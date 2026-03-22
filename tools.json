@@ -1,0 +1,1501 @@
+[
+  {
+    "name": "launch",
+    "description": "Launch a Chromium browser. Options: browser, profile, headless.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "browser": {
+          "type": "string",
+          "description": "chrome, edge, brave, arc, vivaldi, chromium, canary"
+        },
+        "profile": {
+          "type": "string",
+          "description": "Profile name ('new' for auto-ID)"
+        },
+        "headless": {
+          "type": "boolean",
+          "description": "Headless mode (no window)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "navigate",
+    "description": "Navigate to a URL. Auto-dismisses popups. Returns page brief.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "URL (https:// auto-added)"
+        },
+        "no_dismiss": {
+          "type": "boolean",
+          "description": "Skip popup dismissal"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  },
+  {
+    "name": "read",
+    "description": "Reader-mode text extraction. Strips nav/ads, returns clean text.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "Scope to selector"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Token limit"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "text",
+    "description": "Full page text in reading order with numbered interactive refs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "Scope to selector"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Token limit"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "dom",
+    "description": "Compact DOM. Scripts/styles/SVGs stripped. Scope with selector.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "Scope to selector"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Token limit"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "axtree",
+    "description": "Accessibility tree. Use interactive=true for actionable elements with ref numbers. diff=true for changes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "interactive": {
+          "type": "boolean",
+          "description": "Show only interactive elements with ref numbers"
+        },
+        "diff": {
+          "type": "boolean",
+          "description": "Show only changes since last snapshot"
+        },
+        "selector": {
+          "type": "string",
+          "description": "Scope to selector"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Token limit"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "observe",
+    "description": "Interactive elements as ready-to-use commands. Generates ref map.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "find",
+    "description": "Find element by natural language description.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Description of the element to find"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "resolve",
+    "description": "Get link/form target URL without clicking. Returns href, action, src.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector or ref"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    }
+  },
+  {
+    "name": "screenshot",
+    "description": "Capture screenshot. Use ref/selector to crop. Prefer text tools first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "integer",
+          "description": "Ref number to crop to"
+        },
+        "pad": {
+          "type": "integer",
+          "description": "Crop padding (default: 48px)"
+        },
+        "selector": {
+          "type": "string",
+          "description": "Selector to crop to"
+        },
+        "scale": {
+          "type": "number",
+          "description": "Scale factor (default: fit 800px)"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "jpeg",
+            "png"
+          ],
+          "description": "jpeg or png"
+        },
+        "quality": {
+          "type": "integer",
+          "description": "JPEG quality 1-100"
+        },
+        "full": {
+          "type": "boolean",
+          "description": "Capture entire scrollable page, not just the viewport"
+        },
+        "output": {
+          "type": "string",
+          "description": "Save to this path instead of returning the image. Returns text confirmation only, no base64."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "pdf",
+    "description": "Save current page as PDF.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Output file path (default: temp directory)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "click",
+    "description": "Click an element. Supports selector, coordinates, ref, --text. Modes: double, right, human.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Selector, x,y, ref, or --text"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "double",
+            "right",
+            "human"
+          ],
+          "description": "Click variant. Omit for normal click."
+        }
+      },
+      "required": [
+        "target"
+      ]
+    }
+  },
+  {
+    "name": "hover",
+    "description": "Hover over an element.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Selector, x,y, ref, or --text"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    }
+  },
+  {
+    "name": "focus",
+    "description": "Focus an element without clicking.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector or ref number"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    }
+  },
+  {
+    "name": "clear",
+    "description": "Clear an input or contenteditable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector or ref number"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    }
+  },
+  {
+    "name": "type",
+    "description": "Focus input and type text. Set human=true for bot-evasion typing.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector or ref number"
+        },
+        "text": {
+          "type": "string",
+          "description": "Text to type"
+        },
+        "human": {
+          "type": "boolean",
+          "description": "Human-like typing with variable delays and occasional typos"
+        }
+      },
+      "required": [
+        "selector",
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "fill",
+    "description": "Fill multiple form fields. Pass fields as {selector: value} object.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "description": "Map of CSS selector/ref -> value to type. Example: {\"#email\": \"user@example.com\", \"#password\": \"secret\"}",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "fields"
+      ]
+    }
+  },
+  {
+    "name": "keyboard",
+    "description": "Type at current caret position. Use for rich editors.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to type at current caret"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "paste",
+    "description": "Paste text via ClipboardEvent.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to paste"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "clipboard",
+    "description": "Write HTML/text to clipboard and paste via Cmd+V.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "html": {
+          "type": "string",
+          "description": "HTML content to write to clipboard (e.g. '<h1>Title</h1><p>Body with <b>bold</b></p>')"
+        },
+        "text": {
+          "type": "string",
+          "description": "Plain text fallback. If omitted, defaults to the html value."
+        }
+      },
+      "required": [
+        "html"
+      ]
+    }
+  },
+  {
+    "name": "inserttext",
+    "description": "Insert text at cursor via Input.insertText.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to insert at current cursor position"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "press",
+    "description": "Press key or combo (Enter, Ctrl+A, Meta+C).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Key name or combo (e.g., 'Enter', 'Ctrl+A', 'Meta+V')"
+        }
+      },
+      "required": [
+        "key"
+      ]
+    }
+  },
+  {
+    "name": "select",
+    "description": "Select option(s) from a <select> element.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector or ref number of the <select> element"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Value(s) or label(s) to select"
+        }
+      },
+      "required": [
+        "selector",
+        "values"
+      ]
+    }
+  },
+  {
+    "name": "upload",
+    "description": "Upload file(s) to a file input.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector or ref number of the file input"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Absolute file path(s) to upload"
+        }
+      },
+      "required": [
+        "selector",
+        "files"
+      ]
+    }
+  },
+  {
+    "name": "drag",
+    "description": "Drag from one element to another.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "CSS selector or ref number of the source element"
+        },
+        "to": {
+          "type": "string",
+          "description": "CSS selector or ref number of the target element"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    }
+  },
+  {
+    "name": "scroll",
+    "description": "Scroll page or element. Targets: up/down/top/bottom/selector.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Direction (up/down/top/bottom), CSS selector to scroll into view, or selector followed by direction"
+        },
+        "pixels": {
+          "type": "integer",
+          "description": "Pixels to scroll (default 400)"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    }
+  },
+  {
+    "name": "eval",
+    "description": "Evaluate JavaScript expression.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "expression": {
+          "type": "string",
+          "description": "JavaScript expression to evaluate"
+        }
+      },
+      "required": [
+        "expression"
+      ]
+    }
+  },
+  {
+    "name": "dialog",
+    "description": "Set handler for next dialog. Call BEFORE triggering action.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "accept",
+            "dismiss"
+          ],
+          "description": "Accept or dismiss the dialog"
+        },
+        "text": {
+          "type": "string",
+          "description": "Text to enter for prompt dialogs"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "waitfor",
+    "description": "Wait for element to appear (default 30s timeout).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector to wait for"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout in milliseconds (default 5000)"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    }
+  },
+  {
+    "name": "waitfornav",
+    "description": "Wait for navigation/readystate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout in milliseconds (default 10000)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "cookies",
+    "description": "Manage cookies (get/set/delete/clear).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "get",
+            "set",
+            "clear",
+            "delete"
+          ],
+          "description": "Cookie action"
+        },
+        "name": {
+          "type": "string",
+          "description": "Cookie name (for set/delete)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Cookie value (for set)"
+        },
+        "domain": {
+          "type": "string",
+          "description": "Cookie domain (optional, defaults to current hostname)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "console",
+    "description": "Show or listen for console logs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "show",
+            "errors",
+            "listen"
+          ],
+          "description": "Console action (default: show)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "network",
+    "description": "Capture XHR/fetch requests. Filters by URL substring.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "capture",
+            "show"
+          ],
+          "description": "Network action (default: capture)"
+        },
+        "duration": {
+          "type": "integer",
+          "description": "Capture duration in seconds (default 10)"
+        },
+        "filter": {
+          "type": "string",
+          "description": "URL substring to filter requests"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "block",
+    "description": "Block resource types or URL patterns.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource types, URL substrings, '--ads', or 'off'"
+        }
+      },
+      "required": [
+        "patterns"
+      ]
+    }
+  },
+  {
+    "name": "viewport",
+    "description": "Set viewport. Presets: mobile, iphone, ipad, tablet, desktop.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "preset_or_width": {
+          "type": "string",
+          "description": "Preset name or width in pixels"
+        },
+        "height": {
+          "type": "string",
+          "description": "Height in pixels (when using numeric width)"
+        }
+      },
+      "required": [
+        "preset_or_width"
+      ]
+    }
+  },
+  {
+    "name": "zoom",
+    "description": "Zoom page (25-200%). Coordinate clicks auto-adjust.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "description": "Zoom level: 'in' (+25%), 'out' (-25%), 'reset' (100%), or a number 25-200"
+        }
+      },
+      "required": [
+        "level"
+      ]
+    }
+  },
+  {
+    "name": "frames",
+    "description": "List frames/iframes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "frame",
+    "description": "Switch to a frame (use 'main' to reset).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Frame ID, name, CSS selector, or 'main'"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    }
+  },
+  {
+    "name": "tabs",
+    "description": "List tabs owned by this session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "tab",
+    "description": "Switch to a session-owned tab by ID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Tab ID (from tabs output)"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  {
+    "name": "newtab",
+    "description": "Open a new tab in this session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "URL to open in the new tab"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "close",
+    "description": "Close current tab.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "back",
+    "description": "Go back in history.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "forward",
+    "description": "Go forward in history.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "reload",
+    "description": "Reload current page.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "activate",
+    "description": "Bring browser window to front (macOS).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "minimize",
+    "description": "Minimize browser window (macOS).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "lock",
+    "description": "Lock active tab for exclusive access.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "description": "Lock duration in seconds (default 300)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "unlock",
+    "description": "Release tab lock.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "download",
+    "description": "Configure or list downloads.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "path",
+            "list"
+          ],
+          "description": "Download action"
+        },
+        "path": {
+          "type": "string",
+          "description": "Download directory path (for 'path' action)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "search",
+    "description": "Web search via real browser. Returns extracted results.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query"
+        },
+        "engine": {
+          "type": "string",
+          "description": "Search engine: google (default), bing, duckduckgo, or a custom URL (query appended)"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Approximate token limit for results"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "readurls",
+    "description": "Read multiple URLs in parallel. Returns combined content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "URLs to read"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "Approximate token limit per URL"
+        }
+      },
+      "required": [
+        "urls"
+      ]
+    }
+  },
+  {
+    "name": "feedback",
+    "description": "Send product feedback (1-5 rating).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "rating": {
+          "type": "integer",
+          "description": "Rating 1-5 (1=poor, 5=excellent). Did sidekar help you complete browser tasks reliably?"
+        },
+        "comment": {
+          "type": "string",
+          "description": "Focus on improvements only. Which tools failed or behaved unexpectedly (tool names, errors, selectors that didn't match)? What workarounds did you use? What features or fixes would have made the task easier? Do not recap what you did or list what worked."
+        }
+      },
+      "required": [
+        "rating",
+        "comment"
+      ]
+    }
+  },
+  {
+    "name": "config",
+    "description": "Get or set sidekar configuration.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "get",
+            "set"
+          ],
+          "description": "get: show config, set: update a key"
+        },
+        "key": {
+          "type": "string",
+          "description": "Config key to set (telemetry or feedback)"
+        },
+        "value": {
+          "type": "boolean",
+          "description": "Value to set (true or false)"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "media",
+    "description": "Emulate media features (dark mode, print, reduce-motion).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "dark",
+              "light",
+              "print",
+              "screen",
+              "reduce-motion",
+              "high-contrast",
+              "reset"
+            ]
+          },
+          "description": "Media features to emulate"
+        }
+      },
+      "required": [
+        "features"
+      ]
+    }
+  },
+  {
+    "name": "animations",
+    "description": "Pause or resume page animations.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "pause",
+            "resume",
+            "slow"
+          ],
+          "description": "pause: freeze all animations, resume: restore normal playback, slow: 10% speed"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "security",
+    "description": "Control certificate validation (ignore-certs/strict).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "ignore-certs",
+            "strict"
+          ],
+          "description": "ignore-certs: accept self-signed/invalid certificates, strict: restore normal certificate validation"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "storage",
+    "description": "Manage localStorage/sessionStorage/cookies/cache.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "get",
+            "set",
+            "remove",
+            "clear"
+          ],
+          "description": "get: list storage items, set: set a key, remove: delete a key, clear: clear storage"
+        },
+        "key": {
+          "type": "string",
+          "description": "Storage key (for get/set/remove)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Value to set (for set action)"
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "local",
+            "session",
+            "all",
+            "everything"
+          ],
+          "description": "For clear: which storage to clear. 'everything' clears storage + cache + cookies + service workers."
+        },
+        "session": {
+          "type": "boolean",
+          "description": "If true, operate on sessionStorage instead of localStorage (for set/remove)"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "sw",
+    "description": "Manage service workers (list/unregister/update).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "unregister",
+            "update"
+          ],
+          "description": "list: show registered workers, unregister: remove all workers, update: trigger update check"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "kill",
+    "description": "Kill custom profile browser session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "batch",
+    "description": "Execute multiple actions sequentially in one call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "description": "Array of actions to execute. Each action has 'tool' (command name) and tool-specific fields (same as individual tool params). Optional per-action controls: 'wait' (ms), 'retries', 'retry_delay' (ms), and 'optional'.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "Command name (click, type, screenshot, press, navigate, waitfor, etc.)"
+              },
+              "wait": {
+                "type": "integer",
+                "description": "Wait this many ms after this action (overrides smart default)"
+              },
+              "retries": {
+                "type": "integer",
+                "description": "Retry this action this many additional times if it fails"
+              },
+              "retry_delay": {
+                "type": "integer",
+                "description": "Wait this many ms between retry attempts"
+              },
+              "optional": {
+                "type": "boolean",
+                "description": "If true, a failed action is recorded but does not abort the batch"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          }
+        },
+        "delay": {
+          "type": "integer",
+          "description": "Global delay in ms between every action (additive with smart waits). Default: 0"
+        }
+      },
+      "required": [
+        "actions"
+      ]
+    }
+  },
+  {
+    "name": "tools",
+    "description": "List or load tool categories. Core tools always available; load extended categories on demand.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "load"
+          ],
+          "description": "list: show categories. load: activate a category."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "forms",
+            "nav",
+            "debug",
+            "media",
+            "desktop",
+            "session",
+            "meta",
+            "all"
+          ],
+          "description": "Category to load (for action=load)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "grid",
+    "description": "Overlay coordinate grid for canvas/image targeting.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "spec": {
+          "type": "string",
+          "description": "Grid spec: '8x6' (cols x rows), '50' (pixel cell size), 'off' (remove), or omit for default 10x10"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "install",
+    "description": "Register MCP with detected clients.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "monitor",
+    "description": "Watch tabs for title/favicon changes. Requires tmux.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "start",
+            "stop",
+            "status"
+          ],
+          "description": "start: begin monitoring tabs. stop: stop monitoring. status: show monitor state."
+        },
+        "tabs": {
+          "type": "string",
+          "description": "Tab IDs to watch (comma-separated numbers from `tabs` command), or \"all\" to watch all owned tabs. Required for start."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "who",
+    "description": "List agents on your channel. all=true for cross-session discovery.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "all": {
+          "type": "boolean",
+          "description": "If true, discover agents across all tmux sessions via IPC sockets (not just current channel)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "bus_send",
+    "description": "Send a message to another agent on the bus. @all to broadcast.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "description": "Agent name to message, or \"@all\" to broadcast"
+        },
+        "message": {
+          "type": "string",
+          "description": "The message to send"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "request",
+            "response",
+            "fyi"
+          ],
+          "description": "Message type: 'request' expects a response, 'response' answers a prior request, 'fyi' is informational (default: fyi)"
+        },
+        "reply_to": {
+          "type": "string",
+          "description": "Message ID being replied to (from a prior request/handoff). Resolves the pending request."
+        }
+      },
+      "required": [
+        "to",
+        "message"
+      ]
+    }
+  },
+  {
+    "name": "bus_done",
+    "description": "Hand off to another agent with summary and next request.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "next": {
+          "type": "string",
+          "description": "Agent name to hand off to, or \"@all\" to broadcast"
+        },
+        "summary": {
+          "type": "string",
+          "description": "What you just finished"
+        },
+        "request": {
+          "type": "string",
+          "description": "What you need the next agent to do"
+        },
+        "reply_to": {
+          "type": "string",
+          "description": "Message ID being replied to (from a prior request). Resolves the pending request."
+        }
+      },
+      "required": [
+        "next",
+        "summary",
+        "request"
+      ]
+    }
+  },
+  {
+    "name": "register",
+    "description": "Register on the agent bus (auto-called on MCP startup).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Custom name to register as (optional \u2014 auto-generated if omitted)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "unregister",
+    "description": "Leave the agent bus.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "desktop_screenshot",
+    "description": "Capture desktop or app window screenshot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "App name to capture (case-insensitive substring match, e.g. 'Safari', 'Finder')"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID of the app to capture (alternative to app name)"
+        },
+        "output": {
+          "type": "string",
+          "description": "File path to save the screenshot (default: auto-generated temp path)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "desktop_apps",
+    "description": "List running applications with PID and bundle ID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "desktop_windows",
+    "description": "List windows for an app.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "App name (case-insensitive substring match)"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID (alternative to app name)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "desktop_find",
+    "description": "Search app UI elements by query string.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "App name (case-insensitive substring match)"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID (alternative to app name)"
+        },
+        "query": {
+          "type": "string",
+          "description": "Search query \u2014 matches against element role, title, value, and identifier"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "desktop_click",
+    "description": "Click a UI element by query via Accessibility API.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "App name (case-insensitive substring match)"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID (alternative to app name)"
+        },
+        "query": {
+          "type": "string",
+          "description": "Search query to find the element to click"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "desktop_launch",
+    "description": "Launch an app by name.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Application name (e.g. 'Slack', 'Safari', 'Finder')"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "name": "desktop_activate",
+    "description": "Bring an app to the foreground.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "App name (case-insensitive substring match)"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID (alternative to app name)"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "desktop_quit",
+    "description": "Quit an app gracefully.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "App name (case-insensitive substring match)"
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID (alternative to app name)"
+        }
+      },
+      "required": []
+    }
+  }
+]

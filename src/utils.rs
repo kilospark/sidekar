@@ -1,0 +1,881 @@
+use crate::*;
+
+pub fn parse_coordinates(args: &[String]) -> Option<(f64, f64)> {
+    if args.len() == 1 {
+        let arg = args[0].trim();
+        if let Some((x, y)) = arg.split_once(',') {
+            if let (Ok(xv), Ok(yv)) = (x.parse::<f64>(), y.parse::<f64>()) {
+                return Some((xv, yv));
+            }
+        }
+    }
+    if args.len() == 2 {
+        if let (Ok(x), Ok(y)) = (args[0].parse::<f64>(), args[1].parse::<f64>()) {
+            return Some((x, y));
+        }
+    }
+    None
+}
+
+/// Adjust coordinates from screenshot space to CSS space, accounting for zoom.
+/// With CSS zoom, visual coordinates = CSS coordinates * zoom_factor.
+/// Agent picks coords from screenshot (visual space), so divide by zoom to get CSS coords.
+pub fn adjust_coords_for_zoom(ctx: &crate::AppContext, x: f64, y: f64) -> (f64, f64) {
+    let zoom = ctx
+        .load_session_state()
+        .ok()
+        .and_then(|s| s.zoom_level)
+        .unwrap_or(100.0)
+        / 100.0;
+    if (zoom - 1.0).abs() < 0.001 {
+        (x, y)
+    } else {
+        (x / zoom, y / zoom)
+    }
+}
+
+pub fn console_arg_to_text(arg: &Value) -> String {
+    arg.get("value")
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            Value::Null => Some("null".to_string()),
+            _ => Some(v.to_string()),
+        })
+        .or_else(|| {
+            arg.get("description")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
+pub fn map_resource_type(pattern: &str) -> Option<&'static str> {
+    match pattern.to_lowercase().as_str() {
+        "images" => Some("Image"),
+        "css" => Some("Stylesheet"),
+        "fonts" => Some("Font"),
+        "media" => Some("Media"),
+        "scripts" => Some("Script"),
+        _ => None,
+    }
+}
+
+pub fn resource_type_url_patterns(resource_type: &str) -> Vec<String> {
+    match resource_type {
+        "Image" => vec![
+            "*.png".to_string(),
+            "*.jpg".to_string(),
+            "*.jpeg".to_string(),
+            "*.gif".to_string(),
+            "*.webp".to_string(),
+            "*.svg".to_string(),
+            "data:image/*".to_string(),
+        ],
+        "Stylesheet" => vec!["*.css".to_string()],
+        "Font" => vec![
+            "*.woff".to_string(),
+            "*.woff2".to_string(),
+            "*.ttf".to_string(),
+            "*.otf".to_string(),
+        ],
+        "Media" => vec![
+            "*.mp3".to_string(),
+            "*.mp4".to_string(),
+            "*.webm".to_string(),
+            "*.m3u8".to_string(),
+        ],
+        "Script" => vec!["*.js".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+pub fn print_frame_tree(buf: &mut String, node: &Value, depth: usize) {
+    if node.is_null() {
+        return;
+    }
+    let indent = "  ".repeat(depth);
+    let frame = node.get("frame").cloned().unwrap_or(Value::Null);
+    let id = frame.get("id").and_then(Value::as_str).unwrap_or("");
+    let name = frame.get("name").and_then(Value::as_str).unwrap_or("");
+    let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
+    if name.is_empty() {
+        let _ = writeln!(buf, "{}[{}] {}", indent, id, url);
+    } else {
+        let _ = writeln!(buf, "{}[{}] name=\"{}\" {}", indent, id, name, url);
+    }
+    for child in node
+        .get("childFrames")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        print_frame_tree(buf, &child, depth + 1);
+    }
+}
+
+pub fn find_frame_in_tree(node: &Value, id_or_name: &str) -> Option<(String, String)> {
+    if node.is_null() {
+        return None;
+    }
+    let frame = node.get("frame")?;
+    let id = frame.get("id").and_then(Value::as_str).unwrap_or("");
+    let name = frame.get("name").and_then(Value::as_str).unwrap_or("");
+    let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
+    if id == id_or_name || name == id_or_name {
+        return Some((id.to_string(), url.to_string()));
+    }
+    for child in node
+        .get("childFrames")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        if let Some(found) = find_frame_in_tree(&child, id_or_name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub fn find_frame_by_url(node: &Value, target_url: &str) -> Option<(String, String)> {
+    if node.is_null() {
+        return None;
+    }
+    let frame = node.get("frame")?;
+    let id = frame.get("id").and_then(Value::as_str).unwrap_or("");
+    let url = frame.get("url").and_then(Value::as_str).unwrap_or("");
+    if url == target_url {
+        return Some((id.to_string(), url.to_string()));
+    }
+    for child in node
+        .get("childFrames")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        if let Some(found) = find_frame_by_url(&child, target_url) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub fn epoch_to_date(epoch_seconds: i64) -> String {
+    epoch_seconds.to_string()
+}
+
+pub fn human_size(size: u64) -> String {
+    if size > 1_048_576 {
+        format!("{:.1}MB", size as f64 / 1_048_576.0)
+    } else if size > 1024 {
+        format!("{}KB", (size as f64 / 1024.0).round() as u64)
+    } else {
+        format!("{}B", size)
+    }
+}
+
+pub fn activate_browser(browser_name: &str) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        run_osascript(&format!(
+            r#"tell application "{name}" to activate
+try
+    tell application "{name}" to set miniaturized of window 1 to false
+end try"#,
+            name = browser_name
+        ))?;
+    } else if cfg!(target_os = "linux") {
+        // Best-effort: try wmctrl, then xdotool. Both are X11 tools;
+        // on Wayland without these, this is a no-op (CDP restore handles the window).
+        let _ = activate_browser_linux(browser_name);
+    }
+    Ok(())
+}
+
+pub fn minimize_browser(browser_name: &str) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        run_osascript(&format!(
+            r#"tell application "{name}"
+    repeat with w in windows
+        try
+            set miniaturized of w to true
+        end try
+    end repeat
+end tell"#,
+            name = browser_name
+        ))?;
+    } else if cfg!(target_os = "linux") {
+        let _ = minimize_browser_linux(browser_name);
+    }
+    Ok(())
+}
+
+fn activate_browser_linux(browser_name: &str) -> Result<()> {
+    // Try wmctrl first (more reliable for raising + focusing)
+    if let Ok(output) = Command::new("wmctrl").args(["-a", browser_name]).output() {
+        if output.status.success() {
+            return Ok(());
+        }
+    }
+    // Fallback: xdotool search by name, activate first match
+    if let Ok(output) = Command::new("xdotool")
+        .args(["search", "--name", browser_name])
+        .output()
+    {
+        if let Some(wid) = String::from_utf8_lossy(&output.stdout).lines().next() {
+            let _ = Command::new("xdotool")
+                .args(["windowactivate", wid])
+                .output();
+        }
+    }
+    Ok(())
+}
+
+fn minimize_browser_linux(browser_name: &str) -> Result<()> {
+    // Try xdotool: search by name, minimize all matches
+    if let Ok(output) = Command::new("xdotool")
+        .args(["search", "--name", browser_name])
+        .output()
+    {
+        for wid in String::from_utf8_lossy(&output.stdout).lines() {
+            let _ = Command::new("xdotool")
+                .args(["windowminimize", wid])
+                .output();
+        }
+    }
+    Ok(())
+}
+
+fn run_osascript(script: &str) -> Result<()> {
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .context("osascript not found — cannot control browser windows")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "Cannot control browser window: {}. \
+             If using a custom CHROME_PATH, ensure the app is in /Applications.",
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+pub async fn human_click(cdp: &mut CdpClient, x: f64, y: f64) -> Result<()> {
+    let start_x = x + (rand::random::<f64>() - 0.5) * 200.0 + 50.0;
+    let start_y = y + (rand::random::<f64>() - 0.5) * 200.0 + 50.0;
+    cdp.send(
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseMoved", "x": start_x, "y": start_y }),
+    )
+    .await?;
+    human_mouse_move(cdp, start_x, start_y, x, y).await?;
+    sleep(Duration::from_millis(
+        (50.0 + rand::random::<f64>() * 150.0) as u64,
+    ))
+    .await;
+    cdp.send(
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+    )
+    .await?;
+    sleep(Duration::from_millis(
+        (30.0 + rand::random::<f64>() * 90.0) as u64,
+    ))
+    .await;
+    let release_x = x + (rand::random::<f64>() - 0.5) * 2.0;
+    let release_y = y + (rand::random::<f64>() - 0.5) * 2.0;
+    cdp.send(
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseReleased", "x": release_x, "y": release_y, "button": "left", "clickCount": 1 }),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn human_mouse_move(
+    cdp: &mut CdpClient,
+    from_x: f64,
+    from_y: f64,
+    to_x: f64,
+    to_y: f64,
+) -> Result<()> {
+    let distance = ((to_x - from_x).powi(2) + (to_y - from_y).powi(2)).sqrt();
+    let duration = 100.0 + (distance / 2000.0) * 200.0 + rand::random::<f64>() * 100.0;
+    let steps = (duration / 20.0).round().clamp(5.0, 30.0) as usize;
+
+    let cp1_x = from_x + (to_x - from_x) * 0.25 + (rand::random::<f64>() - 0.5) * 50.0;
+    let cp1_y = from_y + (to_y - from_y) * 0.25 + (rand::random::<f64>() - 0.5) * 50.0;
+    let cp2_x = from_x + (to_x - from_x) * 0.75 + (rand::random::<f64>() - 0.5) * 50.0;
+    let cp2_y = from_y + (to_y - from_y) * 0.75 + (rand::random::<f64>() - 0.5) * 50.0;
+
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let u = 1.0 - t;
+        let x = u.powi(3) * from_x
+            + 3.0 * u.powi(2) * t * cp1_x
+            + 3.0 * u * t.powi(2) * cp2_x
+            + t.powi(3) * to_x
+            + (rand::random::<f64>() - 0.5) * 2.0;
+        let y = u.powi(3) * from_y
+            + 3.0 * u.powi(2) * t * cp1_y
+            + 3.0 * u * t.powi(2) * cp2_y
+            + t.powi(3) * to_y
+            + (rand::random::<f64>() - 0.5) * 2.0;
+        cdp.send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseMoved", "x": x, "y": y }),
+        )
+        .await?;
+        sleep(Duration::from_millis(
+            (16.0 + rand::random::<f64>() * 8.0) as u64,
+        ))
+        .await;
+    }
+    Ok(())
+}
+
+pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Result<()> {
+    let base_delay = if fast { 40.0 } else { 80.0 };
+    let chars = text.chars().collect::<Vec<_>>();
+    for (i, ch) in chars.iter().enumerate() {
+        let c = ch.to_string();
+        cdp.send(
+            "Input.dispatchKeyEvent",
+            json!({ "type": "keyDown", "text": c, "unmodifiedText": ch.to_string() }),
+        )
+        .await?;
+        cdp.send(
+            "Input.dispatchKeyEvent",
+            json!({ "type": "keyUp", "text": ch.to_string(), "unmodifiedText": ch.to_string() }),
+        )
+        .await?;
+        let mut delay = base_delay + rand::random::<f64>() * (base_delay / 2.0);
+        if rand::random::<f64>() < 0.05 {
+            delay += rand::random::<f64>() * 500.0;
+        }
+        if i > 0 && chars[i - 1] == *ch {
+            delay /= 2.0;
+        }
+        if rand::random::<f64>() < 0.03 && i < chars.len() - 1 {
+            let wrong_char = ((b'a' + (rand::random::<u8>() % 26)) as char).to_string();
+            cdp.send(
+                "Input.dispatchKeyEvent",
+                json!({ "type": "keyDown", "text": wrong_char, "unmodifiedText": wrong_char }),
+            )
+            .await?;
+            cdp.send(
+                "Input.dispatchKeyEvent",
+                json!({ "type": "keyUp", "text": wrong_char, "unmodifiedText": wrong_char }),
+            )
+            .await?;
+            sleep(Duration::from_millis(
+                (50.0 + rand::random::<f64>() * 100.0) as u64,
+            ))
+            .await;
+            cdp.send(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type": "keyDown",
+                    "key": "Backspace",
+                    "code": "Backspace",
+                    "keyCode": 8,
+                    "windowsVirtualKeyCode": 8
+                }),
+            )
+            .await?;
+            cdp.send(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type": "keyUp",
+                    "key": "Backspace",
+                    "code": "Backspace",
+                    "keyCode": 8,
+                    "windowsVirtualKeyCode": 8
+                }),
+            )
+            .await?;
+            sleep(Duration::from_millis(
+                (30.0 + rand::random::<f64>() * 70.0) as u64,
+            ))
+            .await;
+        }
+        sleep(Duration::from_millis(delay as u64)).await;
+    }
+    Ok(())
+}
+
+pub fn build_dom_extract_script(selector: Option<&str>) -> Result<String> {
+    let root = match selector {
+        Some(sel) => format!("document.querySelector({})", serde_json::to_string(sel)?),
+        None => "document.body".to_string(),
+    };
+    let selector_suffix = match selector {
+        Some(sel) => format!("' for selector: ' + {}", serde_json::to_string(sel)?),
+        None => "''".to_string(),
+    };
+
+    Ok(DOM_EXTRACT_TEMPLATE
+        .replace("__SIDEKAR_ROOT__", &root)
+        .replace("__SIDEKAR_SELECTOR_SUFFIX__", &selector_suffix))
+}
+
+pub fn build_read_extract_script(selector: Option<&str>) -> Result<String> {
+    let root = match selector {
+        Some(sel) => format!("document.querySelector({})", serde_json::to_string(sel)?),
+        None => "document.body".to_string(),
+    };
+    let selector_suffix = match selector {
+        Some(sel) => format!("' for selector: ' + {}", serde_json::to_string(sel)?),
+        None => "''".to_string(),
+    };
+
+    Ok(READ_EXTRACT_TEMPLATE
+        .replace("__SIDEKAR_ROOT__", &root)
+        .replace("__SIDEKAR_SELECTOR_SUFFIX__", &selector_suffix))
+}
+
+pub fn build_text_extract_script(selector: Option<&str>) -> Result<String> {
+    let root = match selector {
+        Some(sel) => format!("document.querySelector({})", serde_json::to_string(sel)?),
+        None => "document.body".to_string(),
+    };
+    let selector_suffix = match selector {
+        Some(sel) => format!("' for selector: ' + {}", serde_json::to_string(sel)?),
+        None => "''".to_string(),
+    };
+
+    Ok(TEXT_EXTRACT_TEMPLATE
+        .replace("__SIDEKAR_ROOT__", &root)
+        .replace("__SIDEKAR_SELECTOR_SUFFIX__", &selector_suffix)
+        .replace("__SIDEKAR_SELECTOR_GEN__", SELECTOR_GEN_SCRIPT))
+}
+
+pub fn parse_key_combo(combo: &str) -> (KeyModifiers, String) {
+    let mut modifiers = KeyModifiers {
+        ctrl: false,
+        alt: false,
+        shift: false,
+        meta: false,
+    };
+    let mut key = String::new();
+
+    for part in combo.split('+') {
+        match part.to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers.ctrl = true,
+            "alt" | "option" => modifiers.alt = true,
+            "shift" => modifiers.shift = true,
+            "meta" | "cmd" | "command" => modifiers.meta = true,
+            _ => key = part.to_string(),
+        }
+    }
+
+    (modifiers, key)
+}
+
+pub fn key_mapping(input: &str) -> KeyMapping {
+    let key = input.to_string();
+    match input.to_lowercase().as_str() {
+        "enter" => KeyMapping {
+            key: "Enter".to_string(),
+            code: "Enter".to_string(),
+            key_code: 13,
+        },
+        "tab" => KeyMapping {
+            key: "Tab".to_string(),
+            code: "Tab".to_string(),
+            key_code: 9,
+        },
+        "escape" => KeyMapping {
+            key: "Escape".to_string(),
+            code: "Escape".to_string(),
+            key_code: 27,
+        },
+        "backspace" => KeyMapping {
+            key: "Backspace".to_string(),
+            code: "Backspace".to_string(),
+            key_code: 8,
+        },
+        "delete" => KeyMapping {
+            key: "Delete".to_string(),
+            code: "Delete".to_string(),
+            key_code: 46,
+        },
+        "arrowup" => KeyMapping {
+            key: "ArrowUp".to_string(),
+            code: "ArrowUp".to_string(),
+            key_code: 38,
+        },
+        "arrowdown" => KeyMapping {
+            key: "ArrowDown".to_string(),
+            code: "ArrowDown".to_string(),
+            key_code: 40,
+        },
+        "arrowleft" => KeyMapping {
+            key: "ArrowLeft".to_string(),
+            code: "ArrowLeft".to_string(),
+            key_code: 37,
+        },
+        "arrowright" => KeyMapping {
+            key: "ArrowRight".to_string(),
+            code: "ArrowRight".to_string(),
+            key_code: 39,
+        },
+        "space" => KeyMapping {
+            key: " ".to_string(),
+            code: "Space".to_string(),
+            key_code: 32,
+        },
+        "home" => KeyMapping {
+            key: "Home".to_string(),
+            code: "Home".to_string(),
+            key_code: 36,
+        },
+        "end" => KeyMapping {
+            key: "End".to_string(),
+            code: "End".to_string(),
+            key_code: 35,
+        },
+        "pageup" => KeyMapping {
+            key: "PageUp".to_string(),
+            code: "PageUp".to_string(),
+            key_code: 33,
+        },
+        "pagedown" => KeyMapping {
+            key: "PageDown".to_string(),
+            code: "PageDown".to_string(),
+            key_code: 34,
+        },
+        _ => {
+            if input.chars().count() == 1 {
+                let upper = input.to_uppercase();
+                let c = upper.chars().next().unwrap_or('A');
+                KeyMapping {
+                    key,
+                    code: format!("Key{}", upper),
+                    key_code: c as i64,
+                }
+            } else {
+                KeyMapping {
+                    key,
+                    code: input.to_string(),
+                    key_code: 0,
+                }
+            }
+        }
+    }
+}
+
+pub fn find_free_port() -> Result<u16> {
+    let listener =
+        TcpListener::bind((DEFAULT_CDP_HOST, 0)).context("failed to allocate free port")?;
+    let port = listener
+        .local_addr()
+        .context("failed reading free port")?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+pub fn find_browser() -> Option<BrowserCandidate> {
+    if let Ok(chrome_path) = env::var("CHROME_PATH") {
+        if Path::new(&chrome_path).exists() {
+            let name = app_name_from_path(&chrome_path);
+            return Some(BrowserCandidate {
+                path: chrome_path,
+                name,
+            });
+        }
+    }
+
+    let home = env::var("HOME").unwrap_or_default();
+    let mut candidates: Vec<(String, String)> = Vec::new();
+
+    if cfg!(target_os = "macos") {
+        for (name, rel) in [
+            (
+                "Google Chrome",
+                "Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            (
+                "Google Chrome Canary",
+                "Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            ),
+            (
+                "Microsoft Edge",
+                "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ),
+            (
+                "Brave Browser",
+                "Brave Browser.app/Contents/MacOS/Brave Browser",
+            ),
+            ("Arc", "Arc.app/Contents/MacOS/Arc"),
+            ("Vivaldi", "Vivaldi.app/Contents/MacOS/Vivaldi"),
+            ("Opera", "Opera.app/Contents/MacOS/Opera"),
+            ("Chromium", "Chromium.app/Contents/MacOS/Chromium"),
+        ] {
+            candidates.push((format!("/Applications/{rel}"), name.to_string()));
+            candidates.push((format!("{home}/Applications/{rel}"), name.to_string()));
+        }
+    } else if cfg!(target_os = "linux") {
+        candidates.extend(
+            [
+                ("/usr/bin/google-chrome-stable", "Google Chrome"),
+                ("/usr/bin/google-chrome", "Google Chrome"),
+                ("/usr/local/bin/google-chrome-stable", "Google Chrome"),
+                ("/usr/local/bin/google-chrome", "Google Chrome"),
+                ("/usr/bin/microsoft-edge-stable", "Microsoft Edge"),
+                ("/usr/bin/microsoft-edge", "Microsoft Edge"),
+                ("/usr/bin/brave-browser", "Brave Browser"),
+                ("/usr/bin/brave-browser-stable", "Brave Browser"),
+                ("/usr/bin/vivaldi-stable", "Vivaldi"),
+                ("/usr/bin/vivaldi", "Vivaldi"),
+                ("/usr/bin/opera", "Opera"),
+                ("/usr/bin/chromium-browser", "Chromium"),
+                ("/usr/bin/chromium", "Chromium"),
+                ("/usr/local/bin/chromium-browser", "Chromium"),
+                ("/usr/local/bin/chromium", "Chromium"),
+                ("/snap/bin/chromium", "Chromium (snap)"),
+            ]
+            .into_iter()
+            .map(|(p, n)| (p.to_string(), n.to_string())),
+        );
+    } else if cfg!(target_os = "windows") {
+        let pf = env::var("PROGRAMFILES").unwrap_or_else(|_| "C:\\Program Files".to_string());
+        let pf86 =
+            env::var("PROGRAMFILES(X86)").unwrap_or_else(|_| "C:\\Program Files (x86)".to_string());
+        let local = env::var("LOCALAPPDATA").unwrap_or_default();
+
+        candidates.extend([
+            (
+                format!("{pf}\\Google\\Chrome\\Application\\chrome.exe"),
+                "Google Chrome".to_string(),
+            ),
+            (
+                format!("{pf86}\\Google\\Chrome\\Application\\chrome.exe"),
+                "Google Chrome".to_string(),
+            ),
+            (
+                format!("{local}\\Google\\Chrome\\Application\\chrome.exe"),
+                "Google Chrome".to_string(),
+            ),
+            (
+                format!("{pf}\\Microsoft\\Edge\\Application\\msedge.exe"),
+                "Microsoft Edge".to_string(),
+            ),
+            (
+                format!("{pf86}\\Microsoft\\Edge\\Application\\msedge.exe"),
+                "Microsoft Edge".to_string(),
+            ),
+            (
+                format!("{pf}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+                "Brave Browser".to_string(),
+            ),
+        ]);
+    }
+
+    for (path, name) in candidates {
+        if Path::new(&path).exists() {
+            return Some(BrowserCandidate { path, name });
+        }
+    }
+
+    if !cfg!(target_os = "windows") {
+        for (bin, name) in [
+            ("google-chrome-stable", "Google Chrome"),
+            ("google-chrome", "Google Chrome"),
+            ("chromium-browser", "Chromium"),
+            ("chromium", "Chromium"),
+            ("microsoft-edge-stable", "Microsoft Edge"),
+            ("brave-browser", "Brave Browser"),
+        ] {
+            if let Some(path) = which_bin(bin) {
+                return Some(BrowserCandidate {
+                    path,
+                    name: name.to_string(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Find a browser matching a preferred name (case-insensitive substring match).
+/// Falls back to find_browser() if no match found.
+pub fn find_browser_by_name(preferred: &str) -> Option<BrowserCandidate> {
+    let pref = preferred.to_lowercase();
+
+    // Normalize common short names to full names
+    let needle = match pref.as_str() {
+        "chrome" | "google-chrome" => "google chrome",
+        "edge" | "msedge" => "microsoft edge",
+        "brave" => "brave browser",
+        "canary" | "chrome-canary" => "google chrome canary",
+        other => other,
+    };
+
+    // Collect all candidates from find_browser's list and filter
+    let all = all_browser_candidates();
+    for (path, name) in &all {
+        if name.to_lowercase().contains(needle) && Path::new(path).exists() {
+            return Some(BrowserCandidate {
+                path: path.clone(),
+                name: name.clone(),
+            });
+        }
+    }
+
+    None
+}
+
+/// Return all known browser candidates for this platform (path, display name).
+fn all_browser_candidates() -> Vec<(String, String)> {
+    let home = env::var("HOME").unwrap_or_default();
+    let mut candidates: Vec<(String, String)> = Vec::new();
+
+    if cfg!(target_os = "macos") {
+        for (name, rel) in [
+            (
+                "Google Chrome",
+                "Google Chrome.app/Contents/MacOS/Google Chrome",
+            ),
+            (
+                "Google Chrome Canary",
+                "Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            ),
+            (
+                "Microsoft Edge",
+                "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ),
+            (
+                "Brave Browser",
+                "Brave Browser.app/Contents/MacOS/Brave Browser",
+            ),
+            ("Arc", "Arc.app/Contents/MacOS/Arc"),
+            ("Vivaldi", "Vivaldi.app/Contents/MacOS/Vivaldi"),
+            ("Opera", "Opera.app/Contents/MacOS/Opera"),
+            ("Chromium", "Chromium.app/Contents/MacOS/Chromium"),
+        ] {
+            candidates.push((format!("/Applications/{rel}"), name.to_string()));
+            candidates.push((format!("{home}/Applications/{rel}"), name.to_string()));
+        }
+    } else if cfg!(target_os = "linux") {
+        candidates.extend(
+            [
+                ("/usr/bin/google-chrome-stable", "Google Chrome"),
+                ("/usr/bin/google-chrome", "Google Chrome"),
+                ("/usr/local/bin/google-chrome-stable", "Google Chrome"),
+                ("/usr/local/bin/google-chrome", "Google Chrome"),
+                ("/usr/bin/microsoft-edge-stable", "Microsoft Edge"),
+                ("/usr/bin/microsoft-edge", "Microsoft Edge"),
+                ("/usr/bin/brave-browser", "Brave Browser"),
+                ("/usr/bin/brave-browser-stable", "Brave Browser"),
+                ("/usr/bin/vivaldi-stable", "Vivaldi"),
+                ("/usr/bin/vivaldi", "Vivaldi"),
+                ("/usr/bin/opera", "Opera"),
+                ("/usr/bin/chromium-browser", "Chromium"),
+                ("/usr/bin/chromium", "Chromium"),
+                ("/usr/local/bin/chromium-browser", "Chromium"),
+                ("/usr/local/bin/chromium", "Chromium"),
+                ("/snap/bin/chromium", "Chromium (snap)"),
+            ]
+            .into_iter()
+            .map(|(p, n)| (p.to_string(), n.to_string())),
+        );
+    } else if cfg!(target_os = "windows") {
+        let pf = env::var("PROGRAMFILES").unwrap_or_else(|_| "C:\\Program Files".to_string());
+        let pf86 =
+            env::var("PROGRAMFILES(X86)").unwrap_or_else(|_| "C:\\Program Files (x86)".to_string());
+        let local = env::var("LOCALAPPDATA").unwrap_or_default();
+        candidates.extend([
+            (
+                format!("{pf}\\Google\\Chrome\\Application\\chrome.exe"),
+                "Google Chrome".to_string(),
+            ),
+            (
+                format!("{pf86}\\Google\\Chrome\\Application\\chrome.exe"),
+                "Google Chrome".to_string(),
+            ),
+            (
+                format!("{local}\\Google\\Chrome\\Application\\chrome.exe"),
+                "Google Chrome".to_string(),
+            ),
+            (
+                format!("{pf}\\Microsoft\\Edge\\Application\\msedge.exe"),
+                "Microsoft Edge".to_string(),
+            ),
+            (
+                format!("{pf86}\\Microsoft\\Edge\\Application\\msedge.exe"),
+                "Microsoft Edge".to_string(),
+            ),
+            (
+                format!("{pf}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+                "Brave Browser".to_string(),
+            ),
+        ]);
+    }
+
+    candidates
+}
+
+/// Extract macOS app name from a path like `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+fn app_name_from_path(path: &str) -> String {
+    // Try to extract from .app bundle name (e.g., "Google Chrome.app" -> "Google Chrome")
+    if let Some(idx) = path.find(".app") {
+        let before_app = &path[..idx];
+        if let Some(slash) = before_app.rfind('/') {
+            return before_app[slash + 1..].to_string();
+        }
+        return before_app.to_string();
+    }
+    // Fall back to filename
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "chrome".to_string())
+}
+
+pub fn which_bin(bin: &str) -> Option<String> {
+    let output = Command::new("which").arg(bin).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() { None } else { Some(path) }
+}
+
+pub fn truncate(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    let clipped = input.chars().take(max_chars).collect::<String>();
+    format!("{clipped}...")
+}
+
+pub fn json_value_to_arg(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => v.to_string(),
+    }
+}
+
+pub fn now_epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis() as i64
+}
+
+pub fn new_session_id() -> String {
+    let mut bytes = [0u8; 4];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+}

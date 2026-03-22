@@ -1,0 +1,8 @@
+{
+  "name": "sidekar-www",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "mongodb": "^6.13.1"
+  }
+}

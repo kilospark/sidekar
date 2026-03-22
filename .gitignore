@@ -1,0 +1,6 @@
+/target
+.vercel
+.DS_Store
+screenshots/
+native/macos-automation/.build/
+www/public/binaries/
