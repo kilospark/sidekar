@@ -21,14 +21,24 @@ pub enum InputSink {
 }
 
 /// Write a message to a PTY master fd (for InputSink::PtyFd).
+/// Loops until the full buffer is written, retrying on EINTR.
 fn write_to_pty_fd(fd: &OwnedFd, message: &str) -> Result<()> {
     let bytes = format!("{message}\n");
     let raw_fd = fd.as_raw_fd();
-    let written = unsafe {
-        libc::write(raw_fd, bytes.as_ptr() as *const libc::c_void, bytes.len())
-    };
-    if written < 0 {
-        bail!("write to PTY fd failed: {}", std::io::Error::last_os_error());
+    let mut buf = bytes.as_bytes();
+    while !buf.is_empty() {
+        let n = unsafe { libc::write(raw_fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+        if n > 0 {
+            buf = &buf[n as usize..];
+        } else if n == 0 {
+            bail!("write to PTY fd returned 0");
+        } else {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            bail!("write to PTY fd failed: {err}");
+        }
     }
     Ok(())
 }

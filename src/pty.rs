@@ -8,6 +8,7 @@ use crate::broker;
 use crate::ipc;
 use crate::message::AgentId;
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 
@@ -40,15 +41,11 @@ impl RawModeGuard {
         }
         Ok(Self { saved, fd })
     }
-
-    fn restore(&self) {
-        unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
-    }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        self.restore();
+        unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
     }
 }
 
@@ -57,30 +54,36 @@ impl Drop for RawModeGuard {
 // ---------------------------------------------------------------------------
 
 /// Fork a child process inside a new PTY.
-/// Returns (master_fd, child_pid) in the parent. Does not return in the child.
-fn fork_pty(cmd: &str, args: &[String]) -> Result<(OwnedFd, libc::pid_t)> {
+///
+/// The child side is async-signal-safe: CString args are prepared before
+/// fork, and the child only calls execvp (or _exit on failure). No Rust
+/// allocations, logging, or non-trivial work happens post-fork in the child.
+fn fork_pty(cmd: &std::ffi::CString, c_args: &[std::ffi::CString]) -> Result<(OwnedFd, libc::pid_t)> {
+    // Build the argv pointer array before forking (allocation is safe here)
+    let c_ptrs: Vec<*const libc::c_char> = c_args
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+
     let mut master_fd: libc::c_int = -1;
-    let pid = unsafe { libc::forkpty(&mut master_fd, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+    let pid = unsafe {
+        libc::forkpty(
+            &mut master_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
 
     if pid < 0 {
         bail!("forkpty failed: {}", std::io::Error::last_os_error());
     }
 
     if pid == 0 {
-        // Child process — exec the agent
-        let c_cmd = std::ffi::CString::new(cmd).context("invalid command")?;
-        let mut c_args: Vec<std::ffi::CString> = vec![c_cmd.clone()];
-        for arg in args {
-            c_args.push(std::ffi::CString::new(arg.as_str()).context("invalid arg")?);
-        }
-        let c_ptrs: Vec<*const libc::c_char> = c_args
-            .iter()
-            .map(|s| s.as_ptr())
-            .chain(std::iter::once(std::ptr::null()))
-            .collect();
-        unsafe { libc::execvp(c_cmd.as_ptr(), c_ptrs.as_ptr()) };
-        // If execvp returns, it failed
-        eprintln!("sidekar: exec failed for \"{cmd}\": {}", std::io::Error::last_os_error());
+        // Child process — only async-signal-safe calls from here.
+        // execvp replaces the process image; _exit if it fails.
+        unsafe { libc::execvp(cmd.as_ptr(), c_ptrs.as_ptr()) };
         unsafe { libc::_exit(127) };
     }
 
@@ -101,7 +104,7 @@ fn copy_terminal_size(master_fd: i32) -> Result<()> {
     Ok(())
 }
 
-/// Set master fd to non-blocking mode for async I/O.
+/// Set an fd to non-blocking mode for async I/O.
 fn set_nonblocking(fd: i32) -> Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
@@ -113,22 +116,32 @@ fn set_nonblocking(fd: i32) -> Result<()> {
     Ok(())
 }
 
-/// Write text directly to the master fd (message injection).
-pub fn inject_text(fd: &OwnedFd, text: &str) -> Result<()> {
-    use std::io::Write;
-    let mut f = unsafe { std::fs::File::from_raw_fd(fd.as_raw_fd()) };
-    let result = f.write_all(text.as_bytes());
-    // Don't let File drop close the fd — we don't own it here
-    std::mem::forget(f);
-    result.context("failed to write to PTY master fd")
+/// Write an entire buffer to a raw fd, retrying on short writes and EINTR.
+/// Returns error on EAGAIN (non-blocking fd full) or other failures.
+fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<()> {
+    while !buf.is_empty() {
+        let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+        if n > 0 {
+            buf = &buf[n as usize..];
+        } else if n == 0 {
+            bail!("write returned 0");
+        } else {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue; // EINTR — retry
+            }
+            bail!("write failed: {err}");
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Agent resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve an agent name to its binary path.
-fn resolve_agent(agent: &str) -> Result<String> {
+/// Resolve an agent name to its binary path. Returns a CString for execvp.
+fn resolve_agent(agent: &str) -> Result<(String, std::ffi::CString)> {
     let output = std::process::Command::new("which")
         .arg(agent)
         .output()
@@ -136,16 +149,25 @@ fn resolve_agent(agent: &str) -> Result<String> {
     if !output.status.success() {
         bail!("\"{agent}\" not found on PATH. Is it installed?");
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let c_path = std::ffi::CString::new(path.as_str()).context("invalid binary path")?;
+    Ok((path, c_path))
+}
+
+/// Build CString args for execvp (must happen before fork).
+fn prepare_args(bin: &std::ffi::CString, args: &[String]) -> Result<Vec<std::ffi::CString>> {
+    let mut c_args: Vec<std::ffi::CString> = vec![bin.clone()];
+    for arg in args {
+        c_args.push(std::ffi::CString::new(arg.as_str()).context("invalid arg")?);
+    }
+    Ok(c_args)
 }
 
 /// Detect a channel name: tmux session if available, otherwise project/hostname.
 fn detect_channel() -> String {
-    // Try tmux session name
     if let Some(pane) = ipc::detect_tmux_pane() {
         return pane.session;
     }
-    // Fall back to git project name or hostname
     if let Some(name) = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -164,87 +186,152 @@ fn detect_channel() -> String {
         .unwrap_or_else(|| "local".into())
 }
 
+/// Pick a unique agent name like `{agent}-{channel}-{n}`, checking the broker
+/// for existing names to avoid collisions.
+fn unique_agent_name(agent: &str, channel: &str) -> String {
+    let mut existing: HashSet<String> = HashSet::new();
+    if let Ok(agents) = broker::list_agents(None) {
+        for a in agents {
+            existing.insert(a.id.name);
+        }
+    }
+    let mut n = 1u32;
+    loop {
+        let candidate = format!("{agent}-{channel}-{n}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup helper
+// ---------------------------------------------------------------------------
+
+/// Kill and reap a child process, clean up broker and socket state.
+fn cleanup_child_and_state(
+    child_pid: libc::pid_t,
+    agent_name: Option<&str>,
+    socket_path: Option<&std::path::Path>,
+) {
+    // Kill child if still running
+    if unsafe { libc::kill(child_pid, 0) } == 0 {
+        unsafe { libc::kill(child_pid, libc::SIGTERM) };
+        // Brief wait, then force kill
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if unsafe { libc::kill(child_pid, 0) } == 0 {
+            unsafe { libc::kill(child_pid, libc::SIGKILL) };
+        }
+    }
+    // Reap
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
+
+    // Clean broker
+    if let Some(name) = agent_name {
+        let _ = broker::unregister_agent(name);
+    }
+    // Clean socket
+    if let Some(path) = socket_path {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
-    let bin = resolve_agent(agent)?;
-    eprintln!("sidekar pty: launching {agent} ({bin})");
+    let (bin_display, bin_c) = resolve_agent(agent)?;
+    let c_args = prepare_args(&bin_c, args)?;
+    eprintln!("sidekar pty: launching {agent} ({bin_display})");
 
     // Fork the child inside a PTY
-    let (master, child_pid) = fork_pty(&bin, args)?;
+    let (master, child_pid) = fork_pty(&bin_c, &c_args)?;
     let master_raw = master.as_raw_fd();
 
-    // Copy parent terminal size to child PTY
-    let _ = copy_terminal_size(master_raw);
+    // From here, any setup failure must clean up the child + broker + socket.
+    // We track what we've registered so cleanup_child_and_state can tear it down.
+    let mut registered_name: Option<String> = None;
+    let mut socket_file: Option<std::path::PathBuf> = None;
 
-    // Set master fd to non-blocking for async I/O
-    set_nonblocking(master_raw)?;
+    let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId)> {
+        // Copy parent terminal size to child PTY
+        let _ = copy_terminal_size(master_raw);
 
-    // Build session identity
-    let session_id = format!("pty-{child_pid}");
-    let channel = detect_channel();
-    let nick = crate::bus::pick_nickname_standalone();
+        // Set master fd to non-blocking for async I/O
+        set_nonblocking(master_raw)?;
 
-    let identity = AgentId {
-        name: format!("{agent}-{}-1", channel),
-        nick: Some(nick.clone()),
-        session: Some(channel.clone()),
-        pane: Some(session_id.clone()),
-        agent_type: Some("sidekar".into()),
-    };
+        // Build session identity with unique name
+        let session_id = format!("pty-{child_pid}");
+        let channel = detect_channel();
+        let nick = crate::bus::pick_nickname_standalone();
+        let name = unique_agent_name(agent, &channel);
 
-    // Register with broker
-    if let Err(e) = broker::register_agent(&identity, Some(&session_id)) {
-        eprintln!("sidekar pty: broker registration failed: {e}");
-    }
+        let identity = AgentId {
+            name: name.clone(),
+            nick: Some(nick.clone()),
+            session: Some(channel.clone()),
+            pane: Some(session_id.clone()),
+            agent_type: Some("sidekar".into()),
+        };
 
-    // Start IPC socket listener
-    let master_arc = Arc::new(master);
-    let socket_path = match ipc::start_socket_listener(
-        &session_id,
-        &session_id,
-        &channel,
-        &identity.name,
-        Some(&nick),
-        ipc::InputSink::PtyFd(master_arc.clone()),
-    ) {
-        Ok(path) => {
-            if let Err(e) = broker::set_agent_socket_path(&identity.name, Some(path.as_path())) {
-                eprintln!("sidekar pty: failed to persist socket path: {e}");
-            }
-            eprintln!("sidekar pty: registered as \"{}\" aka \"{}\" on channel \"{}\"", identity.name, nick, channel);
-            Some(path)
-        }
+        // Register with broker
+        broker::register_agent(&identity, Some(&session_id))?;
+        registered_name = Some(name.clone());
+
+        // Start IPC socket listener
+        let master_arc = Arc::new(master);
+        let path = ipc::start_socket_listener(
+            &session_id,
+            &session_id,
+            &channel,
+            &identity.name,
+            Some(&nick),
+            ipc::InputSink::PtyFd(master_arc.clone()),
+        )?;
+        broker::set_agent_socket_path(&identity.name, Some(path.as_path()))?;
+        socket_file = Some(path);
+
+        eprintln!(
+            "sidekar pty: registered as \"{}\" aka \"{}\" on channel \"{}\"",
+            identity.name, nick, channel
+        );
+
+        Ok((master_arc, identity))
+    })();
+
+    let (master_arc, identity) = match setup_result {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("sidekar pty: IPC socket failed: {e}");
-            None
+            eprintln!("sidekar pty: setup failed: {e}");
+            cleanup_child_and_state(
+                child_pid,
+                registered_name.as_deref(),
+                socket_file.as_deref(),
+            );
+            return Err(e);
         }
     };
 
     // Enter raw mode (must happen after eprintln messages)
-    let _raw_guard = RawModeGuard::enter()?;
+    let raw_guard = RawModeGuard::enter()?;
 
     // Run the async event loop
     let exit_code = event_loop(&master_arc, child_pid).await;
 
-    // Cleanup (raw mode restored automatically by _raw_guard drop)
-    drop(_raw_guard);
-    if let Err(e) = broker::unregister_agent(&identity.name) {
-        eprintln!("sidekar pty: unregister failed: {e}");
-    }
-    if let Some(ref path) = socket_path {
+    // Cleanup: restore terminal, unregister, remove socket
+    drop(raw_guard);
+    let _ = broker::unregister_agent(&identity.name);
+    if let Some(ref path) = socket_file {
         let _ = std::fs::remove_file(path);
     }
 
     match exit_code {
         0 => Ok(()),
-        code => {
-            // Exit with the child's exit code
-            std::process::exit(code);
-        }
+        code => std::process::exit(code),
     }
 }
 
@@ -296,12 +383,7 @@ async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
                 match result {
                     Ok(0) | Err(_) => break, // stdin closed
                     Ok(n) => {
-                        // Write to master fd (synchronous — small writes)
-                        let data = &buf_in[..n];
-                        let written = unsafe {
-                            libc::write(master_fd, data.as_ptr() as *const libc::c_void, data.len())
-                        };
-                        if written < 0 {
+                        if write_all_fd(master_fd, &buf_in[..n]).is_err() {
                             break;
                         }
                     }
@@ -330,7 +412,7 @@ async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
                                 }
                                 let _ = stdout.flush().await;
                             }
-                            Ok(Err(_)) => break, // child exited or read error
+                            Ok(Err(_)) => break,
                             Err(_would_block) => continue,
                         }
                     }
