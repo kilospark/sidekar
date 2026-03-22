@@ -385,6 +385,9 @@ pub struct SidekarBusState {
     /// Unique tmux pane ID, e.g. "%42" (transport-specific).
     pub pane_unique_id: Option<String>,
     pub socket_path: Option<PathBuf>,
+    /// True when identity was inherited from a parent PTY wrapper.
+    /// The MCP server should skip starting a duplicate IPC socket.
+    pub inherited_pty: bool,
     active_nudges: HashSet<String>,
 }
 
@@ -394,6 +397,7 @@ impl SidekarBusState {
             identity: None,
             pane_unique_id: None,
             socket_path: None,
+            inherited_pty: false,
             active_nudges: HashSet::new(),
         }
     }
@@ -494,6 +498,8 @@ impl SidekarBusState {
                         inherited.session.as_deref().unwrap_or("?"),
                     );
                     self.pane_unique_id = inherited.pane.clone();
+                    // Mark as inherited so MCP server skips starting a duplicate socket
+                    self.inherited_pty = true;
                     self.identity = Some(inherited);
                 }
                 return;
@@ -962,22 +968,38 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
         None => return crate::ipc::cmd_who(ctx),
     };
     let my_name = state.name().unwrap_or("unknown");
-    let agents = list_tmux_agents();
-    let on_channel: Vec<&TmuxAgent> = agents.iter().filter(|a| a.session() == channel).collect();
 
-    if on_channel.is_empty() {
+    // Collect agents from both tmux and broker (for PTY sessions)
+    let tmux_agents = list_tmux_agents();
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut lines: Vec<String> = Vec::new();
+
+    // Tmux agents on this channel
+    for a in tmux_agents.iter().filter(|a| a.session() == channel) {
+        seen_names.insert(a.name().to_string());
+        let you = if a.name() == my_name { " (you)" } else { "" };
+        let nick = a.nick().map(|n| format!(" \"{n}\"")).unwrap_or_default();
+        lines.push(format!("- {}{}{} (pane {})", a.name(), nick, you, a.pane_display()));
+    }
+
+    // Broker agents on this channel (catches PTY sessions not visible to tmux)
+    if let Ok(broker_agents) = broker::list_agents(Some(&channel)) {
+        for a in broker_agents {
+            if seen_names.contains(&a.id.name) {
+                continue; // already listed via tmux
+            }
+            let you = if a.id.name == my_name { " (you)" } else { "" };
+            let nick = a.id.nick.as_deref().map(|n| format!(" \"{n}\"")).unwrap_or_default();
+            let pane = a.id.pane.as_deref().unwrap_or("?");
+            lines.push(format!("- {}{}{} (pane {})", a.id.name, nick, you, pane));
+        }
+    }
+
+    if lines.is_empty() {
         out!(ctx, "No agents on channel \"{channel}\".");
         return Ok(());
     }
 
-    let lines: Vec<String> = on_channel
-        .iter()
-        .map(|a| {
-            let you = if a.name() == my_name { " (you)" } else { "" };
-            let nick = a.nick().map(|n| format!(" \"{n}\"")).unwrap_or_default();
-            format!("- {}{}{} (pane {})", a.name(), nick, you, a.pane_display())
-        })
-        .collect();
     out!(
         ctx,
         "Channel \"{channel}\":\n{}\n\nUse \"@all\" to broadcast to all agents.",

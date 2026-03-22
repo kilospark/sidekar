@@ -121,7 +121,11 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut bus_state = bus::SidekarBusState::new();
     bus_state.do_register(None);
 
-    let ipc_socket_path = if let (Some(name), Some(pane_display), Some(session), Some(unique_id)) = (
+    // Start IPC socket — skip if we inherited a PTY registration (socket already running)
+    let ipc_socket_path = if bus_state.inherited_pty {
+        eprintln!("sidekar ipc: inherited PTY socket, skipping listener");
+        None
+    } else if let (Some(name), Some(pane_display), Some(session), Some(unique_id)) = (
         bus_state.name(),
         bus_state.pane(),
         bus_state.channel(),
