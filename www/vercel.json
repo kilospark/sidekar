@@ -4,7 +4,9 @@
     { "source": "/download/v:version/:asset", "destination": "/binaries/v:version/:asset" },
     { "source": "/download/:version/:asset", "destination": "/binaries/v:version/:asset" },
     { "source": "/install", "destination": "/api/script?name=install" },
-    { "source": "/uninstall", "destination": "/api/script?name=uninstall" }
+    { "source": "/install.sh", "destination": "/api/script?name=install" },
+    { "source": "/uninstall", "destination": "/api/script?name=uninstall" },
+    { "source": "/uninstall.sh", "destination": "/api/script?name=uninstall" }
   ],
   "redirects": [
     {

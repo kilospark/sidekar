@@ -48,7 +48,12 @@ async fn run() -> Result<()> {
         return Ok(());
     }
     if command == "uninstall" {
-        sidekar::mcp_clients::remove_clients();
+        let mut ctx = AppContext::new()?;
+        commands::dispatch(&mut ctx, "uninstall", &args).await?;
+        let buffered = ctx.drain_output();
+        if !buffered.is_empty() {
+            print!("{buffered}");
+        }
         return Ok(());
     }
     if command == "update" {
