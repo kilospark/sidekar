@@ -127,7 +127,7 @@ pub async fn run_mcp_server() -> Result<()> {
         bus_state.channel(),
         bus_state.pane_unique_id.as_deref(),
     ) {
-        match ipc::start_socket_listener(unique_id, pane_display, session, name, bus_state.nick()) {
+        match ipc::start_socket_listener(unique_id, pane_display, session, name, bus_state.nick(), ipc::InputSink::TmuxPane(pane_display.to_string())) {
             Ok(path) => Some(path),
             Err(e) => {
                 eprintln!("sidekar ipc: socket failed: {e}");
@@ -612,6 +612,12 @@ async fn handle_tool_call(
             false
         };
 
+        // Remember the frontmost app so we can refocus it after Chrome steals focus.
+        // CDP's Target.createTarget with newWindow:true always activates the new window;
+        // there's no CDP parameter to prevent this.
+        #[cfg(target_os = "macos")]
+        let prev_app_pid = crate::desktop::native::frontmost_app_pid();
+
         if chrome_reachable {
             // Chrome is running — create our own isolated session with a fresh window
             eprintln!("Creating isolated session for this agent...");
@@ -631,6 +637,19 @@ async fn handle_tool_call(
             let launch_output = ctx.drain_output();
             eprintln!("Auto-launch complete: {}", launch_output.trim());
         }
+
+        // Refocus the app that was active before Chrome took focus.
+        #[cfg(target_os = "macos")]
+        if !ctx.headless {
+            if let Some(pid) = prev_app_pid {
+                // Brief delay for Chrome's window to settle
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if let Err(e) = crate::desktop::native::activate_app(pid) {
+                    eprintln!("Failed to refocus previous app: {e}");
+                }
+            }
+        }
+
     }
 
     // Handle bus tools directly (they need bus_state, not the command dispatch)

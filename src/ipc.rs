@@ -8,7 +8,30 @@ use crate::broker;
 use crate::message::AgentId;
 use crate::*;
 use std::io::{Read as IoRead, Write as IoWrite};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
+use std::sync::Arc;
+
+/// How the socket listener delivers inbound messages.
+pub enum InputSink {
+    /// Paste into a tmux pane (display pane ID).
+    TmuxPane(String),
+    /// Write directly to a PTY master fd.
+    PtyFd(Arc<OwnedFd>),
+}
+
+/// Write a message to a PTY master fd (for InputSink::PtyFd).
+fn write_to_pty_fd(fd: &OwnedFd, message: &str) -> Result<()> {
+    let bytes = format!("{message}\n");
+    let raw_fd = fd.as_raw_fd();
+    let written = unsafe {
+        libc::write(raw_fd, bytes.as_ptr() as *const libc::c_void, bytes.len())
+    };
+    if written < 0 {
+        bail!("write to PTY fd failed: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 const IPC_MAX_MESSAGE_SIZE: usize = 4096;
 const IPC_PASTE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
@@ -226,6 +249,7 @@ pub fn start_socket_listener(
     session: &str,
     agent_name: &str,
     agent_nick: Option<&str>,
+    sink: InputSink,
 ) -> Result<std::path::PathBuf> {
     let path = socket_path(unique_pane_id);
     cleanup_stale_socket(&path);
@@ -331,8 +355,12 @@ pub fn start_socket_listener(
                             std::thread::sleep(IPC_PASTE_COOLDOWN - elapsed);
                         }
 
-                        // Message is already formatted by the sender (e.g. "[message from X]: ...")
-                        match send_to_pane(&pane, message) {
+                        // Deliver via the configured sink
+                        let delivery_result = match &sink {
+                            InputSink::TmuxPane(_) => send_to_pane(&pane, message),
+                            InputSink::PtyFd(fd) => write_to_pty_fd(fd, message),
+                        };
+                        match delivery_result {
                             Ok(()) => {
                                 eprintln!("sidekar ipc: message from {from} delivered");
                                 last_paste = std::time::Instant::now();

@@ -66,6 +66,11 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
+    // PTY wrapper: launch known agents inside a sidekar-owned PTY
+    if sidekar::pty::KNOWN_AGENTS.contains(&command.as_str()) {
+        return sidekar::pty::run_agent(&command, &args).await;
+    }
+
     let mut ctx = AppContext::new()?;
     if let Some(port) = env::var("CDP_PORT")
         .ok()

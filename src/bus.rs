@@ -278,6 +278,37 @@ fn pick_nickname() -> String {
     })
 }
 
+/// Pick a nickname using the broker for used-name checks (works without tmux).
+pub fn pick_nickname_standalone() -> String {
+    use rand::seq::SliceRandom;
+
+    let mut used: HashSet<String> = HashSet::new();
+    // Check broker
+    if let Ok(agents) = broker::list_agents(None) {
+        for agent in agents {
+            if let Some(nick) = agent.id.nick {
+                used.insert(nick);
+            }
+        }
+    }
+    // Also check tmux if available
+    for agent in list_tmux_agents() {
+        if let Some(nick) = agent.id.nick {
+            used.insert(nick);
+        }
+    }
+    let mut available: Vec<&str> = NICKNAMES
+        .iter()
+        .filter(|n| !used.contains(**n))
+        .copied()
+        .collect();
+    available.shuffle(&mut rand::rng());
+    available.first().map(|s| s.to_string()).unwrap_or_else(|| {
+        let r: u16 = rand::random();
+        format!("agent-{:04x}", r)
+    })
+}
+
 #[derive(Debug, Clone)]
 struct DeliveryTarget {
     transport_name: &'static str,
