@@ -20,26 +20,40 @@ pub enum InputSink {
     PtyFd(Arc<OwnedFd>),
 }
 
-/// Write a message to a PTY master fd (for InputSink::PtyFd).
-/// Loops until the full buffer is written, retrying on EINTR.
-fn write_to_pty_fd(fd: &OwnedFd, message: &str) -> Result<()> {
-    let bytes = format!("{message}\r");
-    let raw_fd = fd.as_raw_fd();
-    let mut buf = bytes.as_bytes();
+/// Write an entire buffer to a raw fd, retrying on EINTR and short writes.
+fn write_all_raw(fd: i32, mut buf: &[u8]) -> Result<()> {
     while !buf.is_empty() {
-        let n = unsafe { libc::write(raw_fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+        let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if n > 0 {
             buf = &buf[n as usize..];
         } else if n == 0 {
-            bail!("write to PTY fd returned 0");
+            bail!("write to fd returned 0");
         } else {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            bail!("write to PTY fd failed: {err}");
+            bail!("write to fd failed: {err}");
         }
     }
+    Ok(())
+}
+
+/// Write a message to a PTY master fd (for InputSink::PtyFd).
+/// Writes the text first, pauses briefly, then sends CR separately —
+/// matching the tmux paste-buffer + send-keys pattern that TUI apps expect.
+fn write_to_pty_fd(fd: &OwnedFd, message: &str) -> Result<()> {
+    let raw_fd = fd.as_raw_fd();
+
+    // Write message text
+    write_all_raw(raw_fd, message.as_bytes())?;
+
+    // Brief pause so the TUI processes the text before Enter arrives
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // Send Enter (CR) as a separate write
+    write_all_raw(raw_fd, b"\r")?;
+
     Ok(())
 }
 
