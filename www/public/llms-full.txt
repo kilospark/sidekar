@@ -1,0 +1,130 @@
+# sidekar - Full Reference
+
+> The sidecar for AI agents. Browser control, desktop automation, web research, inter-agent communication, batch orchestration, and monitoring/scheduling.
+
+## What is sidekar?
+
+sidekar is a single binary that gives AI agents the ability to see, interact with, and coordinate through browsers, desktops, and each other. It runs as an MCP (Model Context Protocol) server, works with any MCP-compatible AI client, and requires zero configuration.
+
+## Install
+
+```sh
+curl -fsSL sidekar.dev/install | sh
+```
+
+One command downloads the binary and auto-configures every MCP client it finds: Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, and more.
+
+## Core Capabilities
+
+### 1. Token-efficient browser automation
+
+Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read page content. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed.
+
+**Key tools:** navigate, read, text, axtree, observe, screenshot, click, type, fill, press, scroll, keyboard, search, readurls
+
+**Perception escalation order (stop at the first that works):**
+1. `read` - Reader-mode text extraction (articles, docs, search results). Low cost.
+2. `axtree -i` / `observe` - Interactive elements with ref numbers. Low cost.
+3. `text` - Full page text with refs. Low-medium cost.
+4. `dom` - HTML structure with selectors. Medium cost.
+5. `screenshot` (cropped) - Visual of one element. Medium cost.
+6. `screenshot` (full page) - Full visual. High cost.
+
+**Element targeting priority:**
+1. Refs from axtree/observe/text (click 3, type 5 hello)
+2. Text search (click --text Submit)
+3. CSS selectors (#id, [data-testid="..."])
+4. eval with querySelector
+5. Coordinates from screenshot (last resort)
+
+### 2. Desktop automation (macOS)
+
+macOS Accessibility API integration. Find and interact with native app elements, take screenshots, launch and manage applications. No browser required.
+
+**Key tools:** desktop_screenshot, desktop_apps, desktop_windows, desktop_find, desktop_click, desktop_launch, desktop_activate, desktop_quit
+
+### 3. Inter-agent communication
+
+Agents discover and message each other across tmux sessions. Send requests, broadcast, hand off tasks.
+
+**Key tools:** register, unregister, who, bus_send, bus_done
+
+**Message kinds:** request (expects response), response (answers a prior request), fyi (informational)
+
+### 4. Web research
+
+Real-browser search and multi-page reading. No API keys, no rate limits. Handles CAPTCHAs, JavaScript rendering, and redirects.
+
+**Key tools:** search (Google/Bing/DuckDuckGo), readurls (parallel multi-page read)
+
+### 5. Batch orchestration
+
+Execute multi-step action sequences in a single call. Smart waits, per-action retries, optional steps. Reduce round-trips.
+
+**Key tool:** batch
+
+Example:
+```json
+{"actions": [
+  {"tool": "click", "target": "--text Continue", "retries": 2},
+  {"tool": "waitfornav"},
+  {"tool": "screenshot"}
+]}
+```
+
+### 6. Monitoring and scheduling
+
+Watch browser tabs for changes and run actions on a schedule. Reactive alerts and proactive cron.
+
+**Key tools:** monitor start/stop/status
+
+## Tool Categories
+
+Core tools are always available. Extended tools load on demand via `tools(action: "load", category: "<name>")`:
+
+- **forms**: select, upload, drag, clear, focus, dialog, paste, clipboard, inserttext
+- **nav**: back, forward, reload, waitfor, waitfornav, find, resolve
+- **debug**: console, network, block, eval, dom, storage, cookies, sw, security
+- **media**: viewport, zoom, grid, media, animations, pdf, download
+- **desktop**: desktop_screenshot, desktop_apps, desktop_windows, desktop_find, desktop_click, desktop_launch, desktop_activate, desktop_quit
+- **session**: hover, lock, unlock, activate, minimize, kill, monitor, frames, frame
+- **meta**: feedback, config, install
+
+## Tab Isolation
+
+Multiple agents share the same Chrome instance. Each session owns its tabs. Never touch tabs you didn't create. Use `newtab` to open new tabs, `tabs` to list yours, `close` to remove them.
+
+## Profiles
+
+- `launch` - default shared profile
+- `launch --profile <name>` - isolated browser instance
+- `launch --profile new` - auto-generated profile ID
+- `launch --headless` - no visible window
+- `launch --browser brave` - use a specific browser
+
+## Common Patterns
+
+**Navigate and read:** Call navigate with URL. Auto-brief returned.
+
+**Fill a form:** Use `fill` with fields object: `{"#email": "user@example.com", "#password": "secret"}`
+
+**Search the web:** Call search with query. Results extracted automatically.
+
+**Research multiple pages:** Call readurls with list of URLs. Content extracted in parallel.
+
+**Rich text editors:** click the editor, then use keyboard (not type) to preserve cursor position.
+
+## Supported MCP Clients
+
+Claude Code, Claude Desktop, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, Opencode
+
+## Pricing
+
+- Personal: Free (all features, no limits)
+- Professional: $9/month (honor system, for work that pays)
+
+## Links
+
+- Website: https://sidekar.dev
+- Install: https://sidekar.dev/install
+- Compact version: https://sidekar.dev/llms.txt

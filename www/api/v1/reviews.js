@@ -56,7 +56,8 @@ export default async function handler(req, res) {
 
     res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=600");
     res.json({ reviews: sanitized });
-  } catch {
+  } catch (err) {
+    console.error("reviews error:", err);
     res.json({ reviews: [] });
   }
 }

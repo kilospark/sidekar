@@ -1,0 +1,44 @@
+# sidekar
+
+> The sidecar for AI agents. Browser control, desktop automation, web research, inter-agent communication, batch orchestration, and monitoring/scheduling.
+
+## What is sidekar?
+
+sidekar is a single binary that gives AI agents the ability to see, interact with, and coordinate through browsers, desktops, and each other. It runs as an MCP (Model Context Protocol) server, works with any MCP-compatible AI client, and requires zero configuration.
+
+## Install
+
+```sh
+curl -fsSL sidekar.dev/install | sh
+```
+
+One command downloads the binary and auto-configures every MCP client it finds: Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, and more.
+
+## Core capabilities
+
+1. **Token-efficient browser automation** - Full Chrome DevTools Protocol access. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed.
+
+2. **Desktop automation** - macOS Accessibility API integration. Find and interact with native app elements, take screenshots, launch and manage applications. No browser required.
+
+3. **Inter-agent communication** - Agents discover and message each other across sessions. Send requests, broadcast, hand off tasks. The coordination layer for multi-agent workflows.
+
+4. **Web research** - Real-browser search and multi-page reading. No API keys, no rate limits. Handles CAPTCHAs, JavaScript rendering, and redirects.
+
+5. **Batch orchestration** - Execute multi-step action sequences in a single call. Smart waits, per-action retries, optional steps.
+
+6. **Monitoring and scheduling** - Watch browser tabs for changes and run actions on a schedule. Reactive alerts and proactive cron, delivered via the agent bus.
+
+## Supported MCP clients
+
+Claude Code, Claude Desktop, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, Opencode
+
+## Pricing
+
+- Personal: Free (all features, no limits)
+- Professional: $9/month (honor system, for work that pays)
+
+## Links
+
+- Website: https://sidekar.dev
+- Install: https://sidekar.dev/install
+- Full LLM context: https://sidekar.dev/llms-full.txt
