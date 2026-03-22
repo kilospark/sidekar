@@ -23,7 +23,7 @@ pub enum InputSink {
 /// Write a message to a PTY master fd (for InputSink::PtyFd).
 /// Loops until the full buffer is written, retrying on EINTR.
 fn write_to_pty_fd(fd: &OwnedFd, message: &str) -> Result<()> {
-    let bytes = format!("{message}\n");
+    let bytes = format!("{message}\r");
     let raw_fd = fd.as_raw_fd();
     let mut buf = bytes.as_bytes();
     while !buf.is_empty() {
