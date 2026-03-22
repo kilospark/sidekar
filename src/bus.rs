@@ -20,6 +20,40 @@ const NUDGE_BUSY_CHECK_SECS: u64 = 3;
 const TMUX_TRANSPORT: &str = "tmux-paste";
 const SOCKET_TRANSPORT: &str = "unix-socket";
 
+// --- PTY registration inheritance ---
+
+/// Check if a parent process registered a PTY session in the broker.
+/// Walks the process tree looking for a parent PID that matches a
+/// `pty-<pid>` entry in the broker's agents table.
+fn inherit_pty_registration() -> Option<AgentId> {
+    let mut pid = std::process::id();
+    loop {
+        if pid <= 1 {
+            break;
+        }
+        // Walk to parent
+        pid = match Command::new("ps")
+            .args(["-o", "ppid=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            }) {
+            Some(ppid) if ppid != pid && ppid > 1 => ppid,
+            _ => break,
+        };
+        // Check if this ancestor registered a PTY session
+        let pty_id = format!("pty-{pid}");
+        if let Ok(Some(agent)) = broker::agent_for_pane_unique(&pty_id) {
+            return Some(agent.id);
+        }
+    }
+    None
+}
+
 // --- Agent type detection ---
 
 /// Walk process tree to detect agent type (claude, codex, copilot, etc.).
@@ -450,7 +484,20 @@ impl SidekarBusState {
 
         let (pane, pane_unique, session) = match ipc::detect_tmux_pane() {
             Some(detected) => (detected.display_id, detected.unique_id, detected.session),
-            None => return,
+            None => {
+                // Not in tmux — check if a parent PTY wrapper registered us
+                if let Some(inherited) = inherit_pty_registration() {
+                    eprintln!(
+                        "sidekar bus: inherited PTY registration as \"{}\" aka \"{}\" on channel \"{}\"",
+                        inherited.name,
+                        inherited.nick.as_deref().unwrap_or("?"),
+                        inherited.session.as_deref().unwrap_or("?"),
+                    );
+                    self.pane_unique_id = inherited.pane.clone();
+                    self.identity = Some(inherited);
+                }
+                return;
+            }
         };
 
         let name = if let Some(custom) = custom_name {
