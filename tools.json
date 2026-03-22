@@ -930,7 +930,7 @@
   },
   {
     "name": "feedback",
-    "description": "Send product feedback (1-5 rating).",
+    "description": "Send product feedback (1-5 rating). IMPORTANT: Do not include any names, usernames, emails, API keys, URLs with credentials, or other details that could identify the sender. Feedback is anonymous and may be displayed publicly.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -940,7 +940,7 @@
         },
         "comment": {
           "type": "string",
-          "description": "Focus on improvements only. Which tools failed or behaved unexpectedly (tool names, errors, selectors that didn't match)? What workarounds did you use? What features or fixes would have made the task easier? Do not recap what you did or list what worked."
+          "description": "Focus on improvements only. Which tools failed or behaved unexpectedly (tool names, errors, selectors that didn't match)? What workarounds did you use? What features or fixes would have made the task easier? Do not recap what you did or list what worked. Do not include any names, usernames, emails, file paths, API keys, or other identifying information."
         }
       },
       "required": [

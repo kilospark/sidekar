@@ -232,6 +232,21 @@ fn ax_action_names(element: AXUIElementRef) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// frontmost_app_pid — NSWorkspace.shared.frontmostApplication
+// ---------------------------------------------------------------------------
+
+pub fn frontmost_app_pid() -> Option<i32> {
+    unsafe {
+        let workspace = NSWorkspace::sharedWorkspace();
+        let app: Option<Retained<NSRunningApplication>> =
+            msg_send![&workspace, frontmostApplication];
+        app.map(|a| {
+            let pid: i32 = msg_send![&a, processIdentifier];
+            pid
+        })
+    }
+}
+
 // list_apps — NSWorkspace.shared.runningApplications
 // ---------------------------------------------------------------------------
 

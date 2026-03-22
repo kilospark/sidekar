@@ -1,12 +1,12 @@
 import { MongoClient } from "mongodb";
 
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
-const DB_NAME = "webact";
+const DB_NAME = "sidekar";
 
-let cached = globalThis.__webact_mongo;
+let cached = globalThis.__sidekar_mongo;
 
 if (!cached) {
-  cached = globalThis.__webact_mongo = { client: null, db: null };
+  cached = globalThis.__sidekar_mongo = { client: null, db: null };
 }
 
 export async function getDb() {
