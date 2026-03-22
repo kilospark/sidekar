@@ -6,14 +6,14 @@
 #![allow(non_upper_case_globals, clippy::missing_safety_doc)]
 
 use crate::desktop::types::*;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, ClassType};
+use objc2::{ClassType, msg_send};
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::NSString;
 use std::ffi::c_void;
@@ -358,7 +358,11 @@ fn cg_window_ids_for_pid(pid: i32) -> Vec<(u32, Option<String>)> {
             )
         };
         let name = if has_name != 0 && !name_val.is_null() {
-            let type_id = unsafe { core_foundation_sys::base::CFGetTypeID(name_val as core_foundation_sys::base::CFTypeRef) };
+            let type_id = unsafe {
+                core_foundation_sys::base::CFGetTypeID(
+                    name_val as core_foundation_sys::base::CFTypeRef,
+                )
+            };
             let string_type_id = unsafe { core_foundation_sys::string::CFStringGetTypeID() };
             if type_id == string_type_id {
                 let cf_str = unsafe {
@@ -425,7 +429,11 @@ pub fn list_windows(pid: i32) -> Result<Vec<DesktopWindowInfo>> {
         // Match CG window by title (best heuristic since AX doesn't expose CGWindowID)
         let window_id = cg_windows.iter().find_map(|(wid, name)| {
             if let (Some(ax_title), Some(cg_name)) = (title.as_deref(), name.as_deref()) {
-                if ax_title == cg_name { Some(*wid) } else { None }
+                if ax_title == cg_name {
+                    Some(*wid)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -457,16 +465,7 @@ pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> 
     let mut matches = Vec::new();
 
     let app_element = unsafe { AXUIElementCreateApplication(pid) };
-    walk_tree(
-        app_element,
-        pid,
-        &[],
-        0,
-        0,
-        12,
-        &lower_query,
-        &mut matches,
-    );
+    walk_tree(app_element, pid, &[], 0, 0, 12, &lower_query, &mut matches);
     unsafe { CFRelease(app_element as *const c_void) };
 
     Ok(matches)
@@ -486,8 +485,7 @@ fn walk_tree(
         return;
     }
 
-    let role =
-        ax_string_attribute(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
     let title = ax_string_attribute(element, kAXTitleAttribute);
     let value = ax_string_attribute(element, kAXValueAttribute);
     let identifier = ax_string_attribute(element, kAXIdentifierAttribute);
@@ -590,8 +588,7 @@ pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
         let actions = ax_action_names(element);
         if actions.iter().any(|a| a == kAXPressAction) {
             let cf_action = CFString::new(kAXPressAction);
-            let err =
-                unsafe { AXUIElementPerformAction(element, cf_action.as_concrete_TypeRef()) };
+            let err = unsafe { AXUIElementPerformAction(element, cf_action.as_concrete_TypeRef()) };
             unsafe {
                 CFRelease(element as *const c_void);
                 CFRelease(app_element as *const c_void);
@@ -635,10 +632,7 @@ pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
 
 /// Walk the AX tree following a DesktopElementPath to find the actual element.
 /// Returns a retained AXUIElementRef that the caller must release, or None.
-fn resolve_element(
-    root: AXUIElementRef,
-    path: &DesktopElementPath,
-) -> Option<AXUIElementRef> {
+fn resolve_element(root: AXUIElementRef, path: &DesktopElementPath) -> Option<AXUIElementRef> {
     let mut current = root;
     // Retain root so we can release `current` uniformly in the loop
     unsafe { CFRetain(current as *const c_void) };

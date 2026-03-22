@@ -126,7 +126,9 @@ pub fn remove_clients() {
             if run_silent(&["claude", "mcp", "remove", "-s", "user", "sidekar"]) {
                 println!("  Claude Code: removed");
             } else {
-                println!("  Claude Code: failed to remove (try: claude mcp remove -s user sidekar)");
+                println!(
+                    "  Claude Code: failed to remove (try: claude mcp remove -s user sidekar)"
+                );
             }
         }
     }

@@ -1013,9 +1013,7 @@ pub(super) async fn cmd_new_tab(ctx: &mut AppContext, url: Option<&str>) -> Resu
     }
     let max_tabs = crate::config::load_config().max_tabs;
     if state.tabs.len() >= max_tabs {
-        bail!(
-            "Tab limit reached ({max_tabs}). Close a tab first, or increase max_tabs in config."
-        );
+        bail!("Tab limit reached ({max_tabs}). Close a tab first, or increase max_tabs in config.");
     }
     let new_tab = create_new_tab(ctx, url).await?;
     state.tabs.push(new_tab.id.clone());
@@ -1415,7 +1413,8 @@ pub(super) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Res
             .current_session_id
             .clone()
             .unwrap_or_else(|| "default".to_string());
-        ctx.tmp_dir().join(format!("sidekar-screenshot-{sid}.{ext}"))
+        ctx.tmp_dir()
+            .join(format!("sidekar-screenshot-{sid}.{ext}"))
     };
 
     fs::write(&out, &bytes).with_context(|| format!("failed writing {}", out.display()))?;
@@ -1638,7 +1637,10 @@ pub(super) async fn cmd_uninstall(_ctx: &mut AppContext) -> Result<()> {
         .join("skills")
         .join("sidekar");
     if agents_skill_dir.exists() {
-        eprintln!("Removing old skill directory: {}", agents_skill_dir.display());
+        eprintln!(
+            "Removing old skill directory: {}",
+            agents_skill_dir.display()
+        );
         let _ = std::fs::remove_dir_all(&agents_skill_dir);
     }
 

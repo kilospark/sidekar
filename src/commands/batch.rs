@@ -244,7 +244,11 @@ fn build_action_args(tool: &str, action: &Value) -> Vec<String> {
             }
         }
         "type" => {
-            if action.get("human").and_then(Value::as_bool).unwrap_or(false) {
+            if action
+                .get("human")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 args.push("--human".to_string());
             }
             if let Some(sel) = action.get("selector").and_then(Value::as_str) {

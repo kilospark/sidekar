@@ -110,7 +110,9 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                 cdp.close().await;
                 // Try desktop accessibility fallback (macOS only)
                 if let Some(ref browser) = ctx.launch_browser_name {
-                    if let Ok(msg) = super::super::desktop::try_desktop_click_fallback(browser, &text) {
+                    if let Ok(msg) =
+                        super::super::desktop::try_desktop_click_fallback(browser, &text)
+                    {
                         out!(ctx, "{msg}");
                         return Ok(());
                     }
@@ -125,7 +127,9 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
         Err(browser_err) => {
             // Try desktop accessibility fallback (macOS only)
             if let Some(ref browser) = ctx.launch_browser_name {
-                if let Ok(msg) = super::super::desktop::try_desktop_click_fallback(browser, &selector) {
+                if let Ok(msg) =
+                    super::super::desktop::try_desktop_click_fallback(browser, &selector)
+                {
                     out!(ctx, "{msg}");
                     return Ok(());
                 }

@@ -202,8 +202,7 @@ pub(crate) async fn cmd_clipboard(
         html = serde_json::to_string(html_content)?,
         text = serde_json::to_string(text_content)?
     );
-    let result =
-        runtime_evaluate_with_context(&mut cdp, &script, true, true, context_id).await?;
+    let result = runtime_evaluate_with_context(&mut cdp, &script, true, true, context_id).await?;
     if let Some(err) = result
         .pointer("/result/value/error")
         .and_then(Value::as_str)

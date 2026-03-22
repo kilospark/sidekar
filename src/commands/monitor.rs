@@ -1,8 +1,10 @@
 use crate::ipc;
+use crate::message::DeliveryResult;
+use crate::transport::{self, Transport};
 use crate::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
 /// Global timestamp of the last sidekar tool call (epoch ms).
@@ -22,12 +24,10 @@ fn last_tool_action_ms() -> u64 {
     LAST_TOOL_ACTION_MS.load(Ordering::Relaxed)
 }
 
-/// How the monitor delivers notifications.
-enum DeliveryMethod {
-    /// Send via IPC socket
-    Socket(std::path::PathBuf),
-    /// Paste directly into tmux pane (no socket needed)
-    DirectPaste(String), // display pane ID
+/// How the monitor delivers notifications — transport + target.
+struct Delivery {
+    transport: Box<dyn Transport>,
+    target: String,
 }
 
 /// Monitor state shared between the background task and tool calls.
@@ -56,16 +56,15 @@ async fn monitor_cell() -> &'static Mutex<Option<MonitorState>> {
     MONITOR.get_or_init(|| async { Mutex::new(None) }).await
 }
 
-/// Deliver a notification message using the chosen method.
-fn deliver_notification(method: &DeliveryMethod, message: &str) -> Result<()> {
-    match method {
-        DeliveryMethod::Socket(path) => {
-            ipc::ipc_send_message(path, message, "sidekar-monitor")
-        }
-        DeliveryMethod::DirectPaste(pane) => {
-            let formatted = format!("[from sidekar-monitor]: {message}");
-            ipc::send_to_pane(pane, &formatted)
-        }
+/// Deliver a notification message using the chosen transport.
+fn deliver_notification(delivery: &Delivery, message: &str) -> Result<()> {
+    let formatted = format!("[from sidekar-monitor]: {message}");
+    match delivery
+        .transport
+        .deliver(&delivery.target, &formatted, "sidekar-monitor")?
+    {
+        DeliveryResult::Delivered | DeliveryResult::Queued => Ok(()),
+        DeliveryResult::Failed(reason) => bail!("delivery failed: {reason}"),
     }
 }
 
@@ -96,9 +95,7 @@ async fn start_monitor(
         for tab_id in &state.tabs {
             if let Some(tab) = debug_tabs.iter().find(|t| t.id == *tab_id) {
                 cdp_target_ids.push(tab.id.clone());
-                watched_names.push(
-                    tab.title.as_deref().unwrap_or("untitled").to_string(),
-                );
+                watched_names.push(tab.title.as_deref().unwrap_or("untitled").to_string());
             }
         }
     } else {
@@ -107,9 +104,7 @@ async fn start_monitor(
                 if let Some(tab_cdp_id) = state.tabs.get(idx) {
                     if let Some(tab) = debug_tabs.iter().find(|t| t.id == *tab_cdp_id) {
                         cdp_target_ids.push(tab.id.clone());
-                        watched_names.push(
-                            tab.title.as_deref().unwrap_or("untitled").to_string(),
-                        );
+                        watched_names.push(tab.title.as_deref().unwrap_or("untitled").to_string());
                     }
                 }
             } else if debug_tabs.iter().any(|t| t.id == *id_str) {
@@ -123,13 +118,22 @@ async fn start_monitor(
         bail!("No valid tabs to monitor. Use tab IDs from `tabs` command, or \"all\".");
     }
 
-    // Choose delivery method: prefer IPC socket, fall back to direct paste
+    // Choose delivery transport: prefer IPC socket, fall back to direct tmux paste
     let delivery = if let Some(sock) = ipc::find_socket_for_pane(&pane.unique_id) {
         eprintln!("monitor: using IPC socket for delivery: {}", sock.display());
-        DeliveryMethod::Socket(sock)
+        Delivery {
+            transport: Box::new(transport::Socket),
+            target: sock.to_string_lossy().to_string(),
+        }
     } else {
-        eprintln!("monitor: no IPC socket found, using direct tmux paste to {}", pane.display_id);
-        DeliveryMethod::DirectPaste(pane.display_id.clone())
+        eprintln!(
+            "monitor: no IPC socket found, using direct tmux paste to {}",
+            pane.display_id
+        );
+        Delivery {
+            transport: Box::new(transport::TmuxPaste),
+            target: pane.display_id.clone(),
+        }
     };
 
     let running = Arc::new(AtomicBool::new(true));
@@ -209,10 +213,7 @@ const FAVICON_OBSERVER_JS: &str = r#"
 
 /// Attach to a target and inject the favicon MutationObserver.
 /// Returns the CDP session ID for the target, or None on failure.
-async fn inject_favicon_observer(
-    cdp: &mut CdpClient,
-    target_id: &str,
-) -> Option<String> {
+async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option<String> {
     // Attach to target with flatten=true so events arrive on the browser connection
     let result = cdp
         .send(
@@ -277,7 +278,7 @@ async fn run_title_watcher(
     running: Arc<AtomicBool>,
     watched_targets: Vec<String>,
     ws_url: String,
-    delivery: DeliveryMethod,
+    delivery: Delivery,
     event_count: Arc<AtomicU64>,
     last_event_ms: Arc<AtomicU64>,
     error_count: Arc<AtomicU64>,
@@ -336,8 +337,7 @@ async fn run_title_watcher(
             .collect();
 
         for target_id in expired {
-            if let Some((kind, old_val, new_val, title, url, _)) =
-                pending_events.remove(&target_id)
+            if let Some((kind, old_val, new_val, title, url, _)) = pending_events.remove(&target_id)
             {
                 // Source attribution: skip if within 5s of a tool call
                 let now_ms = SystemTime::now()
@@ -346,9 +346,7 @@ async fn run_title_watcher(
                     .as_millis() as u64;
                 let last_action = last_tool_action_ms();
                 if last_action > 0 && now_ms.saturating_sub(last_action) <= 5000 {
-                    eprintln!(
-                        "monitor: skipping agent-initiated {kind} change on {target_id}"
-                    );
+                    eprintln!("monitor: skipping agent-initiated {kind} change on {target_id}");
                     continue;
                 }
 
@@ -433,10 +431,8 @@ async fn run_title_watcher(
                     continue;
                 }
 
-                let (old_title, old_url, old_fav) = known
-                    .get(&target_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let (old_title, old_url, old_fav) =
+                    known.get(&target_id).cloned().unwrap_or_default();
 
                 known.insert(target_id.clone(), (title.clone(), url.clone(), old_fav));
 
@@ -461,7 +457,9 @@ async fn run_title_watcher(
                         .find(|(_, tid)| **tid == target_id)
                         .map(|(sid, _)| sid.clone())
                     {
-                        eprintln!("monitor: URL changed on {target_id}, re-injecting favicon observer");
+                        eprintln!(
+                            "monitor: URL changed on {target_id}, re-injecting favicon observer"
+                        );
                         // Small delay to let the page load
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         let _ = cdp
@@ -635,7 +633,11 @@ pub async fn cmd_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                         "never".to_string()
                     };
 
-                    out!(ctx, "Monitor: {}", if running { "running" } else { "stopped" });
+                    out!(
+                        ctx,
+                        "Monitor: {}",
+                        if running { "running" } else { "stopped" }
+                    );
                     out!(ctx, "Watching: {} tab(s)", mon.watched_tabs.len());
                     out!(ctx, "Events delivered: {events}");
                     out!(ctx, "Last event: {last_event_ago}");

@@ -4,6 +4,8 @@
 //! a JSON-RPC socket listener, and a socket client for cross-session
 //! agent discovery and messaging.
 
+use crate::broker;
+use crate::message::AgentId;
 use crate::*;
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::os::unix::net::UnixListener;
@@ -48,7 +50,11 @@ pub fn detect_tmux_pane() -> Option<DetectedPane> {
         if parts.len() == 4 {
             pane_map.insert(
                 parts[0].to_string(),
-                (parts[1].to_string(), parts[2].to_string(), parts[3].to_string()),
+                (
+                    parts[1].to_string(),
+                    parts[2].to_string(),
+                    parts[3].to_string(),
+                ),
             );
         }
     }
@@ -75,8 +81,7 @@ pub fn detect_tmux_pane() -> Option<DetectedPane> {
                     .trim()
                     .parse::<u32>()
                     .ok()
-            })
-        {
+            }) {
             Some(ppid) if ppid != pid => pid = ppid,
             _ => break,
         }
@@ -84,26 +89,11 @@ pub fn detect_tmux_pane() -> Option<DetectedPane> {
     None
 }
 
-/// Read agent nick and name from tmux pane options. Returns (nick, name).
+/// Read agent nick and name from the durable broker. Returns (nick, name).
 fn read_pane_identity(pane: &str) -> (Option<String>, Option<String>) {
-    let read_opt = |opt: &str| -> Option<String> {
-        Command::new("tmux")
-            .args(["show-option", "-pv", "-t", pane, opt])
-            .output()
-            .ok()
-            .and_then(|o| {
-                let val = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if val.is_empty() { None } else { Some(val) }
-            })
-    };
-    (read_opt("@agent-nick"), read_opt("@agent-name"))
-}
-
-/// Format a sender label as "nick(name)" when both are available.
-pub fn format_from_label(nick: Option<&str>, name: &str) -> String {
-    match nick {
-        Some(n) => format!("{n}({name})"),
-        None => name.to_string(),
+    match broker::agent_for_pane_unique(pane) {
+        Ok(Some(agent)) => (agent.id.nick, Some(agent.id.name)),
+        _ => (None, None),
     }
 }
 
@@ -214,7 +204,10 @@ fn cleanup_stale_socket(path: &std::path::Path) {
     if path.exists() {
         match std::os::unix::net::UnixStream::connect(path) {
             Ok(_) => {
-                eprintln!("sidekar ipc: socket {} is in use by another process", path.display());
+                eprintln!(
+                    "sidekar ipc: socket {} is in use by another process",
+                    path.display()
+                );
             }
             Err(_) => {
                 let _ = std::fs::remove_file(path);
@@ -278,9 +271,8 @@ pub fn start_socket_listener(
                         "id": serde_json::Value::Null,
                         "error": { "code": -32700, "message": "Parse error" }
                     });
-                    let _ = stream.write_all(
-                        serde_json::to_string(&err).unwrap_or_default().as_bytes(),
-                    );
+                    let _ = stream
+                        .write_all(serde_json::to_string(&err).unwrap_or_default().as_bytes());
                     continue;
                 }
             };
@@ -369,8 +361,11 @@ pub fn start_socket_listener(
                 }),
             };
 
-            let _ = stream
-                .write_all(serde_json::to_string(&response).unwrap_or_default().as_bytes());
+            let _ = stream.write_all(
+                serde_json::to_string(&response)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
         }
     });
 
@@ -382,9 +377,7 @@ pub fn start_socket_listener(
 /// Query an agent's identity via its IPC socket.
 pub fn ipc_query_who(path: &std::path::Path) -> Option<serde_json::Value> {
     let mut stream = std::os::unix::net::UnixStream::connect(path).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     let request = json!({"jsonrpc": "2.0", "method": "who", "id": 1});
     stream
         .write_all(serde_json::to_string(&request).ok()?.as_bytes())
@@ -396,11 +389,7 @@ pub fn ipc_query_who(path: &std::path::Path) -> Option<serde_json::Value> {
 }
 
 /// Send a message to an agent via its IPC socket.
-pub fn ipc_send_message(
-    socket_path: &std::path::Path,
-    message: &str,
-    from: &str,
-) -> Result<()> {
+pub fn ipc_send_message(socket_path: &std::path::Path, message: &str, from: &str) -> Result<()> {
     if message.len() > IPC_MAX_MESSAGE_SIZE {
         bail!(
             "Message too large ({} bytes, max {})",
@@ -408,16 +397,13 @@ pub fn ipc_send_message(
             IPC_MAX_MESSAGE_SIZE
         );
     }
-    let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
-        .with_context(|| {
-            format!(
-                "failed to connect to IPC socket at {}",
-                socket_path.display()
-            )
-        })?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .ok();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket_path).with_context(|| {
+        format!(
+            "failed to connect to IPC socket at {}",
+            socket_path.display()
+        )
+    })?;
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
     let request = json!({
         "jsonrpc": "2.0",
         "method": "send",
@@ -441,17 +427,37 @@ pub fn ipc_send_message(
     Ok(())
 }
 
+/// Parse an IPC `who` response (JSON value) into an [`AgentId`].
+pub fn agent_id_from_who(info: &serde_json::Value) -> AgentId {
+    AgentId {
+        name: info
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string(),
+        nick: info.get("nick").and_then(Value::as_str).map(String::from),
+        session: info
+            .get("session")
+            .and_then(Value::as_str)
+            .map(String::from),
+        pane: info.get("pane").and_then(Value::as_str).map(String::from),
+        agent_type: info.get("type").and_then(Value::as_str).map(String::from),
+    }
+}
+
 /// Discover all agents across sessions by scanning IPC sockets.
 /// Scans both sidekar-% and agentbus-% socket patterns.
-pub fn discover_all_agents() -> Vec<(std::path::PathBuf, serde_json::Value)> {
+pub fn discover_all_agents() -> Vec<(std::path::PathBuf, AgentId)> {
     let mut agents = Vec::new();
-    let mut seen_paths: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    let mut seen_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
     for dir in socket_scan_dirs() {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                let is_agent_socket = (name.starts_with("sidekar-%") || name.starts_with("agentbus-%"))
+                let is_agent_socket = (name.starts_with("sidekar-%")
+                    || name.starts_with("agentbus-%"))
                     && name.ends_with(".sock");
                 if is_agent_socket {
                     let path = entry.path();
@@ -459,7 +465,7 @@ pub fn discover_all_agents() -> Vec<(std::path::PathBuf, serde_json::Value)> {
                         continue;
                     }
                     if let Some(info) = ipc_query_who(&path) {
-                        agents.push((path, info));
+                        agents.push((path, agent_id_from_who(&info)));
                     } else {
                         // Stale socket — clean up
                         let _ = std::fs::remove_file(&path);
@@ -475,10 +481,7 @@ pub fn discover_all_agents() -> Vec<(std::path::PathBuf, serde_json::Value)> {
 pub fn find_agent_socket(target: &str) -> Option<std::path::PathBuf> {
     discover_all_agents()
         .into_iter()
-        .find(|(_, info)| {
-            info.get("agent").and_then(Value::as_str) == Some(target)
-                || info.get("nick").and_then(Value::as_str) == Some(target)
-        })
+        .find(|(_, id)| id.name == target || id.nick.as_deref() == Some(target))
         .map(|(path, _)| path)
 }
 
@@ -499,9 +502,9 @@ pub fn find_socket_for_pane(pane_unique_id: &str) -> Option<std::path::PathBuf> 
     // Scan all sockets and query for the pane
     discover_all_agents()
         .into_iter()
-        .find(|(_, info)| {
-            info.get("pane")
-                .and_then(Value::as_str)
+        .find(|(_, id)| {
+            id.pane
+                .as_deref()
                 .map(|p| p == pane_unique_id || p.ends_with(&format!(".{}", pane_unique_id)))
                 .unwrap_or(false)
         })
@@ -514,19 +517,24 @@ pub fn find_socket_for_pane(pane_unique_id: &str) -> Option<std::path::PathBuf> 
 pub fn cmd_who(ctx: &mut crate::AppContext) -> Result<()> {
     let agents = discover_all_agents();
     if agents.is_empty() {
-        out!(ctx, "No agents discovered. (Are any agents running in tmux with sidekar?)");
+        out!(
+            ctx,
+            "No agents discovered. (Are any agents running in tmux with sidekar?)"
+        );
         return Ok(());
     }
     let mut lines = Vec::new();
-    for (path, info) in &agents {
-        let name = info.get("agent").and_then(Value::as_str).unwrap_or("?");
-        let nick = info.get("nick").and_then(Value::as_str);
-        let session = info.get("session").and_then(Value::as_str).unwrap_or("?");
-        let pane = info.get("pane").and_then(Value::as_str).unwrap_or("?");
-        let agent_type = info.get("type").and_then(Value::as_str).unwrap_or("unknown");
+    for (path, id) in &agents {
+        let session = id.session.as_deref().unwrap_or("?");
+        let pane = id.pane.as_deref().unwrap_or("?");
+        let agent_type = id.agent_type.as_deref().unwrap_or("unknown");
         let socket = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let nick_str = nick.map(|n| format!(" \"{n}\"")).unwrap_or_default();
-        lines.push(format!("- {name}{nick_str} (session \"{session}\", pane {pane}, type: {agent_type}, socket: {socket})"));
+        let nick_str = id
+            .nick
+            .as_deref()
+            .map(|n| format!(" \"{n}\""))
+            .unwrap_or_default();
+        lines.push(format!("- {}{nick_str} (session \"{session}\", pane {pane}, type: {agent_type}, socket: {socket})", id.name));
     }
     out!(ctx, "Agents discovered:\n{}", lines.join("\n"));
     Ok(())
@@ -537,33 +545,38 @@ pub fn cmd_send_message(ctx: &mut crate::AppContext, to: &str, message: &str) ->
     let pane = detect_tmux_pane();
     let (my_nick, my_name) = if let Some(ref p) = pane {
         let (nick, name) = read_pane_identity(&p.unique_id);
-        (nick, name.unwrap_or_else(|| format!("sidekar@{}", p.display_id)))
+        (
+            nick,
+            name.unwrap_or_else(|| format!("sidekar@{}", p.display_id)),
+        )
     } else {
         (None, "sidekar".to_string())
     };
-    let from_label = format_from_label(my_nick.as_deref(), &my_name);
+    let my_id = AgentId {
+        name: my_name,
+        nick: my_nick,
+        session: None,
+        pane: None,
+        agent_type: Some("sidekar".into()),
+    };
 
     match find_agent_socket(to) {
         Some(socket_path) => {
-            let full_message = format!("[message from {from_label}]: {message}");
-            ipc_send_message(&socket_path, &full_message, &my_name)?;
+            let full_message = format!("[message from {}]: {message}", my_id.display_name());
+            ipc_send_message(&socket_path, &full_message, &my_id.name)?;
             out!(ctx, "Message sent to {to}.");
             Ok(())
         }
         None => {
             let agents = discover_all_agents();
-            let available: Vec<String> = agents
-                .iter()
-                .filter_map(|(_, info)| {
-                    let name = info.get("agent").and_then(Value::as_str)?;
-                    let nick = info.get("nick").and_then(Value::as_str);
-                    Some(format_from_label(nick, name))
-                })
-                .collect();
+            let available: Vec<String> = agents.iter().map(|(_, id)| id.display_name()).collect();
             if available.is_empty() {
                 bail!("Agent \"{to}\" not found. No agents discovered.");
             } else {
-                bail!("Agent \"{to}\" not found. Available: {}", available.join(", "));
+                bail!(
+                    "Agent \"{to}\" not found. Available: {}",
+                    available.join(", ")
+                );
             }
         }
     }

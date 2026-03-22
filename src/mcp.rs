@@ -15,31 +15,92 @@ const DEFAULT_TOOL_TIMEOUT_MS: u64 = 90_000;
 /// Tool categories for lazy loading. Core tools are always available.
 /// Extended categories can be loaded on demand via the `tools` meta-tool.
 const CORE_TOOLS: &[&str] = &[
-    "launch", "navigate", "read", "text", "axtree", "observe", "screenshot",
-    "click", "type", "fill", "press", "scroll", "keyboard",
-    "tabs", "tab", "newtab", "close",
-    "search", "readurls",
-    "batch", "tools",
+    "launch",
+    "navigate",
+    "read",
+    "text",
+    "axtree",
+    "observe",
+    "screenshot",
+    "click",
+    "type",
+    "fill",
+    "press",
+    "scroll",
+    "keyboard",
+    "tabs",
+    "tab",
+    "newtab",
+    "close",
+    "search",
+    "readurls",
+    "batch",
+    "tools",
     // Bus tools always available
-    "who", "bus_send", "bus_done", "register", "unregister",
+    "who",
+    "bus_send",
+    "bus_done",
+    "register",
+    "unregister",
 ];
 
 /// Category name → tool names
 fn category_tools(cat: &str) -> Option<&'static [&'static str]> {
     match cat {
-        "forms" => Some(&["select", "upload", "drag", "clear", "focus", "dialog", "paste", "clipboard", "inserttext"]),
-        "nav" => Some(&["back", "forward", "reload", "waitfor", "waitfornav", "find", "resolve"]),
-        "debug" => Some(&["console", "network", "block", "eval", "dom", "storage", "cookies", "sw", "security"]),
-        "media" => Some(&["viewport", "zoom", "grid", "media", "animations", "pdf", "download"]),
-        "desktop" => Some(&["desktop_screenshot", "desktop_apps", "desktop_windows", "desktop_find", "desktop_click", "desktop_launch", "desktop_activate", "desktop_quit"]),
-        "session" => Some(&["hover", "lock", "unlock", "activate", "minimize", "kill", "monitor", "frames", "frame"]),
+        "forms" => Some(&[
+            "select",
+            "upload",
+            "drag",
+            "clear",
+            "focus",
+            "dialog",
+            "paste",
+            "clipboard",
+            "inserttext",
+        ]),
+        "nav" => Some(&[
+            "back",
+            "forward",
+            "reload",
+            "waitfor",
+            "waitfornav",
+            "find",
+            "resolve",
+        ]),
+        "debug" => Some(&[
+            "console", "network", "block", "eval", "dom", "storage", "cookies", "sw", "security",
+        ]),
+        "media" => Some(&[
+            "viewport",
+            "zoom",
+            "grid",
+            "media",
+            "animations",
+            "pdf",
+            "download",
+        ]),
+        "desktop" => Some(&[
+            "desktop_screenshot",
+            "desktop_apps",
+            "desktop_windows",
+            "desktop_find",
+            "desktop_click",
+            "desktop_launch",
+            "desktop_activate",
+            "desktop_quit",
+        ]),
+        "session" => Some(&[
+            "hover", "lock", "unlock", "activate", "minimize", "kill", "monitor", "frames", "frame",
+        ]),
         "meta" => Some(&["feedback", "config", "install"]),
         "all" => None, // special: loads everything
         _ => None,
     }
 }
 
-const ALL_CATEGORIES: &[&str] = &["forms", "nav", "debug", "media", "desktop", "session", "meta"];
+const ALL_CATEGORIES: &[&str] = &[
+    "forms", "nav", "debug", "media", "desktop", "session", "meta",
+];
 
 pub async fn run_mcp_server() -> Result<()> {
     let async_stdin = BufReader::new(tokio::io::stdin());
@@ -60,16 +121,13 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut bus_state = bus::SidekarBusState::new();
     bus_state.do_register(None);
 
-    let ipc_socket_path = if let (Some(name), Some(pane_display), Some(session), Some(unique_id)) =
-        (bus_state.name.as_deref(), bus_state.pane.as_deref(), bus_state.channel.as_deref(), bus_state.pane_unique_id.as_deref())
-    {
-        match ipc::start_socket_listener(
-            unique_id,
-            pane_display,
-            session,
-            name,
-            bus_state.nick.as_deref(),
-        ) {
+    let ipc_socket_path = if let (Some(name), Some(pane_display), Some(session), Some(unique_id)) = (
+        bus_state.name(),
+        bus_state.pane(),
+        bus_state.channel(),
+        bus_state.pane_unique_id.as_deref(),
+    ) {
+        match ipc::start_socket_listener(unique_id, pane_display, session, name, bus_state.nick()) {
             Ok(path) => Some(path),
             Err(e) => {
                 eprintln!("sidekar ipc: socket failed: {e}");
@@ -79,6 +137,7 @@ pub async fn run_mcp_server() -> Result<()> {
     } else {
         None
     };
+    bus_state.set_socket_path(ipc_socket_path.clone());
 
     let cfg = config::load_config();
     let mut telemetry_timer = interval(TELEMETRY_INTERVAL);
@@ -149,8 +208,8 @@ pub async fn run_mcp_server() -> Result<()> {
                                 }
                             });
                         }
-                        let instructions = if let (Some(name), Some(channel)) = (bus_state.name.as_deref(), bus_state.channel.as_deref()) {
-                            let nick_line = bus_state.nick.as_deref()
+                        let instructions = if let (Some(name), Some(channel)) = (bus_state.name(), bus_state.channel()) {
+                            let nick_line = bus_state.nick()
                                 .map(|n| format!(" Your nickname is **{n}**. Others can use either \"{name}\" or \"{n}\" to reach you."))
                                 .unwrap_or_default();
                             format!(
@@ -296,14 +355,14 @@ pub async fn run_mcp_server() -> Result<()> {
                             feedback_interval.reset();
                         }
 
+                        bus_state.touch();
+
                         // Check for pending messages and outbound timeouts
                         let mut extra_warnings = Vec::new();
-                        if let Some(pane) = &bus_state.pane {
-                            if let Some(w) = bus::pending_warnings(pane) {
-                                extra_warnings.push(w);
-                            }
+                        if let Some(w) = bus::pending_warnings(&bus_state) {
+                            extra_warnings.push(w);
                         }
-                        if let Some(w) = bus::check_outbound_timeouts(&mut bus_state.outbound) {
+                        if let Some(w) = bus::check_outbound_timeouts(&bus_state) {
                             extra_warnings.push(w);
                         }
 
@@ -519,11 +578,27 @@ async fn handle_tool_call(
     // Commands that don't need a browser session
     let no_browser = matches!(
         tool_name,
-        "launch" | "connect" | "feedback" | "config" | "kill" | "install" | "uninstall"
-        | "tools"
-        | "who" | "bus_send" | "bus_done" | "register" | "unregister"
-        | "desktop_screenshot" | "desktop_apps" | "desktop_windows" | "desktop_find" | "desktop_click"
-        | "desktop_launch" | "desktop_activate" | "desktop_quit"
+        "launch"
+            | "connect"
+            | "feedback"
+            | "config"
+            | "kill"
+            | "install"
+            | "uninstall"
+            | "tools"
+            | "who"
+            | "bus_send"
+            | "bus_done"
+            | "register"
+            | "unregister"
+            | "desktop_screenshot"
+            | "desktop_apps"
+            | "desktop_windows"
+            | "desktop_find"
+            | "desktop_click"
+            | "desktop_launch"
+            | "desktop_activate"
+            | "desktop_quit"
     );
 
     // Auto-discover or create an isolated session for this MCP process.
@@ -561,24 +636,45 @@ async fn handle_tool_call(
     // Handle bus tools directly (they need bus_state, not the command dispatch)
     match tool_name {
         "who" => {
-            let show_all = arguments.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let show_all = arguments
+                .get("all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             bus::cmd_who(bus_state, ctx, show_all)?;
             let output = ctx.drain_output();
             return Ok(vec![json!({"type": "text", "text": output.trim_end()})]);
         }
         "bus_send" => {
-            let to = arguments.get("to").and_then(Value::as_str).unwrap_or_default();
-            let message = arguments.get("message").and_then(Value::as_str).unwrap_or_default();
-            let kind = arguments.get("kind").and_then(Value::as_str).unwrap_or("fyi");
+            let to = arguments
+                .get("to")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let message = arguments
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let kind = arguments
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("fyi");
             let reply_to = arguments.get("reply_to").and_then(Value::as_str);
             bus::cmd_send_message(bus_state, ctx, to, message, kind, reply_to)?;
             let output = ctx.drain_output();
             return Ok(vec![json!({"type": "text", "text": output.trim_end()})]);
         }
         "bus_done" => {
-            let next = arguments.get("next").and_then(Value::as_str).unwrap_or_default();
-            let summary = arguments.get("summary").and_then(Value::as_str).unwrap_or_default();
-            let request = arguments.get("request").and_then(Value::as_str).unwrap_or_default();
+            let next = arguments
+                .get("next")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let summary = arguments
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let request = arguments
+                .get("request")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let reply_to = arguments.get("reply_to").and_then(Value::as_str);
             bus::cmd_signal_done(bus_state, ctx, next, summary, request, reply_to)?;
             let output = ctx.drain_output();
@@ -720,7 +816,10 @@ fn handle_batch_output(output: &str, arguments: &Value) -> Result<Vec<Value>> {
     let mut modified_batch = batch_json.clone();
     let mut images: Vec<Value> = Vec::new();
 
-    if let Some(results) = modified_batch.get_mut("results").and_then(Value::as_array_mut) {
+    if let Some(results) = modified_batch
+        .get_mut("results")
+        .and_then(Value::as_array_mut)
+    {
         for (i, result) in results.iter_mut().enumerate() {
             if !inline_screenshot_indices.contains(&i) {
                 continue;
@@ -872,7 +971,11 @@ fn map_tool_args(command: &str, arguments: &Value) -> Vec<String> {
         // Type: selector + text + optional human flag
         "type" => {
             let mut args = Vec::new();
-            if arguments.get("human").and_then(Value::as_bool).unwrap_or(false) {
+            if arguments
+                .get("human")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 args.push("--human".to_string());
             }
             if let Some(sel) = arguments.get("selector").and_then(Value::as_str) {
@@ -1338,9 +1441,7 @@ fn map_tool_args(command: &str, arguments: &Value) -> Vec<String> {
             args
         }
         // Desktop launch: takes app name directly
-        "desktop_launch" => {
-            vec_from_opt_str(arguments, "name")
-        }
+        "desktop_launch" => vec_from_opt_str(arguments, "name"),
         // No-arg commands
         "observe" | "frames" | "tabs" | "close" | "back" | "forward" | "reload" | "activate"
         | "minimize" | "unlock" | "kill" | "install" | "who" => Vec::new(),
@@ -1395,7 +1496,8 @@ mod tests {
     fn batch_output_with_inline_screenshot_marks_result() {
         // Screenshot without output path, but file doesn't exist — should still mark inline
         let output = r#"{"completed":2,"total":2,"error":null,"results":[{"tool":"click","ok":true,"output":"Clicked","attempts":1},{"tool":"screenshot","ok":true,"output":"Screenshot saved to /tmp/nonexistent-sidekar-test.png","attempts":1}]}"#;
-        let args = json!({"actions":[{"tool":"click","target":"--text Foo"},{"tool":"screenshot"}]});
+        let args =
+            json!({"actions":[{"tool":"click","target":"--text Foo"},{"tool":"screenshot"}]});
         let result = handle_batch_output(output, &args).unwrap();
         // File doesn't exist so handle_screenshot_output falls back to text
         // but the batch result should still be processed (screenshot_inline marker)

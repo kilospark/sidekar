@@ -31,9 +31,6 @@ pub async fn capture_desktop_screenshot(pid: Option<i32>, output_path: &Path) ->
 }
 
 #[cfg(not(target_os = "macos"))]
-pub async fn capture_desktop_screenshot(
-    _pid: Option<i32>,
-    _output_path: &Path,
-) -> Result<()> {
+pub async fn capture_desktop_screenshot(_pid: Option<i32>, _output_path: &Path) -> Result<()> {
     bail!("Desktop screenshot is only available on macOS")
 }

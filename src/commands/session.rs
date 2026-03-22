@@ -313,16 +313,14 @@ pub(super) async fn cmd_unlock(ctx: &mut AppContext) -> Result<()> {
         .ok_or_else(|| anyhow!("No active tab"))?;
     let sid = ctx.require_session_id()?.to_string();
 
-    let msg = with_tab_locks_exclusive(ctx, |locks| {
-        match locks.get(&tab_id).cloned() {
-            None => Ok("Tab is not locked.".to_string()),
-            Some(l) if l.session_id != sid => {
-                bail!("Tab is locked by session {}, not yours.", l.session_id)
-            }
-            Some(_) => {
-                locks.remove(&tab_id);
-                Ok(format!("Tab {} unlocked.", tab_id))
-            }
+    let msg = with_tab_locks_exclusive(ctx, |locks| match locks.get(&tab_id).cloned() {
+        None => Ok("Tab is not locked.".to_string()),
+        Some(l) if l.session_id != sid => {
+            bail!("Tab is locked by session {}, not yours.", l.session_id)
+        }
+        Some(_) => {
+            locks.remove(&tab_id);
+            Ok(format!("Tab {} unlocked.", tab_id))
         }
     })?;
     out!(ctx, "{msg}");

@@ -36,14 +36,17 @@ macro_rules! wlog {
 }
 
 pub mod api_client;
+pub mod broker;
 pub mod bus;
 pub mod commands;
-pub mod desktop;
 pub mod config;
+pub mod desktop;
 pub mod ipc;
 pub mod mcp;
 pub mod mcp_clients;
+pub mod message;
 pub mod scripts;
+pub mod transport;
 pub mod types;
 pub mod utils;
 
@@ -236,11 +239,13 @@ impl AppContext {
 /// Prevents corruption from crashes mid-write and partial reads by other processes.
 fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     // Use PID + random suffix to avoid races between concurrent writers
-    let tmp = path.with_extension(format!("tmp.{}.{:08x}", std::process::id(), rand::random::<u32>()));
-    let data = serde_json::to_string_pretty(value)
-        .context("failed serializing JSON")?;
-    fs::write(&tmp, &data)
-        .with_context(|| format!("failed writing {}", tmp.display()))?;
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{:08x}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    let data = serde_json::to_string_pretty(value).context("failed serializing JSON")?;
+    fs::write(&tmp, &data).with_context(|| format!("failed writing {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("failed renaming {} → {}", tmp.display(), path.display()))?;
     Ok(())
@@ -312,7 +317,9 @@ impl CdpClient {
         self.ws
             .send(Message::Text(payload.to_string().into()))
             .await
-            .with_context(|| format!("failed to send CDP method {method} to session {session_id}"))?;
+            .with_context(|| {
+                format!("failed to send CDP method {method} to session {session_id}")
+            })?;
 
         match timeout(CDP_SEND_TIMEOUT, self.recv_response(id)).await {
             Ok(result) => result,
@@ -354,9 +361,7 @@ impl CdpClient {
                 .ok_or_else(|| anyhow!("WebSocket closed"))?;
 
             // Auto-handle JS dialogs at the CDP protocol level
-            if value.get("method").and_then(Value::as_str)
-                == Some("Page.javascriptDialogOpening")
-            {
+            if value.get("method").and_then(Value::as_str) == Some("Page.javascriptDialogOpening") {
                 if let Some((accept, prompt_text)) = &self.auto_dialog {
                     let dialog_id = self.next_id;
                     self.next_id += 1;
@@ -408,7 +413,9 @@ impl CdpClient {
             if value.get("method").is_some() {
                 if self.pending_events.len() >= MAX_PENDING_EVENTS {
                     if self.pending_events.len() == MAX_PENDING_EVENTS {
-                        wlog!("CDP event queue full ({MAX_PENDING_EVENTS}), dropping oldest events");
+                        wlog!(
+                            "CDP event queue full ({MAX_PENDING_EVENTS}), dropping oldest events"
+                        );
                     }
                     self.pending_events.pop_front();
                 }
@@ -540,9 +547,10 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
                     .find(|t| t.id == *owned_id && t.web_socket_debugger_url.is_some())
                     .cloned()
                 {
-                        wlog!(
+                    wlog!(
                         "Active tab {} lost, falling back to owned tab {}",
-                        active_id, found.id
+                        active_id,
+                        found.id
                     );
                     tab = Some(found);
                     break;
@@ -570,9 +578,7 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
 /// Verify Chrome's CDP is fully operational: HTTP + WebSocket + Browser.getVersion.
 pub async fn verify_cdp_ready(ctx: &AppContext) -> Result<()> {
     let tabs = get_debug_tabs(ctx).await?;
-    let tab = tabs
-        .first()
-        .ok_or_else(|| anyhow!("No tabs available"))?;
+    let tab = tabs.first().ok_or_else(|| anyhow!("No tabs available"))?;
     let ws_url = tab
         .web_socket_debugger_url
         .as_ref()
@@ -1138,7 +1144,9 @@ pub async fn adopt_new_tabs(
             let mut state = ctx.load_session_state()?;
             let max_tabs = crate::config::load_config().max_tabs;
             if state.tabs.len() >= max_tabs {
-                wlog!("tab limit ({max_tabs}) reached during adoption — consider closing unused tabs");
+                wlog!(
+                    "tab limit ({max_tabs}) reached during adoption — consider closing unused tabs"
+                );
             }
             for tab in &new_tabs {
                 if !state.tabs.iter().any(|id| id == &tab.id) {

@@ -59,7 +59,12 @@ fn resolve_pid_by_app_name(name: &str) -> Result<i32> {
     apps.iter()
         .find(|a| a.name.to_lowercase().contains(&lower))
         .map(|a| a.pid)
-        .ok_or_else(|| anyhow!("App '{}' not found. Run desktop-apps to see running apps.", name))
+        .ok_or_else(|| {
+            anyhow!(
+                "App '{}' not found. Run desktop-apps to see running apps.",
+                name
+            )
+        })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -131,7 +136,10 @@ pub(super) async fn cmd_desktop_windows(ctx: &mut AppContext, args: &[String]) -
                     (false, true) => " [focused]",
                     _ => "",
                 };
-                let wid = win.window_id.map(|id| format!(" wid:{id}")).unwrap_or_default();
+                let wid = win
+                    .window_id
+                    .map(|id| format!(" wid:{id}"))
+                    .unwrap_or_default();
                 out!(
                     ctx,
                     "\"{}\" ({:.0}x{:.0} at {:.0},{:.0}){}{}",
@@ -172,7 +180,7 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
                 } else {
                     format!(" [{}]", m.actions.join(", "))
                 };
-                out!(ctx, "  {} \"{}\"{}",  m.role, title, actions);
+                out!(ctx, "  {} \"{}\"{}", m.role, title, actions);
             }
         }
         Ok(())
@@ -193,7 +201,12 @@ fn parse_desktop_pid_and_rest(args: &[String]) -> Result<(i32, Vec<String>)> {
             }
             "--pid" => {
                 i += 1;
-                pid = Some(args.get(i).context("--pid requires a value")?.parse().context("invalid pid")?);
+                pid = Some(
+                    args.get(i)
+                        .context("--pid requires a value")?
+                        .parse()
+                        .context("invalid pid")?,
+                );
             }
             "--query" => {
                 // --query is passed by MCP tool schema; consume it and add the value to rest
@@ -278,7 +291,14 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
                     crate::desktop::input::click_at(x, y)?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
-                    out!(ctx, "Clicked {} \"{}\" at ({:.0}, {:.0}) via coordinate fallback", role, title, x, y);
+                    out!(
+                        ctx,
+                        "Clicked {} \"{}\" at ({:.0}, {:.0}) via coordinate fallback",
+                        role,
+                        title,
+                        x,
+                        y
+                    );
                 } else {
                     bail!("Element found but no coordinates available for fallback click");
                 }
@@ -300,10 +320,7 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
 /// Try to click an element in the browser via the desktop accessibility API.
 /// Returns Ok with a description if the click succeeded, Err if it failed.
 /// Only available on macOS; returns Err immediately on other platforms.
-pub(crate) fn try_desktop_click_fallback(
-    browser_name: &str,
-    query: &str,
-) -> Result<String> {
+pub(crate) fn try_desktop_click_fallback(browser_name: &str, query: &str) -> Result<String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (browser_name, query);
@@ -318,14 +335,20 @@ pub(crate) fn try_desktop_click_fallback(
             "axPress" => {
                 let role = result.role.as_deref().unwrap_or("element");
                 let title = result.title.as_deref().unwrap_or("");
-                Ok(format!("Clicked {} \"{}\" via desktop fallback", role, title))
+                Ok(format!(
+                    "Clicked {} \"{}\" via desktop fallback",
+                    role, title
+                ))
             }
             "fallbackClick" => {
                 if let (Some(x), Some(y)) = (result.x, result.y) {
                     crate::desktop::input::click_at(x, y)?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
-                    Ok(format!("Clicked {} \"{}\" at ({:.0}, {:.0}) via desktop fallback", role, title, x, y))
+                    Ok(format!(
+                        "Clicked {} \"{}\" at ({:.0}, {:.0}) via desktop fallback",
+                        role, title, x, y
+                    ))
                 } else {
                     bail!("no coordinates for fallback");
                 }

@@ -109,8 +109,15 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "pdf" => cmd_pdf(ctx, args.first().map(String::as_str)).await,
         "click" => {
             // Extract --mode=<mode> if present
-            let mode = args.iter().find_map(|a| a.strip_prefix("--mode=")).map(String::from);
-            let filtered: Vec<String> = args.iter().filter(|a| !a.starts_with("--mode=")).cloned().collect();
+            let mode = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--mode="))
+                .map(String::from);
+            let filtered: Vec<String> = args
+                .iter()
+                .filter(|a| !a.starts_with("--mode="))
+                .cloned()
+                .collect();
             if filtered.is_empty() {
                 bail!("Usage: sidekar click <sel|x,y|--text> [--mode=double|right|human]");
             }
@@ -143,7 +150,12 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .first()
                 .cloned()
                 .context("Usage: sidekar type <selector> <text> [--human]")?;
-            let text = filtered.iter().skip(1).map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+            let text = filtered
+                .iter()
+                .skip(1)
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             if text.is_empty() {
                 bail!("Usage: sidekar type <selector> <text> [--human]");
             }
@@ -175,11 +187,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                         if i < args.len() {
                             html = Some(args[i..].join(" "));
                             // If --text comes later, split at --text
-                            if let Some(pos) = html
-                                .as_ref()
-                                .unwrap()
-                                .find(" --text ")
-                            {
+                            if let Some(pos) = html.as_ref().unwrap().find(" --text ") {
                                 let full = html.take().unwrap();
                                 html = Some(full[..pos].to_string());
                                 text = Some(full[pos + 8..].to_string());
@@ -236,7 +244,10 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "waitfornav" => cmd_wait_for_nav(ctx, args.first().map(String::as_str)).await,
         "press" => {
-            let key = args.first().cloned().context("Usage: sidekar press <key>")?;
+            let key = args
+                .first()
+                .cloned()
+                .context("Usage: sidekar press <key>")?;
             cmd_press(ctx, &key).await
         }
         "scroll" => cmd_scroll(ctx, args).await,
