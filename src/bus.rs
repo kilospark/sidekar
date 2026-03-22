@@ -879,6 +879,7 @@ fn resolve_reply(reply_to: Option<&str>) {
 }
 
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
+    // 1. Try same-session tmux agent
     if let Some(agent) = find_agent_on_channel(to, channel) {
         return Some(DeliveryTarget {
             transport_name: TMUX_TRANSPORT,
@@ -887,6 +888,21 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
         });
     }
 
+    // 2. Try broker — has socket_path for PTY and cross-session agents
+    if let Ok(Some(agent)) = broker::find_agent(to, None) {
+        if let Some(ref socket) = agent.socket_path {
+            let socket_path = std::path::Path::new(socket);
+            if socket_path.exists() {
+                return Some(DeliveryTarget {
+                    transport_name: SOCKET_TRANSPORT,
+                    transport_target: socket.clone(),
+                    output_label: format!("via broker ({})", agent.id.pane.as_deref().unwrap_or("?")),
+                });
+            }
+        }
+    }
+
+    // 3. Fallback: scan filesystem for sockets
     ipc::find_agent_socket(to).map(|socket_path| DeliveryTarget {
         transport_name: SOCKET_TRANSPORT,
         transport_target: socket_path.to_string_lossy().to_string(),
@@ -903,7 +919,7 @@ fn send_directed_envelope(
 ) -> Result<()> {
     let channel = match state.channel() {
         Some(c) => c.to_string(),
-        None => bail!("Not running inside tmux."),
+        None => bail!("Not registered on the bus."),
     };
 
     if envelope.to == "@all" {

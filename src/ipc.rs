@@ -494,8 +494,8 @@ pub fn discover_all_agents() -> Vec<(std::path::PathBuf, AgentId)> {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                let is_agent_socket = (name.starts_with("sidekar-%")
-                    || name.starts_with("agentbus-%"))
+                let is_agent_socket = (name.starts_with("sidekar-")
+                    || name.starts_with("agentbus-"))
                     && name.ends_with(".sock");
                 if is_agent_socket {
                     let path = entry.path();
