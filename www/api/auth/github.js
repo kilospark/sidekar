@@ -2,35 +2,41 @@ import { getDb } from "../_db.js";
 import { signToken, setSessionCookie } from "../_auth.js";
 
 export default async function handler(req, res) {
-  if (req.method !== "GET") return res.status(405).end();
+  try {
+    if (req.method !== "GET") return res.status(405).end();
 
-  // If code is present, this is the OAuth callback
-  if (req.query.code) return handleCallback(req, res);
+    if (req.query.code) return handleCallback(req, res);
 
-  // Otherwise, redirect to GitHub
-  const clientId = process.env.GITHUB_CLIENT_ID;
-  if (!clientId) return res.status(500).json({ error: "GITHUB_CLIENT_ID not set" });
+    const clientId = (process.env.GITHUB_CLIENT_ID || "").trim();
+    if (!clientId) return res.status(500).json({ error: "GITHUB_CLIENT_ID not set" });
 
-  const redirectUri = `https://sidekar.dev/api/auth/github?callback=1`;
-  const scope = "read:user user:email";
-  const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}`;
-  res.redirect(302, url);
+    const redirectUri = "https://sidekar.dev/api/auth/github";
+    const scope = "read:user user:email";
+    const state = req.query.redirect || "/sessions";
+    const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
+    return res.redirect(302, url);
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
 }
 
 async function handleCallback(req, res) {
+  try {
   const { code } = req.query;
+  const clientId = (process.env.GITHUB_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.GITHUB_CLIENT_SECRET || "").trim();
 
   const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
-      client_id: process.env.GITHUB_CLIENT_ID,
-      client_secret: process.env.GITHUB_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       code,
     }),
   });
   const tokenData = await tokenRes.json();
-  if (tokenData.error) return res.status(400).json({ error: tokenData.error_description });
+  if (tokenData.error) return res.status(400).json({ error: tokenData.error_description, detail: tokenData });
 
   const userRes = await fetch("https://api.github.com/user", {
     headers: { Authorization: `Bearer ${tokenData.access_token}`, Accept: "application/json" },
@@ -71,5 +77,9 @@ async function handleCallback(req, res) {
   });
 
   setSessionCookie(res, jwt);
-  res.redirect(302, "/sessions");
+  const returnTo = req.query.state || "/sessions";
+  return res.redirect(302, returnTo);
+  } catch (err) {
+    return res.status(500).json({ error: err.message, stack: err.stack });
+  }
 }
