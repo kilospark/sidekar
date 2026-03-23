@@ -60,8 +60,8 @@
 
     setStatus("", "connecting...");
 
-    // Fetch /api/auth/me to verify we are authenticated before connecting
-    fetch("/api/auth/me")
+    // Fetch /api/auth/session to verify we are authenticated before connecting
+    fetch("/api/auth/session")
       .then(function (res) {
         if (res.status === 401) {
           window.location.href = "/api/auth/github?redirect=/terminal/" + sessionId;

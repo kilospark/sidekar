@@ -7,7 +7,7 @@
 
   // --- Auth check ---
   function checkAuth() {
-    return fetch("/api/auth/me")
+    return fetch("/api/auth/session")
       .then(function (res) {
         if (res.status === 401) {
           window.location.href = "/api/auth/github?redirect=/sessions";
@@ -27,7 +27,7 @@
 
   // --- Logout ---
   logoutBtn.addEventListener("click", function () {
-    fetch("/api/auth/logout", { method: "POST" }).then(function () {
+    fetch("/api/auth/session", { method: "POST" }).then(function () {
       window.location.href = "/";
     });
   });

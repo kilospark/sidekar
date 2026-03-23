@@ -113,7 +113,7 @@ pub async fn device_auth_flow() -> Result<()> {
         }
 
         let poll_resp = client
-            .post(format!("{base}/api/auth/device/token"))
+            .post(format!("{base}/api/auth/device?action=token"))
             .json(&json!({ "device_code": device_code }))
             .send()
             .await;

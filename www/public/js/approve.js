@@ -6,7 +6,7 @@
   const message = document.getElementById("message");
 
   // Check authentication
-  fetch("/api/auth/me")
+  fetch("/api/auth/session")
     .then(function (res) {
       if (res.status === 401) {
         // Not logged in — redirect to GitHub OAuth, then back here
@@ -57,7 +57,7 @@
     message.textContent = "";
     message.className = "message";
 
-    fetch("/api/auth/device/approve", {
+    fetch("/api/auth/device?action=approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_code: code }),
