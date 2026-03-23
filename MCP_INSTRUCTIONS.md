@@ -71,9 +71,7 @@ Control Chrome directly via the Chrome DevTools Protocol. Chrome auto-launches o
 
 ## Tool Categories
 
-Core tools (navigation, perception, interaction, session, bus) are always available. Extended tools are organized in categories and loaded on demand to reduce context overhead.
-
-Call `tools` to see available categories, or `tools(action: "load", category: "<name>")` to activate one:
+All tools are available from startup. They are organized into categories for reference:
 
 - **forms**: select, upload, drag, clear, focus, dialog, paste, clipboard, inserttext
 - **nav**: back, forward, reload, waitfor, waitfornav, find, resolve
@@ -83,7 +81,7 @@ Call `tools` to see available categories, or `tools(action: "load", category: "<
 - **session**: hover, lock, unlock, activate, minimize, kill, monitor, frames, frame
 - **meta**: feedback, config, install
 
-Use `tools(action: "load", category: "all")` to load everything at once.
+Call `tools` to see the full list organized by category.
 
 ## Tab Isolation
 

@@ -1170,33 +1170,10 @@
   },
   {
     "name": "tools",
-    "description": "List or load tool categories. Core tools always available; load extended categories on demand.",
+    "description": "List all available tools organized by category.",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "action": {
-          "type": "string",
-          "enum": [
-            "list",
-            "load"
-          ],
-          "description": "list: show categories. load: activate a category."
-        },
-        "category": {
-          "type": "string",
-          "enum": [
-            "forms",
-            "nav",
-            "debug",
-            "media",
-            "desktop",
-            "session",
-            "meta",
-            "all"
-          ],
-          "description": "Category to load (for action=load)"
-        }
-      },
+      "properties": {},
       "required": []
     }
   },

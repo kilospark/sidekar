@@ -12,38 +12,10 @@ const TELEMETRY_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const FEEDBACK_DELAY: Duration = Duration::from_secs(1800); // 30 minutes
 const DEFAULT_TOOL_TIMEOUT_MS: u64 = 90_000;
 
-/// Tool categories for lazy loading. Core tools are always available.
-/// Extended categories can be loaded on demand via the `tools` meta-tool.
-const CORE_TOOLS: &[&str] = &[
-    "launch",
-    "navigate",
-    "read",
-    "text",
-    "axtree",
-    "observe",
-    "screenshot",
-    "click",
-    "type",
-    "fill",
-    "press",
-    "scroll",
-    "keyboard",
-    "tabs",
-    "tab",
-    "newtab",
-    "close",
-    "search",
-    "readurls",
-    "batch",
-    "tools",
-    // Bus tools always available
-    "who",
-    "bus_send",
-    "bus_done",
-    "register",
-    "unregister",
-];
-
+/// Tool categories for documentation/reference. All tools are advertised at startup.
+/// MCP clients don't reliably handle tools/list_changed notifications, so lazy loading
+/// just hides tools from agents.
+///
 /// Category name → tool names
 fn category_tools(cat: &str) -> Option<&'static [&'static str]> {
     match cat {
@@ -151,7 +123,6 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut feedback_prompted = false;
     let mut feedback_received = false;
     let mut session_tool_count: u64 = 0; // lifetime count, independent of telemetry clearing
-    let mut active_categories: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut lines = async_stdin.lines();
 
     loop {
@@ -247,7 +218,7 @@ pub async fn run_mcp_server() -> Result<()> {
                         None
                     }
                     "tools/list" => {
-                        let tools = match build_mcp_tools(&active_categories) {
+                        let tools = match build_mcp_tools() {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!("failed building MCP tools list: {e}");
@@ -282,44 +253,17 @@ pub async fn run_mcp_server() -> Result<()> {
                         *ctx.tool_counts.entry(tool_name.clone()).or_insert(0) += 1;
                         session_tool_count += 1;
 
-                        // Handle the `tools` meta-tool inline (needs active_categories + stdout for notification)
+                        // Handle the `tools` meta-tool inline
                         if tool_name == "tools" {
-                            let action = arguments.get("action").and_then(Value::as_str).unwrap_or("list");
-                            let result_text = match action {
-                                "list" => {
-                                    let mut lines = Vec::new();
-                                    for cat in ALL_CATEGORIES {
-                                        let loaded = if active_categories.contains(*cat) { " [loaded]" } else { "" };
-                                        let tool_names = category_tools(cat)
-                                            .map(|t| t.join(", "))
-                                            .unwrap_or_default();
-                                        lines.push(format!("  {cat}{loaded}: {tool_names}"));
-                                    }
-                                    let all_loaded = active_categories.contains("all");
-                                    format!("Tool categories{}:\n{}\n\nUse tools(action: \"load\", category: \"<name>\") to load a category. Use \"all\" to load everything.",
-                                        if all_loaded { " [all loaded]" } else { "" },
-                                        lines.join("\n"))
-                                }
-                                "load" => {
-                                    let cat = arguments.get("category").and_then(Value::as_str).unwrap_or("");
-                                    if cat == "all" {
-                                        active_categories.insert("all".to_string());
-                                        // Send tools/list_changed notification
-                                        let notification = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
-                                        let _ = write_response(&stdout, &notification);
-                                        "All tool categories loaded.".to_string()
-                                    } else if category_tools(cat).is_some() {
-                                        active_categories.insert(cat.to_string());
-                                        let notification = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
-                                        let _ = write_response(&stdout, &notification);
-                                        let tool_names = category_tools(cat).unwrap().join(", ");
-                                        format!("Loaded category \"{cat}\": {tool_names}")
-                                    } else {
-                                        format!("Unknown category: \"{cat}\". Available: {}", ALL_CATEGORIES.join(", "))
-                                    }
-                                }
-                                _ => format!("Unknown action: \"{action}\". Use \"list\" or \"load\"."),
-                            };
+                            let mut lines = Vec::new();
+                            for cat in ALL_CATEGORIES {
+                                let tool_names = category_tools(cat)
+                                    .map(|t| t.join(", "))
+                                    .unwrap_or_default();
+                                lines.push(format!("  {cat}: {tool_names}"));
+                            }
+                            let result_text = format!("Tool categories:\n{}\n\nAll tools are available. Categories are for reference only.",
+                                lines.join("\n"));
                             let response = json!({
                                 "jsonrpc": "2.0",
                                 "id": id,
@@ -508,28 +452,13 @@ pub async fn run_mcp_server() -> Result<()> {
     Ok(())
 }
 
-fn build_mcp_tools(active_categories: &std::collections::HashSet<String>) -> Result<Value> {
+fn build_mcp_tools() -> Result<Value> {
     let mut tools: Value =
         serde_json::from_str(TOOLS_JSON).context("failed parsing embedded tools.json")?;
 
-    // Filter tools by active categories (unless "all" is loaded)
-    if !active_categories.contains("all") {
-        // Build set of allowed tool names
-        let mut allowed: std::collections::HashSet<&str> = CORE_TOOLS.iter().copied().collect();
-        for cat in active_categories {
-            if let Some(cat_tools) = category_tools(cat) {
-                allowed.extend(cat_tools.iter());
-            }
-        }
-
-        let entries = tools.as_array_mut().context("tools.json must be array")?;
-        entries.retain(|t| {
-            t.get("name")
-                .and_then(Value::as_str)
-                .map(|n| allowed.contains(n))
-                .unwrap_or(false)
-        });
-    }
+    // All tools are always advertised. The category system exists for documentation
+    // but MCP clients don't reliably handle tools/list_changed notifications,
+    // so hiding tools behind lazy loading just makes them invisible to agents.
 
     inject_common_timeout_property(&mut tools)?;
     Ok(tools)
@@ -1545,8 +1474,7 @@ mod tests {
 
     #[test]
     fn tools_list_includes_common_timeout_property() {
-        let active_categories = std::collections::HashSet::new();
-        let tools = build_mcp_tools(&active_categories).unwrap();
+        let tools = build_mcp_tools().unwrap();
         let first_tool = tools.as_array().and_then(|v| v.first()).unwrap();
         let timeout_prop = first_tool
             .pointer("/inputSchema/properties/timeout_ms")
