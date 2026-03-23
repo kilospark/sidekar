@@ -990,25 +990,36 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut lines: Vec<String> = Vec::new();
 
+    // Get all broker agents for this channel (has cwd info)
+    let broker_agents = broker::list_agents(Some(&channel)).unwrap_or_default();
+    let broker_map: HashMap<String, &broker::BrokerAgent> = broker_agents
+        .iter()
+        .map(|a| (a.id.name.clone(), a))
+        .collect();
+
     // Tmux agents on this channel
     for a in tmux_agents.iter().filter(|a| a.session() == channel) {
         seen_names.insert(a.name().to_string());
         let you = if a.name() == my_name { " (you)" } else { "" };
         let nick = a.nick().map(|n| format!(" \"{n}\"")).unwrap_or_default();
-        lines.push(format!("- {}{}{} (pane {})", a.name(), nick, you, a.pane_display()));
+        let cwd = broker_map
+            .get(a.name())
+            .and_then(|b| b.cwd.as_deref())
+            .map(|c| format!(", cwd: {c}"))
+            .unwrap_or_default();
+        lines.push(format!("- {}{}{} (pane {}{})", a.name(), nick, you, a.pane_display(), cwd));
     }
 
     // Broker agents on this channel (catches PTY sessions not visible to tmux)
-    if let Ok(broker_agents) = broker::list_agents(Some(&channel)) {
-        for a in broker_agents {
-            if seen_names.contains(&a.id.name) {
-                continue; // already listed via tmux
-            }
-            let you = if a.id.name == my_name { " (you)" } else { "" };
-            let nick = a.id.nick.as_deref().map(|n| format!(" \"{n}\"")).unwrap_or_default();
-            let pane = a.id.pane.as_deref().unwrap_or("?");
-            lines.push(format!("- {}{}{} (pane {})", a.id.name, nick, you, pane));
+    for a in &broker_agents {
+        if seen_names.contains(&a.id.name) {
+            continue;
         }
+        let you = if a.id.name == my_name { " (you)" } else { "" };
+        let nick = a.id.nick.as_deref().map(|n| format!(" \"{n}\"")).unwrap_or_default();
+        let pane = a.id.pane.as_deref().unwrap_or("?");
+        let cwd = a.cwd.as_deref().map(|c| format!(", cwd: {c}")).unwrap_or_default();
+        lines.push(format!("- {}{}{} (pane {}{})", a.id.name, nick, you, pane, cwd));
     }
 
     if lines.is_empty() {

@@ -15,6 +15,7 @@ pub struct BrokerAgent {
     pub id: AgentId,
     pub pane_unique_id: Option<String>,
     pub socket_path: Option<String>,
+    pub cwd: Option<String>,
     pub registered_at: u64,
     pub last_seen_at: u64,
 }
@@ -64,6 +65,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             pane_unique_id TEXT,
             agent_type TEXT,
             socket_path TEXT,
+            cwd TEXT,
             registered_at INTEGER NOT NULL,
             last_seen_at INTEGER NOT NULL
         );
@@ -98,6 +100,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON outbound_requests(sender_name, created_at);
         ",
     )?;
+    // Migration: add cwd column if missing (existing databases)
+    let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN cwd TEXT");
     Ok(())
 }
 
@@ -117,10 +121,13 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
             params![unique],
         )?;
     }
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
     tx.execute(
         "INSERT INTO agents (
-            name, nick, session, pane, pane_unique_id, agent_type, socket_path, registered_at, last_seen_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?7)",
+            name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?8)",
         params![
             agent.name,
             nick,
@@ -128,6 +135,7 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
             pane,
             pane_unique_id,
             agent_type,
+            cwd,
             now,
         ],
     )?;
@@ -176,7 +184,7 @@ pub fn unregister_agent(name: &str) -> Result<()> {
 pub fn agent_for_pane_unique(pane_unique_id: &str) -> Result<Option<BrokerAgent>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, registered_at, last_seen_at
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
          FROM agents
          WHERE pane_unique_id = ?1
          LIMIT 1",
@@ -189,12 +197,12 @@ pub fn agent_for_pane_unique(pane_unique_id: &str) -> Result<Option<BrokerAgent>
 pub fn list_agents(session: Option<&str>) -> Result<Vec<BrokerAgent>> {
     let conn = open()?;
     let sql = if session.is_some() {
-        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, registered_at, last_seen_at
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
          FROM agents
          WHERE session = ?1
          ORDER BY name"
     } else {
-        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, registered_at, last_seen_at
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
          FROM agents
          ORDER BY name"
     };
@@ -215,7 +223,7 @@ pub fn find_agent(target: &str, session: Option<&str>) -> Result<Option<BrokerAg
     let conn = open()?;
     let mut stmt = if session.is_some() {
         conn.prepare(
-            "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, registered_at, last_seen_at
+            "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
              FROM agents
              WHERE session = ?1 AND (name = ?2 OR nick = ?2)
              ORDER BY CASE WHEN name = ?2 THEN 0 ELSE 1 END
@@ -223,7 +231,7 @@ pub fn find_agent(target: &str, session: Option<&str>) -> Result<Option<BrokerAg
         )?
     } else {
         conn.prepare(
-            "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, registered_at, last_seen_at
+            "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
              FROM agents
              WHERE name = ?1 OR nick = ?1
              ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END
@@ -443,8 +451,9 @@ fn row_to_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrokerAgent> {
         },
         pane_unique_id: row.get(4)?,
         socket_path: row.get(6)?,
-        registered_at: row.get::<_, i64>(7)? as u64,
-        last_seen_at: row.get::<_, i64>(8)? as u64,
+        cwd: row.get(7)?,
+        registered_at: row.get::<_, i64>(8)? as u64,
+        last_seen_at: row.get::<_, i64>(9)? as u64,
     })
 }
 

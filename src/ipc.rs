@@ -586,7 +586,13 @@ pub fn cmd_who(ctx: &mut crate::AppContext) -> Result<()> {
             .as_deref()
             .map(|n| format!(" \"{n}\""))
             .unwrap_or_default();
-        lines.push(format!("- {}{nick_str} (session \"{session}\", pane {pane}, type: {agent_type}, socket: {socket})", id.name));
+        let cwd_str = broker::find_agent(&id.name, None)
+            .ok()
+            .flatten()
+            .and_then(|a| a.cwd)
+            .map(|c| format!(", cwd: {c}"))
+            .unwrap_or_default();
+        lines.push(format!("- {}{nick_str} (session \"{session}\", pane {pane}, type: {agent_type}, socket: {socket}{cwd_str})", id.name));
     }
     out!(ctx, "Agents discovered:\n{}", lines.join("\n"));
     Ok(())
