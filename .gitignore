@@ -7,3 +7,4 @@ www/public/binaries/
 .env
 .env.*
 !.env.example
+relay/target/

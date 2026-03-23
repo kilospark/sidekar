@@ -380,11 +380,30 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         }
     };
 
+    // Optionally establish tunnel to relay for web terminal access
+    let tunnel = if let Some(token) = crate::auth::auth_token() {
+        let cwd_str = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".into());
+        match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str).await {
+            Ok(t) => {
+                eprintln!("sidekar pty: tunnel connected");
+                Some(t)
+            }
+            Err(e) => {
+                eprintln!("sidekar pty: tunnel unavailable: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Enter raw mode (must happen after eprintln messages)
     let raw_guard = RawModeGuard::enter()?;
 
     // Run the async event loop
-    let exit_code = event_loop(&master_arc, child_pid).await;
+    let exit_code = event_loop(&master_arc, child_pid, tunnel).await;
 
     // Cleanup: restore terminal, unregister, remove socket
     drop(raw_guard);
@@ -403,7 +422,11 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 // Async event loop
 // ---------------------------------------------------------------------------
 
-async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
+async fn event_loop(
+    master: &Arc<OwnedFd>,
+    child_pid: libc::pid_t,
+    tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
+) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -427,19 +450,67 @@ async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
     let mut buf_in = [0u8; 4096];
     let mut buf_out = [0u8; 8192];
 
+    // Split tunnel into sender + receiver (if connected)
+    let (tunnel_tx, mut tunnel_rx) = match tunnel {
+        Some((tx, rx)) => (Some(tx), Some(rx)),
+        None => (None, None),
+    };
+
     loop {
         tokio::select! {
             biased;
 
-            // SIGWINCH: resize child PTY
+            // SIGWINCH: resize child PTY + notify tunnel
             _ = sigwinch.recv() => {
                 let _ = copy_terminal_size(master_fd);
+                if let Some(ref tx) = tunnel_tx {
+                    // Read new size and forward to tunnel
+                    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+                    if unsafe { libc::ioctl(master_fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
+                        tx.send_resize(ws.ws_col, ws.ws_row);
+                    }
+                }
             }
 
             // SIGTERM: forward to child, exit
             _ = sigterm.recv() => {
                 unsafe { libc::kill(child_pid, libc::SIGTERM) };
                 break;
+            }
+
+            // Tunnel → master fd (browser input injected into agent)
+            event = async {
+                match tunnel_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    Some(crate::tunnel::TunnelEvent::Data(data)) => {
+                        // Browser keystrokes → agent stdin via master fd
+                        let _ = write_all_fd(master_fd, &data);
+                    }
+                    Some(crate::tunnel::TunnelEvent::Resize { cols, rows }) => {
+                        // Browser resize → child PTY
+                        let ws = libc::winsize {
+                            ws_col: cols,
+                            ws_row: rows,
+                            ws_xpixel: 0,
+                            ws_ypixel: 0,
+                        };
+                        unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
+                    }
+                    Some(crate::tunnel::TunnelEvent::Disconnected) => {
+                        // Tunnel dropped — continue without it, reconnect happens in background
+                    }
+                    Some(crate::tunnel::TunnelEvent::ViewerCount(_)) => {
+                        // Informational, ignore
+                    }
+                    None => {
+                        // Tunnel channel closed — disable tunnel recv
+                        tunnel_rx = None;
+                    }
+                }
             }
 
             // stdin → master fd (user typing forwarded to agent)
@@ -454,7 +525,7 @@ async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
                 }
             }
 
-            // master fd → stdout (agent output forwarded to terminal)
+            // master fd → stdout AND tunnel (agent output)
             result = master_async.readable() => {
                 match result {
                     Ok(mut guard) => {
@@ -471,10 +542,16 @@ async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
                             }
                         }) {
                             Ok(Ok(n)) => {
+                                // Write to local stdout
                                 if stdout.write_all(&buf_out[..n]).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
+
+                                // Fan-out to tunnel (non-blocking, best-effort)
+                                if let Some(ref tx) = tunnel_tx {
+                                    tx.send_data(buf_out[..n].to_vec());
+                                }
                             }
                             Ok(Err(_)) => break,
                             Err(_would_block) => continue,
@@ -484,6 +561,11 @@ async fn event_loop(master: &Arc<OwnedFd>, child_pid: libc::pid_t) -> i32 {
                 }
             }
         }
+    }
+
+    // Shut down tunnel gracefully
+    if let Some(tx) = tunnel_tx {
+        tx.shutdown();
     }
 
     // Wait for child to exit

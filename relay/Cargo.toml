@@ -1,0 +1,23 @@
+[package]
+name = "sidekar-relay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tokio-tungstenite = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mongodb = "3"
+jsonwebtoken = "9"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["cors"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+hex = "0.4"
+bytes = "1"

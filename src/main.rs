@@ -65,6 +65,9 @@ async fn run() -> Result<()> {
         }
         return Ok(());
     }
+    if command == "login" {
+        return sidekar::auth::device_auth_flow().await;
+    }
 
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it
     if sidekar::pty::is_agent_command(&command) {

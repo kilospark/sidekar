@@ -6,7 +6,10 @@
     { "source": "/install", "destination": "/api/script?name=install" },
     { "source": "/install.sh", "destination": "/api/script?name=install" },
     { "source": "/uninstall", "destination": "/api/script?name=uninstall" },
-    { "source": "/uninstall.sh", "destination": "/api/script?name=uninstall" }
+    { "source": "/uninstall.sh", "destination": "/api/script?name=uninstall" },
+    { "source": "/sessions", "destination": "/sessions.html" },
+    { "source": "/approve", "destination": "/approve.html" },
+    { "source": "/terminal/:id", "destination": "/terminal.html" }
   ],
   "redirects": [
     {
