@@ -22,15 +22,25 @@ pub enum InputSink {
 
 /// Write an entire buffer to a raw fd, retrying on EINTR and short writes.
 fn write_all_raw(fd: i32, mut buf: &[u8]) -> Result<()> {
+    let mut retries = 0u32;
     while !buf.is_empty() {
         let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if n > 0 {
             buf = &buf[n as usize..];
+            retries = 0;
         } else if n == 0 {
             bail!("write to fd returned 0");
         } else {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                retries += 1;
+                if retries > 50 {
+                    bail!("write to fd: buffer full after 50 retries");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
                 continue;
             }
             bail!("write to fd failed: {err}");
