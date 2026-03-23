@@ -193,7 +193,14 @@ pub async fn run_mcp_server() -> Result<()> {
                                  You do not need to register — it happened automatically.\n"
                             )
                         } else {
-                            MCP_INSTRUCTIONS.to_string()
+                            format!(
+                                "{MCP_INSTRUCTIONS}\n\n## Agent Bus\n\n\
+                                 **Not connected to the agent bus.** Bus tools (register, who, bus_send, bus_done) \
+                                 are unavailable because this session is not running inside tmux or a sidekar PTY wrapper.\n\n\
+                                 To enable multi-agent communication, run your agent inside one of:\n\
+                                 - **tmux** (any pane) — the bus auto-detects tmux panes\n\
+                                 - **`sidekar <cmd>`** — e.g. `sidekar claude` or `sidekar codex` — wraps the agent in a PTY with bus registration\n"
+                            )
                         };
 
                         let response = json!({

@@ -1134,7 +1134,12 @@ pub fn cmd_register(
             );
             Ok(())
         }
-        None => bail!("Registration failed — not running inside tmux."),
+        None => bail!(
+            "Registration failed — the agent bus requires either tmux or a sidekar PTY wrapper.\n\n\
+             To fix, run your agent inside one of:\n\
+             • tmux (any pane): the bus auto-detects tmux panes\n\
+             • sidekar <cmd>: e.g. `sidekar claude` or `sidekar codex` — wraps the agent in a PTY with bus registration"
+        ),
     }
 }
 

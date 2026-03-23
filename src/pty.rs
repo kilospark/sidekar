@@ -12,6 +12,19 @@ use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 
+/// Shell-safe single-quote escaping: wraps in single quotes, escaping any
+/// embedded single quotes as `'\''`.
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".into();
+    }
+    // If it's simple (no special chars), return as-is
+    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/') {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Known agent binary names.
 pub const KNOWN_AGENTS: &[&str] = &[
     "codex", "claude", "gemini", "agent", "opencode", "copilot", "aider",
@@ -140,18 +153,40 @@ fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<()> {
 // Agent resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve an agent name to its binary path. Returns a CString for execvp.
-fn resolve_agent(agent: &str) -> Result<(String, std::ffi::CString)> {
+/// Resolution result: either a direct binary path or a shell alias/function
+/// that must be exec'd via the user's shell.
+enum ResolvedAgent {
+    /// Direct binary path (from `which`).
+    Binary(String, std::ffi::CString),
+    /// Shell alias or function — must exec via `$SHELL -ic '<command> ...'`.
+    ShellAlias(String),
+}
+
+/// Resolve an agent name to its binary path, or detect that it's a shell alias/function.
+fn resolve_agent(agent: &str) -> Result<ResolvedAgent> {
+    // Try direct binary lookup first
     let output = std::process::Command::new("which")
         .arg(agent)
         .output()
         .with_context(|| format!("failed to look up \"{agent}\""))?;
-    if !output.status.success() {
-        bail!("\"{agent}\" not found on PATH. Is it installed?");
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let c_path = std::ffi::CString::new(path.as_str()).context("invalid binary path")?;
+        return Ok(ResolvedAgent::Binary(path, c_path));
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let c_path = std::ffi::CString::new(path.as_str()).context("invalid binary path")?;
-    Ok((path, c_path))
+
+    // Not on PATH — check if the user's shell knows it (alias or function)
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let check = std::process::Command::new(&shell)
+        .args(["-ic", &format!("type {agent} 2>/dev/null")])
+        .output();
+    if let Ok(out) = check {
+        if out.status.success() {
+            return Ok(ResolvedAgent::ShellAlias(shell));
+        }
+    }
+
+    bail!("\"{agent}\" not found on PATH or as a shell alias/function. Is it installed?");
 }
 
 /// Build CString args for execvp (must happen before fork).
@@ -244,8 +279,28 @@ fn cleanup_child_and_state(
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
-    let (bin_display, bin_c) = resolve_agent(agent)?;
-    let c_args = prepare_args(&bin_c, args)?;
+    let (bin_display, bin_c, c_args) = match resolve_agent(agent)? {
+        ResolvedAgent::Binary(path, c_path) => {
+            let c_args = prepare_args(&c_path, args)?;
+            (path, c_path, c_args)
+        }
+        ResolvedAgent::ShellAlias(shell) => {
+            // Build a single command string: "agent arg1 arg2 ..."
+            // Use single-quote escaping for safety.
+            let mut cmd_str = shell_quote(agent);
+            for arg in args {
+                cmd_str.push(' ');
+                cmd_str.push_str(&shell_quote(arg));
+            }
+            let shell_c = std::ffi::CString::new(shell.as_str()).context("invalid shell path")?;
+            let c_args = vec![
+                shell_c.clone(),
+                std::ffi::CString::new("-ic").unwrap(),
+                std::ffi::CString::new(cmd_str.as_str()).context("invalid command string")?,
+            ];
+            (format!("{shell} -ic '{agent} ...'"), shell_c, c_args)
+        }
+    };
     eprintln!("sidekar pty: launching {agent} ({bin_display})");
 
     // Fork the child inside a PTY
