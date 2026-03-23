@@ -66,8 +66,8 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    // PTY wrapper: launch known agents inside a sidekar-owned PTY
-    if sidekar::pty::KNOWN_AGENTS.contains(&command.as_str()) {
+    // PTY wrapper: if the command resolves to an external binary or shell alias, launch it
+    if sidekar::pty::is_agent_command(&command) {
         return sidekar::pty::run_agent(&command, &args).await;
     }
 

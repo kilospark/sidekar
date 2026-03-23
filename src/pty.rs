@@ -25,10 +25,10 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Known agent binary names.
-pub const KNOWN_AGENTS: &[&str] = &[
-    "codex", "claude", "gemini", "agent", "opencode", "copilot", "aider",
-];
+/// Check if a command can be resolved as an external agent (binary, alias, or function).
+pub fn is_agent_command(command: &str) -> bool {
+    resolve_agent(command).is_ok()
+}
 
 // ---------------------------------------------------------------------------
 // Terminal raw mode
