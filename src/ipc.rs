@@ -396,7 +396,6 @@ pub fn start_socket_listener(
                         };
                         match delivery_result {
                             Ok(()) => {
-                                eprintln!("sidekar ipc: message from {from} delivered");
                                 last_paste = std::time::Instant::now();
                                 json!({
                                     "jsonrpc": "2.0",
@@ -405,7 +404,6 @@ pub fn start_socket_listener(
                                 })
                             }
                             Err(e) => {
-                                eprintln!("sidekar ipc: delivery failed: {e}");
                                 last_paste = std::time::Instant::now();
                                 json!({
                                     "jsonrpc": "2.0",
