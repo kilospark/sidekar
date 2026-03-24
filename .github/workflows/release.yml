@@ -63,9 +63,10 @@ jobs:
 
       - name: Sign release
         run: |
-          printf '%s' "${{ secrets.MINISIGN_SECRET }}" | base64 -d > minisign.key
-          chmod 600 minisign.key
-          minisign -Sm ${{ matrix.name }}.tar.gz -s minisign.key -P ""
+          mkdir -p ~/.config/minisign
+          echo "${{ secrets.MINISIGN_SECRET }}" | base64 -D > ~/.config/minisign/minisign.key
+          chmod 600 ~/.config/minisign/minisign.key
+          minisign -Sm ${{ matrix.name }}.tar.gz -s ~/.config/minisign/minisign.key -P ""
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
