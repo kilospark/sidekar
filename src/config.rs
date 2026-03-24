@@ -15,6 +15,8 @@ pub struct SidekarConfig {
     pub auto_update: bool,
     #[serde(default = "default_max_tabs")]
     pub max_tabs: usize,
+    #[serde(default = "default_cdp_timeout")]
+    pub cdp_timeout_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -25,14 +27,19 @@ fn default_max_tabs() -> usize {
     20
 }
 
+fn default_cdp_timeout() -> u64 {
+    60
+}
+
 impl Default for SidekarConfig {
     fn default() -> Self {
         Self {
             telemetry: true,
-            feedback: true,
+            feedback: false,
             browser: None,
             auto_update: true,
             max_tabs: default_max_tabs(),
+            cdp_timeout_secs: default_cdp_timeout(),
         }
     }
 }
@@ -51,6 +58,10 @@ pub fn load_config() -> SidekarConfig {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
         Err(_) => SidekarConfig::default(),
     }
+}
+
+pub fn is_first_run() -> bool {
+    !config_path().exists()
 }
 
 pub fn save_config(config: &SidekarConfig) -> Result<()> {

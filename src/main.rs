@@ -47,6 +47,21 @@ async fn run() -> Result<()> {
         sidekar::mcp_clients::configure_clients();
         return Ok(());
     }
+
+    // Show telemetry info on first run (when no config exists yet)
+    if sidekar::config::is_first_run() && !matches!(command.as_str(), "telemetry" | "config") {
+        let config_path = sidekar::config::config_path();
+        eprintln!("");
+        eprintln!("Thanks for installing sidekar!");
+        eprintln!("");
+        eprintln!("Anonymous telemetry is enabled by default to help us improve.");
+        eprintln!("It collects: tool usage counts, error counts (no personal data).");
+        eprintln!("");
+        eprintln!("Config file: {}", config_path.display());
+        eprintln!("To disable: set \"telemetry\": false in the config file");
+        eprintln!("");
+    }
+
     if command == "uninstall" {
         let mut ctx = AppContext::new()?;
         commands::dispatch(&mut ctx, "uninstall", &args).await?;

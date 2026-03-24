@@ -8,6 +8,13 @@ const DEFAULT_API_URL: &str = "https://sidekar.dev";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const POLL_TIMEOUT: Duration = Duration::from_secs(15 * 60); // 15 minutes
 
+static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("failed to build HTTP client")
+});
+
 fn api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
 }
@@ -58,12 +65,9 @@ pub fn save_token(token: &str) -> Result<()> {
 /// poll until the user approves, then save the token.
 pub async fn device_auth_flow() -> Result<()> {
     let base = api_base();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
 
     // Step 1: Request device code
-    let resp = client
+    let resp = HTTP_CLIENT
         .post(format!("{base}/api/auth/device"))
         .json(&json!({}))
         .send()
@@ -112,7 +116,7 @@ pub async fn device_auth_flow() -> Result<()> {
             bail!("Authorization timed out after 15 minutes");
         }
 
-        let poll_resp = client
+        let poll_resp = HTTP_CLIENT
             .post(format!("{base}/api/auth/device?action=token"))
             .json(&json!({ "device_code": device_code }))
             .send()

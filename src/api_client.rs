@@ -13,15 +13,50 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 60 * 60; // 1 hour
 
+static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(SHUTDOWN_TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client")
+});
+
+static HTTP_CLIENT_SHORT_TIMEOUT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client")
+});
+
+static HTTP_CLIENT_DOWNLOAD: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(DOWNLOAD_TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client")
+});
+
 fn api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
 }
 
+const MAX_RETRIES: u32 = 3;
+const RETRY_DELAY_MS: u64 = 500;
+
 pub async fn check_version(current: &str) -> Result<Value> {
     let url = format!("{}/v1/version?current={}", api_base(), current);
-    let client = reqwest::Client::builder().timeout(TIMEOUT).build()?;
-    let resp = client.get(&url).send().await?.json::<Value>().await?;
-    Ok(resp)
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match HTTP_CLIENT_SHORT_TIMEOUT.get(&url).send().await {
+            Ok(resp) => match resp.json::<Value>().await {
+                Ok(v) => return Ok(v),
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+        if attempt < MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(anyhow::anyhow!("check_version failed after {} attempts: {:?}", MAX_RETRIES, last_err))
 }
 
 pub async fn send_telemetry(
@@ -32,22 +67,27 @@ pub async fn send_telemetry(
     tools: &HashMap<String, u64>,
 ) -> Result<()> {
     let url = format!("{}/v1/telemetry", api_base());
-    let client = reqwest::Client::builder()
-        .timeout(SHUTDOWN_TIMEOUT)
-        .build()?;
-    let resp = client
-        .post(&url)
-        .json(&json!({
-            "session_id": session_id,
-            "version": version,
-            "platform": platform,
-            "duration_s": duration_s,
-            "tools": tools,
-        }))
-        .send()
-        .await?;
-    resp.error_for_status()?;
-    Ok(())
+    let payload = json!({
+        "session_id": session_id,
+        "version": version,
+        "platform": platform,
+        "duration_s": duration_s,
+        "tools": tools,
+    });
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match HTTP_CLIENT.post(&url).json(&payload).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(_) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+        if attempt < MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(anyhow::anyhow!("send_telemetry failed after {} attempts: {:?}", MAX_RETRIES, last_err))
 }
 
 pub async fn send_feedback(
@@ -57,21 +97,26 @@ pub async fn send_feedback(
     comment: &str,
 ) -> Result<()> {
     let url = format!("{}/v1/feedback", api_base());
-    let client = reqwest::Client::builder()
-        .timeout(SHUTDOWN_TIMEOUT)
-        .build()?;
-    let resp = client
-        .post(&url)
-        .json(&json!({
-            "session_id": session_id,
-            "version": version,
-            "rating": rating,
-            "comment": comment,
-        }))
-        .send()
-        .await?;
-    resp.error_for_status()?;
-    Ok(())
+    let payload = json!({
+        "session_id": session_id,
+        "version": version,
+        "rating": rating,
+        "comment": comment,
+    });
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match HTTP_CLIENT.post(&url).json(&payload).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(_) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+        if attempt < MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+        }
+    }
+    Err(anyhow::anyhow!("send_feedback failed after {} attempts: {:?}", MAX_RETRIES, last_err))
 }
 
 /// Returns (platform, arch) for the current system, matching install.sh naming.
@@ -186,18 +231,14 @@ async fn do_self_update(version: &str) -> Result<()> {
     let url = format!("{}/download/{version}/{asset}.tar.gz", api_base());
     let sig_url = format!("{}.minisig", url);
 
-    let client = reqwest::Client::builder()
-        .timeout(DOWNLOAD_TIMEOUT)
-        .build()?;
-
-    let resp = client.get(&url).send().await?;
+    let resp = HTTP_CLIENT_DOWNLOAD.get(&url).send().await?;
     let status = resp.status();
     if !status.is_success() {
         bail!("Download failed: HTTP {status} from {url}");
     }
     let bytes = resp.bytes().await?;
 
-    let sig_resp = client.get(&sig_url).send().await?;
+    let sig_resp = HTTP_CLIENT_DOWNLOAD.get(&sig_url).send().await?;
     let sig_status = sig_resp.status();
     if !sig_status.is_success() {
         bail!("Signature download failed: HTTP {sig_status} from {sig_url}");
