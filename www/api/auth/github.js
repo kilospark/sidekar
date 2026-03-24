@@ -16,7 +16,7 @@ export default async function handler(req, res) {
     const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
     return res.redirect(302, url);
   } catch (err) {
-    res.status(500).json({ error: err.message, stack: err.stack });
+    res.status(500).json({ error: "internal error" });
   }
 }
 
@@ -36,7 +36,7 @@ async function handleCallback(req, res) {
     }),
   });
   const tokenData = await tokenRes.json();
-  if (tokenData.error) return res.status(400).json({ error: tokenData.error_description, detail: tokenData });
+  if (tokenData.error) return res.status(400).json({ error: tokenData.error_description || "OAuth token exchange failed" });
 
   const userRes = await fetch("https://api.github.com/user", {
     headers: { Authorization: `Bearer ${tokenData.access_token}`, Accept: "application/json" },
@@ -80,6 +80,6 @@ async function handleCallback(req, res) {
   const returnTo = req.query.state || "/sessions";
   return res.redirect(302, returnTo);
   } catch (err) {
-    return res.status(500).json({ error: err.message, stack: err.stack });
+    return res.status(500).json({ error: "internal error" });
   }
 }

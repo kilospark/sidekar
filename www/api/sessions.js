@@ -11,17 +11,13 @@ export default async function handler(req, res) {
   const jwt = parseCookie(req);
 
   try {
-    const url = `${RELAY_URL}/sessions?token=${encodeURIComponent(jwt)}`;
-    const relayRes = await fetch(url);
-    const text = await relayRes.text();
-
+    const relayRes = await fetch(`${RELAY_URL}/sessions?token=${encodeURIComponent(jwt)}`);
     if (!relayRes.ok) {
-      return res.status(502).json({ error: "relay error", status: relayRes.status, body: text, relay_url: RELAY_URL });
+      return res.json({ sessions: [] });
     }
-
-    const data = JSON.parse(text);
+    const data = await relayRes.json();
     res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message, relay_url: RELAY_URL });
+  } catch {
+    res.json({ sessions: [] });
   }
 }
