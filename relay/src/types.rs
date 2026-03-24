@@ -9,15 +9,8 @@ pub struct RegisterMsg {
     pub agent_type: String,
     pub cwd: String,
     pub hostname: String,
-}
-
-/// Generic JSON control frame (resize, viewer events, etc.)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ControlMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    #[serde(flatten)]
-    pub data: serde_json::Value,
+    #[serde(default)]
+    pub nickname: Option<String>,
 }
 
 /// Session info returned in the session list API.
@@ -28,6 +21,7 @@ pub struct SessionInfo {
     pub agent_type: String,
     pub cwd: String,
     pub hostname: String,
+    pub nickname: Option<String>,
     pub connected_at: chrono::DateTime<chrono::Utc>,
     pub viewers: usize,
 }

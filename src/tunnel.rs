@@ -79,6 +79,7 @@ struct RegisterMsg<'a> {
     agent_type: &'a str,
     cwd: &'a str,
     hostname: &'a str,
+    nickname: &'a str,
 }
 
 /// Relay sends JSON text frames during registration handshake only.
@@ -102,6 +103,7 @@ struct ConnectParams {
     agent_type: String,
     cwd: String,
     hostname: String,
+    nickname: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,7 @@ pub async fn connect(
     session_name: &str,
     agent_type: &str,
     cwd: &str,
+    nickname: &str,
 ) -> Result<(TunnelSender, TunnelReceiver)> {
     let hostname = gethostname();
 
@@ -126,6 +129,7 @@ pub async fn connect(
         agent_type: agent_type.to_string(),
         cwd: cwd.to_string(),
         hostname,
+        nickname: nickname.to_string(),
     };
 
     // Perform the initial connection synchronously so callers get an immediate error
@@ -175,6 +179,7 @@ async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, St
         agent_type: &params.agent_type,
         cwd: &params.cwd,
         hostname: &params.hostname,
+        nickname: &params.nickname,
     };
     let register_json = serde_json::to_string(&register).context("serialize register")?;
     ws.send(Message::Text(register_json.into()))
