@@ -127,12 +127,13 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut session_tool_count: u64 = 0; // lifetime count, independent of telemetry clearing
     let mut lines = async_stdin.lines();
 
-    let mut sigterm = signal(SignalKind::terminate()).unwrap();
-    let mut sigint = signal(SignalKind::interrupt()).unwrap();
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
     let mut shutdown = false;
 
     loop {
         tokio::select! {
+            biased;
             _ = sigterm.recv() => {
                 eprintln!("\nReceived SIGTERM, shutting down gracefully...");
                 shutdown = true;

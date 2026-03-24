@@ -77,11 +77,18 @@ pub async fn send_telemetry(
     let mut last_err = None;
     for attempt in 0..MAX_RETRIES {
         match HTTP_CLIENT.post(&url).json(&payload).send().await {
-            Ok(resp) => match resp.error_for_status() {
-                Ok(_) => return Ok(()),
-                Err(e) => last_err = Some(e),
-            },
-            Err(e) => last_err = Some(e),
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return Ok(());
+                }
+                // Don't retry on 4xx client errors
+                if status.is_client_error() {
+                    return Err(anyhow::anyhow!("send_telemetry failed with {}: {}", status, resp.text().await.unwrap_or_default()));
+                }
+                last_err = Some(anyhow::anyhow!("server error: {}", status));
+            }
+            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
         }
         if attempt < MAX_RETRIES - 1 {
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
@@ -106,11 +113,18 @@ pub async fn send_feedback(
     let mut last_err = None;
     for attempt in 0..MAX_RETRIES {
         match HTTP_CLIENT.post(&url).json(&payload).send().await {
-            Ok(resp) => match resp.error_for_status() {
-                Ok(_) => return Ok(()),
-                Err(e) => last_err = Some(e),
-            },
-            Err(e) => last_err = Some(e),
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return Ok(());
+                }
+                // Don't retry on 4xx client errors
+                if status.is_client_error() {
+                    return Err(anyhow::anyhow!("send_feedback failed with {}: {}", status, resp.text().await.unwrap_or_default()));
+                }
+                last_err = Some(anyhow::anyhow!("server error: {}", status));
+            }
+            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
         }
         if attempt < MAX_RETRIES - 1 {
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;

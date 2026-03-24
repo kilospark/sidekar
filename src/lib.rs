@@ -1681,7 +1681,7 @@ pub fn check_tab_lock(ctx: &AppContext, tab_id: &str) -> Result<Option<TabLock>>
     let now = now_epoch_ms();
     with_tab_locks_exclusive(ctx, |locks| {
         if let Some(lock) = locks.get(&tab_id).cloned() {
-            // Use saturating_sub to handle clock skew (if clock goes backwards, lock expires immediately)
+            // Use saturating_sub to handle clock skew (if clock goes backwards, lock stays valid)
             if now.saturating_sub(lock.expires) > 0 {
                 locks.remove(&tab_id);
                 return Ok(None);

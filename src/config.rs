@@ -35,7 +35,7 @@ impl Default for SidekarConfig {
     fn default() -> Self {
         Self {
             telemetry: true,
-            feedback: false,
+            feedback: true,
             browser: None,
             auto_update: true,
             max_tabs: default_max_tabs(),
