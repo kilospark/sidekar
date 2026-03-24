@@ -239,3 +239,4 @@ Auto-detected on macOS, Linux, Windows, and WSL. Set `CHROME_PATH` to override.
 ## License
 
 MIT
+# Force fresh build
