@@ -63,7 +63,7 @@ jobs:
 
       - name: Sign release
         run: |
-          echo "${{ secrets.MINISIGN_SECRET }}" > minisign.key
+          echo "${{ secrets.MINISIGN_SECRET }}" | base64 -d > minisign.key
           chmod 600 minisign.key
           minisign -Sm ${{ matrix.name }}.tar.gz -s minisign.key -P ""
 
