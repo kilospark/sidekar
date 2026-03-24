@@ -386,14 +386,8 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".into());
         match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str).await {
-            Ok(t) => {
-                eprintln!("sidekar pty: tunnel connected");
-                Some(t)
-            }
-            Err(e) => {
-                eprintln!("sidekar pty: tunnel unavailable: {e:#}");
-                None
-            }
+            Ok(t) => Some(t),
+            Err(_) => None,
         }
     } else {
         None

@@ -259,18 +259,15 @@ async fn tunnel_task(
 
         // Reconnect with exponential backoff
         loop {
-            eprintln!("sidekar tunnel: reconnecting in {backoff:?}");
             tokio::time::sleep(backoff).await;
 
             match ws_connect_and_register(&params).await {
                 Ok((stream, _new_session_id)) => {
-                    eprintln!("sidekar tunnel: reconnected");
                     ws = Some(stream);
-                    backoff = RECONNECT_BASE; // reset backoff
+                    backoff = RECONNECT_BASE;
                     break;
                 }
-                Err(e) => {
-                    eprintln!("sidekar tunnel: reconnect failed: {e:#}");
+                Err(_) => {
                     backoff = (backoff * 2).min(RECONNECT_MAX);
                 }
             }
