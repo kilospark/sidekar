@@ -85,16 +85,18 @@
 
   function renderSessionCard(s) {
     var name = escapeHtml(s.name || s.session_name || "unnamed");
+    var nick = s.nickname ? escapeHtml(s.nickname) : null;
     var agentType = escapeHtml(s.agent_type || "unknown");
     var hostname = escapeHtml(s.hostname || "-");
     var cwd = escapeHtml(s.cwd || "-");
     var viewers = s.viewers != null ? s.viewers : 0;
     var connectedAt = s.connected_at ? relativeTime(new Date(s.connected_at)) : "-";
+    var nickHtml = nick ? ' <span class="agent-nick">' + nick + "</span>" : "";
 
     return (
       '<div class="session-card" data-session-id="' + escapeHtml(s.id) + '">' +
       '<div class="session-name">' +
-      name +
+      name + nickHtml +
       ' <span class="agent-badge">' + agentType + "</span>" +
       "</div>" +
       '<div class="session-meta">' +

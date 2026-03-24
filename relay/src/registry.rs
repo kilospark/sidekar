@@ -26,6 +26,7 @@ pub struct Session {
     pub agent_type: String,
     pub cwd: String,
     pub hostname: String,
+    pub nickname: Option<String>,
     pub connected_at: chrono::DateTime<chrono::Utc>,
     /// Send data back to the tunnel.
     pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
@@ -86,6 +87,7 @@ impl Registry {
         agent_type: String,
         cwd: String,
         hostname: String,
+        nickname: Option<String>,
         tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     ) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -96,6 +98,7 @@ impl Registry {
             agent_type,
             cwd,
             hostname,
+            nickname,
             connected_at: chrono::Utc::now(),
             tunnel_tx,
             viewers: Arc::new(RwLock::new(Vec::new())),
@@ -146,6 +149,7 @@ impl Registry {
                     agent_type: s.agent_type.clone(),
                     cwd: s.cwd.clone(),
                     hostname: s.hostname.clone(),
+                    nickname: s.nickname.clone(),
                     connected_at: s.connected_at,
                     viewers: viewer_count,
                 });

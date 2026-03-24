@@ -320,7 +320,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let mut registered_name: Option<String> = None;
     let mut socket_file: Option<std::path::PathBuf> = None;
 
-    let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId)> {
+    let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId, String)> {
         // Copy parent terminal size to child PTY
         let _ = copy_terminal_size(master_raw);
 
@@ -358,10 +358,10 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         broker::set_agent_socket_path(&identity.name, Some(path.as_path()))?;
         socket_file = Some(path);
 
-        Ok((master_arc, identity))
+        Ok((master_arc, identity, nick))
     })();
 
-    let (master_arc, identity) = match setup_result {
+    let (master_arc, identity, nick) = match setup_result {
         Ok(v) => v,
         Err(e) => {
             eprintln!("sidekar pty: setup failed: {e}");
@@ -379,7 +379,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         let cwd_str = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".into());
-        match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str).await {
+        match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str, &nick).await {
             Ok(t) => Some(t),
             Err(_) => None,
         }

@@ -82,6 +82,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
             register_msg.agent_type,
             register_msg.cwd,
             register_msg.hostname,
+            register_msg.nickname,
             tunnel_tx,
         )
         .await;
