@@ -50,6 +50,8 @@ async fn run() -> Result<()> {
 
     // Show telemetry info on first run (when no config exists yet)
     if sidekar::config::is_first_run() && !matches!(command.as_str(), "telemetry" | "config") {
+        let config = sidekar::config::SidekarConfig::default();
+        let _ = sidekar::config::save_config(&config);
         let config_path = sidekar::config::config_path();
         eprintln!("");
         eprintln!("Thanks for installing sidekar!");
