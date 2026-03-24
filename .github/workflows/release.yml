@@ -65,7 +65,7 @@ jobs:
         run: |
           echo "${{ secrets.MINISIGN_SECRET }}" > minisign.key
           chmod 600 minisign.key
-          minisign -Sm ${{ matrix.name }}.tar.gz -s minisign.key
+          minisign -Sm ${{ matrix.name }}.tar.gz -s minisign.key -P ""
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
