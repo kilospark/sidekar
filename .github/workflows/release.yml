@@ -44,6 +44,14 @@ jobs:
           echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
 
+      - name: Install minisign
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install minisign
+          else
+            sudo apt-get update && sudo apt-get install -y minisign
+          fi
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -53,11 +61,19 @@ jobs:
           chmod +x ${{ matrix.name }}
           tar czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
 
+      - name: Sign release
+        run: |
+          echo "${{ secrets.MINISIGN_SECRET }}" > minisign.key
+          chmod 600 minisign.key
+          minisign -Sm ${{ matrix.name }}.tar.gz -s minisign.key
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.name }}.tar.gz
+          path: |
+            ${{ matrix.name }}.tar.gz
+            ${{ matrix.name }}.tar.gz.minisig
 
   release:
     needs: build
@@ -70,5 +86,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: '*.tar.gz'
+          files: |
+            *.tar.gz
+            *.minisig
           generate_release_notes: true
