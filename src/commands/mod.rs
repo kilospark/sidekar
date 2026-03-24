@@ -382,6 +382,27 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             Ok(())
         }
+        "telemetry" => {
+            let action = args.first().map(String::as_str).unwrap_or("status");
+            let mut config = crate::config::load_config();
+            match action {
+                "on" | "enable" => {
+                    config.telemetry = true;
+                    crate::config::save_config(&config)?;
+                    out!(ctx, "Telemetry enabled. Thank you!");
+                }
+                "off" | "disable" => {
+                    config.telemetry = false;
+                    crate::config::save_config(&config)?;
+                    out!(ctx, "Telemetry disabled.");
+                }
+                "status" | "" => {
+                    out!(ctx, "Telemetry: {}", if config.telemetry { "on" } else { "off" });
+                }
+                _ => bail!("Usage: sidekar telemetry [on|off|status]"),
+            }
+            Ok(())
+        }
         "install" => cmd_setup(ctx).await,
         "uninstall" => cmd_uninstall(ctx).await,
         "config" => {
@@ -417,8 +438,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                             config.browser = Some(raw_value.to_string());
                         }
                         "auto_update" => config.auto_update = raw_value == "true",
+                        "cdp_timeout_secs" => {
+                            config.cdp_timeout_secs = raw_value.parse().unwrap_or(60);
+                        }
                         _ => bail!(
-                            "Unknown config key: {key}. Valid keys: telemetry, feedback, browser, auto_update"
+                            "Unknown config key: {key}. Valid keys: telemetry, feedback, browser, auto_update, cdp_timeout_secs"
                         ),
                     }
                     crate::config::save_config(&config)?;

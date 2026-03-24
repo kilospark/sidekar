@@ -16,7 +16,16 @@ pub use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use tokio::time::{sleep, timeout};
 pub use tokio_tungstenite::tungstenite::protocol::Message;
 
-const CDP_SEND_TIMEOUT: Duration = Duration::from_secs(60);
+static CDP_SEND_TIMEOUT_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(60);
+
+pub fn set_cdp_timeout_secs(secs: u64) {
+    CDP_SEND_TIMEOUT_SECS.store(secs, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn cdp_send_timeout() -> Duration {
+    Duration::from_secs(CDP_SEND_TIMEOUT_SECS.load(std::sync::atomic::Ordering::SeqCst))
+}
+
 const MAX_PENDING_EVENTS: usize = 1000;
 
 #[macro_export]
@@ -324,11 +333,12 @@ impl CdpClient {
                 format!("failed to send CDP method {method} to session {session_id}")
             })?;
 
-        match timeout(CDP_SEND_TIMEOUT, self.recv_response(id)).await {
+        let timeout_duration = cdp_send_timeout();
+        match timeout(timeout_duration, self.recv_response(id)).await {
             Ok(result) => result,
             Err(_) => bail!(
                 "CDP method {method} timed out after {}s",
-                CDP_SEND_TIMEOUT.as_secs()
+                timeout_duration.as_secs()
             ),
         }
     }
@@ -348,11 +358,12 @@ impl CdpClient {
             .await
             .with_context(|| format!("failed to send CDP method {method}"))?;
 
-        match timeout(CDP_SEND_TIMEOUT, self.recv_response(id)).await {
+        let timeout_duration = cdp_send_timeout();
+        match timeout(timeout_duration, self.recv_response(id)).await {
             Ok(result) => result,
             Err(_) => bail!(
                 "CDP method {method} timed out after {}s",
-                CDP_SEND_TIMEOUT.as_secs()
+                timeout_duration.as_secs()
             ),
         }
     }
@@ -1667,9 +1678,11 @@ where
 
 pub fn check_tab_lock(ctx: &AppContext, tab_id: &str) -> Result<Option<TabLock>> {
     let tab_id = tab_id.to_string();
+    let now = now_epoch_ms();
     with_tab_locks_exclusive(ctx, |locks| {
         if let Some(lock) = locks.get(&tab_id).cloned() {
-            if now_epoch_ms() > lock.expires {
+            // Use saturating_sub to handle clock skew (if clock goes backwards, lock expires immediately)
+            if now.saturating_sub(lock.expires) > 0 {
                 locks.remove(&tab_id);
                 return Ok(None);
             }

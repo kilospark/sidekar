@@ -5,6 +5,7 @@ use crate::*;
 use std::io::{self, Write as IoWrite};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{Duration, interval};
+use tokio::signal::unix::{SignalKind, signal};
 
 const TOOLS_JSON: &str = include_str!("../tools.json");
 const MCP_INSTRUCTIONS: &str = include_str!("../MCP_INSTRUCTIONS.md");
@@ -116,6 +117,7 @@ pub async fn run_mcp_server() -> Result<()> {
     bus_state.set_socket_path(ipc_socket_path.clone());
 
     let cfg = config::load_config();
+    set_cdp_timeout_secs(cfg.cdp_timeout_secs);
     let mut telemetry_timer = interval(TELEMETRY_INTERVAL);
     telemetry_timer.tick().await; // consume the immediate first tick
     let mut feedback_interval = interval(FEEDBACK_DELAY);
@@ -125,9 +127,24 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut session_tool_count: u64 = 0; // lifetime count, independent of telemetry clearing
     let mut lines = async_stdin.lines();
 
+    let mut sigterm = signal(SignalKind::terminate()).unwrap();
+    let mut sigint = signal(SignalKind::interrupt()).unwrap();
+    let mut shutdown = false;
+
     loop {
         tokio::select! {
+            _ = sigterm.recv() => {
+                eprintln!("\nReceived SIGTERM, shutting down gracefully...");
+                shutdown = true;
+            }
+            _ = sigint.recv() => {
+                eprintln!("\nReceived SIGINT, shutting down gracefully...");
+                shutdown = true;
+            }
             result = lines.next_line() => {
+                if shutdown {
+                    break;
+                }
                 let line = match result {
                     Ok(Some(l)) => l,
                     Ok(None) => break,    // EOF — stdin closed

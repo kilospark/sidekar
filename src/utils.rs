@@ -376,7 +376,7 @@ pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Res
                 (50.0 + rand::random::<f64>() * 100.0) as u64,
             ))
             .await;
-            cdp.send(
+            if let Err(e) = cdp.send(
                 "Input.dispatchKeyEvent",
                 json!({
                     "type": "keyDown",
@@ -385,9 +385,10 @@ pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Res
                     "keyCode": 8,
                     "windowsVirtualKeyCode": 8
                 }),
-            )
-            .await?;
-            cdp.send(
+            ).await {
+                eprintln!("Warning: failed to send Backspace: {}", e);
+            }
+            if let Err(e) = cdp.send(
                 "Input.dispatchKeyEvent",
                 json!({
                     "type": "keyUp",
@@ -396,8 +397,9 @@ pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Res
                     "keyCode": 8,
                     "windowsVirtualKeyCode": 8
                 }),
-            )
-            .await?;
+            ).await {
+                eprintln!("Warning: failed to send Backspace keyUp: {}", e);
+            }
             sleep(Duration::from_millis(
                 (30.0 + rand::random::<f64>() * 70.0) as u64,
             ))
