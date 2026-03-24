@@ -61,15 +61,11 @@ jobs:
           chmod +x ${{ matrix.name }}
           tar czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
 
-      - name: Sign release
-        run: |
-          set -e
-          mkdir -p ~/.config/minisign
-          SECRET_RAW="${{ secrets.MINISIGN_RAW }}"
-          SECRET_FIXED="${SECRET_RAW//~/\\n}"
-          echo -e "$SECRET_FIXED" > ~/.config/minisign/minisign.key
-          chmod 600 ~/.config/minisign/minisign.key
-          minisign -Sm ${{ matrix.name }}.tar.gz -s ~/.config/minisign/minisign.key -P ""
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
