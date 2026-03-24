@@ -329,8 +329,15 @@ pub(super) async fn cmd_navigate(ctx: &mut AppContext, url: &str, dismiss: bool)
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
     cdp.send("Page.enable", json!({})).await?;
-    cdp.send("Page.navigate", json!({ "url": target_url }))
-        .await?;
+    // Use window.location instead of Page.navigate to avoid Chrome
+    // bringing its window to the foreground on navigation.
+    runtime_evaluate(
+        &mut cdp,
+        &format!("window.location.href = {}", serde_json::to_string(&target_url)?),
+        false,
+        false,
+    )
+    .await?;
     wait_for_ready_state_complete(&mut cdp, Duration::from_secs(15)).await?;
 
     if dismiss {
