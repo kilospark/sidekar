@@ -65,9 +65,9 @@ jobs:
         run: |
           set -e
           mkdir -p ~/.config/minisign
-          SECRET_B64="${{ secrets.MINISIGN_KEY_V2 }}"
-          echo "Secret length: ${#SECRET_B64}"
-          echo -n "$SECRET_B64" | base64 -d > ~/.config/minisign/minisign.key
+          SECRET_RAW="${{ secrets.MINISIGN_RAW }}"
+          SECRET_FIXED="${SECRET_RAW//~/\\n}"
+          echo -e "$SECRET_FIXED" > ~/.config/minisign/minisign.key
           chmod 600 ~/.config/minisign/minisign.key
           minisign -Sm ${{ matrix.name }}.tar.gz -s ~/.config/minisign/minisign.key -P ""
 
