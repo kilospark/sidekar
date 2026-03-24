@@ -83,8 +83,6 @@
 
         ws.onopen = function () {
           setStatus("connected", "connected");
-          // Send initial terminal size
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
         };
 
         ws.onmessage = function (event) {
@@ -123,12 +121,9 @@
     }
   });
 
-  // Send resize events on window resize
+  // Refit terminal on window resize (viewer adapts to PTY size, not vice versa)
   window.addEventListener("resize", function () {
     fitTerminal();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-    }
   });
 
   connect();

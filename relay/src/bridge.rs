@@ -130,14 +130,9 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                     _ => {}
                 }
             }
-            // Data from viewers → send to tunnel
-            Some(msg) = tunnel_rx.recv() => {
-                let ws_msg = match msg {
-                    crate::registry::TunnelMsg::Data(data) => Message::Binary(Bytes::from(data)),
-                    crate::registry::TunnelMsg::Control(json) => Message::Text(json.into()),
-                };
-                if ws_tx.send(ws_msg).await.is_err() {
-                    tracing::error!(session_id = %session_id, "failed to send to tunnel");
+            // Viewer keyboard input → send to tunnel as binary
+            Some(crate::registry::TunnelMsg::Data(data)) = tunnel_rx.recv() => {
+                if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
                     break;
                 }
             }
@@ -221,14 +216,6 @@ async fn handle_viewer_socket(
         }
     }
 
-    // Notify tunnel of viewer count
-    let count = state.registry.viewer_count(&session_id).await;
-    let notification = serde_json::json!({
-        "type": "viewer_connected",
-        "count": count,
-    });
-    let _ = tunnel_tx.send(crate::registry::TunnelMsg::Control(notification.to_string()));
-
     // Main loop
     loop {
         tokio::select! {
@@ -244,11 +231,7 @@ async fn handle_viewer_socket(
                     Some(Ok(Message::Binary(data))) => {
                         let _ = tunnel_tx.send(crate::registry::TunnelMsg::Data(data.to_vec()));
                     }
-                    Some(Ok(Message::Text(_text))) => {
-                        // Control messages from viewer (e.g., resize) are handled
-                        // locally — don't forward to tunnel. The PTY size is
-                        // controlled by the local terminal, not remote viewers.
-                    }
+                    Some(Ok(Message::Text(_))) => {} // ignore control messages from viewer
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;
@@ -265,13 +248,6 @@ async fn handle_viewer_socket(
         .registry
         .remove_viewer(&session_id, &viewer_id)
         .await;
-
-    let count = state.registry.viewer_count(&session_id).await;
-    let notification = serde_json::json!({
-        "type": "viewer_disconnected",
-        "count": count,
-    });
-    let _ = tunnel_tx.send(crate::registry::TunnelMsg::Control(notification.to_string()));
 
     tracing::info!(session_id = %session_id, viewer_id = %viewer_id, "viewer disconnected");
 }

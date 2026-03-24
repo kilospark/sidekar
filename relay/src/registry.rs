@@ -6,12 +6,10 @@ use crate::types::SessionInfo;
 
 const REPLAY_BUFFER_SIZE: usize = 50 * 1024; // 50KB
 
-/// Message sent to the tunnel WebSocket from viewers/relay.
+/// Message sent to the tunnel WebSocket from viewers.
+/// Only carries raw PTY input bytes (viewer keyboard).
 pub enum TunnelMsg {
-    /// Raw PTY input bytes (from viewer keyboard).
     Data(Vec<u8>),
-    /// JSON control message (viewer_connected, resize, etc.) — sent as Text frame.
-    Control(String),
 }
 
 /// A connected viewer.
@@ -213,13 +211,4 @@ impl Registry {
         }
     }
 
-    /// Get the viewer count for a session.
-    pub async fn viewer_count(&self, session_id: &str) -> usize {
-        let sessions = self.sessions.read().await;
-        if let Some(session) = sessions.get(session_id) {
-            session.viewers.read().await.len()
-        } else {
-            0
-        }
-    }
 }

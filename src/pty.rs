@@ -449,16 +449,9 @@ async fn event_loop(
         tokio::select! {
             biased;
 
-            // SIGWINCH: resize child PTY + notify tunnel
+            // SIGWINCH: resize child PTY
             _ = sigwinch.recv() => {
                 let _ = copy_terminal_size(master_fd);
-                if let Some(ref tx) = tunnel_tx {
-                    // Read new size and forward to tunnel
-                    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-                    if unsafe { libc::ioctl(master_fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
-                        tx.send_resize(ws.ws_col, ws.ws_row);
-                    }
-                }
             }
 
             // SIGTERM: forward to child, exit
@@ -476,22 +469,10 @@ async fn event_loop(
             } => {
                 match event {
                     Some(crate::tunnel::TunnelEvent::Data(data)) => {
-                        // Browser keystrokes → agent stdin via master fd
                         let _ = write_all_fd(master_fd, &data);
                     }
-                    Some(crate::tunnel::TunnelEvent::Resize { .. }) => {
-                        // Ignore viewer resize — the local terminal controls the
-                        // PTY size via SIGWINCH. Viewers must fit to the PTY's
-                        // dimensions, not the other way around.
-                    }
-                    Some(crate::tunnel::TunnelEvent::Disconnected) => {
-                        // Tunnel dropped — continue without it, reconnect happens in background
-                    }
-                    Some(crate::tunnel::TunnelEvent::ViewerCount(_)) => {
-                        // Informational, ignore
-                    }
+                    Some(crate::tunnel::TunnelEvent::Disconnected) => {}
                     None => {
-                        // Tunnel channel closed — disable tunnel recv
                         tunnel_rx = None;
                     }
                 }
