@@ -183,6 +183,39 @@ html.dark .nav-logo-icon.light { display: none; }
 
 .nav-links a:hover { color: var(--text); }
 
+/* Auth button */
+.nav-auth {
+  display: none;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.nav-auth:hover {
+  border-color: var(--border-subtle);
+  color: var(--text);
+  background: var(--bg-subtle);
+}
+
+.nav-auth.visible {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-auth svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* Theme toggle */
 .theme-toggle {
   display: flex;
@@ -801,6 +834,7 @@ footer .container {
         <li><a href="#feedback">Feedback</a></li>
         <li><a href="#pricing">Pricing</a></li>
       </ul>
+      <a class="nav-auth" id="nav-auth" href="/api/auth/github">Sign in</a>
       <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
         <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -1046,6 +1080,24 @@ function cycleTheme() {
   var stored = localStorage.getItem('theme') || 'system';
   var btn = document.getElementById('theme-toggle');
   if (btn) btn.setAttribute('data-mode', stored);
+})();
+
+// Auth check
+(function() {
+  var el = document.getElementById('nav-auth');
+  if (!el) return;
+  fetch('/api/auth/session').then(function(res) {
+    if (res.ok) return res.json();
+    return null;
+  }).then(function(data) {
+    if (data && data.user) {
+      el.href = '/sessions';
+      el.textContent = 'Dashboard';
+    }
+    el.classList.add('visible');
+  }).catch(function() {
+    el.classList.add('visible');
+  });
 })();
 
 // Stars SVG helpers

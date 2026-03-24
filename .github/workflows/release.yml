@@ -64,7 +64,11 @@ jobs:
       - name: Sign release
         run: |
           mkdir -p ~/.config/minisign
-          printf '%s' "${{ secrets.MINISIGN_SECRET }}" > ~/.config/minisign/minisign.key
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            echo "${{ secrets.MINISIGN_SECRET }}" | base64 -D > ~/.config/minisign/minisign.key
+          else
+            echo "${{ secrets.MINISIGN_SECRET }}" | base64 -d > ~/.config/minisign/minisign.key
+          fi
           chmod 600 ~/.config/minisign/minisign.key
           minisign -Sm ${{ matrix.name }}.tar.gz -s ~/.config/minisign/minisign.key -P ""
 

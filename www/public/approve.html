@@ -35,6 +35,7 @@
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
   --accent: #e4e4e7;
+  --nav-bg: rgba(9, 9, 11, 0.8);
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 }
@@ -50,6 +51,7 @@
     --text-secondary: #52525b;
     --text-muted: #71717a;
     --accent: #27272a;
+    --nav-bg: rgba(255, 255, 255, 0.8);
   }
 }
 
@@ -63,6 +65,7 @@ html.light {
   --text-secondary: #52525b;
   --text-muted: #71717a;
   --accent: #27272a;
+  --nav-bg: rgba(255, 255, 255, 0.8);
 }
 
 html.dark {
@@ -75,6 +78,7 @@ html.dark {
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
   --accent: #e4e4e7;
+  --nav-bg: rgba(9, 9, 11, 0.8);
 }
 
 html { scroll-behavior: smooth; }
@@ -88,6 +92,107 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Nav */
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--nav-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+nav .container {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.nav-logo-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+}
+
+.nav-logo-icon.dark { display: block; }
+.nav-logo-icon.light { display: none; }
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) .nav-logo-icon.dark { display: none; }
+  :root:not(.dark) .nav-logo-icon.light { display: block; }
+}
+
+html.light .nav-logo-icon.dark { display: none; }
+html.light .nav-logo-icon.light { display: block; }
+html.dark .nav-logo-icon.dark { display: block; }
+html.dark .nav-logo-icon.light { display: none; }
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.page-title {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+}
+
+.theme-toggle:hover {
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.theme-toggle .icon-light,
+.theme-toggle .icon-system,
+.theme-toggle .icon-dark { display: none; }
+
+.theme-toggle[data-mode="light"] .icon-light { display: block; }
+.theme-toggle[data-mode="system"] .icon-system { display: block; }
+.theme-toggle[data-mode="dark"] .icon-dark { display: block; }
+
+/* Card */
+.page-content {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -104,35 +209,12 @@ body {
   text-align: center;
 }
 
-.logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
+.card-title {
   font-size: 20px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 8px;
 }
-
-.logo-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-}
-
-.logo-icon.dark { display: block; }
-.logo-icon.light { display: none; }
-
-@media (prefers-color-scheme: light) {
-  :root:not(.dark) .logo-icon.dark { display: none; }
-  :root:not(.dark) .logo-icon.light { display: block; }
-}
-
-html.light .logo-icon.dark { display: none; }
-html.light .logo-icon.light { display: block; }
-html.dark .logo-icon.dark { display: block; }
-html.dark .logo-icon.light { display: none; }
 
 .subtitle {
   color: var(--text-muted);
@@ -176,7 +258,7 @@ input[type="text"]:focus {
   border-color: var(--accent);
 }
 
-button {
+.card button {
   width: 100%;
   margin-top: 16px;
   padding: 12px 24px;
@@ -191,8 +273,8 @@ button {
   transition: opacity 0.15s;
 }
 
-button:hover { opacity: 0.9; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.card button:hover { opacity: 0.9; }
+.card button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .message {
   margin-top: 16px;
@@ -213,27 +295,90 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #auth-loading {
   display: block;
 }
+
+/* Footer */
+footer {
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
+}
+
+footer .container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.footer-left {
+  font-size: 13px;
+  color: var(--text-muted);
+}
 </style>
 </head>
 <body>
-  <div class="card">
-    <div class="logo">
-      <img src="/sidekar-icon-dark.svg" alt="" class="logo-icon dark">
-      <img src="/sidekar-icon-light.svg" alt="" class="logo-icon light">
-      sidekar
+  <nav>
+    <div class="container">
+      <a href="/" class="nav-logo">
+        <img src="/sidekar-icon-dark.svg" alt="" class="nav-logo-icon dark">
+        <img src="/sidekar-icon-light.svg" alt="" class="nav-logo-icon light">
+        sidekar
+      </a>
+      <div class="nav-right">
+        <span class="page-title">Authorize Device</span>
+        <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
+          <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="subtitle">Authorize your device</div>
+  </nav>
 
-    <div id="auth-loading" class="loading">Checking authentication...</div>
+  <div class="page-content">
+    <div class="card">
+      <div class="card-title">Authorize your device</div>
+      <div class="subtitle">Enter the code shown in your terminal</div>
 
-    <form id="approve-form" style="display: none;">
-      <label for="code-input">Enter the code shown in your terminal</label>
-      <input type="text" id="code-input" placeholder="ABCD-1234" maxlength="9" autocomplete="off" autofocus>
-      <button type="submit" id="submit-btn">Approve Device</button>
-      <div id="message" class="message"></div>
-    </form>
+      <div id="auth-loading" class="loading">Checking authentication...</div>
+
+      <form id="approve-form" style="display: none;">
+        <label for="code-input">Device code</label>
+        <input type="text" id="code-input" placeholder="ABCD-1234" maxlength="9" autocomplete="off" autofocus>
+        <button type="submit" id="submit-btn">Approve Device</button>
+        <div id="message" class="message"></div>
+      </form>
+    </div>
   </div>
 
+  <footer>
+    <div class="container">
+      <div class="footer-left">&copy; 2026 Kilo Spark</div>
+    </div>
+  </footer>
+
+  <script>
+  var themeModes = ['light', 'system', 'dark'];
+  function setTheme(mode) {
+    var html = document.documentElement;
+    html.classList.remove('light', 'dark');
+    if (mode === 'light') html.classList.add('light');
+    else if (mode === 'dark') html.classList.add('dark');
+    if (mode === 'system') localStorage.removeItem('theme');
+    else localStorage.setItem('theme', mode);
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.setAttribute('data-mode', mode);
+  }
+  function cycleTheme() {
+    var current = localStorage.getItem('theme') || 'system';
+    var idx = themeModes.indexOf(current);
+    var next = themeModes[(idx + 1) % themeModes.length];
+    setTheme(next);
+  }
+  (function() {
+    var stored = localStorage.getItem('theme') || 'system';
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.setAttribute('data-mode', stored);
+  })();
+  </script>
   <script src="/js/approve.js"></script>
 </body>
 </html>

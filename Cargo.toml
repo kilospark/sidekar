@@ -30,6 +30,7 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 flate2 = "1.1"
 tar = "0.4"
 urlencoding = "2"
+minisign-verify = "0.2"
 socket2 = "0.6.3"
 fs2 = "0.4"
 libc = "0.2"

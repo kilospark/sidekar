@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
+
+const MINISIGN_PUBKEY: &str = "RWTFCgAOlu2Vk0A6BZRipRDpp0AuaO5CopvA5X/+vS7iyo0z66o91+5F";
+
 const TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -181,16 +184,27 @@ async fn do_self_update(version: &str) -> Result<()> {
     let (platform, arch) = platform_arch()?;
     let asset = format!("sidekar-{platform}-{arch}");
     let url = format!("{}/download/{version}/{asset}.tar.gz", api_base());
+    let sig_url = format!("{}.minisig", url);
 
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
         .build()?;
+
     let resp = client.get(&url).send().await?;
     let status = resp.status();
     if !status.is_success() {
         bail!("Download failed: HTTP {status} from {url}");
     }
     let bytes = resp.bytes().await?;
+
+    let sig_resp = client.get(&sig_url).send().await?;
+    let sig_status = sig_resp.status();
+    if !sig_status.is_success() {
+        bail!("Signature download failed: HTTP {sig_status} from {sig_url}");
+    }
+    let sig_bytes = sig_resp.bytes().await?;
+
+    verify_signature(&bytes, &sig_bytes).context("Signature verification failed")?;
 
     // Extract tar.gz to a unique temp dir (PID + timestamp to avoid collisions)
     let unique = format!(
@@ -233,6 +247,24 @@ async fn do_self_update(version: &str) -> Result<()> {
         .context("Failed to replace binary (permission denied?)")?;
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    Ok(())
+}
+
+fn verify_signature(binary: &[u8], signature: &[u8]) -> Result<()> {
+    use minisign_verify::{PublicKey, Signature};
+
+    let sig_str = std::str::from_utf8(signature)
+        .context("Signature is not valid UTF-8")?;
+
+    let pk = PublicKey::from_base64(MINISIGN_PUBKEY)
+        .context("Invalid embedded public key")?;
+
+    let sig = Signature::decode(sig_str)
+        .context("Invalid signature format")?;
+
+    pk.verify(binary, &sig, /*allow_legacy=*/ false)
+        .map_err(|e| anyhow!("Signature verification failed: {e}"))?;
 
     Ok(())
 }
