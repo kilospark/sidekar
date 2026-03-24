@@ -30,8 +30,15 @@ async fn main() {
     let db = client.database("sidekar");
     tracing::info!("connected to MongoDB");
 
-    // Create registry
-    let registry = Registry::new();
+    // Clean up any stale sessions from previous relay instances
+    let _ = db
+        .collection::<mongodb::bson::Document>("sessions")
+        .delete_many(mongodb::bson::doc! {})
+        .await;
+
+    // Create registry (hybrid: MongoDB for metadata, in-memory for live connections)
+    let registry = Registry::new(db.clone());
+    registry.start_heartbeat();
 
     // App state
     let state = AppState {

@@ -4,10 +4,11 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::types::SessionInfo;
 
-const REPLAY_BUFFER_SIZE: usize = 8 * 1024; // 8KB — enough for recent context, not overwhelming on mobile
+const REPLAY_BUFFER_SIZE: usize = 8 * 1024;
+const HEARTBEAT_INTERVAL_SECS: u64 = 30;
+const SESSION_TTL_SECS: i64 = 90; // sessions expire if no heartbeat for 90s
 
 /// Message sent to the tunnel WebSocket from viewers.
-/// Only carries raw PTY input bytes (viewer keyboard).
 pub enum TunnelMsg {
     Data(Vec<u8>),
 }
@@ -18,21 +19,12 @@ pub struct ViewerHandle {
     pub tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
-/// A single tunnel session with its replay buffer and viewer list.
-pub struct Session {
-    pub id: String,
+/// Live connection state for a session (in-memory only).
+pub struct LiveSession {
+    pub session_id: String,
     pub user_id: String,
-    pub name: String,
-    pub agent_type: String,
-    pub cwd: String,
-    pub hostname: String,
-    pub nickname: Option<String>,
-    pub connected_at: chrono::DateTime<chrono::Utc>,
-    /// Send data back to the tunnel.
     pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
-    /// Connected viewers.
     pub viewers: Arc<RwLock<Vec<ViewerHandle>>>,
-    /// Ring buffer of recent PTY output for replay on viewer connect.
     pub replay_buffer: Arc<RwLock<ReplayBuffer>>,
 }
 
@@ -64,22 +56,56 @@ impl ReplayBuffer {
     }
 }
 
-/// In-memory session registry. Clone-safe via internal Arc.
+/// Hybrid registry: MongoDB for session metadata (discovery/listing),
+/// in-memory HashMap for live WebSocket state (tunnel_tx, viewers, replay).
 #[derive(Clone)]
 pub struct Registry {
-    sessions: Arc<RwLock<HashMap<String, Session>>>,
-    user_sessions: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    db: mongodb::Database,
+    /// In-memory map: session_id → live connection state.
+    live: Arc<RwLock<HashMap<String, LiveSession>>>,
 }
 
 impl Registry {
-    pub fn new() -> Self {
+    pub fn new(db: mongodb::Database) -> Self {
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            user_sessions: Arc::new(RwLock::new(HashMap::new())),
+            db,
+            live: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Register a new tunnel session. Returns the session_id.
+    /// Start the background heartbeat task that keeps our sessions alive in MongoDB.
+    pub fn start_heartbeat(&self) {
+        let db = self.db.clone();
+        let live = self.live.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+            loop {
+                interval.tick().await;
+                let session_ids: Vec<String> = {
+                    live.read().await.keys().cloned().collect()
+                };
+                if session_ids.is_empty() {
+                    continue;
+                }
+                let now = mongodb::bson::DateTime::now();
+                let _ = db
+                    .collection::<mongodb::bson::Document>("sessions")
+                    .update_many(
+                        mongodb::bson::doc! {
+                            "session_id": { "$in": &session_ids }
+                        },
+                        mongodb::bson::doc! {
+                            "$set": { "last_heartbeat": now }
+                        },
+                    )
+                    .await;
+            }
+        });
+    }
+
+    /// Register a new tunnel session. Writes metadata to MongoDB, stores
+    /// live connection state in-memory. Returns the session_id.
     pub async fn register(
         &self,
         user_id: String,
@@ -91,86 +117,125 @@ impl Registry {
         tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     ) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let session = Session {
-            id: session_id.clone(),
-            user_id: user_id.clone(),
-            name,
-            agent_type,
-            cwd,
-            hostname,
-            nickname,
-            connected_at: chrono::Utc::now(),
+        let now = mongodb::bson::DateTime::now();
+
+        // Write metadata to MongoDB
+        let doc = mongodb::bson::doc! {
+            "session_id": &session_id,
+            "user_id": &user_id,
+            "name": &name,
+            "agent_type": &agent_type,
+            "cwd": &cwd,
+            "hostname": &hostname,
+            "nickname": &nickname,
+            "connected_at": now,
+            "last_heartbeat": now,
+        };
+        let _ = self
+            .db
+            .collection::<mongodb::bson::Document>("sessions")
+            .insert_one(doc)
+            .await;
+
+        // Store live state in-memory
+        let live_session = LiveSession {
+            session_id: session_id.clone(),
+            user_id,
             tunnel_tx,
             viewers: Arc::new(RwLock::new(Vec::new())),
             replay_buffer: Arc::new(RwLock::new(ReplayBuffer::new(REPLAY_BUFFER_SIZE))),
         };
-
-        self.sessions.write().await.insert(session_id.clone(), session);
-        self.user_sessions
+        self.live
             .write()
             .await
-            .entry(user_id)
-            .or_default()
-            .push(session_id.clone());
+            .insert(session_id.clone(), live_session);
 
         session_id
     }
 
-    /// Unregister a session (tunnel disconnected).
+    /// Unregister a session (tunnel disconnected). Removes from both MongoDB and memory.
     pub async fn unregister(&self, session_id: &str) {
-        let session = self.sessions.write().await.remove(session_id);
-        if let Some(session) = session {
-            let mut user_map = self.user_sessions.write().await;
-            if let Some(ids) = user_map.get_mut(&session.user_id) {
-                ids.retain(|id| id != session_id);
-                if ids.is_empty() {
-                    user_map.remove(&session.user_id);
-                }
-            }
-        }
+        self.live.write().await.remove(session_id);
+        let _ = self
+            .db
+            .collection::<mongodb::bson::Document>("sessions")
+            .delete_one(mongodb::bson::doc! { "session_id": session_id })
+            .await;
     }
 
-    /// Get all sessions for a user.
+    /// Get all sessions for a user. Queries MongoDB so it works across relay instances.
     pub async fn get_sessions(&self, user_id: &str) -> Vec<SessionInfo> {
-        let sessions = self.sessions.read().await;
-        let user_sessions = self.user_sessions.read().await;
+        use futures_util::StreamExt;
 
-        let Some(session_ids) = user_sessions.get(user_id) else {
-            return Vec::new();
+        // Only return sessions with a recent heartbeat (not orphaned)
+        let cutoff = mongodb::bson::DateTime::from_millis(
+            chrono::Utc::now().timestamp_millis() - (SESSION_TTL_SECS * 1000),
+        );
+
+        let filter = mongodb::bson::doc! {
+            "user_id": user_id,
+            "last_heartbeat": { "$gt": cutoff },
         };
 
+        let mut cursor = match self
+            .db
+            .collection::<mongodb::bson::Document>("sessions")
+            .find(filter)
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        let live = self.live.read().await;
         let mut result = Vec::new();
-        for sid in session_ids {
-            if let Some(s) = sessions.get(sid) {
-                let viewer_count = s.viewers.read().await.len();
-                result.push(SessionInfo {
-                    id: s.id.clone(),
-                    name: s.name.clone(),
-                    agent_type: s.agent_type.clone(),
-                    cwd: s.cwd.clone(),
-                    hostname: s.hostname.clone(),
-                    nickname: s.nickname.clone(),
-                    connected_at: s.connected_at,
-                    viewers: viewer_count,
-                });
-            }
+
+        while let Some(Ok(doc)) = cursor.next().await {
+            let sid = doc.get_str("session_id").unwrap_or_default().to_string();
+            let viewer_count = if let Some(ls) = live.get(&sid) {
+                ls.viewers.read().await.len()
+            } else {
+                0
+            };
+
+            let connected_at = doc
+                .get_datetime("connected_at")
+                .ok()
+                .map(|dt| {
+                    chrono::DateTime::from_timestamp_millis(dt.timestamp_millis())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+
+            result.push(SessionInfo {
+                id: sid,
+                name: doc.get_str("name").unwrap_or_default().to_string(),
+                agent_type: doc.get_str("agent_type").unwrap_or_default().to_string(),
+                cwd: doc.get_str("cwd").unwrap_or_default().to_string(),
+                hostname: doc.get_str("hostname").unwrap_or_default().to_string(),
+                nickname: doc.get_str("nickname").ok().map(|s| s.to_string()),
+                connected_at,
+                viewers: viewer_count,
+            });
         }
+
         result
     }
 
-    /// Add a viewer to a session. Returns (replay_data, viewer_rx) or None if session not found.
-    /// The viewer_rx receives data from the tunnel.
-    /// Also returns the tunnel_tx so the viewer can send data back to the tunnel.
+    /// Add a viewer to a session. Uses in-memory state (needs the WebSocket handles).
     pub async fn add_viewer(
         &self,
         session_id: &str,
         user_id: &str,
-    ) -> Option<(Vec<u8>, mpsc::UnboundedReceiver<Vec<u8>>, mpsc::UnboundedSender<TunnelMsg>, String)>
-    {
-        let sessions = self.sessions.read().await;
-        let session = sessions.get(session_id)?;
+    ) -> Option<(
+        Vec<u8>,
+        mpsc::UnboundedReceiver<Vec<u8>>,
+        mpsc::UnboundedSender<TunnelMsg>,
+        String,
+    )> {
+        let live = self.live.read().await;
+        let session = live.get(session_id)?;
 
-        // Verify user_id matches
         if session.user_id != user_id {
             return None;
         }
@@ -190,8 +255,8 @@ impl Registry {
 
     /// Remove a viewer from a session.
     pub async fn remove_viewer(&self, session_id: &str, viewer_id: &str) {
-        let sessions = self.sessions.read().await;
-        if let Some(session) = sessions.get(session_id) {
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
             session
                 .viewers
                 .write()
@@ -202,17 +267,13 @@ impl Registry {
 
     /// Broadcast data from tunnel to all viewers and append to replay buffer.
     pub async fn broadcast_to_viewers(&self, session_id: &str, data: &[u8]) {
-        let sessions = self.sessions.read().await;
-        if let Some(session) = sessions.get(session_id) {
-            // Append to replay buffer
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
             session.replay_buffer.write().await.push(data);
-
-            // Send to all viewers
             let viewers = session.viewers.read().await;
             for viewer in viewers.iter() {
                 let _ = viewer.tx.send(data.to_vec());
             }
         }
     }
-
 }

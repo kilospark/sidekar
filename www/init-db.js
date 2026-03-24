@@ -40,5 +40,11 @@ await db.collection("device_codes").createIndex({ device_code: 1 }, { unique: tr
 await db.collection("device_codes").createIndex({ user_code: 1 });
 console.log("  device_codes: expires_at (TTL), device_code (unique), user_code");
 
+// Sessions indexes (relay tunnel sessions — ephemeral but stored in MongoDB for multi-instance support)
+await db.collection("sessions").createIndex({ user_id: 1 });
+await db.collection("sessions").createIndex({ session_id: 1 }, { unique: true });
+await db.collection("sessions").createIndex({ last_heartbeat: 1 }, { expireAfterSeconds: 120 });
+console.log("  sessions: user_id, session_id (unique), last_heartbeat (TTL 120s)");
+
 await client.close();
 console.log("Done.");
