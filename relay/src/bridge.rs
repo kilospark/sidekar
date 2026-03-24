@@ -244,9 +244,10 @@ async fn handle_viewer_socket(
                     Some(Ok(Message::Binary(data))) => {
                         let _ = tunnel_tx.send(crate::registry::TunnelMsg::Data(data.to_vec()));
                     }
-                    Some(Ok(Message::Text(text))) => {
-                        // Control messages (e.g., resize) — forward as Text frame
-                        let _ = tunnel_tx.send(crate::registry::TunnelMsg::Control(text.to_string()));
+                    Some(Ok(Message::Text(_text))) => {
+                        // Control messages from viewer (e.g., resize) are handled
+                        // locally — don't forward to tunnel. The PTY size is
+                        // controlled by the local terminal, not remote viewers.
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
