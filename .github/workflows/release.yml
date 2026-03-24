@@ -65,15 +65,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.name }}.tar.gz
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
           path: |
             ${{ matrix.name }}.tar.gz
             ${{ matrix.name }}.tar.gz.minisig
+          if-no-files-found: ignore
 
   release:
     needs: build
