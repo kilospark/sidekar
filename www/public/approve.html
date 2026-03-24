@@ -7,11 +7,21 @@
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
-<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script>
+(function() {
+  var stored = localStorage.getItem('theme');
+  if (stored === 'light') document.documentElement.classList.add('light');
+  else if (stored === 'dark') document.documentElement.classList.add('dark');
+})();
+</script>
 <style>
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -27,6 +37,44 @@
   --accent: #e4e4e7;
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) {
+    --bg: #ffffff;
+    --bg-subtle: #f4f4f5;
+    --bg-muted: #e4e4e7;
+    --border: #e4e4e7;
+    --border-subtle: #d4d4d8;
+    --text: #09090b;
+    --text-secondary: #52525b;
+    --text-muted: #71717a;
+    --accent: #27272a;
+  }
+}
+
+html.light {
+  --bg: #ffffff;
+  --bg-subtle: #f4f4f5;
+  --bg-muted: #e4e4e7;
+  --border: #e4e4e7;
+  --border-subtle: #d4d4d8;
+  --text: #09090b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --accent: #27272a;
+}
+
+html.dark {
+  --bg: #09090b;
+  --bg-subtle: #18181b;
+  --bg-muted: #27272a;
+  --border: #27272a;
+  --border-subtle: #3f3f46;
+  --text: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #e4e4e7;
 }
 
 html { scroll-behavior: smooth; }
@@ -72,6 +120,19 @@ body {
   height: 28px;
   border-radius: 6px;
 }
+
+.logo-icon.dark { display: block; }
+.logo-icon.light { display: none; }
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) .logo-icon.dark { display: none; }
+  :root:not(.dark) .logo-icon.light { display: block; }
+}
+
+html.light .logo-icon.dark { display: none; }
+html.light .logo-icon.light { display: block; }
+html.dark .logo-icon.dark { display: block; }
+html.dark .logo-icon.light { display: none; }
 
 .subtitle {
   color: var(--text-muted);
@@ -156,7 +217,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 </head>
 <body>
   <div class="card">
-    <div class="logo"><img src="/sidekar-icon-dark.svg" alt="" class="logo-icon">sidekar</div>
+    <div class="logo">
+      <img src="/sidekar-icon-dark.svg" alt="" class="logo-icon dark">
+      <img src="/sidekar-icon-light.svg" alt="" class="logo-icon light">
+      sidekar
+    </div>
     <div class="subtitle">Authorize your device</div>
 
     <div id="auth-loading" class="loading">Checking authentication...</div>

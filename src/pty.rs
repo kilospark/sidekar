@@ -407,15 +407,16 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     // Cleanup: restore terminal, unregister, remove socket
     drop(raw_guard);
+
+    ipc::shutdown_listeners();
     let _ = broker::unregister_agent(&identity.name);
     if let Some(ref path) = socket_file {
         let _ = std::fs::remove_file(path);
     }
 
-    match exit_code {
-        0 => Ok(()),
-        code => std::process::exit(code),
-    }
+    // Use process::exit to terminate immediately — the IPC listener thread
+    // would otherwise block for up to 1s on its accept() timeout.
+    std::process::exit(exit_code);
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +563,11 @@ async fn event_loop(
             }
         }
     }
+
+    // Flush the async stdout — process::exit() won't run Drop impls, and
+    // the tokio stdout has its own buffer separate from std::io::stdout().
+    // The child's final escape sequences (rmcup etc.) must be flushed now.
+    let _ = stdout.flush().await;
 
     // Shut down tunnel gracefully
     if let Some(tx) = tunnel_tx {

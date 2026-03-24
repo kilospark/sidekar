@@ -10,9 +10,18 @@
 <link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script>
+(function() {
+  var stored = localStorage.getItem('theme');
+  if (stored === 'light') document.documentElement.classList.add('light');
+  else if (stored === 'dark') document.documentElement.classList.add('dark');
+})();
+</script>
 <style>
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -26,8 +35,50 @@
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
   --accent: #e4e4e7;
+  --nav-bg: rgba(9, 9, 11, 0.8);
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) {
+    --bg: #ffffff;
+    --bg-subtle: #f4f4f5;
+    --bg-muted: #e4e4e7;
+    --border: #e4e4e7;
+    --border-subtle: #d4d4d8;
+    --text: #09090b;
+    --text-secondary: #52525b;
+    --text-muted: #71717a;
+    --accent: #27272a;
+    --nav-bg: rgba(255, 255, 255, 0.8);
+  }
+}
+
+html.light {
+  --bg: #ffffff;
+  --bg-subtle: #f4f4f5;
+  --bg-muted: #e4e4e7;
+  --border: #e4e4e7;
+  --border-subtle: #d4d4d8;
+  --text: #09090b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --accent: #27272a;
+  --nav-bg: rgba(255, 255, 255, 0.8);
+}
+
+html.dark {
+  --bg: #09090b;
+  --bg-subtle: #18181b;
+  --bg-muted: #27272a;
+  --border: #27272a;
+  --border-subtle: #3f3f46;
+  --text: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #e4e4e7;
+  --nav-bg: rgba(9, 9, 11, 0.8);
 }
 
 html { scroll-behavior: smooth; }
@@ -48,7 +99,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(9, 9, 11, 0.8);
+  background: var(--nav-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
@@ -86,6 +137,51 @@ body {
   height: 24px;
   border-radius: 5px;
 }
+
+.logo-icon.dark { display: block; }
+.logo-icon.light { display: none; }
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) .logo-icon.dark { display: none; }
+  :root:not(.dark) .logo-icon.light { display: block; }
+}
+
+html.light .logo-icon.dark { display: none; }
+html.light .logo-icon.light { display: block; }
+html.dark .logo-icon.dark { display: block; }
+html.dark .logo-icon.light { display: none; }
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+}
+
+.theme-toggle:hover {
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.theme-toggle .icon-light,
+.theme-toggle .icon-system,
+.theme-toggle .icon-dark { display: none; }
+
+.theme-toggle[data-mode="light"] .icon-light { display: block; }
+.theme-toggle[data-mode="system"] .icon-system { display: block; }
+.theme-toggle[data-mode="dark"] .icon-dark { display: block; }
 
 .page-title {
   font-size: 14px;
@@ -283,12 +379,21 @@ body {
   <header class="header">
     <div class="header-inner">
       <div class="header-left">
-        <a href="/" class="logo"><img src="/sidekar-icon-dark.svg" alt="" class="logo-icon">sidekar</a>
+        <a href="/" class="logo">
+          <img src="/sidekar-icon-dark.svg" alt="" class="logo-icon dark">
+          <img src="/sidekar-icon-light.svg" alt="" class="logo-icon light">
+          sidekar
+        </a>
         <span class="page-title">Sessions</span>
       </div>
       <div class="header-right">
         <span class="user-info" id="user-info"></span>
         <button class="btn-logout" id="logout-btn">Log out</button>
+        <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
+          <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
       </div>
     </div>
   </header>
@@ -300,6 +405,30 @@ body {
     </div>
   </main>
 
+  <script>
+  var themeModes = ['light', 'system', 'dark'];
+  function setTheme(mode) {
+    var html = document.documentElement;
+    html.classList.remove('light', 'dark');
+    if (mode === 'light') html.classList.add('light');
+    else if (mode === 'dark') html.classList.add('dark');
+    if (mode === 'system') localStorage.removeItem('theme');
+    else localStorage.setItem('theme', mode);
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.setAttribute('data-mode', mode);
+  }
+  function cycleTheme() {
+    var current = localStorage.getItem('theme') || 'system';
+    var idx = themeModes.indexOf(current);
+    var next = themeModes[(idx + 1) % themeModes.length];
+    setTheme(next);
+  }
+  (function() {
+    var stored = localStorage.getItem('theme') || 'system';
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.setAttribute('data-mode', stored);
+  })();
+  </script>
   <script src="/js/sessions.js"></script>
 </body>
 </html>

@@ -12,6 +12,28 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 
+/// Set SO_RCVTIMEO on a UnixListener so accept() times out periodically.
+fn nix_set_socket_timeout(listener: &UnixListener, timeout: std::time::Duration) -> Result<()> {
+    let fd = listener.as_raw_fd();
+    let tv = libc::timeval {
+        tv_sec: timeout.as_secs() as libc::time_t,
+        tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+    };
+    let ret = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const libc::timeval as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if ret != 0 {
+        bail!("setsockopt SO_RCVTIMEO failed: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// How the socket listener delivers inbound messages.
 pub enum InputSink {
     /// Paste into a tmux pane (display pane ID).
@@ -277,6 +299,15 @@ fn cleanup_stale_socket(path: &std::path::Path) {
 
 /// Start the IPC socket listener in a background thread.
 /// Returns the socket path for cleanup.
+/// Shared shutdown flag for socket listener threads.
+static LISTENER_SHUTDOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Signal all socket listener threads to stop.
+pub fn shutdown_listeners() {
+    LISTENER_SHUTDOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn start_socket_listener(
     unique_pane_id: &str,
     display_pane: &str,
@@ -291,6 +322,10 @@ pub fn start_socket_listener(
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("failed to bind IPC socket at {}", path.display()))?;
 
+    // Set a timeout so accept() unblocks periodically to check shutdown flag.
+    listener.set_nonblocking(false)?;
+    let _ = nix_set_socket_timeout(&listener, std::time::Duration::from_secs(1));
+
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
@@ -303,12 +338,21 @@ pub fn start_socket_listener(
     let sess = session.to_string();
     let pane = display_pane.to_string();
 
+    LISTENER_SHUTDOWN.store(false, std::sync::atomic::Ordering::Relaxed);
+
     std::thread::spawn(move || {
         let mut last_paste = std::time::Instant::now() - IPC_PASTE_COOLDOWN;
 
         for stream in listener.incoming() {
+            if LISTENER_SHUTDOWN.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             let mut stream = match stream {
                 Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {
+                    continue; // accept() timeout — loop to check shutdown flag
+                }
                 Err(e) => {
                     eprintln!("sidekar ipc: accept error: {e}");
                     continue;

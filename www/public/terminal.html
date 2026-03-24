@@ -7,11 +7,49 @@
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
-<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css">
+<script>
+(function() {
+  var stored = localStorage.getItem('theme');
+  if (stored === 'light') document.documentElement.classList.add('light');
+  else if (stored === 'dark') document.documentElement.classList.add('dark');
+})();
+</script>
 <style>
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bar-bg: rgba(9, 9, 11, 0.9);
+  --bar-border: #27272a;
+  --bar-text: #71717a;
+  --bar-text-hover: #a1a1aa;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) {
+    --bar-bg: rgba(255, 255, 255, 0.9);
+    --bar-border: #e4e4e7;
+    --bar-text: #71717a;
+    --bar-text-hover: #52525b;
+  }
+}
+
+html.light {
+  --bar-bg: rgba(255, 255, 255, 0.9);
+  --bar-border: #e4e4e7;
+  --bar-text: #71717a;
+  --bar-text-hover: #52525b;
+}
+
+html.dark {
+  --bar-bg: rgba(9, 9, 11, 0.9);
+  --bar-border: #27272a;
+  --bar-text: #71717a;
+  --bar-text-hover: #a1a1aa;
+}
 
 body {
   background: #09090b;
@@ -33,27 +71,27 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
-  background: rgba(9, 9, 11, 0.9);
+  background: var(--bar-bg);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border-bottom: 1px solid #27272a;
+  border-bottom: 1px solid var(--bar-border);
   z-index: 10;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
 }
 
 #back-link {
-  color: #71717a;
+  color: var(--bar-text);
   text-decoration: none;
   transition: color 0.15s;
 }
 
 #back-link:hover {
-  color: #a1a1aa;
+  color: var(--bar-text-hover);
 }
 
 #status {
-  color: #71717a;
+  color: var(--bar-text);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -63,7 +101,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #71717a;
+  background: var(--bar-text);
   display: inline-block;
 }
 
