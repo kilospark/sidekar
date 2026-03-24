@@ -95,13 +95,16 @@ pub async fn device_auth_flow() -> Result<()> {
 
     // Step 2: Show the code and open browser
     println!();
-    println!("  ┌─────────────────────────────────────┐");
-    println!("  │                                       │");
-    println!("  │   Enter this code: {:<18} │", user_code);
-    println!("  │                                       │");
-    println!("  │   {:<37} │", verification_uri);
-    println!("  │                                       │");
-    println!("  └─────────────────────────────────────┘");
+    let inner = 39;
+    let code_line = format!("   Enter this code: {}", user_code);
+    let url_line = format!("   {}", verification_uri);
+    println!("  ┌{:─<inner$}┐", "");
+    println!("  │{:inner$}│", "");
+    println!("  │{:<inner$}│", code_line);
+    println!("  │{:inner$}│", "");
+    println!("  │{:<inner$}│", url_line);
+    println!("  │{:inner$}│", "");
+    println!("  └{:─<inner$}┘", "");
     println!();
 
     open_browser(verification_uri);
