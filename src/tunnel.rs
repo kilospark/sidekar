@@ -9,8 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -35,10 +34,6 @@ fn relay_url() -> String {
 pub enum TunnelEvent {
     /// Raw bytes from a browser viewer (keyboard input).
     Data(Vec<u8>),
-    /// Browser requested a terminal resize.
-    Resize { cols: u16, rows: u16 },
-    /// Viewer count changed.
-    ViewerCount(u32),
     /// The tunnel has disconnected (reconnect is happening in the background).
     Disconnected,
 }
@@ -48,8 +43,6 @@ pub enum TunnelEvent {
 enum TunnelCommand {
     /// Raw PTY output bytes to forward to viewers.
     Data(Vec<u8>),
-    /// Notify relay of a terminal resize.
-    Resize { cols: u16, rows: u16 },
     /// Graceful shutdown.
     Shutdown,
 }
@@ -66,11 +59,6 @@ impl TunnelSender {
         let _ = self.tx.try_send(TunnelCommand::Data(data));
     }
 
-    /// Notify the relay of a terminal resize.
-    pub fn send_resize(&self, cols: u16, rows: u16) {
-        let _ = self.tx.try_send(TunnelCommand::Resize { cols, rows });
-    }
-
     /// Request graceful shutdown of the tunnel background task.
     pub fn shutdown(&self) {
         let _ = self.tx.try_send(TunnelCommand::Shutdown);
@@ -81,7 +69,7 @@ impl TunnelSender {
 pub type TunnelReceiver = mpsc::Receiver<TunnelEvent>;
 
 // ---------------------------------------------------------------------------
-// Control message types (JSON text frames)
+// Message types
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -93,17 +81,12 @@ struct RegisterMsg<'a> {
     hostname: &'a str,
 }
 
-#[derive(Deserialize, Debug)]
-struct ControlMessage {
+/// Relay sends JSON text frames during registration handshake only.
+#[derive(serde::Deserialize)]
+struct RegisterResponse {
     r#type: String,
     #[serde(default)]
     session_id: Option<String>,
-    #[serde(default)]
-    cols: Option<u16>,
-    #[serde(default)]
-    rows: Option<u16>,
-    #[serde(default)]
-    count: Option<u32>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -203,17 +186,17 @@ async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, St
         while let Some(msg) = ws.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    let ctrl: ControlMessage =
+                    let resp: RegisterResponse =
                         serde_json::from_str(&text).context("parse register response")?;
-                    if ctrl.r#type == "registered" {
-                        return ctrl
+                    if resp.r#type == "registered" {
+                        return resp
                             .session_id
                             .ok_or_else(|| anyhow::anyhow!("registered response missing session_id"));
                     }
-                    if ctrl.r#type == "error" {
+                    if resp.r#type == "error" {
                         bail!(
                             "relay rejected registration: {}",
-                            ctrl.error.unwrap_or_else(|| "unknown error".into())
+                            resp.error.unwrap_or_else(|| "unknown error".into())
                         );
                     }
                 }
@@ -294,60 +277,33 @@ async fn io_loop(
         tokio::select! {
             biased;
 
-            // Commands from the PTY event loop → WebSocket
+            // PTY output → relay (binary frames only)
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(TunnelCommand::Data(data)) => {
                         if ws_sink.send(Message::Binary(data.into())).await.is_err() {
-                            return false; // connection lost
-                        }
-                    }
-                    Some(TunnelCommand::Resize { cols, rows }) => {
-                        let msg = json!({"type": "resize", "cols": cols, "rows": rows});
-                        if ws_sink.send(Message::Text(msg.to_string().into())).await.is_err() {
                             return false;
                         }
                     }
                     Some(TunnelCommand::Shutdown) | None => {
                         let _ = ws_sink.close().await;
-                        return true; // clean shutdown
+                        return true;
                     }
                 }
             }
 
-            // WebSocket → events for the PTY event loop
+            // Relay → PTY input (binary = viewer keystrokes, text = ignored)
             msg = ws_stream.next() => {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
                         let _ = evt_tx.try_send(TunnelEvent::Data(data.into()));
                     }
-                    Some(Ok(Message::Text(text))) => {
-                        if let Ok(ctrl) = serde_json::from_str::<ControlMessage>(&text) {
-                            match ctrl.r#type.as_str() {
-                                "resize" => {
-                                    if let (Some(cols), Some(rows)) = (ctrl.cols, ctrl.rows) {
-                                        let _ = evt_tx.try_send(TunnelEvent::Resize { cols, rows });
-                                    }
-                                }
-                                "viewer_connected" | "viewer_disconnected" => {
-                                    if let Some(count) = ctrl.count {
-                                        let _ = evt_tx.try_send(TunnelEvent::ViewerCount(count));
-                                    }
-                                }
-                                _ => {} // ignore unknown control messages
-                            }
-                        }
-                    }
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_sink.send(Message::Pong(data)).await;
                     }
-                    Some(Ok(Message::Close(_))) | None => {
-                        return false; // connection lost
-                    }
-                    Some(Err(_)) => {
-                        return false; // connection error
-                    }
-                    _ => {} // Pong, Frame — ignore
+                    Some(Ok(Message::Close(_))) | None => return false,
+                    Some(Err(_)) => return false,
+                    _ => {}
                 }
             }
 
