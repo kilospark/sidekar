@@ -94,8 +94,8 @@ body {
   min-height: 100vh;
 }
 
-/* Header */
-.header {
+/* Nav */
+nav {
   position: sticky;
   top: 0;
   z-index: 100;
@@ -105,7 +105,7 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.header-inner {
+nav .container {
   max-width: 1080px;
   margin: 0 auto;
   padding: 0 24px;
@@ -115,13 +115,13 @@ body {
   height: 56px;
 }
 
-.header-left {
+.nav-left {
   display: flex;
   align-items: center;
   gap: 24px;
 }
 
-.logo {
+.nav-logo {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -132,24 +132,62 @@ body {
   text-decoration: none;
 }
 
-.logo-icon {
+.nav-logo-icon {
   width: 24px;
   height: 24px;
   border-radius: 5px;
 }
 
-.logo-icon.dark { display: block; }
-.logo-icon.light { display: none; }
+.nav-logo-icon.dark { display: block; }
+.nav-logo-icon.light { display: none; }
 
 @media (prefers-color-scheme: light) {
-  :root:not(.dark) .logo-icon.dark { display: none; }
-  :root:not(.dark) .logo-icon.light { display: block; }
+  :root:not(.dark) .nav-logo-icon.dark { display: none; }
+  :root:not(.dark) .nav-logo-icon.light { display: block; }
 }
 
-html.light .logo-icon.dark { display: none; }
-html.light .logo-icon.light { display: block; }
-html.dark .logo-icon.dark { display: block; }
-html.dark .logo-icon.light { display: none; }
+html.light .nav-logo-icon.dark { display: none; }
+html.light .nav-logo-icon.light { display: block; }
+html.dark .nav-logo-icon.dark { display: block; }
+html.dark .nav-logo-icon.light { display: none; }
+
+.page-title {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-info {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.user-info .username {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.btn-logout {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.btn-logout:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
 
 .theme-toggle {
   display: flex;
@@ -183,42 +221,24 @@ html.dark .logo-icon.light { display: none; }
 .theme-toggle[data-mode="system"] .icon-system { display: block; }
 .theme-toggle[data-mode="dark"] .icon-dark { display: block; }
 
-.page-title {
-  font-size: 14px;
-  color: var(--text-muted);
+/* Footer */
+footer {
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
 }
 
-.header-right {
+footer .container {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px;
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 16px;
 }
 
-.user-info {
+.footer-left {
   font-size: 13px;
   color: var(--text-muted);
-}
-
-.user-info .username {
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.btn-logout {
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-muted);
-  font-family: var(--font);
-  font-size: 13px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-}
-
-.btn-logout:hover {
-  border-color: var(--border-subtle);
-  color: var(--text-secondary);
 }
 
 /* Content */
@@ -376,17 +396,17 @@ html.dark .logo-icon.light { display: none; }
 </style>
 </head>
 <body>
-  <header class="header">
-    <div class="header-inner">
-      <div class="header-left">
-        <a href="/" class="logo">
-          <img src="/sidekar-icon-dark.svg" alt="" class="logo-icon dark">
-          <img src="/sidekar-icon-light.svg" alt="" class="logo-icon light">
+  <nav>
+    <div class="container">
+      <div class="nav-left">
+        <a href="/" class="nav-logo">
+          <img src="/sidekar-icon-dark.svg" alt="" class="nav-logo-icon dark">
+          <img src="/sidekar-icon-light.svg" alt="" class="nav-logo-icon light">
           sidekar
         </a>
         <span class="page-title">Sessions</span>
       </div>
-      <div class="header-right">
+      <div class="nav-right">
         <span class="user-info" id="user-info"></span>
         <button class="btn-logout" id="logout-btn">Log out</button>
         <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
@@ -396,7 +416,7 @@ html.dark .logo-icon.light { display: none; }
         </button>
       </div>
     </div>
-  </header>
+  </nav>
 
   <main class="container">
     <div class="refresh-note" id="refresh-note"></div>
@@ -404,6 +424,12 @@ html.dark .logo-icon.light { display: none; }
       <div class="loading">Loading sessions...</div>
     </div>
   </main>
+
+  <footer>
+    <div class="container">
+      <div class="footer-left">&copy; 2026 Kilo Spark</div>
+    </div>
+  </footer>
 
   <script>
   var themeModes = ['light', 'system', 'dark'];
