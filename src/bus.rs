@@ -6,7 +6,7 @@
 
 use crate::broker::{self, BrokerAgent};
 use crate::ipc;
-use crate::message::{AgentId, Envelope, MessageKind, epoch_secs};
+use crate::message::{epoch_secs, AgentId, Envelope, MessageKind};
 use crate::transport::{Socket, TmuxPaste, Transport};
 use crate::*;
 
@@ -739,9 +739,6 @@ fn spawn_nudge_timer(msg_id: String) {
 
                 let snap2 = ipc::capture_pane(&fresh_request.transport_target);
                 if snap1 != snap2 {
-                    eprintln!(
-                        "sidekar bus: nudge for {msg_id}: recipient still busy, resetting timer"
-                    );
                     wait_secs = NUDGE_INTERVAL_SECS;
                     continue;
                 }
@@ -751,9 +748,6 @@ fn spawn_nudge_timer(msg_id: String) {
                 Ok(count) => count,
                 Err(_) => return,
             };
-            eprintln!(
-                "sidekar bus: nudging recipient for {msg_id} (attempt {nudge_count}/{NUDGE_MAX})"
-            );
 
             let nudge_msg = format!(
                 "[sidekar] You have an unanswered request from {}. Reply using bus_send or bus_done with reply_to: \"{msg_id}\"",
@@ -767,7 +761,6 @@ fn spawn_nudge_timer(msg_id: String) {
             );
 
             if nudge_count >= NUDGE_MAX {
-                eprintln!("sidekar bus: gave up nudging for {msg_id} after {NUDGE_MAX} attempts");
                 return;
             }
 
@@ -896,7 +889,10 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
                 return Some(DeliveryTarget {
                     transport_name: SOCKET_TRANSPORT,
                     transport_target: socket.clone(),
-                    output_label: format!("via broker ({})", agent.id.pane.as_deref().unwrap_or("?")),
+                    output_label: format!(
+                        "via broker ({})",
+                        agent.id.pane.as_deref().unwrap_or("?")
+                    ),
                 });
             }
         }
@@ -1007,7 +1003,14 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
             .and_then(|b| b.cwd.as_deref())
             .map(|c| format!(", cwd: {c}"))
             .unwrap_or_default();
-        lines.push(format!("- {}{}{} (pane {}{})", a.name(), nick, you, a.pane_display(), cwd));
+        lines.push(format!(
+            "- {}{}{} (pane {}{})",
+            a.name(),
+            nick,
+            you,
+            a.pane_display(),
+            cwd
+        ));
     }
 
     // Broker agents on this channel (catches PTY sessions not visible to tmux)
@@ -1016,10 +1019,21 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
             continue;
         }
         let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick = a.id.nick.as_deref().map(|n| format!(" \"{n}\"")).unwrap_or_default();
+        let nick =
+            a.id.nick
+                .as_deref()
+                .map(|n| format!(" \"{n}\""))
+                .unwrap_or_default();
         let pane = a.id.pane.as_deref().unwrap_or("?");
-        let cwd = a.cwd.as_deref().map(|c| format!(", cwd: {c}")).unwrap_or_default();
-        lines.push(format!("- {}{}{} (pane {}{})", a.id.name, nick, you, pane, cwd));
+        let cwd = a
+            .cwd
+            .as_deref()
+            .map(|c| format!(", cwd: {c}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {}{}{} (pane {}{})",
+            a.id.name, nick, you, pane, cwd
+        ));
     }
 
     if lines.is_empty() {

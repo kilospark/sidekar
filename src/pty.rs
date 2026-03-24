@@ -310,7 +310,6 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
             (format!("{shell} -ic '{agent} ...'"), shell_c, c_args)
         }
     };
-    eprintln!("sidekar pty: launching {agent} ({bin_display})");
 
     // Fork the child inside a PTY
     let (master, child_pid) = fork_pty(&bin_c, &c_args)?;
@@ -358,11 +357,6 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         )?;
         broker::set_agent_socket_path(&identity.name, Some(path.as_path()))?;
         socket_file = Some(path);
-
-        eprintln!(
-            "sidekar pty: registered as \"{}\" aka \"{}\" on channel \"{}\"",
-            identity.name, nick, channel
-        );
 
         Ok((master_arc, identity))
     })();
