@@ -29,7 +29,10 @@ fn nix_set_socket_timeout(listener: &UnixListener, timeout: std::time::Duration)
         )
     };
     if ret != 0 {
-        bail!("setsockopt SO_RCVTIMEO failed: {}", std::io::Error::last_os_error());
+        bail!(
+            "setsockopt SO_RCVTIMEO failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
     Ok(())
 }
@@ -300,8 +303,7 @@ fn cleanup_stale_socket(path: &std::path::Path) {
 /// Start the IPC socket listener in a background thread.
 /// Returns the socket path for cleanup.
 /// Shared shutdown flag for socket listener threads.
-static LISTENER_SHUTDOWN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static LISTENER_SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Signal all socket listener threads to stop.
 pub fn shutdown_listeners() {
@@ -331,8 +333,6 @@ pub fn start_socket_listener(
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 
-    eprintln!("sidekar ipc: socket listening at {}", path.display());
-
     let name = agent_name.to_string();
     let nick = agent_nick.map(|n| n.to_string());
     let sess = session.to_string();
@@ -349,8 +349,10 @@ pub fn start_socket_listener(
             }
             let mut stream = match stream {
                 Ok(s) => s,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
                     continue; // accept() timeout — loop to check shutdown flag
                 }
                 Err(e) => {
