@@ -64,6 +64,8 @@ jobs:
       - name: Sign release
         run: |
           mkdir -p ~/.config/minisign
+          SECRET_LEN=$(echo -n "${{ secrets.MINISIGN_SECRET }}" | wc -c)
+          echo "Secret length: $SECRET_LEN"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             echo "${{ secrets.MINISIGN_SECRET }}" | base64 -D > ~/.config/minisign/minisign.key
           else
