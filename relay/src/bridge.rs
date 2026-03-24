@@ -71,7 +71,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     };
 
     // Create channel for data flowing TO the tunnel (from viewers)
-    let (tunnel_tx, mut tunnel_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tunnel_tx, mut tunnel_rx) = mpsc::unbounded_channel::<crate::registry::TunnelMsg>();
 
     // Register session
     let session_id = state
@@ -131,8 +131,12 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                 }
             }
             // Data from viewers → send to tunnel
-            Some(data) = tunnel_rx.recv() => {
-                if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
+            Some(msg) = tunnel_rx.recv() => {
+                let ws_msg = match msg {
+                    crate::registry::TunnelMsg::Data(data) => Message::Binary(Bytes::from(data)),
+                    crate::registry::TunnelMsg::Control(json) => Message::Text(json.into()),
+                };
+                if ws_tx.send(ws_msg).await.is_err() {
                     tracing::error!(session_id = %session_id, "failed to send to tunnel");
                     break;
                 }
@@ -223,7 +227,7 @@ async fn handle_viewer_socket(
         "type": "viewer_connected",
         "count": count,
     });
-    let _ = tunnel_tx.send(notification.to_string().into_bytes());
+    let _ = tunnel_tx.send(crate::registry::TunnelMsg::Control(notification.to_string()));
 
     // Main loop
     loop {
@@ -238,11 +242,11 @@ async fn handle_viewer_socket(
             msg = ws_rx.next() => {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
-                        let _ = tunnel_tx.send(data.to_vec());
+                        let _ = tunnel_tx.send(crate::registry::TunnelMsg::Data(data.to_vec()));
                     }
                     Some(Ok(Message::Text(text))) => {
-                        // Control messages (e.g., resize) — forward as bytes to tunnel
-                        let _ = tunnel_tx.send(text.as_bytes().to_vec());
+                        // Control messages (e.g., resize) — forward as Text frame
+                        let _ = tunnel_tx.send(crate::registry::TunnelMsg::Control(text.to_string()));
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
@@ -266,7 +270,7 @@ async fn handle_viewer_socket(
         "type": "viewer_disconnected",
         "count": count,
     });
-    let _ = tunnel_tx.send(notification.to_string().into_bytes());
+    let _ = tunnel_tx.send(crate::registry::TunnelMsg::Control(notification.to_string()));
 
     tracing::info!(session_id = %session_id, viewer_id = %viewer_id, "viewer disconnected");
 }

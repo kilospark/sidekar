@@ -407,6 +407,8 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     // Cleanup: restore terminal, unregister, remove socket
     drop(raw_guard);
+    // Print newline so the shell prompt appears on a fresh line
+    eprint!("\r\n");
     let _ = broker::unregister_agent(&identity.name);
     if let Some(ref path) = socket_file {
         let _ = std::fs::remove_file(path);

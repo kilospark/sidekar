@@ -6,6 +6,14 @@ use crate::types::SessionInfo;
 
 const REPLAY_BUFFER_SIZE: usize = 50 * 1024; // 50KB
 
+/// Message sent to the tunnel WebSocket from viewers/relay.
+pub enum TunnelMsg {
+    /// Raw PTY input bytes (from viewer keyboard).
+    Data(Vec<u8>),
+    /// JSON control message (viewer_connected, resize, etc.) — sent as Text frame.
+    Control(String),
+}
+
 /// A connected viewer.
 pub struct ViewerHandle {
     pub id: String,
@@ -22,7 +30,7 @@ pub struct Session {
     pub hostname: String,
     pub connected_at: chrono::DateTime<chrono::Utc>,
     /// Send data back to the tunnel.
-    pub tunnel_tx: mpsc::UnboundedSender<Vec<u8>>,
+    pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     /// Connected viewers.
     pub viewers: Arc<RwLock<Vec<ViewerHandle>>>,
     /// Ring buffer of recent PTY output for replay on viewer connect.
@@ -80,7 +88,7 @@ impl Registry {
         agent_type: String,
         cwd: String,
         hostname: String,
-        tunnel_tx: mpsc::UnboundedSender<Vec<u8>>,
+        tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     ) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
         let session = Session {
@@ -155,7 +163,7 @@ impl Registry {
         &self,
         session_id: &str,
         user_id: &str,
-    ) -> Option<(Vec<u8>, mpsc::UnboundedReceiver<Vec<u8>>, mpsc::UnboundedSender<Vec<u8>>, String)>
+    ) -> Option<(Vec<u8>, mpsc::UnboundedReceiver<Vec<u8>>, mpsc::UnboundedSender<TunnelMsg>, String)>
     {
         let sessions = self.sessions.read().await;
         let session = sessions.get(session_id)?;
