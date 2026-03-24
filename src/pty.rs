@@ -479,15 +479,10 @@ async fn event_loop(
                         // Browser keystrokes → agent stdin via master fd
                         let _ = write_all_fd(master_fd, &data);
                     }
-                    Some(crate::tunnel::TunnelEvent::Resize { cols, rows }) => {
-                        // Browser resize → child PTY
-                        let ws = libc::winsize {
-                            ws_col: cols,
-                            ws_row: rows,
-                            ws_xpixel: 0,
-                            ws_ypixel: 0,
-                        };
-                        unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
+                    Some(crate::tunnel::TunnelEvent::Resize { .. }) => {
+                        // Ignore viewer resize — the local terminal controls the
+                        // PTY size via SIGWINCH. Viewers must fit to the PTY's
+                        // dimensions, not the other way around.
                     }
                     Some(crate::tunnel::TunnelEvent::Disconnected) => {
                         // Tunnel dropped — continue without it, reconnect happens in background
