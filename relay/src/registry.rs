@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::types::SessionInfo;
 
-const REPLAY_BUFFER_SIZE: usize = 50 * 1024; // 50KB
+const REPLAY_BUFFER_SIZE: usize = 8 * 1024; // 8KB — enough for recent context, not overwhelming on mobile
 
 /// Message sent to the tunnel WebSocket from viewers.
 /// Only carries raw PTY input bytes (viewer keyboard).

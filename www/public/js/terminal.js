@@ -86,11 +86,10 @@
         };
 
         ws.onmessage = function (event) {
-          if (typeof event.data === "string") {
-            // Control message — ignore for now
-            return;
-          }
-          term.write(new Uint8Array(event.data));
+          if (typeof event.data === "string") return;
+          term.write(new Uint8Array(event.data), function () {
+            term.scrollToBottom();
+          });
         };
 
         ws.onclose = function () {
