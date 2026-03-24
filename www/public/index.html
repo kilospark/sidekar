@@ -8,6 +8,12 @@
 <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" type="image/png" href="favicon-32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="favicon-16.png" sizes="16x16">
+<link rel="icon" type="image/svg+xml" href="sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -128,11 +134,33 @@ nav .container {
 }
 
 .nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
   letter-spacing: -0.02em;
 }
+
+.nav-logo-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+}
+
+.nav-logo-icon.dark { display: block; }
+.nav-logo-icon.light { display: none; }
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) .nav-logo-icon.dark { display: none; }
+  :root:not(.dark) .nav-logo-icon.light { display: block; }
+}
+
+html.light .nav-logo-icon.dark { display: none; }
+html.light .nav-logo-icon.light { display: block; }
+html.dark .nav-logo-icon.dark { display: block; }
+html.dark .nav-logo-icon.light { display: none; }
 
 .nav-right {
   display: flex;
@@ -159,40 +187,34 @@ nav .container {
 .theme-toggle {
   display: flex;
   align-items: center;
-  gap: 2px;
-  background: var(--bg-subtle);
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 2px;
-}
-
-.theme-toggle button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: transparent;
-  border-radius: 4px;
+  background: var(--bg-subtle);
   cursor: pointer;
   color: var(--text-muted);
   transition: background 0.15s, color 0.15s;
 }
 
-.theme-toggle button:hover {
+.theme-toggle:hover {
   color: var(--text-secondary);
-}
-
-.theme-toggle button.active {
   background: var(--bg-muted);
-  color: var(--text);
 }
 
 .theme-toggle svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
+
+.theme-toggle .icon-light,
+.theme-toggle .icon-system,
+.theme-toggle .icon-dark { display: none; }
+
+.theme-toggle[data-mode="light"] .icon-light { display: block; }
+.theme-toggle[data-mode="system"] .icon-system { display: block; }
+.theme-toggle[data-mode="dark"] .icon-dark { display: block; }
 
 /* Hero */
 .hero {
@@ -767,7 +789,11 @@ footer .container {
 
 <nav>
   <div class="container">
-    <div class="nav-logo">sidekar</div>
+    <div class="nav-logo">
+      <img src="sidekar-icon-dark.svg" alt="" class="nav-logo-icon dark">
+      <img src="sidekar-icon-light.svg" alt="" class="nav-logo-icon light">
+      sidekar
+    </div>
     <div class="nav-right">
       <ul class="nav-links">
         <li><a href="#features">Features</a></li>
@@ -775,24 +801,17 @@ footer .container {
         <li><a href="#feedback">Feedback</a></li>
         <li><a href="#pricing">Pricing</a></li>
       </ul>
-      <div class="theme-toggle" role="radiogroup" aria-label="Theme">
-        <button onclick="setTheme('light')" title="Light" id="theme-light">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-        </button>
-        <button onclick="setTheme('system')" title="System" id="theme-system">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        </button>
-        <button onclick="setTheme('dark')" title="Dark" id="theme-dark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        </button>
-      </div>
+      <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
+        <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
     </div>
   </div>
 </nav>
 
 <section class="hero">
   <div class="container">
-    <div class="hero-badge">One binary. Ten MCP clients. Zero config.</div>
     <h1>The sidecar for<br>AI agents</h1>
     <p class="hero-sub">
       Agents are powerful but isolated. They can't see what they build, can't use the web like you do, and can't talk to each other. sidekar gives them browser control, desktop automation, web research, and inter-agent communication.
@@ -1000,30 +1019,33 @@ function copyInstall(el) {
 }
 
 // Theme
+var themeModes = ['light', 'system', 'dark'];
+
 function setTheme(mode) {
   var html = document.documentElement;
   html.classList.remove('light', 'dark');
   if (mode === 'light') html.classList.add('light');
   else if (mode === 'dark') html.classList.add('dark');
-  // system: no class added, CSS media query handles it
 
   if (mode === 'system') localStorage.removeItem('theme');
   else localStorage.setItem('theme', mode);
 
-  updateThemeButtons(mode);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.setAttribute('data-mode', mode);
 }
 
-function updateThemeButtons(mode) {
-  ['light', 'system', 'dark'].forEach(function(m) {
-    var btn = document.getElementById('theme-' + m);
-    if (btn) btn.classList.toggle('active', m === mode);
-  });
+function cycleTheme() {
+  var current = localStorage.getItem('theme') || 'system';
+  var idx = themeModes.indexOf(current);
+  var next = themeModes[(idx + 1) % themeModes.length];
+  setTheme(next);
 }
 
-// Init theme buttons
+// Init theme toggle
 (function() {
-  var stored = localStorage.getItem('theme');
-  updateThemeButtons(stored || 'system');
+  var stored = localStorage.getItem('theme') || 'system';
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.setAttribute('data-mode', stored);
 })();
 
 // Stars SVG helpers

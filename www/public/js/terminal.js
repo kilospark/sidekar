@@ -60,8 +60,8 @@
 
     setStatus("", "connecting...");
 
-    // Fetch /api/auth/session to verify we are authenticated before connecting
-    fetch("/api/auth/session")
+    // Fetch JWT token for cross-origin WebSocket auth (cookie is HttpOnly)
+    fetch("/api/auth/session?ws=1")
       .then(function (res) {
         if (res.status === 401) {
           window.location.href = "/api/auth/github?redirect=/terminal/" + sessionId;
@@ -73,10 +73,9 @@
       .then(function (data) {
         if (!data) return; // redirecting
 
-        var token = getCookie("sidekar_session");
         var wsUrl = "wss://" + relayHost + "/session/" + sessionId;
-        if (token) {
-          wsUrl += "?token=" + encodeURIComponent(token);
+        if (data.token) {
+          wsUrl += "?token=" + encodeURIComponent(data.token);
         }
 
         ws = new WebSocket(wsUrl);

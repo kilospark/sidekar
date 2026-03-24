@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sessions — sidekar</title>
 <link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -66,11 +71,20 @@ body {
 }
 
 .logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
   letter-spacing: -0.02em;
   text-decoration: none;
+}
+
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
 }
 
 .page-title {
@@ -269,7 +283,7 @@ body {
   <header class="header">
     <div class="header-inner">
       <div class="header-left">
-        <a href="/" class="logo">sidekar</a>
+        <a href="/" class="logo"><img src="/sidekar-icon-dark.svg" alt="" class="logo-icon">sidekar</a>
         <span class="page-title">Sessions</span>
       </div>
       <div class="header-right">

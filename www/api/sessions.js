@@ -1,6 +1,6 @@
-import { getUser } from "./_auth.js";
+import { getUser, parseCookie } from "./_auth.js";
 
-const RELAY_URL = process.env.RELAY_URL || "https://sidekar-relay.fly.dev";
+const RELAY_URL = (process.env.RELAY_URL || "https://relay.sidekar.dev").trim();
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
@@ -8,18 +8,20 @@ export default async function handler(req, res) {
   const user = await getUser(req);
   if (!user) return res.status(401).json({ error: "not authenticated" });
 
+  const jwt = parseCookie(req);
+
   try {
-    const relayRes = await fetch(`${RELAY_URL}/sessions`, {
-      headers: { Cookie: req.headers.cookie },
-    });
+    const url = `${RELAY_URL}/sessions?token=${encodeURIComponent(jwt)}`;
+    const relayRes = await fetch(url);
+    const text = await relayRes.text();
+
     if (!relayRes.ok) {
-      // Relay returned an error — return empty sessions rather than propagating
-      return res.json({ sessions: [] });
+      return res.status(502).json({ error: "relay error", status: relayRes.status, body: text, relay_url: RELAY_URL });
     }
-    const data = await relayRes.json();
+
+    const data = JSON.parse(text);
     res.json(data);
-  } catch {
-    // Relay is down or unreachable — return empty sessions
-    res.json({ sessions: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message, relay_url: RELAY_URL });
   }
 }

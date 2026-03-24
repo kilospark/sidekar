@@ -20,7 +20,7 @@ async fn main() {
     let mongodb_uri =
         std::env::var("MONGODB_URI").expect("MONGODB_URI environment variable is required");
     let jwt_secret =
-        std::env::var("JWT_SECRET").expect("JWT_SECRET environment variable is required");
+        std::env::var("JWT_SECRET").expect("JWT_SECRET environment variable is required").trim().to_string();
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
 
     // Connect to MongoDB

@@ -7,7 +7,7 @@ pub async fn validate_device_token(db: &Database, token: &str) -> Option<String>
     let hash = {
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
-        format!("sha256:{}", hex::encode(hasher.finalize()))
+        hex::encode(hasher.finalize())
     };
 
     let devices = db.collection::<mongodb::bson::Document>("devices");
