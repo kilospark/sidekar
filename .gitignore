@@ -8,3 +8,4 @@ www/public/binaries/
 .env.*
 !.env.example
 relay/target/
+minisign.key
