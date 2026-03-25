@@ -6,7 +6,7 @@ use std::time::Duration;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
 
-const MINISIGN_PUBKEY: &str = "RWTFCgAOlu2Vk0A6BZRipRDpp0AuaO5CopvA5X/+vS7iyo0z66o91+5F";
+const MINISIGN_PUBKEY: &str = "RWRbW42KimMWVFdiSOnjFE3ZqQ3qqQ45SOySRmomdZIp3Bb9l3ZUrE33";
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);

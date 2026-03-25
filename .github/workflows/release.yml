@@ -61,6 +61,14 @@ jobs:
           chmod +x ${{ matrix.name }}
           tar czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
 
+      - name: Sign binary
+        env:
+          MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
+        run: |
+          echo "$MINISIGN_SECRET_KEY_B64" | base64 --decode > /tmp/minisign.key
+          echo | minisign -S -s /tmp/minisign.key -m ${{ matrix.name }}.tar.gz
+          rm /tmp/minisign.key
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +76,6 @@ jobs:
           path: |
             ${{ matrix.name }}.tar.gz
             ${{ matrix.name }}.tar.gz.minisig
-          if-no-files-found: ignore
 
   release:
     needs: build
