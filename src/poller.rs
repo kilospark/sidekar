@@ -1,5 +1,5 @@
 //! Bus message poller — reads from the SQLite bus_queue and delivers
-//! messages to the local agent via tmux paste or PTY write.
+//! messages to the local agent via PTY write.
 
 use crate::broker;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -13,21 +13,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLEANUP_INTERVAL_POLLS: u32 = 120; // clean old messages every 60s (120 * 500ms)
 const MAX_MESSAGE_AGE_SECS: u64 = 3600;
 
-/// How the poller delivers messages to the local agent.
-pub enum DeliverySink {
-    /// Write to a PTY master fd (for `sidekar <cmd>` wrapper).
-    PtyFd(Arc<OwnedFd>),
-    /// Paste into a tmux pane (for MCP server in tmux).
-    TmuxPane(String),
-}
-
 /// Signal the poller to stop.
 pub fn shutdown_poller() {
     POLLER_SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
 /// Start the background poller thread. Returns immediately.
-pub fn start_poller(agent_name: String, sink: DeliverySink) {
+pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>) {
     POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
 
     std::thread::spawn(move || {
@@ -44,7 +36,7 @@ pub fn start_poller(agent_name: String, sink: DeliverySink) {
             match broker::poll_messages(&agent_name) {
                 Ok(messages) => {
                     for msg in messages {
-                        deliver(&sink, &msg.body);
+                        deliver_to_pty(&pty_fd, &msg.body);
                     }
                 }
                 Err(_) => {} // SQLite busy or locked, retry next poll
@@ -60,20 +52,13 @@ pub fn start_poller(agent_name: String, sink: DeliverySink) {
     });
 }
 
-fn deliver(sink: &DeliverySink, message: &str) {
-    match sink {
-        DeliverySink::PtyFd(fd) => {
-            let raw_fd = fd.as_raw_fd();
-            // Write message text
-            let _ = write_all_raw(raw_fd, message.as_bytes());
-            // Brief pause then send Enter (CR)
-            std::thread::sleep(Duration::from_millis(150));
-            let _ = write_all_raw(raw_fd, b"\r");
-        }
-        DeliverySink::TmuxPane(pane) => {
-            let _ = crate::ipc::send_to_pane(pane, message);
-        }
-    }
+fn deliver_to_pty(fd: &OwnedFd, message: &str) {
+    let raw_fd = fd.as_raw_fd();
+    // Write message text
+    let _ = write_all_raw(raw_fd, message.as_bytes());
+    // Brief pause then send Enter (CR)
+    std::thread::sleep(Duration::from_millis(150));
+    let _ = write_all_raw(raw_fd, b"\r");
 }
 
 fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {

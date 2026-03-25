@@ -18,10 +18,10 @@ pub struct AgentId {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nick: Option<String>,
-    /// Logical channel (tmux session name, future: workspace ID).
+    /// Logical channel (directory path or user-set name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
-    /// Transport-specific locator (tmux pane ID, socket path, etc.).
+    /// Transport-specific locator (pane ID, agent name, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
     /// Agent system type: "sidekar", "agentbus", etc.

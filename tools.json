@@ -1202,7 +1202,7 @@
   },
   {
     "name": "monitor",
-    "description": "Watch tabs for title/favicon changes. Requires tmux or sidekar PTY wrapper.",
+    "description": "Watch tabs for title/favicon changes. Requires sidekar PTY wrapper.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1233,7 +1233,7 @@
       "properties": {
         "all": {
           "type": "boolean",
-          "description": "If true, discover agents across all tmux sessions via IPC sockets (not just current channel)"
+          "description": "If true, discover agents across all channels (not just current channel)"
         }
       },
       "required": []

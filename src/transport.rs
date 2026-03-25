@@ -16,32 +16,11 @@ pub trait Transport: Send + Sync {
     /// Deliver a pre-formatted message to `target`.
     ///
     /// What `target` means depends on the transport:
-    /// - [`TmuxPaste`]: tmux pane display ID (e.g. `"0:0.1"`)
     /// - [`Broker`]: recipient agent name
     fn deliver(&self, target: &str, message: &str, from: &str) -> Result<DeliveryResult>;
 
     /// Transport name for logging.
     fn name(&self) -> &'static str;
-}
-
-// ---------------------------------------------------------------------------
-// Tmux paste transport
-// ---------------------------------------------------------------------------
-
-/// Delivers messages by pasting into a tmux pane.
-pub struct TmuxPaste;
-
-impl Transport for TmuxPaste {
-    fn deliver(&self, target: &str, message: &str, _from: &str) -> Result<DeliveryResult> {
-        match crate::ipc::send_to_pane(target, message) {
-            Ok(()) => Ok(DeliveryResult::Delivered),
-            Err(e) => Ok(DeliveryResult::Failed(e.to_string())),
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "tmux-paste"
-    }
 }
 
 // ---------------------------------------------------------------------------

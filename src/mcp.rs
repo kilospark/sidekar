@@ -91,19 +91,9 @@ pub async fn run_mcp_server() -> Result<()> {
         ctx.cdp_port = port;
     }
 
-    // Auto-register on the sidekar bus and start IPC socket
+    // Auto-register on the sidekar bus
     let mut bus_state = bus::SidekarBusState::new();
     bus_state.do_register(None);
-
-    // Start bus message poller — reads from SQLite queue, delivers to tmux pane
-    if !bus_state.inherited_pty {
-        if let (Some(name), Some(pane_display)) = (bus_state.name(), bus_state.pane()) {
-            crate::poller::start_poller(
-                name.to_string(),
-                crate::poller::DeliverySink::TmuxPane(pane_display.to_string()),
-            );
-        }
-    }
 
     // Start cron background loop (restores persisted jobs from broker)
     let cron_ctx = commands::cron::CronContext::from_app_context(&ctx);
@@ -204,10 +194,9 @@ pub async fn run_mcp_server() -> Result<()> {
                             format!(
                                 "{MCP_INSTRUCTIONS}\n\n## Agent Bus\n\n\
                                  **Not connected to the agent bus.** Bus tools (register, who, bus_send, bus_done) \
-                                 are unavailable because this session is not running inside a sidekar PTY wrapper or tmux.\n\n\
-                                 To enable multi-agent communication, run your agent with:\n\
-                                 - **`sidekar <cmd>`** (recommended) — e.g. `sidekar claude` or `sidekar codex` — wraps the agent in a PTY with automatic bus registration\n\
-                                 - **tmux** (any pane) — the bus auto-detects tmux panes\n"
+                                 are unavailable because this session is not running inside a sidekar PTY wrapper.\n\n\
+                                 To enable multi-agent communication, launch your agent with:\n\
+                                 - `sidekar claude`, `sidekar codex`, etc. — wraps the agent in a PTY with automatic bus registration\n"
                             )
                         };
 
@@ -478,9 +467,6 @@ pub async fn run_mcp_server() -> Result<()> {
         let sid = ctx.require_session_id().unwrap_or("unknown").to_string();
         let _ = std::fs::remove_file(ctx.session_state_file(&sid));
     }
-
-    // Stop bus message poller
-    crate::poller::shutdown_poller();
 
     Ok(())
 }

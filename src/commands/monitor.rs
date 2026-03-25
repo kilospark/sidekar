@@ -1,4 +1,3 @@
-use crate::ipc;
 use crate::message::DeliveryResult;
 use crate::transport::{self, Transport};
 use crate::*;
@@ -69,17 +68,9 @@ pub(crate) fn deliver_notification(delivery: &Delivery, message: &str) -> Result
 }
 
 /// Resolve the delivery transport for monitor notifications.
-/// Uses tmux paste if in tmux, or broker queue for PTY-wrapped agents.
+/// Uses broker queue for delivery.
 pub(crate) fn resolve_delivery() -> Result<Delivery> {
-    // Try tmux pane detection — direct paste
-    if let Some(pane) = ipc::detect_tmux_pane() {
-        return Ok(Delivery {
-            transport: Box::new(transport::TmuxPaste),
-            target: pane.display_id.clone(),
-        });
-    }
-
-    // Not in tmux — deliver via broker queue to our own agent
+    // Deliver via broker queue to our own agent
     if let Ok(agents) = crate::broker::list_agents(None) {
         let my_pid = std::process::id().to_string();
         let my_pane = format!("pty-{my_pid}");
@@ -102,7 +93,7 @@ pub(crate) fn resolve_delivery() -> Result<Delivery> {
 
     bail!(
         "monitor: cannot find a delivery target. \
-         Run inside tmux or a sidekar PTY wrapper (sidekar claude, etc.)."
+         Run inside a sidekar PTY wrapper (sidekar claude, sidekar codex, etc.)."
     )
 }
 

@@ -2,7 +2,7 @@
 //!
 //! This module is intentionally narrow: it persists agent registrations,
 //! pending inbound envelopes, and outbound request tracking so the bus can
-//! stop using tmux pane options and process-local vectors as state stores.
+//! provide durable state for bus coordination.
 
 use crate::message::{AgentId, Envelope};
 use crate::*;
@@ -746,8 +746,8 @@ mod tests {
                 &sender.name,
                 &sender.display_name(),
                 &envelope.to,
-                "tmux-paste",
-                "%2",
+                "broker",
+                "receiver",
                 envelope.created_at,
             )?;
 

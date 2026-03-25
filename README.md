@@ -80,11 +80,11 @@ Agents discover and message each other via a local bus backed by a SQLite broker
 
 ### PTY wrapper (recommended)
 
-`sidekar claude`, `sidekar codex`, etc. launch the agent inside a sidekar-owned PTY with automatic bus registration, input injection, signal forwarding, resize handling, and terminal title updates showing the agent's nickname. The recommended way to run multi-agent workflows. Also works inside tmux for a visual multi-pane layout.
+`sidekar claude`, `sidekar codex`, etc. launch the agent inside a sidekar-owned PTY with automatic bus registration, input injection, signal forwarding, resize handling, and terminal title updates showing the agent's nickname. The recommended way to run multi-agent workflows. 
 
 ### Tab monitoring
 
-Watch browser tabs for title and favicon changes. Detects new Slack messages, new emails, Grafana alerts. Debounced, skips agent-initiated changes, delivers notifications via the agent bus. Works with both PTY-wrapped agents and tmux panes.
+Watch browser tabs for title and favicon changes. Detects new Slack messages, new emails, Grafana alerts. Debounced, skips agent-initiated changes, delivers notifications via the agent bus. 
 
 ### Cron scheduling
 
@@ -293,7 +293,7 @@ sidekar codex [args]            # Launch Codex in a sidekar PTY
 sidekar copilot [args]          # Launch any agent with bus integration
 ```
 
-Each agent gets automatic bus registration, a unique nickname shown in the terminal title, and input injection via Unix sockets. No tmux required (but works inside tmux too for multi-pane layouts).
+Each agent gets automatic bus registration, a unique nickname shown in the terminal title, and input injection via Unix sockets. 
 
 ### Monitoring
 
@@ -303,7 +303,7 @@ sidekar monitor stop            # Stop watching
 sidekar monitor status          # Show watcher state
 ```
 
-Works with both PTY-wrapped agents and tmux panes.
+
 
 ### Scheduling
 
@@ -375,10 +375,10 @@ sidekar feedback <rating> [txt] # Send feedback (1-5)
 - **CLI** (`main.rs` → `commands/mod.rs`): Direct dispatch to same command implementations
 - **PTY Wrapper** (`pty.rs`): Fork+exec agents in a PTY, register on bus, bridge I/O, signal forwarding
 - **CDP Client** (`lib.rs`): Raw WebSocket to Chrome's debug port, request/response matching, event queue, auto-dialog handling, connection retry, TCP keepalive
-- **Agent Bus** (`bus.rs` + `broker.rs` + `message.rs` + `transport.rs`): SQLite-backed agent registry, typed envelope protocol (request/response/fyi/done), delivery via Unix sockets (primary) or tmux paste (fallback), nudge timers, timeout tracking
+- **Agent Bus** (`bus.rs` + `broker.rs` + `message.rs` + `transport.rs`): SQLite-backed agent registry, typed envelope protocol (request/response/fyi/done), delivery via SQLite message queue, nudge timers, timeout tracking
 - **Desktop** (`desktop/`): macOS-only Accessibility API (`objc2-app-kit`), screen capture (`screencapturekit`), input simulation (`enigo`)
-- **Monitor** (`commands/monitor.rs`): Background task watches tab titles/favicons via CDP, delivers notifications via bus transport. Works with both PTY-wrapped agents and tmux panes
-- **IPC** (`ipc.rs`): Unix domain socket listener for cross-session messaging, PTY and tmux pane detection
+- **Monitor** (`commands/monitor.rs`): Background task watches tab titles/favicons via CDP, delivers notifications via bus transport. 
+
 - **Tunnel** (`tunnel.rs`): WSS connection to relay server for remote session access, auto-reconnect with exponential backoff
 
 ## Token Stats
@@ -487,8 +487,8 @@ src/
 ├── bus.rs               # Agent bus: registration, messaging, nudge timers
 ├── broker.rs            # SQLite-backed agent registry and message persistence
 ├── message.rs           # Typed envelope protocol (AgentId, Envelope, MessageKind)
-├── transport.rs         # Message delivery trait + tmux paste / Unix socket impls
-├── ipc.rs               # Unix domain socket listener, tmux pane detection
+├── transport.rs         # Message delivery trait + SQLite broker transport
+├── ipc.rs               # Legacy stub (sockets replaced by SQLite queue)
 ├── pty.rs               # PTY wrapper for launching agents (fork+exec)
 ├── tunnel.rs            # WSS tunnel client for relay server
 ├── desktop/
