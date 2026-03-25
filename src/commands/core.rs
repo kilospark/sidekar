@@ -98,6 +98,7 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         format!("--user-data-dir={}", user_data_dir.to_string_lossy()),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
+        "--disable-blink-features=AutomationControlled".to_string(),
     ];
     if headless {
         chrome_args.push("--headless=new".to_string());
@@ -176,6 +177,27 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         );
     }
 
+    // Inject stealth script to hide CDP automation markers from sites.
+    // Uses the first available tab to set Page.addScriptToEvaluateOnNewDocument
+    // which persists across all future navigations in this browser session.
+    if let Ok(tabs) = get_debug_tabs(ctx).await {
+        if let Some(tab) = tabs.first() {
+            if let Some(ref ws_url) = tab.web_socket_debugger_url {
+                if let Ok(mut cdp) = CdpClient::connect(ws_url).await {
+                    let _ = cdp
+                        .send(
+                            "Page.addScriptToEvaluateOnNewDocument",
+                            json!({
+                                "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+                            }),
+                        )
+                        .await;
+                    cdp.close().await;
+                }
+            }
+        }
+    }
+
     // Snapshot Chrome's initial default tabs before creating the session window
     let initial_tabs: Vec<String> = get_debug_tabs(ctx)
         .await
@@ -227,6 +249,21 @@ pub(super) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
     } else {
         (create_new_tab(ctx, None).await?, false)
     };
+
+    // Inject stealth script to hide navigator.webdriver on all future navigations.
+    if let Some(ref ws_url) = new_tab.web_socket_debugger_url {
+        if let Ok(mut cdp) = CdpClient::connect(ws_url).await {
+            let _ = cdp
+                .send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({
+                        "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+                    }),
+                )
+                .await;
+            cdp.close().await;
+        }
+    }
 
     // Only capture window_id when this session owns its own window.
     // If we fell back to create_new_tab, the window is shared and we must not
@@ -1023,6 +1060,22 @@ pub(super) async fn cmd_new_tab(ctx: &mut AppContext, url: Option<&str>) -> Resu
         bail!("Tab limit reached ({max_tabs}). Close a tab first, or increase max_tabs in config.");
     }
     let new_tab = create_new_tab(ctx, url).await?;
+
+    // Inject stealth script on the new tab
+    if let Some(ref ws_url) = new_tab.web_socket_debugger_url {
+        if let Ok(mut cdp) = CdpClient::connect(ws_url).await {
+            let _ = cdp
+                .send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({
+                        "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+                    }),
+                )
+                .await;
+            cdp.close().await;
+        }
+    }
+
     state.tabs.push(new_tab.id.clone());
     state.active_tab_id = Some(new_tab.id.clone());
     ctx.save_session_state(&state)?;
