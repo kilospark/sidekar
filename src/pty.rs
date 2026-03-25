@@ -387,6 +387,10 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         None
     };
 
+    // Set terminal title to show agent nickname and name
+    // OSC 0 sets both window title and icon name; works in all major terminals + tmux
+    eprint!("\x1b]0;{} ({}) — {}\x07", nick, identity.name, agent);
+
     // Enter raw mode (must happen after eprintln messages)
     let raw_guard = RawModeGuard::enter()?;
 
@@ -395,6 +399,9 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     // Cleanup: restore terminal, unregister, remove socket
     drop(raw_guard);
+
+    // Reset terminal title
+    eprint!("\x1b]0;\x07");
 
     ipc::shutdown_listeners();
     let _ = broker::unregister_agent(&identity.name);

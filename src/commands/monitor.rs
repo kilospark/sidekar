@@ -25,7 +25,7 @@ fn last_tool_action_ms() -> u64 {
 }
 
 /// How the monitor delivers notifications — transport + target.
-struct Delivery {
+pub(crate) struct Delivery {
     transport: Box<dyn Transport>,
     target: String,
 }
@@ -57,7 +57,7 @@ async fn monitor_cell() -> &'static Mutex<Option<MonitorState>> {
 }
 
 /// Deliver a notification message using the chosen transport.
-fn deliver_notification(delivery: &Delivery, message: &str) -> Result<()> {
+pub(crate) fn deliver_notification(delivery: &Delivery, message: &str) -> Result<()> {
     let formatted = format!("[from sidekar-monitor]: {message}");
     match delivery
         .transport
@@ -68,11 +68,71 @@ fn deliver_notification(delivery: &Delivery, message: &str) -> Result<()> {
     }
 }
 
+/// Resolve the delivery transport for monitor notifications.
+/// Tries (in order): IPC socket for tmux pane, IPC socket for bus-registered agent,
+/// direct tmux paste as fallback.
+pub(crate) fn resolve_delivery() -> Result<Delivery> {
+    // Try tmux pane detection first
+    if let Some(pane) = ipc::detect_tmux_pane() {
+        if let Some(sock) = ipc::find_socket_for_pane(&pane.unique_id) {
+            eprintln!("monitor: using IPC socket for delivery: {}", sock.display());
+            return Ok(Delivery {
+                transport: Box::new(transport::Socket),
+                target: sock.to_string_lossy().to_string(),
+            });
+        }
+        eprintln!(
+            "monitor: no IPC socket found, using direct tmux paste to {}",
+            pane.display_id
+        );
+        return Ok(Delivery {
+            transport: Box::new(transport::TmuxPaste),
+            target: pane.display_id.clone(),
+        });
+    }
+
+    // Not in tmux — look for our own agent socket via the broker
+    // (covers sidekar PTY wrapper and standalone MCP sessions)
+    if let Ok(agents) = crate::broker::list_agents(None) {
+        let my_pid = std::process::id().to_string();
+        let my_pane = format!("pty-{my_pid}");
+        for agent in &agents {
+            let matches_pty = agent.pane_unique_id.as_deref() == Some(&my_pane);
+            let matches_socket = agent.socket_path.is_some();
+            if matches_pty && matches_socket {
+                let sock = agent.socket_path.as_ref().unwrap();
+                eprintln!("monitor: using PTY agent socket for delivery: {sock}");
+                return Ok(Delivery {
+                    transport: Box::new(transport::Socket),
+                    target: sock.clone(),
+                });
+            }
+        }
+        // Fall back: use the first agent that has a socket path (likely us)
+        for agent in &agents {
+            if let Some(ref sock) = agent.socket_path {
+                if std::path::Path::new(sock).exists() {
+                    eprintln!("monitor: using agent socket for delivery: {sock}");
+                    return Ok(Delivery {
+                        transport: Box::new(transport::Socket),
+                        target: sock.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    bail!(
+        "monitor: cannot find a delivery target. \
+         Run inside tmux, a sidekar PTY wrapper (sidekar claude, etc.), \
+         or ensure the agent bus is registered."
+    )
+}
+
 /// Start the monitor background task.
 async fn start_monitor(
     ctx: &mut AppContext,
     tab_ids: Vec<String>,
-    pane: ipc::DetectedPane,
 ) -> Result<()> {
     let cell = monitor_cell().await;
     let mut guard = cell.lock().await;
@@ -118,23 +178,7 @@ async fn start_monitor(
         bail!("No valid tabs to monitor. Use tab IDs from `tabs` command, or \"all\".");
     }
 
-    // Choose delivery transport: prefer IPC socket, fall back to direct tmux paste
-    let delivery = if let Some(sock) = ipc::find_socket_for_pane(&pane.unique_id) {
-        eprintln!("monitor: using IPC socket for delivery: {}", sock.display());
-        Delivery {
-            transport: Box::new(transport::Socket),
-            target: sock.to_string_lossy().to_string(),
-        }
-    } else {
-        eprintln!(
-            "monitor: no IPC socket found, using direct tmux paste to {}",
-            pane.display_id
-        );
-        Delivery {
-            transport: Box::new(transport::TmuxPaste),
-            target: pane.display_id.clone(),
-        }
-    };
+    let delivery = resolve_delivery()?;
 
     let running = Arc::new(AtomicBool::new(true));
     let event_count = Arc::new(AtomicU64::new(0));
@@ -584,9 +628,6 @@ pub async fn cmd_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     match sub {
         "start" => {
-            let pane = ipc::detect_tmux_pane()
-                .ok_or_else(|| anyhow!("monitor requires tmux — not running in a tmux pane"))?;
-
             let tab_ids: Vec<String> = args
                 .iter()
                 .skip(1)
@@ -598,7 +639,7 @@ pub async fn cmd_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 bail!("Usage: monitor start <tab_id|tab_id2|all>");
             }
 
-            start_monitor(ctx, tab_ids, pane).await
+            start_monitor(ctx, tab_ids).await
         }
         "stop" => {
             let cell = monitor_cell().await;

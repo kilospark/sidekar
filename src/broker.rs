@@ -102,6 +102,28 @@ fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     // Migration: add cwd column if missing (existing databases)
     let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN cwd TEXT");
+
+    // Cron jobs table
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS cron_jobs (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            schedule TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            target TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            last_run_at INTEGER,
+            run_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_cron_active
+            ON cron_jobs(active);
+        ",
+    )?;
     Ok(())
 }
 
@@ -467,6 +489,121 @@ fn row_to_outbound(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboundRequestR
         transport_target: row.get(5)?,
         created_at: row.get::<_, i64>(6)? as u64,
         nudge_count: row.get::<_, i64>(7)? as u32,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Cron jobs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct CronJobRecord {
+    pub id: String,
+    pub name: Option<String>,
+    pub schedule: String,
+    pub action_json: String,
+    pub target: String,
+    pub created_by: String,
+    pub created_at: u64,
+    pub last_run_at: Option<u64>,
+    pub run_count: u64,
+    pub error_count: u64,
+    pub last_error: Option<String>,
+    pub active: bool,
+}
+
+pub fn create_cron_job(
+    id: &str,
+    name: Option<&str>,
+    schedule: &str,
+    action_json: &str,
+    target: &str,
+    created_by: &str,
+) -> Result<()> {
+    let conn = open()?;
+    let now = crate::message::epoch_secs() as i64;
+    conn.execute(
+        "INSERT INTO cron_jobs (id, name, schedule, action_json, target, created_by, created_at, active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+        params![id, name, schedule, action_json, target, created_by, now],
+    )?;
+    Ok(())
+}
+
+pub fn list_cron_jobs(active_only: bool) -> Result<Vec<CronJobRecord>> {
+    let conn = open()?;
+    let sql = if active_only {
+        "SELECT id, name, schedule, action_json, target, created_by, created_at,
+                last_run_at, run_count, error_count, last_error, active
+         FROM cron_jobs WHERE active = 1 ORDER BY created_at ASC"
+    } else {
+        "SELECT id, name, schedule, action_json, target, created_by, created_at,
+                last_run_at, run_count, error_count, last_error, active
+         FROM cron_jobs ORDER BY created_at ASC"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query([])?;
+    let mut jobs = Vec::new();
+    while let Some(row) = rows.next()? {
+        jobs.push(row_to_cron_job(row)?);
+    }
+    Ok(jobs)
+}
+
+pub fn get_cron_job(id: &str) -> Result<Option<CronJobRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, schedule, action_json, target, created_by, created_at,
+                last_run_at, run_count, error_count, last_error, active
+         FROM cron_jobs WHERE id = ?1 LIMIT 1",
+    )?;
+    stmt.query_row(params![id], row_to_cron_job)
+        .optional()
+        .map_err(Into::into)
+}
+
+pub fn delete_cron_job(id: &str) -> Result<bool> {
+    let conn = open()?;
+    let rows = conn.execute(
+        "UPDATE cron_jobs SET active = 0 WHERE id = ?1 AND active = 1",
+        params![id],
+    )?;
+    Ok(rows > 0)
+}
+
+pub fn update_cron_job_run(id: &str, error: Option<&str>) -> Result<()> {
+    let conn = open()?;
+    let now = crate::message::epoch_secs() as i64;
+    if let Some(err_msg) = error {
+        conn.execute(
+            "UPDATE cron_jobs SET last_run_at = ?2, run_count = run_count + 1,
+             error_count = error_count + 1, last_error = ?3 WHERE id = ?1",
+            params![id, now, err_msg],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE cron_jobs SET last_run_at = ?2, run_count = run_count + 1,
+             last_error = NULL WHERE id = ?1",
+            params![id, now],
+        )?;
+    }
+    Ok(())
+}
+
+fn row_to_cron_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRecord> {
+    Ok(CronJobRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        schedule: row.get(2)?,
+        action_json: row.get(3)?,
+        target: row.get(4)?,
+        created_by: row.get(5)?,
+        created_at: row.get::<_, i64>(6)? as u64,
+        last_run_at: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+        run_count: row.get::<_, i64>(8)? as u64,
+        error_count: row.get::<_, i64>(9)? as u64,
+        last_error: row.get(10)?,
+        active: row.get::<_, i64>(11)? != 0,
     })
 }
 

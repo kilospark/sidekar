@@ -17,6 +17,8 @@ pub struct SidekarConfig {
     pub max_tabs: usize,
     #[serde(default = "default_cdp_timeout")]
     pub cdp_timeout_secs: u64,
+    #[serde(default = "default_max_cron_jobs")]
+    pub max_cron_jobs: usize,
 }
 
 fn default_true() -> bool {
@@ -31,6 +33,10 @@ fn default_cdp_timeout() -> u64 {
     60
 }
 
+fn default_max_cron_jobs() -> usize {
+    10
+}
+
 impl Default for SidekarConfig {
     fn default() -> Self {
         Self {
@@ -40,6 +46,7 @@ impl Default for SidekarConfig {
             auto_update: true,
             max_tabs: default_max_tabs(),
             cdp_timeout_secs: default_cdp_timeout(),
+            max_cron_jobs: default_max_cron_jobs(),
         }
     }
 }
