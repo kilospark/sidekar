@@ -65,6 +65,7 @@ fn category_tools(cat: &str) -> Option<&'static [&'static str]> {
         "session" => Some(&[
             "hover", "lock", "unlock", "activate", "minimize", "kill", "monitor", "frames", "frame",
         ]),
+        "scheduling" => Some(&["cron_create", "cron_list", "cron_delete"]),
         "meta" => Some(&["feedback", "config", "install"]),
         "all" => None, // special: loads everything
         _ => None,
@@ -115,6 +116,10 @@ pub async fn run_mcp_server() -> Result<()> {
         None
     };
     bus_state.set_socket_path(ipc_socket_path.clone());
+
+    // Start cron background loop (restores persisted jobs from broker)
+    let cron_ctx = commands::cron::CronContext::from_app_context(&ctx);
+    commands::cron::start_cron_loop(cron_ctx).await;
 
     let cfg = config::load_config();
     set_cdp_timeout_secs(cfg.cdp_timeout_secs);
@@ -211,10 +216,10 @@ pub async fn run_mcp_server() -> Result<()> {
                             format!(
                                 "{MCP_INSTRUCTIONS}\n\n## Agent Bus\n\n\
                                  **Not connected to the agent bus.** Bus tools (register, who, bus_send, bus_done) \
-                                 are unavailable because this session is not running inside tmux or a sidekar PTY wrapper.\n\n\
-                                 To enable multi-agent communication, run your agent inside one of:\n\
-                                 - **tmux** (any pane) — the bus auto-detects tmux panes\n\
-                                 - **`sidekar <cmd>`** — e.g. `sidekar claude` or `sidekar codex` — wraps the agent in a PTY with bus registration\n"
+                                 are unavailable because this session is not running inside a sidekar PTY wrapper or tmux.\n\n\
+                                 To enable multi-agent communication, run your agent with:\n\
+                                 - **`sidekar <cmd>`** (recommended) — e.g. `sidekar claude` or `sidekar codex` — wraps the agent in a PTY with automatic bus registration\n\
+                                 - **tmux** (any pane) — the bus auto-detects tmux panes\n"
                             )
                         };
 
@@ -564,6 +569,9 @@ async fn handle_tool_call(
             | "who"
             | "bus_send"
             | "bus_done"
+            | "cron_create"
+            | "cron_list"
+            | "cron_delete"
             | "register"
             | "unregister"
             | "desktop_screenshot"
@@ -621,6 +629,9 @@ async fn handle_tool_call(
             }
         }
 
+        // Update cron context now that we have a browser session
+        let updated_cron_ctx = commands::cron::CronContext::from_app_context(ctx);
+        commands::cron::update_cron_context(updated_cron_ctx).await;
     }
 
     // Handle bus tools directly (they need bus_state, not the command dispatch)
@@ -678,6 +689,27 @@ async fn handle_tool_call(
         }
         "unregister" => {
             bus::cmd_unregister(bus_state, ctx)?;
+            let output = ctx.drain_output();
+            return Ok(vec![json!({"type": "text", "text": output.trim_end()})]);
+        }
+        "cron_create" => {
+            let schedule = arguments.get("schedule").and_then(Value::as_str).unwrap_or_default();
+            let action = arguments.get("action").cloned().unwrap_or(Value::Null);
+            let target = arguments.get("target").and_then(Value::as_str).unwrap_or("self");
+            let name = arguments.get("name").and_then(Value::as_str);
+            let created_by = bus_state.name().unwrap_or("unknown").to_string();
+            commands::cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by).await?;
+            let output = ctx.drain_output();
+            return Ok(vec![json!({"type": "text", "text": output.trim_end()})]);
+        }
+        "cron_list" => {
+            commands::cron::cmd_cron_list(ctx).await?;
+            let output = ctx.drain_output();
+            return Ok(vec![json!({"type": "text", "text": output.trim_end()})]);
+        }
+        "cron_delete" => {
+            let id = arguments.get("id").and_then(Value::as_str).unwrap_or_default();
+            commands::cron::cmd_cron_delete(ctx, id).await?;
             let output = ctx.drain_output();
             return Ok(vec![json!({"type": "text", "text": output.trim_end()})]);
         }

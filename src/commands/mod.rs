@@ -2,6 +2,7 @@ use crate::*;
 
 mod batch;
 mod core;
+pub mod cron;
 mod data;
 mod desktop;
 mod interaction;

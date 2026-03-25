@@ -576,6 +576,9 @@ impl SidekarBusState {
         if let (Some(name), Some(nick), Some(channel), Some(pane)) =
             (self.name(), self.nick(), self.channel(), self.pane())
         {
+            // Set terminal title to show agent nickname (works in tmux + standalone terminals)
+            let agent_type = detect_agent_type();
+            eprint!("\x1b]0;{nick} ({name}) — {agent_type}\x07");
             eprintln!(
                 "sidekar bus: registered as \"{name}\" aka \"{nick}\" on channel \"{channel}\" (pane {pane})"
             );

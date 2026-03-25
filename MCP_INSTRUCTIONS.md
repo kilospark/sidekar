@@ -249,7 +249,7 @@ Take a screenshot after applying the grid to see coordinate mappings, then click
 
 ## Monitor (Tab Watching)
 
-Watch tabs for title and favicon changes (new Slack message, new email, etc.). Requires tmux.
+Watch tabs for title and favicon changes (new Slack message, new email, etc.). Works with both sidekar PTY-wrapped agents and tmux panes.
 
 - **`monitor start <tabs>`:** Pass tab IDs (comma-separated) or `"all"`. Watches title changes and favicon changes (detects apps like Slack/Gmail that use favicon badges). Debounced 3s, skips agent-initiated changes, delivers via IPC.
 - **`monitor stop`:** Stop the watcher.
@@ -257,13 +257,38 @@ Watch tabs for title and favicon changes (new Slack message, new email, etc.). R
 
 **Example:** Open Gmail + Slack → `monitor start all` → continue working → Gmail title changes to "Inbox (1)" or Slack favicon shows red dot → you receive a notification.
 
+## Cron (Scheduled Jobs)
+
+Run sidekar tools on a recurring schedule. Jobs persist across MCP session restarts via SQLite.
+
+- **`cron_create`:** Create a scheduled job with a standard 5-field cron expression. Specify an action (single tool or batch sequence) and a target agent for result delivery.
+- **`cron_list`:** Show all active jobs with schedule, run count, last error, and running state.
+- **`cron_delete`:** Remove a job by ID (soft-delete).
+
+**Schedule examples:**
+- `*/5 * * * *` — every 5 minutes
+- `0 9 * * 1-5` — 9:00 AM on weekdays
+- `30 */2 * * *` — every 2 hours at :30
+- `0 0 * * 0` — midnight every Sunday
+
+**Action examples:**
+- Single tool: `{"tool": "screenshot", "args": {"full": true}}`
+- Batch: `{"batch": [{"tool": "navigate", "url": "https://grafana.example.com"}, {"tool": "screenshot"}]}`
+
+**Target:** Agent name from `who`, or `"self"` to deliver results to this agent.
+
+**Example:** Watch a dashboard every 5 minutes:
+```
+cron_create(schedule: "*/5 * * * *", action: {"batch": [{"tool": "navigate", "url": "https://grafana.example.com/dashboard"}, {"tool": "screenshot", "args": {"output": "/tmp/dashboard.png"}}]}, target: "self", name: "dashboard-check")
+```
+
 ## Agent Bus (Multi-Agent Communication)
 
-When running inside tmux, agents can discover and message each other across panes and sessions.
+Agents can discover and message each other across sessions. Works with sidekar PTY wrappers (`sidekar claude`, `sidekar codex`, etc.) and tmux panes.
 
 - **`register`:** Register on the bus with a name (auto-assigned if omitted). Auto-called by the MCP server on startup.
 - **`unregister`:** Leave the bus.
-- **`who`:** List all agents on your channel. Use `all=true` to discover agents across all tmux sessions.
+- **`who`:** List all agents on your channel. Use `all=true` to discover agents across all sessions via IPC sockets.
 - **`bus_send`:** Send a message to another agent by name, or `@all` to broadcast. Kinds: `request` (expects response), `response` (answers a prior request), `fyi` (informational).
 - **`bus_done`:** Hand off to another agent with a summary of what you did and what they should do next.
 

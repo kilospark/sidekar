@@ -1202,7 +1202,7 @@
   },
   {
     "name": "monitor",
-    "description": "Watch tabs for title/favicon changes. Requires tmux.",
+    "description": "Watch tabs for title/favicon changes. Requires tmux or sidekar PTY wrapper.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1473,6 +1473,61 @@
         }
       },
       "required": []
+    }
+  },
+  {
+    "name": "cron_create",
+    "description": "Create a recurring scheduled job. Executes a sidekar tool or batch on a cron schedule and delivers results via the agent bus.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "schedule": {
+          "type": "string",
+          "description": "Standard 5-field cron expression (minute hour day-of-month month day-of-week). Examples: '*/5 * * * *' (every 5 min), '0 9 * * 1-5' (9am weekdays), '30 */2 * * *' (every 2 hours at :30)."
+        },
+        "action": {
+          "type": "object",
+          "description": "Action to execute. Either {\"tool\": \"screenshot\", \"args\": {...}} for a single tool, or {\"batch\": [{\"tool\": \"navigate\", \"url\": \"...\"}, ...]} for a sequence."
+        },
+        "target": {
+          "type": "string",
+          "description": "Agent name to deliver results to, or 'self' to deliver to this agent. Use agent names from `who`."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable label for this job (optional)."
+        }
+      },
+      "required": [
+        "schedule",
+        "action",
+        "target"
+      ]
+    }
+  },
+  {
+    "name": "cron_list",
+    "description": "List all active cron jobs with schedule, target, run count, and last error.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "cron_delete",
+    "description": "Delete a cron job by ID.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Job ID from cron_create or cron_list."
+        }
+      },
+      "required": [
+        "id"
+      ]
     }
   }
 ]
