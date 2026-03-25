@@ -95,27 +95,15 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut bus_state = bus::SidekarBusState::new();
     bus_state.do_register(None);
 
-    // Start IPC socket — skip if we inherited a PTY registration (socket already running)
-    let ipc_socket_path = if bus_state.inherited_pty {
-        eprintln!("sidekar ipc: inherited PTY socket, skipping listener");
-        None
-    } else if let (Some(name), Some(pane_display), Some(session), Some(unique_id)) = (
-        bus_state.name(),
-        bus_state.pane(),
-        bus_state.channel(),
-        bus_state.pane_unique_id.as_deref(),
-    ) {
-        match ipc::start_socket_listener(unique_id, pane_display, session, name, bus_state.nick(), ipc::InputSink::TmuxPane(pane_display.to_string())) {
-            Ok(path) => Some(path),
-            Err(e) => {
-                eprintln!("sidekar ipc: socket failed: {e}");
-                None
-            }
+    // Start bus message poller — reads from SQLite queue, delivers to tmux pane
+    if !bus_state.inherited_pty {
+        if let (Some(name), Some(pane_display)) = (bus_state.name(), bus_state.pane()) {
+            crate::poller::start_poller(
+                name.to_string(),
+                crate::poller::DeliverySink::TmuxPane(pane_display.to_string()),
+            );
         }
-    } else {
-        None
-    };
-    bus_state.set_socket_path(ipc_socket_path.clone());
+    }
 
     // Start cron background loop (restores persisted jobs from broker)
     let cron_ctx = commands::cron::CronContext::from_app_context(&ctx);
@@ -491,10 +479,8 @@ pub async fn run_mcp_server() -> Result<()> {
         let _ = std::fs::remove_file(ctx.session_state_file(&sid));
     }
 
-    // Clean up IPC socket
-    if let Some(path) = &ipc_socket_path {
-        let _ = std::fs::remove_file(path);
-    }
+    // Stop bus message poller
+    crate::poller::shutdown_poller();
 
     Ok(())
 }
