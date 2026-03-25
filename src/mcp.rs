@@ -135,11 +135,9 @@ pub async fn run_mcp_server() -> Result<()> {
         tokio::select! {
             biased;
             _ = sigterm.recv() => {
-                eprintln!("\nReceived SIGTERM, shutting down gracefully...");
                 shutdown = true;
             }
             _ = sigint.recv() => {
-                eprintln!("\nReceived SIGINT, shutting down gracefully...");
                 shutdown = true;
             }
             result = lines.next_line() => {
@@ -193,7 +191,6 @@ pub async fn run_mcp_server() -> Result<()> {
                                         if let Err(e) = api_client::self_update(&latest).await {
                                             eprintln!("Auto-update failed: {e}");
                                         } else {
-                                            eprintln!("Auto-updated to v{latest}. Restart MCP client to use.");
                                         }
                                     }
                                     Ok(None) => {}
@@ -412,7 +409,7 @@ pub async fn run_mcp_server() -> Result<()> {
                 // Every 30 minutes, flag that we should ask for feedback on next tool response
                 if !feedback_received && !feedback_prompted && session_tool_count >= 5 {
                     feedback_prompted = true;
-                    eprintln!("Feedback prompt queued (session {}s, {} tools used)", ctx.session_start.elapsed().as_secs(), session_tool_count);
+                    // feedback prompt queued silently
                 }
             }
             _ = telemetry_timer.tick() => {
@@ -420,7 +417,6 @@ pub async fn run_mcp_server() -> Result<()> {
                 if cfg.telemetry && !ctx.tool_counts.is_empty() {
                     let duration = ctx.session_start.elapsed().as_secs();
                     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-                    eprintln!("Periodic telemetry ({} tools, {}s)...", ctx.tool_counts.len(), duration);
                     match api_client::send_telemetry(
                         &ctx.session_id,
                         env!("CARGO_PKG_VERSION"),
@@ -431,10 +427,9 @@ pub async fn run_mcp_server() -> Result<()> {
                     .await
                     {
                         Ok(()) => {
-                            eprintln!("Periodic telemetry sent.");
                             ctx.tool_counts.clear();
                         }
-                        Err(e) => eprintln!("Periodic telemetry failed: {e}"),
+                        Err(_) => {},
                     }
                 }
             }
@@ -449,11 +444,6 @@ pub async fn run_mcp_server() -> Result<()> {
     if cfg.telemetry && !ctx.tool_counts.is_empty() {
         let duration = ctx.session_start.elapsed().as_secs();
         let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        eprintln!(
-            "Final telemetry ({} tools, {}s)...",
-            ctx.tool_counts.len(),
-            duration
-        );
         match api_client::send_telemetry(
             &ctx.session_id,
             env!("CARGO_PKG_VERSION"),
@@ -463,8 +453,8 @@ pub async fn run_mcp_server() -> Result<()> {
         )
         .await
         {
-            Ok(()) => eprintln!("Final telemetry sent."),
-            Err(e) => eprintln!("Final telemetry failed: {e}"),
+            Ok(()) => {},
+            Err(_) => {},
         }
     }
 
@@ -499,7 +489,6 @@ pub async fn run_mcp_server() -> Result<()> {
     // Clean up IPC socket
     if let Some(path) = &ipc_socket_path {
         let _ = std::fs::remove_file(path);
-        eprintln!("sidekar ipc: socket removed");
     }
 
     Ok(())
@@ -606,7 +595,6 @@ async fn handle_tool_call(
 
         if chrome_reachable {
             // Chrome is running — create our own isolated session with a fresh window
-            eprintln!("Creating isolated session for this agent...");
             ctx.current_session_id = None; // Clear so connect creates a new one
             if ctx.launch_browser_name.is_none() {
                 ctx.launch_browser_name = crate::detect_browser_from_port(ctx).await;
@@ -614,14 +602,11 @@ async fn handle_tool_call(
             ctx.output.clear();
             commands::dispatch(ctx, "connect", &[]).await?;
             let connect_output = ctx.drain_output();
-            eprintln!("Session created: {}", connect_output.trim());
         } else {
             // No Chrome running — launch it (which also creates a session)
-            eprintln!("Auto-launching browser for {tool_name}...");
             ctx.output.clear();
             commands::dispatch(ctx, "launch", &[]).await?;
             let launch_output = ctx.drain_output();
-            eprintln!("Auto-launch complete: {}", launch_output.trim());
         }
 
         // Refocus the app that was active before Chrome took focus.
