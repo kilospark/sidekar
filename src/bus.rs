@@ -1,13 +1,12 @@
 //! Sidekar bus — registration, message tracking, and coordination.
 //!
 //! Provides agent identity management, pending message tracking, nudge
-//! timers, broadcast, and bus handoffs. Built on top of the ipc module's
-//! socket and paste primitives, with durable state stored in the broker.
+//! timers, broadcast, and bus handoffs. Durable state stored in the broker
+//! SQLite database, delivery via the broker message queue.
 
 use crate::broker::{self, BrokerAgent};
-use crate::ipc;
 use crate::message::{epoch_secs, AgentId, Envelope, MessageKind};
-use crate::transport::{TmuxPaste, Transport};
+use crate::transport::Transport;
 use crate::*;
 
 const PENDING_GRACE_SECS: u64 = 30;
@@ -17,7 +16,6 @@ const NUDGE_BACKOFF_SECS: u64 = 90;
 const NUDGE_MAX: u32 = 3;
 const NUDGE_POLL_SECS: u64 = 5;
 const NUDGE_BUSY_CHECK_SECS: u64 = 3;
-const TMUX_TRANSPORT: &str = "tmux-paste";
 const BROKER_TRANSPORT: &str = "broker";
 
 // --- PTY registration inheritance ---
@@ -292,43 +290,21 @@ const NICKNAMES: &[&str] = &[
     "zorilla",
 ];
 
-/// Pick a random unused nickname from the pool.
+/// Pick a random unused nickname from the broker pool.
 fn pick_nickname() -> String {
-    use rand::seq::SliceRandom;
-
-    let used: HashSet<String> = list_tmux_agents()
-        .into_iter()
-        .filter_map(|a| a.id.nick)
-        .collect();
-    let mut available: Vec<&str> = NICKNAMES
-        .iter()
-        .filter(|n| !used.contains(**n))
-        .copied()
-        .collect();
-    available.shuffle(&mut rand::rng());
-    available.first().map(|s| s.to_string()).unwrap_or_else(|| {
-        let r: u16 = rand::random();
-        format!("agent-{:04x}", r)
-    })
+    pick_nickname_standalone()
 }
 
-/// Pick a nickname using the broker for used-name checks (works without tmux).
+/// Pick a nickname using the broker for used-name checks.
 pub fn pick_nickname_standalone() -> String {
     use rand::seq::SliceRandom;
 
     let mut used: HashSet<String> = HashSet::new();
-    // Check broker
     if let Ok(agents) = broker::list_agents(None) {
         for agent in agents {
             if let Some(nick) = agent.id.nick {
                 used.insert(nick);
             }
-        }
-    }
-    // Also check tmux if available
-    for agent in list_tmux_agents() {
-        if let Some(nick) = agent.id.nick {
-            used.insert(nick);
         }
     }
     let mut available: Vec<&str> = NICKNAMES
@@ -351,38 +327,13 @@ struct DeliveryTarget {
 }
 
 #[derive(Debug, Clone)]
-struct TmuxAgent {
-    id: AgentId,
-    pane_target: String,
-}
 
-impl TmuxAgent {
-    fn name(&self) -> &str {
-        &self.id.name
-    }
-
-    fn nick(&self) -> Option<&str> {
-        self.id.nick.as_deref()
-    }
-
-    fn pane_display(&self) -> &str {
-        self.id.pane.as_deref().unwrap_or("?")
-    }
-
-    fn pane_target(&self) -> &str {
-        &self.pane_target
-    }
-
-    fn session(&self) -> &str {
-        self.id.session.as_deref().unwrap_or("?")
-    }
-}
 
 #[derive(Default)]
 pub struct SidekarBusState {
     /// Agent identity (None if not registered).
     pub identity: Option<AgentId>,
-    /// Unique tmux pane ID, e.g. "%42" (transport-specific).
+    /// Unique pane/session ID (e.g. "pty-12345" or "mcp-12345").
     pub pane_unique_id: Option<String>,
     pub socket_path: Option<PathBuf>,
     /// True when identity was inherited from a parent PTY wrapper.
@@ -470,12 +421,6 @@ impl SidekarBusState {
             }
         }
 
-        if let Some(pane) = self.pane().map(String::from) {
-            let _ = Command::new("tmux")
-                .args(["set-option", "-pu", "-t", &pane, "pane-border-format"])
-                .status();
-        }
-
         self.identity = None;
         self.pane_unique_id = None;
         self.active_nudges.clear();
@@ -486,33 +431,35 @@ impl SidekarBusState {
             self.unregister();
         }
 
-        let (pane, pane_unique, session) = match ipc::detect_tmux_pane() {
-            Some(detected) => (detected.display_id, detected.unique_id, detected.session),
-            None => {
-                // Not in tmux — check if a parent PTY wrapper registered us
-                if let Some(inherited) = inherit_pty_registration() {
-                    eprintln!(
-                        "sidekar bus: inherited PTY registration as \"{}\" aka \"{}\" on channel \"{}\"",
-                        inherited.name,
-                        inherited.nick.as_deref().unwrap_or("?"),
-                        inherited.session.as_deref().unwrap_or("?"),
-                    );
-                    self.pane_unique_id = inherited.pane.clone();
-                    // Mark as inherited so MCP server skips starting a duplicate socket
-                    self.inherited_pty = true;
-                    self.identity = Some(inherited);
-                }
-                return;
-            }
-        };
+        // Check if a parent PTY wrapper already registered us
+        if let Some(inherited) = inherit_pty_registration() {
+            eprintln!(
+                "sidekar bus: inherited PTY registration as \"{}\" aka \"{}\" on channel \"{}\"",
+                inherited.name,
+                inherited.nick.as_deref().unwrap_or("?"),
+                inherited.session.as_deref().unwrap_or("?"),
+            );
+            self.pane_unique_id = inherited.pane.clone();
+            self.inherited_pty = true;
+            self.identity = Some(inherited);
+            self.resume_nudges();
+            return;
+        }
+
+        // Not in a PTY wrapper — register as a standalone MCP session
+        let channel = crate::pty::detect_channel();
+        let pane_unique = format!("mcp-{}", std::process::id());
 
         let name = if let Some(custom) = custom_name {
             custom.to_string()
         } else {
             let agent_type = detect_agent_type();
             let project = detect_project_name();
-            let existing_names: HashSet<String> =
-                list_tmux_agents().into_iter().map(|a| a.id.name).collect();
+            let existing_names: HashSet<String> = broker::list_agents(None)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| a.id.name)
+                .collect();
             let mut n = 1u32;
             loop {
                 let candidate = format!("{agent_type}-{project}-{n}");
@@ -525,34 +472,11 @@ impl SidekarBusState {
 
         let nick = pick_nickname();
 
-        let _ = Command::new("tmux")
-            .args([
-                "set-option",
-                "-p",
-                "-t",
-                &pane,
-                "pane-border-format",
-                &format!(" {nick} ({name}) | #{{pane_title}} "),
-            ])
-            .status();
-
-        let border_status = Command::new("tmux")
-            .args(["show-option", "-pv", "-t", &pane, "pane-border-status"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_default();
-        if border_status.trim().is_empty() || border_status.trim() == "off" {
-            let _ = Command::new("tmux")
-                .args(["set-option", "-p", "-t", &pane, "pane-border-status", "top"])
-                .status();
-        }
-
         let identity = AgentId {
             name,
             nick: Some(nick),
-            session: Some(session),
-            pane: Some(pane),
+            session: Some(channel),
+            pane: Some(pane_unique.clone()),
             agent_type: Some("sidekar".into()),
         };
 
@@ -567,20 +491,14 @@ impl SidekarBusState {
         self.pane_unique_id = Some(pane_unique);
         self.active_nudges.clear();
 
-        if let Some(name) = self.name() {
-            if let Err(e) = broker::set_agent_socket_path(name, self.socket_path.as_deref()) {
-                eprintln!("sidekar bus: failed to persist socket path for {name}: {e}");
-            }
-        }
-
-        if let (Some(name), Some(nick), Some(channel), Some(pane)) =
-            (self.name(), self.nick(), self.channel(), self.pane())
+        if let (Some(name), Some(nick), Some(channel)) =
+            (self.name(), self.nick(), self.channel())
         {
-            // Set terminal title to show agent nickname (works in tmux + standalone terminals)
+            // Set terminal title
             let agent_type = detect_agent_type();
             eprint!("\x1b]0;{nick} ({name}) — {agent_type}\x07");
             eprintln!(
-                "sidekar bus: registered as \"{name}\" aka \"{nick}\" on channel \"{channel}\" (pane {pane})"
+                "sidekar bus: registered as \"{name}\" aka \"{nick}\" on channel \"{channel}\""
             );
         }
 
@@ -594,82 +512,18 @@ impl Drop for SidekarBusState {
     }
 }
 
-fn current_tmux_panes() -> HashMap<String, String> {
-    let output = Command::new("tmux")
-        .args([
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}",
-        ])
-        .output();
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return HashMap::new(),
-    };
-    let mut panes = HashMap::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut parts = line.split('\t');
-        let Some(unique_id) = parts.next() else {
-            continue;
-        };
-        let Some(display_id) = parts.next() else {
-            continue;
-        };
-        panes.insert(unique_id.to_string(), display_id.to_string());
-    }
-    panes
-}
-
-fn broker_agent_to_tmux(
-    agent: BrokerAgent,
-    pane_map: &HashMap<String, String>,
-) -> Option<TmuxAgent> {
-    let target = agent
-        .pane_unique_id
-        .clone()
-        .or_else(|| agent.id.pane.clone())?;
-
-    let mut id = agent.id;
-    if let Some(unique_id) = agent.pane_unique_id {
-        let display_id = pane_map.get(&unique_id)?.clone();
-        id.pane = Some(display_id);
-        Some(TmuxAgent {
-            id,
-            pane_target: unique_id,
-        })
-    } else {
-        Some(TmuxAgent {
-            id,
-            pane_target: target,
-        })
-    }
-}
-
-fn list_tmux_agents() -> Vec<TmuxAgent> {
-    let pane_map = current_tmux_panes();
-    match broker::list_agents(None) {
-        Ok(agents) => agents
-            .into_iter()
-            .filter_map(|agent| broker_agent_to_tmux(agent, &pane_map))
-            .collect(),
-        Err(e) => {
-            eprintln!("sidekar bus: failed to read broker agent list: {e}");
-            Vec::new()
-        }
-    }
-}
-
-fn find_agent_on_channel(name_or_nick: &str, channel: &str) -> Option<TmuxAgent> {
-    list_tmux_agents().into_iter().find(|a| {
-        (a.name() == name_or_nick || a.nick() == Some(name_or_nick)) && a.session() == channel
-    })
-}
-
-fn agents_on_channel(session: &str, exclude: &str) -> Vec<TmuxAgent> {
-    list_tmux_agents()
+fn find_agent_on_channel(name_or_nick: &str, channel: &str) -> Option<BrokerAgent> {
+    broker::list_agents(Some(channel))
+        .unwrap_or_default()
         .into_iter()
-        .filter(|a| a.session() == session && a.name() != exclude)
+        .find(|a| a.id.name == name_or_nick || a.id.nick.as_deref() == Some(name_or_nick))
+}
+
+fn agents_on_channel(session: &str, exclude: &str) -> Vec<BrokerAgent> {
+    broker::list_agents(Some(session))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.id.name != exclude)
         .collect()
 }
 
@@ -692,7 +546,6 @@ fn pending_message_exists(msg_id: &str) -> bool {
 
 fn deliver_via(transport_name: &str, target: &str, message: &str, from: &str) -> Result<()> {
     let result = match transport_name {
-        TMUX_TRANSPORT => TmuxPaste.deliver(target, message, from)?,
         BROKER_TRANSPORT => crate::transport::Broker.deliver(target, message, from)?,
         other => bail!("unknown transport: {other}"),
     };
@@ -727,26 +580,6 @@ fn spawn_nudge_timer(msg_id: String) {
                 return;
             }
 
-            if request.transport_name == TMUX_TRANSPORT {
-                let snap1 = ipc::capture_pane(&request.transport_target);
-                std::thread::sleep(Duration::from_secs(NUDGE_BUSY_CHECK_SECS));
-
-                let Some(fresh_request) = broker::outbound_request(&msg_id).ok().flatten() else {
-                    return;
-                };
-
-                if !pending_message_exists(&msg_id) {
-                    let _ = broker::delete_outbound_request(&msg_id);
-                    return;
-                }
-
-                let snap2 = ipc::capture_pane(&fresh_request.transport_target);
-                if snap1 != snap2 {
-                    wait_secs = NUDGE_INTERVAL_SECS;
-                    continue;
-                }
-            }
-
             let nudge_count = match broker::increment_nudge_count(&msg_id) {
                 Ok(count) => count,
                 Err(_) => return,
@@ -772,27 +605,35 @@ fn spawn_nudge_timer(msg_id: String) {
     });
 }
 
-/// Build a warning string for unanswered pending messages.
+/// Build a warning string for unanswered pending messages and queued bus messages.
 pub fn pending_warnings(state: &SidekarBusState) -> Option<String> {
     let name = state.name()?;
-    let pending = broker::pending_for_agent(name).ok()?;
-    if pending.is_empty() {
-        return None;
-    }
-    let now = epoch_secs();
     let mut warnings = Vec::new();
-    for env in &pending {
-        if env.created_at > 0 && now.saturating_sub(env.created_at) < PENDING_GRACE_SECS {
-            continue;
+
+    // Check envelope-based pending messages
+    if let Ok(pending) = broker::pending_for_agent(name) {
+        let now = epoch_secs();
+        for env in &pending {
+            if env.created_at > 0 && now.saturating_sub(env.created_at) < PENDING_GRACE_SECS {
+                continue;
+            }
+            let kind = env.kind.as_str();
+            warnings.push(format!(
+                "  [{kind} id={} from {}]: {}",
+                env.id,
+                env.from.display_name(),
+                env.preview()
+            ));
         }
-        let kind = env.kind.as_str();
-        warnings.push(format!(
-            "  [{kind} id={} from {}]: {}",
-            env.id,
-            env.from.display_name(),
-            env.preview()
-        ));
     }
+
+    // Drain bus_queue messages (from broker transport / cron / monitor)
+    if let Ok(queued) = broker::poll_messages(name) {
+        for msg in &queued {
+            warnings.push(format!("  {}", msg.body));
+        }
+    }
+
     if warnings.is_empty() {
         return None;
     }
@@ -875,16 +716,16 @@ fn resolve_reply(reply_to: Option<&str>) {
 }
 
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
-    // 1. Try same-session tmux agent — direct paste is faster than polling
+    // Try same-channel first, then any agent
     if let Some(agent) = find_agent_on_channel(to, channel) {
         return Some(DeliveryTarget {
-            transport_name: TMUX_TRANSPORT,
-            transport_target: agent.pane_target().to_string(),
-            output_label: format!("pane {}", agent.pane_display()),
+            transport_name: BROKER_TRANSPORT,
+            transport_target: agent.id.name.clone(),
+            output_label: format!("via broker (channel {})", channel),
         });
     }
 
-    // 2. Broker queue — recipient's poller will pick up the message
+    // Cross-channel fallback
     if let Ok(Some(agent)) = broker::find_agent(to, None) {
         return Some(DeliveryTarget {
             transport_name: BROKER_TRANSPORT,
@@ -964,63 +805,33 @@ fn send_directed_envelope(
 // --- Tool handlers ---
 
 pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) -> Result<()> {
-    if show_all {
-        return crate::ipc::cmd_who(ctx);
-    }
-
-    let channel = match state.channel() {
-        Some(c) => c.to_string(),
-        None => return crate::ipc::cmd_who(ctx),
-    };
     let my_name = state.name().unwrap_or("unknown");
 
-    // Collect agents from both tmux and broker (for PTY sessions)
-    let tmux_agents = list_tmux_agents();
-    let mut seen_names: HashSet<String> = HashSet::new();
-    let mut lines: Vec<String> = Vec::new();
+    let agents = if show_all {
+        broker::list_agents(None).unwrap_or_default()
+    } else {
+        match state.channel() {
+            Some(c) => broker::list_agents(Some(c)).unwrap_or_default(),
+            None => broker::list_agents(None).unwrap_or_default(),
+        }
+    };
 
-    // Get all broker agents for this channel (has cwd info)
-    let broker_agents = broker::list_agents(Some(&channel)).unwrap_or_default();
-    let broker_map: HashMap<String, &broker::BrokerAgent> = broker_agents
-        .iter()
-        .map(|a| (a.id.name.clone(), a))
-        .collect();
-
-    // Tmux agents on this channel
-    for a in tmux_agents.iter().filter(|a| a.session() == channel) {
-        seen_names.insert(a.name().to_string());
-        let you = if a.name() == my_name { " (you)" } else { "" };
-        let nick = a.nick().map(|n| format!(" \"{n}\"")).unwrap_or_default();
-        let cwd = broker_map
-            .get(a.name())
-            .and_then(|b| b.cwd.as_deref())
-            .map(|c| format!(", cwd: {c}"))
-            .unwrap_or_default();
-        lines.push(format!(
-            "- {}{}{} (pane {}{})",
-            a.name(),
-            nick,
-            you,
-            a.pane_display(),
-            cwd
-        ));
+    if agents.is_empty() {
+        let scope = state.channel().unwrap_or("any channel");
+        out!(ctx, "No agents on \"{scope}\".");
+        return Ok(());
     }
 
-    // Broker agents on this channel (catches PTY sessions not visible to tmux)
-    for a in &broker_agents {
-        if seen_names.contains(&a.id.name) {
-            continue;
-        }
+    let channel_label = state.channel().unwrap_or("all");
+    let mut lines: Vec<String> = Vec::new();
+
+    for a in &agents {
         let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick =
-            a.id.nick
-                .as_deref()
-                .map(|n| format!(" \"{n}\""))
-                .unwrap_or_default();
+        let nick = a.id.nick.as_deref()
+            .map(|n| format!(" \"{n}\""))
+            .unwrap_or_default();
         let pane = a.id.pane.as_deref().unwrap_or("?");
-        let cwd = a
-            .cwd
-            .as_deref()
+        let cwd = a.cwd.as_deref()
             .map(|c| format!(", cwd: {c}"))
             .unwrap_or_default();
         lines.push(format!(
@@ -1029,14 +840,9 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
         ));
     }
 
-    if lines.is_empty() {
-        out!(ctx, "No agents on channel \"{channel}\".");
-        return Ok(());
-    }
-
     out!(
         ctx,
-        "Channel \"{channel}\":\n{}\n\nUse \"@all\" to broadcast to all agents.",
+        "Channel \"{channel_label}\":\n{}\n\nUse \"@all\" to broadcast to all agents.",
         lines.join("\n")
     );
     Ok(())
@@ -1076,38 +882,20 @@ pub fn cmd_signal_done(
 }
 
 fn broadcast(ctx: &mut AppContext, channel: &str, my_name: &str, message: &str) -> Result<()> {
-    let same_session = agents_on_channel(channel, my_name);
-
-    // Get all agents from broker for cross-session delivery
     let all_agents = broker::list_agents(None).unwrap_or_default();
-    let cross_session: Vec<_> = all_agents
+    let targets: Vec<_> = all_agents
         .into_iter()
         .filter(|a| a.id.name != my_name && a.id.nick.as_deref() != Some(my_name))
         .collect();
 
-    if same_session.is_empty() && cross_session.is_empty() {
+    if targets.is_empty() {
         bail!("No other agents to broadcast to.");
     }
 
     let mut delivered: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
 
-    // Same-session: tmux paste (faster)
-    for agent in &same_session {
-        seen.insert(agent.name().to_string());
-        match deliver_via(TMUX_TRANSPORT, agent.pane_target(), message, my_name) {
-            Ok(()) => delivered.push(agent.name().to_string()),
-            Err(_) => failed.push(agent.name().to_string()),
-        }
-    }
-
-    // Cross-session: broker queue
-    for agent in &cross_session {
-        if seen.contains(&agent.id.name) {
-            continue;
-        }
-        seen.insert(agent.id.name.clone());
+    for agent in &targets {
         match deliver_via(BROKER_TRANSPORT, &agent.id.name, message, my_name) {
             Ok(()) => delivered.push(agent.id.name.clone()),
             Err(_) => failed.push(agent.id.name.clone()),
@@ -1142,10 +930,8 @@ pub fn cmd_register(
             Ok(())
         }
         None => bail!(
-            "Registration failed — the agent bus requires either tmux or a sidekar PTY wrapper.\n\n\
-             To fix, run your agent inside one of:\n\
-             • tmux (any pane): the bus auto-detects tmux panes\n\
-             • sidekar <cmd>: e.g. `sidekar claude` or `sidekar codex` — wraps the agent in a PTY with bus registration"
+            "Registration failed — the agent bus requires a sidekar PTY wrapper.\n\n\
+             To fix, launch your agent with: sidekar claude, sidekar codex, etc."
         ),
     }
 }

@@ -2,10 +2,10 @@
 //!
 //! `sidekar codex ...`, `sidekar claude ...`, etc. launch the agent inside
 //! a sidekar-owned PTY. This gives us direct input injection (write to master fd),
-//! signal forwarding, resize handling, and broker registration — all without tmux.
+//! signal forwarding, resize handling, and broker registration.
 
 use crate::broker;
-use crate::ipc;
+
 use crate::message::AgentId;
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
@@ -207,11 +207,14 @@ fn prepare_args(bin: &std::ffi::CString, args: &[String]) -> Result<Vec<std::ffi
     Ok(c_args)
 }
 
-/// Detect a channel name: tmux session if available, otherwise project/hostname.
-fn detect_channel() -> String {
-    if let Some(pane) = ipc::detect_tmux_pane() {
-        return pane.session;
+/// Detect a channel name. Priority: $PWD → git repo name → hostname.
+/// Channel can also be set at runtime via `@sidekar channel <name>`.
+pub(crate) fn detect_channel() -> String {
+    // 1. Full path ($PWD) — agents in the same directory are on the same channel
+    if let Ok(cwd) = std::env::current_dir() {
+        return cwd.to_string_lossy().to_string();
     }
+    // 2. Git repo name
     if let Some(name) = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -222,6 +225,7 @@ fn detect_channel() -> String {
     {
         return name;
     }
+    // 3. Hostname
     std::process::Command::new("hostname")
         .output()
         .ok()
@@ -345,10 +349,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
-        crate::poller::start_poller(
-            identity.name.clone(),
-            crate::poller::DeliverySink::PtyFd(master_arc.clone()),
-        );
+        crate::poller::start_poller(identity.name.clone(), master_arc.clone());
 
         Ok((master_arc, identity, nick))
     })();
@@ -380,7 +381,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     };
 
     // Set terminal title to show agent nickname and name
-    // OSC 0 sets both window title and icon name; works in all major terminals + tmux
+    // OSC 0 sets both window title and icon name; works in all major terminals
     eprint!("\x1b]0;{} ({}) — {}\x07", nick, identity.name, agent);
 
     // Enter raw mode (must happen after eprintln messages)
@@ -405,6 +406,84 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Async event loop
 // ---------------------------------------------------------------------------
+
+/// Handle a `@sidekar <command>` line typed by the user.
+/// Returns a response string to echo to the terminal.
+fn handle_sidekar_command(line: &str) -> String {
+    let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
+    // parts[0] = "@sidekar", parts[1] = command, parts[2] = args
+    let cmd = parts.get(1).map(|s| *s).unwrap_or("help");
+    let arg = parts.get(2).map(|s| *s).unwrap_or("");
+
+    match cmd {
+        "channel" => {
+            if arg.is_empty() {
+                // Show current channel
+                let channel = CHANNEL_OVERRIDE
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .unwrap_or_else(detect_channel);
+                format!("Channel: {channel}")
+            } else {
+                // Set channel
+                if let Ok(mut guard) = CHANNEL_OVERRIDE.lock() {
+                    *guard = Some(arg.to_string());
+                }
+                // Update broker registration
+                if let Ok(agents) = broker::list_agents(None) {
+                    let my_pid = std::process::id().to_string();
+                    let my_pane = format!("pty-{my_pid}");
+                    if let Some(agent) = agents.iter().find(|a| a.pane_unique_id.as_deref() == Some(&my_pane)) {
+                        let updated = crate::message::AgentId {
+                            name: agent.id.name.clone(),
+                            nick: agent.id.nick.clone(),
+                            session: Some(arg.to_string()),
+                            pane: agent.id.pane.clone(),
+                            agent_type: agent.id.agent_type.clone(),
+                        };
+                        let _ = broker::register_agent(&updated, Some(&my_pane));
+                    }
+                }
+                format!("Channel set to: {arg}")
+            }
+        }
+        "who" => {
+            match broker::list_agents(None) {
+                Ok(agents) if !agents.is_empty() => {
+                    let mut lines = Vec::new();
+                    for a in &agents {
+                        let nick = a.id.nick.as_deref().unwrap_or("");
+                        let chan = a.id.session.as_deref().unwrap_or("?");
+                        lines.push(format!("  {} \"{}\" (channel: {})", a.id.name, nick, chan));
+                    }
+                    format!("Agents:\n{}", lines.join("\n"))
+                }
+                _ => "No agents registered.".to_string(),
+            }
+        }
+        "help" | _ => {
+            "@sidekar commands:\n  \
+             @sidekar channel          — show current channel\n  \
+             @sidekar channel <name>   — set channel\n  \
+             @sidekar who              — list registered agents\n  \
+             @sidekar help             — show this help"
+                .to_string()
+        }
+    }
+}
+
+/// Global channel override set by `@sidekar channel <name>`.
+static CHANNEL_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Get the effective channel: override → detect_channel().
+pub(crate) fn effective_channel() -> String {
+    CHANNEL_OVERRIDE
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(detect_channel)
+}
 
 async fn event_loop(
     master: &Arc<OwnedFd>,
@@ -433,6 +512,11 @@ async fn event_loop(
 
     let mut buf_in = [0u8; 4096];
     let mut buf_out = [0u8; 8192];
+
+    // Line buffer for @sidekar command interception.
+    // Accumulates stdin bytes; when CR/LF is seen, checks for @sidekar prefix.
+    let mut line_buf: Vec<u8> = Vec::with_capacity(256);
+    let mut intercepting = false; // true when line_buf starts with "@sidekar"
 
     // Split tunnel into sender + receiver (if connected)
     let (tunnel_tx, mut tunnel_rx) = match tunnel {
@@ -474,12 +558,74 @@ async fn event_loop(
             }
 
             // stdin → master fd (user typing forwarded to agent)
+            // Intercepts lines starting with "@sidekar" for local commands.
             result = stdin.read(&mut buf_in) => {
                 match result {
                     Ok(0) | Err(_) => break, // stdin closed
                     Ok(n) => {
-                        if write_all_fd(master_fd, &buf_in[..n]).is_err() {
-                            break;
+                        for &byte in &buf_in[..n] {
+                            if byte == b'\r' || byte == b'\n' {
+                                if intercepting {
+                                    // Handle the @sidekar command locally
+                                    let line = String::from_utf8_lossy(&line_buf).to_string();
+                                    let response = handle_sidekar_command(&line);
+                                    // Echo newline + response to user's terminal
+                                    let _ = stdout.write_all(b"\r\n").await;
+                                    let _ = stdout.write_all(response.as_bytes()).await;
+                                    let _ = stdout.write_all(b"\r\n").await;
+                                    let _ = stdout.flush().await;
+                                    line_buf.clear();
+                                    intercepting = false;
+                                } else {
+                                    // Forward accumulated bytes + the CR/LF to agent
+                                    if !line_buf.is_empty() {
+                                        let _ = write_all_fd(master_fd, &line_buf);
+                                        line_buf.clear();
+                                    }
+                                    let _ = write_all_fd(master_fd, &[byte]);
+                                }
+                            } else if byte == 0x7f || byte == 0x08 {
+                                // Backspace — remove from buffer
+                                if intercepting {
+                                    line_buf.pop();
+                                    // Echo backspace to terminal
+                                    let _ = stdout.write_all(b"\x08 \x08").await;
+                                    let _ = stdout.flush().await;
+                                    // Check if we've backspaced out of @sidekar prefix
+                                    if !line_buf.starts_with(b"@sidekar") {
+                                        intercepting = false;
+                                        // Flush what we have to the agent
+                                        if !line_buf.is_empty() {
+                                            let _ = write_all_fd(master_fd, &line_buf);
+                                            line_buf.clear();
+                                        }
+                                    }
+                                } else {
+                                    // Forward backspace and update line buffer
+                                    line_buf.pop();
+                                    let _ = write_all_fd(master_fd, &[byte]);
+                                }
+                            } else {
+                                line_buf.push(byte);
+                                // Check if we're entering @sidekar mode
+                                if line_buf.starts_with(b"@sidekar") {
+                                    if !intercepting {
+                                        intercepting = true;
+                                    }
+                                    // Echo character locally (agent won't see it)
+                                    let _ = stdout.write_all(&[byte]).await;
+                                    let _ = stdout.flush().await;
+                                } else if intercepting {
+                                    // We were intercepting but the prefix broke — shouldn't happen
+                                    // since we check starts_with above, but safety net
+                                    intercepting = false;
+                                    let _ = write_all_fd(master_fd, &line_buf);
+                                    line_buf.clear();
+                                } else {
+                                    // Normal byte — forward immediately
+                                    let _ = write_all_fd(master_fd, &[byte]);
+                                }
+                            }
                         }
                     }
                 }

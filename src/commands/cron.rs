@@ -584,7 +584,7 @@ async fn execute_cron_job(
         let msg = format!("[cron {job_id}]: {}", output.trim());
 
         if target == "self" || target.is_empty() {
-            // Deliver to self — use resolve_delivery (tmux paste or broker queue)
+            // Deliver to self via broker queue
             match resolve_delivery() {
                 Ok(delivery) => {
                     if let Err(e) = deliver_notification(&delivery, &msg) {

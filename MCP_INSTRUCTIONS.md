@@ -249,7 +249,7 @@ Take a screenshot after applying the grid to see coordinate mappings, then click
 
 ## Monitor (Tab Watching)
 
-Watch tabs for title and favicon changes (new Slack message, new email, etc.). Works with both sidekar PTY-wrapped agents and tmux panes.
+Watch tabs for title and favicon changes (new Slack message, new email, etc.). 
 
 - **`monitor start <tabs>`:** Pass tab IDs (comma-separated) or `"all"`. Watches title changes and favicon changes (detects apps like Slack/Gmail that use favicon badges). Debounced 3s, skips agent-initiated changes, delivers via IPC.
 - **`monitor stop`:** Stop the watcher.
@@ -284,7 +284,7 @@ cron_create(schedule: "*/5 * * * *", action: {"batch": [{"tool": "navigate", "ur
 
 ## Agent Bus (Multi-Agent Communication)
 
-Agents can discover and message each other across sessions. Works with sidekar PTY wrappers (`sidekar claude`, `sidekar codex`, etc.) and tmux panes.
+Agents can discover and message each other across sessions. Works with sidekar PTY wrappers (`sidekar claude`, `sidekar codex`, etc.).
 
 - **`register`:** Register on the bus with a name (auto-assigned if omitted). Auto-called by the MCP server on startup.
 - **`unregister`:** Leave the bus.
