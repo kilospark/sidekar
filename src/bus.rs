@@ -7,7 +7,7 @@
 use crate::broker::{self, BrokerAgent};
 use crate::ipc;
 use crate::message::{epoch_secs, AgentId, Envelope, MessageKind};
-use crate::transport::{Socket, TmuxPaste, Transport};
+use crate::transport::{TmuxPaste, Transport};
 use crate::*;
 
 const PENDING_GRACE_SECS: u64 = 30;
@@ -18,7 +18,7 @@ const NUDGE_MAX: u32 = 3;
 const NUDGE_POLL_SECS: u64 = 5;
 const NUDGE_BUSY_CHECK_SECS: u64 = 3;
 const TMUX_TRANSPORT: &str = "tmux-paste";
-const SOCKET_TRANSPORT: &str = "unix-socket";
+const BROKER_TRANSPORT: &str = "broker";
 
 // --- PTY registration inheritance ---
 
@@ -693,7 +693,7 @@ fn pending_message_exists(msg_id: &str) -> bool {
 fn deliver_via(transport_name: &str, target: &str, message: &str, from: &str) -> Result<()> {
     let result = match transport_name {
         TMUX_TRANSPORT => TmuxPaste.deliver(target, message, from)?,
-        SOCKET_TRANSPORT => Socket.deliver(target, message, from)?,
+        BROKER_TRANSPORT => crate::transport::Broker.deliver(target, message, from)?,
         other => bail!("unknown transport: {other}"),
     };
     match result {
@@ -875,7 +875,7 @@ fn resolve_reply(reply_to: Option<&str>) {
 }
 
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
-    // 1. Try same-session tmux agent
+    // 1. Try same-session tmux agent — direct paste is faster than polling
     if let Some(agent) = find_agent_on_channel(to, channel) {
         return Some(DeliveryTarget {
             transport_name: TMUX_TRANSPORT,
@@ -884,29 +884,19 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
         });
     }
 
-    // 2. Try broker — has socket_path for PTY and cross-session agents
+    // 2. Broker queue — recipient's poller will pick up the message
     if let Ok(Some(agent)) = broker::find_agent(to, None) {
-        if let Some(ref socket) = agent.socket_path {
-            let socket_path = std::path::Path::new(socket);
-            if socket_path.exists() {
-                return Some(DeliveryTarget {
-                    transport_name: SOCKET_TRANSPORT,
-                    transport_target: socket.clone(),
-                    output_label: format!(
-                        "via broker ({})",
-                        agent.id.pane.as_deref().unwrap_or("?")
-                    ),
-                });
-            }
-        }
+        return Some(DeliveryTarget {
+            transport_name: BROKER_TRANSPORT,
+            transport_target: agent.id.name.clone(),
+            output_label: format!(
+                "via broker ({})",
+                agent.id.pane.as_deref().unwrap_or("?")
+            ),
+        });
     }
 
-    // 3. Fallback: scan filesystem for sockets
-    ipc::find_agent_socket(to).map(|socket_path| DeliveryTarget {
-        transport_name: SOCKET_TRANSPORT,
-        transport_target: socket_path.to_string_lossy().to_string(),
-        output_label: "cross-session via IPC".to_string(),
-    })
+    None
 }
 
 fn send_directed_envelope(
@@ -1087,10 +1077,13 @@ pub fn cmd_signal_done(
 
 fn broadcast(ctx: &mut AppContext, channel: &str, my_name: &str, message: &str) -> Result<()> {
     let same_session = agents_on_channel(channel, my_name);
-    let cross_session = ipc::discover_all_agents()
+
+    // Get all agents from broker for cross-session delivery
+    let all_agents = broker::list_agents(None).unwrap_or_default();
+    let cross_session: Vec<_> = all_agents
         .into_iter()
-        .filter(|(_, id)| id.name != my_name && id.nick.as_deref() != Some(my_name))
-        .collect::<Vec<_>>();
+        .filter(|a| a.id.name != my_name && a.id.nick.as_deref() != Some(my_name))
+        .collect();
 
     if same_session.is_empty() && cross_session.is_empty() {
         bail!("No other agents to broadcast to.");
@@ -1100,6 +1093,7 @@ fn broadcast(ctx: &mut AppContext, channel: &str, my_name: &str, message: &str) 
     let mut failed: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
+    // Same-session: tmux paste (faster)
     for agent in &same_session {
         seen.insert(agent.name().to_string());
         match deliver_via(TMUX_TRANSPORT, agent.pane_target(), message, my_name) {
@@ -1108,19 +1102,15 @@ fn broadcast(ctx: &mut AppContext, channel: &str, my_name: &str, message: &str) 
         }
     }
 
-    for (socket_path, id) in &cross_session {
-        if seen.contains(&id.name) {
+    // Cross-session: broker queue
+    for agent in &cross_session {
+        if seen.contains(&agent.id.name) {
             continue;
         }
-        seen.insert(id.name.clone());
-        match deliver_via(
-            SOCKET_TRANSPORT,
-            &socket_path.to_string_lossy(),
-            message,
-            my_name,
-        ) {
-            Ok(()) => delivered.push(id.name.clone()),
-            Err(_) => failed.push(id.name.clone()),
+        seen.insert(agent.id.name.clone());
+        match deliver_via(BROKER_TRANSPORT, &agent.id.name, message, my_name) {
+            Ok(()) => delivered.push(agent.id.name.clone()),
+            Err(_) => failed.push(agent.id.name.clone()),
         }
     }
 

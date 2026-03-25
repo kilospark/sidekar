@@ -17,7 +17,7 @@ pub trait Transport: Send + Sync {
     ///
     /// What `target` means depends on the transport:
     /// - [`TmuxPaste`]: tmux pane display ID (e.g. `"0:0.1"`)
-    /// - [`Socket`]: Unix socket path
+    /// - [`Broker`]: recipient agent name
     fn deliver(&self, target: &str, message: &str, from: &str) -> Result<DeliveryResult>;
 
     /// Transport name for logging.
@@ -45,22 +45,22 @@ impl Transport for TmuxPaste {
 }
 
 // ---------------------------------------------------------------------------
-// Unix socket transport
+// Broker transport (SQLite queue)
 // ---------------------------------------------------------------------------
 
-/// Delivers messages via a Unix domain socket (IPC JSON-RPC).
-pub struct Socket;
+/// Delivers messages by inserting into the SQLite bus_queue table.
+/// The recipient's poller picks up and delivers the message.
+pub struct Broker;
 
-impl Transport for Socket {
+impl Transport for Broker {
     fn deliver(&self, target: &str, message: &str, from: &str) -> Result<DeliveryResult> {
-        let path = std::path::Path::new(target);
-        match crate::ipc::ipc_send_message(path, message, from) {
+        match crate::broker::enqueue_message(from, target, message) {
             Ok(()) => Ok(DeliveryResult::Delivered),
             Err(e) => Ok(DeliveryResult::Failed(e.to_string())),
         }
     }
 
     fn name(&self) -> &'static str {
-        "unix-socket"
+        "broker"
     }
 }

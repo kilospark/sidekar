@@ -315,10 +315,8 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let (master, child_pid) = fork_pty(&bin_c, &c_args)?;
     let master_raw = master.as_raw_fd();
 
-    // From here, any setup failure must clean up the child + broker + socket.
-    // We track what we've registered so cleanup_child_and_state can tear it down.
+    // From here, any setup failure must clean up the child + broker.
     let mut registered_name: Option<String> = None;
-    let mut socket_file: Option<std::path::PathBuf> = None;
 
     let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId, String)> {
         // Copy parent terminal size to child PTY
@@ -345,18 +343,12 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         broker::register_agent(&identity, Some(&session_id))?;
         registered_name = Some(name.clone());
 
-        // Start IPC socket listener
+        // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
-        let path = ipc::start_socket_listener(
-            &session_id,
-            &session_id,
-            &channel,
-            &identity.name,
-            Some(&nick),
-            ipc::InputSink::PtyFd(master_arc.clone()),
-        )?;
-        broker::set_agent_socket_path(&identity.name, Some(path.as_path()))?;
-        socket_file = Some(path);
+        crate::poller::start_poller(
+            identity.name.clone(),
+            crate::poller::DeliverySink::PtyFd(master_arc.clone()),
+        );
 
         Ok((master_arc, identity, nick))
     })();
@@ -368,7 +360,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
             cleanup_child_and_state(
                 child_pid,
                 registered_name.as_deref(),
-                socket_file.as_deref(),
+                None,
             );
             return Err(e);
         }
@@ -397,20 +389,16 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // Run the async event loop
     let exit_code = event_loop(&master_arc, child_pid, tunnel).await;
 
-    // Cleanup: restore terminal, unregister, remove socket
+    // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
 
     // Reset terminal title
     eprint!("\x1b]0;\x07");
 
-    ipc::shutdown_listeners();
+    crate::poller::shutdown_poller();
     let _ = broker::unregister_agent(&identity.name);
-    if let Some(ref path) = socket_file {
-        let _ = std::fs::remove_file(path);
-    }
 
-    // Use process::exit to terminate immediately — the IPC listener thread
-    // would otherwise block for up to 1s on its accept() timeout.
+    // process::exit to terminate the poller thread immediately
     std::process::exit(exit_code);
 }
 

@@ -55,6 +55,7 @@ pub mod ipc;
 pub mod mcp;
 pub mod mcp_clients;
 pub mod message;
+pub mod poller;
 pub mod pty;
 pub mod scripts;
 pub mod transport;
