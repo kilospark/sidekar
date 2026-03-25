@@ -579,14 +579,14 @@ async fn execute_cron_job(
         }
     };
 
-    // Deliver result
+    // Deliver result via broker queue
     if !output.trim().is_empty() {
-        // Try delivering to named target agent
+        let msg = format!("[cron {job_id}]: {}", output.trim());
+
         if target == "self" || target.is_empty() {
-            // Deliver to self — use resolve_delivery which finds our own socket
+            // Deliver to self — use resolve_delivery (tmux paste or broker queue)
             match resolve_delivery() {
                 Ok(delivery) => {
-                    let msg = format!("[cron {job_id}]: {}", output.trim());
                     if let Err(e) = deliver_notification(&delivery, &msg) {
                         eprintln!("cron: delivery to self failed: {e}");
                     }
@@ -596,17 +596,9 @@ async fn execute_cron_job(
                 }
             }
         } else {
-            // Find target agent's socket
-            match crate::ipc::find_agent_socket(target) {
-                Some(socket_path) => {
-                    let msg = format!("[cron {job_id}]: {}", output.trim());
-                    if let Err(e) = crate::ipc::ipc_send_message(&socket_path, &msg, "sidekar-cron") {
-                        eprintln!("cron: delivery to {target} failed: {e}");
-                    }
-                }
-                None => {
-                    eprintln!("cron: target agent '{target}' not found, output discarded");
-                }
+            // Deliver to named agent via broker queue
+            if let Err(e) = crate::broker::enqueue_message("sidekar-cron", target, &msg) {
+                eprintln!("cron: delivery to {target} failed: {e}");
             }
         }
     }
