@@ -468,6 +468,34 @@ pub async fn run_mcp_server() -> Result<()> {
         }
     }
 
+    // Close our session's tabs and window so Chrome doesn't stay orphaned.
+    // If this was the last window, Chrome exits automatically.
+    if let Ok(state) = ctx.load_session_state() {
+        // Close all tabs owned by this session
+        for tab_id in &state.tabs {
+            let _ = http_put_text(&ctx, &format!("/json/close/{tab_id}")).await;
+        }
+        // If we have a dedicated window, close it too
+        if let Some(window_id) = state.window_id {
+            if let Ok(mut cdp) = open_cdp(&mut ctx).await {
+                let _ = cdp
+                    .send(
+                        "Browser.getWindowBounds",
+                        json!({ "windowId": window_id }),
+                    )
+                    .await;
+                // Close the window by closing its target
+                if let Some(ref active_tab) = state.active_tab_id {
+                    let _ = http_put_text(&ctx, &format!("/json/close/{active_tab}")).await;
+                }
+                cdp.close().await;
+            }
+        }
+        // Clean up session state file
+        let sid = ctx.require_session_id().unwrap_or("unknown").to_string();
+        let _ = std::fs::remove_file(ctx.session_state_file(&sid));
+    }
+
     // Clean up IPC socket
     if let Some(path) = &ipc_socket_path {
         let _ = std::fs::remove_file(path);
