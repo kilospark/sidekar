@@ -315,9 +315,30 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         }
     };
 
+    // Build identity before fork so env vars are inherited by child.
+    let channel = detect_channel();
+    let nick = crate::bus::pick_nickname_standalone();
+    let pre_fork_name = unique_agent_name(agent, &channel);
+
+    // Set env vars before fork — child inherits them.
+    // These let CLI commands (sidekar navigate, etc.) recover bus identity.
+    // Safety: no other threads are reading these env vars at this point.
+    unsafe {
+        std::env::set_var("SIDEKAR_PTY", "1");
+        std::env::set_var("SIDEKAR_AGENT_NAME", &pre_fork_name);
+        std::env::set_var("SIDEKAR_CHANNEL", &channel);
+    }
+
     // Fork the child inside a PTY
     let (master, child_pid) = fork_pty(&bin_c, &c_args)?;
     let master_raw = master.as_raw_fd();
+
+    // Clear env vars in parent — they were only needed for the child.
+    unsafe {
+        std::env::remove_var("SIDEKAR_PTY");
+        std::env::remove_var("SIDEKAR_AGENT_NAME");
+        std::env::remove_var("SIDEKAR_CHANNEL");
+    }
 
     // From here, any setup failure must clean up the child + broker.
     let mut registered_name: Option<String> = None;
@@ -331,9 +352,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
         // Build session identity with unique name
         let session_id = format!("pty-{child_pid}");
-        let channel = detect_channel();
-        let nick = crate::bus::pick_nickname_standalone();
-        let name = unique_agent_name(agent, &channel);
+        let name = pre_fork_name.clone();
 
         let identity = AgentId {
             name: name.clone(),
@@ -357,7 +376,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let (master_arc, identity, nick) = match setup_result {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("sidekar pty: setup failed: {e}");
+            // silent — error propagated via return
             cleanup_child_and_state(
                 child_pid,
                 registered_name.as_deref(),
@@ -380,6 +399,23 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         None
     };
 
+    // Start the cron background loop (will pick up Chrome session when available)
+    {
+        let cron_ctx = crate::commands::cron::CronContext {
+            cdp_port: crate::DEFAULT_CDP_PORT,
+            cdp_host: crate::DEFAULT_CDP_HOST.to_string(),
+            current_session_id: None,
+            current_profile: "default".to_string(),
+            headless: false,
+        };
+        crate::commands::cron::start_cron_loop(cron_ctx).await;
+    }
+
+    // Start a background task to watch for the child's Chrome session.
+    // When the child calls `sidekar launch` or `sidekar connect`, the
+    // last-session file is updated. We read it and update the cron context.
+    let session_watcher = tokio::spawn(watch_session_file());
+
     // Set terminal title to show agent nickname and name
     // OSC 0 sets both window title and icon name; works in all major terminals
     eprint!("\x1b]0;{} ({}) — {}\x07", nick, identity.name, agent);
@@ -396,11 +432,131 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // Reset terminal title
     eprint!("\x1b]0;\x07");
 
+    session_watcher.abort();
     crate::poller::shutdown_poller();
+
+    // Clean up Chrome resources owned by the child's session
+    cleanup_chrome_session().await;
+
     let _ = broker::unregister_agent(&identity.name);
 
     // process::exit to terminate the poller thread immediately
     std::process::exit(exit_code);
+}
+
+// ---------------------------------------------------------------------------
+// Session file watcher — picks up Chrome session from child agent
+// ---------------------------------------------------------------------------
+
+/// Watch `~/.sidekar/last-session` for changes. When the child agent calls
+/// `sidekar launch` or `sidekar connect`, this file is updated with the session ID.
+/// We read the session state to get CDP port and update the cron context.
+async fn watch_session_file() {
+    use tokio::time::{Duration, interval};
+
+    let data_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".sidekar");
+    let last_session_file = data_dir.join("last-session");
+
+    let mut poll = interval(Duration::from_secs(2));
+    let mut last_contents = String::new();
+
+    loop {
+        poll.tick().await;
+
+        let contents = match std::fs::read_to_string(&last_session_file) {
+            Ok(c) => c.trim().to_string(),
+            Err(_) => continue,
+        };
+
+        if contents == last_contents || contents.is_empty() {
+            continue;
+        }
+        last_contents = contents.clone();
+
+        // Read session state to get CDP port
+        let state_file = data_dir.join(format!("state-{contents}.json"));
+        if let Ok(state_str) = std::fs::read_to_string(&state_file) {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&state_str) {
+                let port = state.get("port").and_then(|v| v.as_u64()).unwrap_or(9222) as u16;
+                let host = state
+                    .get("host")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("127.0.0.1")
+                    .to_string();
+                let headless = false;
+                let profile = state
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string();
+
+                let cron_ctx = crate::commands::cron::CronContext {
+                    cdp_port: port,
+                    cdp_host: host,
+                    current_session_id: Some(contents.clone()),
+                    current_profile: profile,
+                    headless,
+                };
+                crate::commands::cron::update_cron_context(cron_ctx).await;
+                // silent — don't print to the pty terminal
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chrome cleanup — close tabs/windows owned by the child's session
+// ---------------------------------------------------------------------------
+
+/// Close Chrome tabs and windows owned by the child's last session.
+async fn cleanup_chrome_session() {
+    let data_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".sidekar");
+    let last_session_file = data_dir.join("last-session");
+
+    let session_id = match std::fs::read_to_string(&last_session_file) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return,
+    };
+    if session_id.is_empty() {
+        return;
+    }
+
+    let state_file = data_dir.join(format!("state-{session_id}.json"));
+    let state: crate::types::SessionState = match std::fs::read_to_string(&state_file)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(s) => s,
+        None => return,
+    };
+
+    let port = state.port.unwrap_or(9222);
+    let host = state.host.as_deref().unwrap_or("127.0.0.1");
+    let base_url = format!("http://{host}:{port}");
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Close all tabs owned by this session
+    for tab_id in &state.tabs {
+        let _ = client
+            .put(format!("{base_url}/json/close/{tab_id}"))
+            .send()
+            .await;
+    }
+
+    // Clean up session state file
+    let _ = std::fs::remove_file(&state_file);
+    // silent — don't print to the pty terminal
 }
 
 // ---------------------------------------------------------------------------
@@ -462,11 +618,53 @@ fn handle_sidekar_command(line: &str) -> String {
                 _ => "No agents registered.".to_string(),
             }
         }
+        "cron" => {
+            // Dispatch to cron subcommands synchronously via a small tokio block
+            let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            let sub = sub_parts.first().copied().unwrap_or("list");
+            match sub {
+                "list" | "" => {
+                    match crate::broker::list_cron_jobs(true) {
+                        Ok(jobs) if jobs.is_empty() => "No active cron jobs.".to_string(),
+                        Ok(jobs) => {
+                            let mut lines = Vec::new();
+                            for j in &jobs {
+                                let name = j.name.as_deref().unwrap_or("(unnamed)");
+                                lines.push(format!(
+                                    "  [{}] {} — schedule: {} — target: {} — {} runs",
+                                    j.id, name, j.schedule, j.target, j.run_count
+                                ));
+                            }
+                            format!("Cron jobs:\n{}", lines.join("\n"))
+                        }
+                        Err(e) => format!("Error: {e}"),
+                    }
+                }
+                "delete" => {
+                    let job_id = sub_parts.get(1).copied().unwrap_or("").trim();
+                    if job_id.is_empty() {
+                        "@sidekar cron delete <job-id>".to_string()
+                    } else {
+                        match crate::broker::delete_cron_job(job_id) {
+                            Ok(true) => format!("Cron job {job_id} deleted."),
+                            Ok(false) => format!("Cron job '{job_id}' not found."),
+                            Err(e) => format!("Error: {e}"),
+                        }
+                    }
+                }
+                _ => "@sidekar cron commands:\n  \
+                      @sidekar cron list              — list active jobs\n  \
+                      @sidekar cron delete <job-id>   — delete a job"
+                    .to_string(),
+            }
+        }
         "help" | _ => {
             "@sidekar commands:\n  \
              @sidekar channel          — show current channel\n  \
              @sidekar channel <name>   — set channel\n  \
              @sidekar who              — list registered agents\n  \
+             @sidekar cron list        — list cron jobs\n  \
+             @sidekar cron delete <id> — delete a cron job\n  \
              @sidekar help             — show this help"
                 .to_string()
         }
@@ -499,7 +697,7 @@ async fn event_loop(
     let master_async = match tokio::io::unix::AsyncFd::new(master_fd) {
         Ok(fd) => fd,
         Err(e) => {
-            eprintln!("sidekar pty: AsyncFd failed: {e}");
+            // silent — error code returned
             return 1;
         }
     };
@@ -577,11 +775,10 @@ async fn event_loop(
                                     line_buf.clear();
                                     intercepting = false;
                                 } else {
-                                    // Forward accumulated bytes + the CR/LF to agent
-                                    if !line_buf.is_empty() {
-                                        let _ = write_all_fd(master_fd, &line_buf);
-                                        line_buf.clear();
-                                    }
+                                    // Bytes were already forwarded individually;
+                                    // just clear the prefix-detection buffer and
+                                    // forward the CR/LF itself.
+                                    line_buf.clear();
                                     let _ = write_all_fd(master_fd, &[byte]);
                                 }
                             } else if byte == 0x7f || byte == 0x08 {
