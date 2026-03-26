@@ -199,7 +199,20 @@ async fn run() -> Result<()> {
         let tab_id = ctx.override_tab_id.as_ref().unwrap();
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
-    } else if !matches!(command.as_str(), "launch" | "connect" | "config" | "update") {
+    } else if !matches!(command.as_str(),
+        "launch" | "connect" | "config" | "update"
+        | "who" | "bus_send" | "bus-send" | "bus_done" | "bus-done"
+        | "feedback" | "telemetry"
+        | "cron_create" | "cron-create" | "cron_list" | "cron-list" | "cron_delete" | "cron-delete"
+        | "desktop-screenshot" | "desktop_screenshot"
+        | "desktop-apps" | "desktop_apps"
+        | "desktop-windows" | "desktop_windows"
+        | "desktop-find" | "desktop_find"
+        | "desktop-click" | "desktop_click"
+        | "desktop-launch" | "desktop_launch"
+        | "desktop-activate" | "desktop_activate"
+        | "desktop-quit" | "desktop_quit"
+    ) {
         if ctx.auto_discover_last_session().is_err() {
             // No session — auto-launch Chrome if inside a PTY wrapper or
             // if the command clearly needs a browser.
