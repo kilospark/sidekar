@@ -1,10 +1,10 @@
 # sidekar - Full Reference
 
-> The sidecar for AI agents. Browser control, desktop automation, web research, inter-agent communication, batch orchestration, and monitoring/scheduling.
+> The sidecar for AI agents. Four capability pillars: browser automation (CDP + Chrome extension), desktop automation (macOS), inter-agent orchestration, and background automation (monitor + cron).
 
 ## What is sidekar?
 
-sidekar is a single binary that gives AI agents the ability to see, interact with, and coordinate through browsers, desktops, and each other. It runs as an MCP (Model Context Protocol) server, works with any MCP-compatible AI client, and requires zero configuration.
+sidekar is a single binary that gives AI agents the ability to see, interact with, and coordinate through browsers, desktops, and each other. Install with `curl -fsSL sidekar.dev/install | sh`. That downloads the binary and runs `sidekar install` to add `SKILL.md` to each detected agent’s skills directory.
 
 ## Install
 
@@ -12,15 +12,31 @@ sidekar is a single binary that gives AI agents the ability to see, interact wit
 curl -fsSL sidekar.dev/install | sh
 ```
 
-One command downloads the binary and auto-configures every MCP client it finds: Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, and more.
+## Getting started (step by step)
 
-## Core Capabilities
+1. **Install:** run the curl command above (binary + `sidekar install` for skills).
+2. **Chrome extension (optional):** load unpacked from `extension/`, run `sidekar ext-server` or any `sidekar ext …` command, paste the secret in the extension popup, connect.
+3. **`sidekar login` (optional):** device auth against sidekar.dev for remote session access (web dashboard, tunnel workflows).
+4. **Launch an agent:** `sidekar <agent> [args…]` for any agent CLI on PATH (e.g. `sidekar claude`, `sidekar codex`).
 
-### 1. Token-efficient browser automation
+## Core capabilities (four pillars)
 
-Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read page content. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed.
+### 1. Browser automation (CDP + Chrome extension)
 
-**Key tools:** navigate, read, text, axtree, observe, screenshot, click, type, fill, press, scroll, keyboard, search, readurls
+Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read page content. The optional Chrome extension complements CDP for the same automation goals. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed.
+
+**Web search and multi-page reads** (`search`, `readurls`) and **batch** (multi-step sequences) are **use cases** on the browser stack, not separate product pillars.
+
+**Key tools:** navigate, read, text, axtree, observe, screenshot, click, type, fill, press, scroll, keyboard, search, readurls, batch
+
+**batch** example (multi-step in one call):
+```json
+{"actions": [
+  {"tool": "click", "target": "--text Continue", "retries": 2},
+  {"tool": "waitfornav"},
+  {"tool": "screenshot"}
+]}
+```
 
 **Perception escalation order (stop at the first that works):**
 1. `read` - Reader-mode text extraction (articles, docs, search results). Low cost.
@@ -43,40 +59,19 @@ macOS Accessibility API integration. Find and interact with native app elements,
 
 **Key tools:** desktop_screenshot, desktop_apps, desktop_windows, desktop_find, desktop_click, desktop_launch, desktop_activate, desktop_quit
 
-### 3. Inter-agent communication
+### 3. Inter-agent orchestration
 
-Agents discover and message each other across tmux sessions. Send requests, broadcast, hand off tasks.
+Agents discover and message each other via a local bus (SQLite-backed). Send requests, broadcast, hand off tasks.
 
 **Key tools:** register, unregister, who, bus_send, bus_done
 
 **Message kinds:** request (expects response), response (answers a prior request), fyi (informational)
 
-### 4. Web research
+### 4. Background automation
 
-Real-browser search and multi-page reading. No API keys, no rate limits. Handles CAPTCHAs, JavaScript rendering, and redirects.
+Watch browser tabs for meaningful changes and run tools on a cron schedule. Reactive alerts and unattended runs; results delivered via the bus.
 
-**Key tools:** search (Google/Bing/DuckDuckGo), readurls (parallel multi-page read)
-
-### 5. Batch orchestration
-
-Execute multi-step action sequences in a single call. Smart waits, per-action retries, optional steps. Reduce round-trips.
-
-**Key tool:** batch
-
-Example:
-```json
-{"actions": [
-  {"tool": "click", "target": "--text Continue", "retries": 2},
-  {"tool": "waitfornav"},
-  {"tool": "screenshot"}
-]}
-```
-
-### 6. Monitoring and scheduling
-
-Watch browser tabs for changes and run actions on a schedule. Reactive alerts and proactive cron.
-
-**Key tools:** monitor start/stop/status
+**Key tools:** monitor start/stop/status, cron_create, cron_list, cron_delete
 
 ## Tool Categories
 
@@ -114,9 +109,9 @@ Multiple agents share the same Chrome instance. Each session owns its tabs. Neve
 
 **Rich text editors:** click the editor, then use keyboard (not type) to preserve cursor position.
 
-## Supported MCP Clients
+## Supported agents
 
-Claude Code, Claude Desktop, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, Opencode
+Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, OpenCode, Pi, and others via `sidekar install` or the skills registry.
 
 ## Pricing
 

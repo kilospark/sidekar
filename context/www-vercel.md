@@ -1,4 +1,4 @@
-# sidekar website — Vercel deployment
+# sidekar website: Vercel deployment
 
 The sidekar landing page and API have been migrated from a Docker/Cloud Run Express app (`vm-sites/sidekar-api`) to Vercel serverless functions at `~/src/sidekar/www`.
 
@@ -13,7 +13,7 @@ The sidekar landing page and API have been migrated from a Docker/Cloud Run Expr
 
 - Location: `~/src/sidekar/www/` (inside the main sidekar repo)
 - Platform: Vercel (serverless functions + static CDN)
-- No Express — each route is a standalone serverless function
+- No Express: each route is a standalone serverless function
 - Static files served from `public/` by Vercel's CDN
 
 ## Structure
@@ -24,13 +24,13 @@ www/
 ├── api/
 │   ├── _db.js           # Shared MongoDB connection (cached via globalThis)
 │   ├── v1/
-│   │   ├── version.js   # GET  /v1/version — GitHub release check
-│   │   ├── telemetry.js # POST /v1/telemetry — session telemetry
-│   │   ├── feedback.js  # POST /v1/feedback — user ratings
-│   │   └── stats.js     # GET  /v1/stats — aggregated tool/rating stats
+│   │   ├── version.js   # GET  /v1/version: GitHub release check
+│   │   ├── telemetry.js # POST /v1/telemetry: session telemetry
+│   │   ├── feedback.js  # POST /v1/feedback: user ratings
+│   │   └── stats.js     # GET  /v1/stats: aggregated tool/rating stats
 │   ├── download/
-│   │   └── [...path].js # GET  /download/:version?/:asset — binary proxy
-│   └── script.js        # GET  /install, /uninstall — shell script proxy
+│   │   └── [...path].js # GET  /download/:version?/:asset: binary proxy
+│   └── script.js        # GET  /install, /uninstall: shell script proxy
 ├── vercel.json          # Rewrites + host redirect
 ├── package.json         # Only dep: mongodb
 ├── init-db.js           # One-time index creation script
@@ -55,8 +55,8 @@ Clients hit the same URLs as before. `vercel.json` rewrites map them to serverle
 
 Set in Vercel project settings:
 
-- `MONGODB_URI` — MongoDB Atlas connection string (same `sidekar` DB as before)
-- `GITHUB_REPO` — optional, defaults to `kilospark/sidekar`
+- `MONGODB_URI`: MongoDB Atlas connection string (same `sidekar` DB as before)
+- `GITHUB_REPO`: optional, defaults to `kilospark/sidekar`
 
 ## Host redirect
 

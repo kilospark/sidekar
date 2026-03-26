@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>sidekar — the sidecar for AI agents</title>
-<meta name="description" content="Browser control, desktop automation, web research, and inter-agent communication for Claude Code, Codex, Cursor, Copilot, and Gemini CLI. Single Rust binary, zero dependencies.">
+<title>sidekar: the sidecar for AI agents</title>
+<meta name="description" content="Browser automation (CDP + Chrome extension), desktop automation, inter-agent orchestration, and background automation for Claude Code, Codex, Cursor, and more. Single Rust binary, zero dependencies.">
 <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="icon" href="favicon.ico" sizes="32x32">
@@ -16,7 +16,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script>
 // Apply theme before paint to prevent flash
 (function() {
@@ -42,7 +42,7 @@
   --nav-bg: rgba(9, 9, 11, 0.8);
   --star-fill: #eab308;
   --star-empty: #3f3f46;
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 }
 
@@ -446,10 +446,17 @@ h1 {
 
 .steps {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 32px;
   max-width: 840px;
   margin: 0 auto;
+}
+
+@media (min-width: 900px) {
+  .steps {
+    grid-template-columns: repeat(4, 1fr);
+    max-width: 1080px;
+  }
 }
 
 .step-num {
@@ -830,6 +837,7 @@ footer .container {
     <div class="nav-right">
       <ul class="nav-links">
         <li><a href="#features">Features</a></li>
+        <li><a href="#how">Getting started</a></li>
         <li><a href="#examples">Examples</a></li>
         <li><a href="#feedback">Feedback</a></li>
         <li><a href="#pricing">Pricing</a></li>
@@ -848,7 +856,7 @@ footer .container {
   <div class="container">
     <h1>The sidecar for<br>AI agents</h1>
     <p class="hero-sub">
-      Agents are powerful but isolated. They can't see what they build, can't use the web like you do, and can't talk to each other. sidekar gives them browser control, desktop automation, web research, and inter-agent communication.
+      sidekar gives agents real browser automation (Chrome DevTools Protocol plus the optional Chrome extension), desktop automation on macOS, inter-agent orchestration over a local bus, and background automation: tab monitoring, scheduled runs, and alerts routed to agents.
     </p>
     <div class="install-block" onclick="copyInstall(this)">
       <code>curl -fsSL sidekar.dev/install | sh</code>
@@ -867,9 +875,9 @@ footer .container {
 <section class="problem">
   <div class="container">
     <div class="problem-text">
-      <h2>The gap</h2>
+      <h2>What sidekar enables</h2>
       <p>
-        AI agents are getting better at reasoning and writing code. But they still can't see what they build, research the web, or coordinate with other agents. <strong>sidekar fills the gap between thinking and doing</strong>, giving agents the ability to verify, research, interact, and collaborate.
+        <strong>Browser automation</strong> through CDP and the extension bridge, <strong>desktop automation</strong> for native macOS UI, <strong>inter-agent orchestration</strong> for discovery and handoffs, and <strong>background automation</strong> for monitors and cron. One binary ties them together so agents can act in the browser, on the desktop, with each other, and while you step away.
       </p>
     </div>
   </div>
@@ -885,43 +893,29 @@ footer .container {
         <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
         </div>
-        <h3>Token-efficient browser automation</h3>
-        <p>Full Chrome DevTools Protocol access. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed. Your tokens go to thinking, not parsing.</p>
+        <h3>Browser automation</h3>
+        <p>Chrome DevTools Protocol plus the optional Chrome extension, one automation story. Navigate, interact, read pages efficiently, capture screenshots and network traffic. Search, multi-tab reads, and testing flows are use cases on the same stack.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
         <h3>Desktop automation</h3>
-        <p>macOS Accessibility API integration. Find and interact with native app elements, take screenshots, launch and manage applications. No browser required.</p>
+        <p>macOS Accessibility API integration. Find and interact with native app elements, take screenshots, launch and manage applications. Covers UI that lives outside the browser.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
-        <h3>Inter-agent communication</h3>
-        <p>Launch agents with <code>sidekar claude</code>, <code>sidekar codex</code> — each gets a name, a nickname in the terminal title, and the ability to discover and message other agents. Send requests, broadcast, hand off tasks.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        </div>
-        <h3>Web research</h3>
-        <p>Real-browser search and multi-page reading. No API keys, no rate limits. Handles CAPTCHAs, JavaScript rendering, and redirects that headless fetchers can't.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
-        </div>
-        <h3>Batch orchestration</h3>
-        <p>Execute multi-step action sequences in a single call. Smart waits, per-action retries, optional steps. Reduce round-trips and keep agents moving.</p>
+        <h3>Inter-agent orchestration</h3>
+        <p>Local bus: discover other agents, send messages, hand off work, persist coordination in SQLite. Multi-agent workflows share one coordination layer for handoffs and shared state.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </div>
-        <h3>Monitoring and scheduling</h3>
-        <p>Watch browser tabs for changes and run actions on a schedule. Reactive alerts when something happens, proactive cron when it should. Results delivered via the agent bus.</p>
+        <h3>Background automation</h3>
+        <p>Watch tabs for meaningful changes and run tools on a cron schedule. Reactive alerts and unattended runs, with results routed to agents on the bus.</p>
       </div>
     </div>
   </div>
@@ -929,22 +923,27 @@ footer .container {
 
 <section class="how" id="how">
   <div class="container">
-    <h2>How it works</h2>
+    <h2>Getting started</h2>
     <div class="steps">
       <div class="step">
         <div class="step-num">01</div>
         <h3>Install</h3>
-        <p>One command downloads the binary and auto-configures every MCP client it finds on your machine. Claude Code, Cursor, Copilot, Codex, Gemini CLI. All set up in seconds.</p>
+        <p><code>curl -fsSL https://sidekar.dev/install | sh</code> downloads the binary, updates your <code>PATH</code>, and runs <code>sidekar install</code> so the skill is available in supported agents.</p>
       </div>
       <div class="step">
         <div class="step-num">02</div>
-        <h3>Use naturally</h3>
-        <p>Ask your agent to test a UI, research a topic, check a dashboard, fill out a form, or coordinate with another agent. It acts, just like you would.</p>
+        <h3>Chrome extension (optional)</h3>
+        <p>Clone or download the sidekar repo and load the <code>extension/</code> directory as an unpacked extension. Start the bridge with <code>sidekar ext-server</code> or any <code>sidekar ext …</code> command, paste the shared secret in the toolbar popup, and connect to automate your normal Chrome profile.</p>
       </div>
       <div class="step">
         <div class="step-num">03</div>
-        <h3>Stay efficient</h3>
-        <p>Smart perception returns compact summaries, not raw data. Agents escalate from text to screenshot only when needed. Your tokens go to thinking, not parsing.</p>
+        <h3><code>sidekar login</code> (optional)</h3>
+        <p>Run <code>sidekar login</code> to authenticate with sidekar.dev if you want to attach to or manage sessions from the web dashboard and remote workflows, not only on this machine.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">04</div>
+        <h3>Launch your agent</h3>
+        <p>Run <code>sidekar &lt;agent&gt; [args…]</code> for any agent CLI on your <code>PATH</code> (for example <code>sidekar claude</code>, <code>sidekar codex</code>). Sidekar wraps the PTY, registers the bus, and connects browser tooling.</p>
       </div>
     </div>
   </div>
@@ -953,7 +952,7 @@ footer .container {
 <section class="examples" id="examples">
   <div class="container">
     <h2>What you can ask</h2>
-    <p class="examples-sub">Things agents can do with sidekar that they can't do alone.</p>
+    <p class="examples-sub">What agents can do with sidekar.</p>
     <div class="examples-grid">
       <div class="example">
         <div class="example-label">Coding</div>
@@ -1014,7 +1013,7 @@ footer .container {
         <div class="tier-desc">For side projects, learning, and personal use.</div>
         <ul class="tier-features">
           <li>All features included</li>
-          <li>All MCP clients supported</li>
+          <li>All supported agents</li>
           <li>No limits, no telemetry gates</li>
         </ul>
       </div>
