@@ -151,10 +151,46 @@ pub async fn device_auth_flow() -> Result<()> {
         // If we got a token, we're done
         if let Some(token) = poll_data["token"].as_str() {
             save_token(token)?;
+            if let Err(e) = push_device_metadata(token).await {
+                eprintln!("sidekar: could not register device info with sidekar.dev: {e:#}");
+            }
             println!("Logged in successfully! Token saved to {}", auth_file().display());
             return Ok(());
         }
     }
+}
+
+fn system_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+async fn push_device_metadata(token: &str) -> Result<()> {
+    let body = json!({
+        "hostname": system_hostname(),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "sidekar_version": env!("CARGO_PKG_VERSION"),
+    });
+    let url = format!("{}/api/auth/device?action=metadata", api_base());
+    let resp = HTTP_CLIENT
+        .post(url)
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&body)
+        .send()
+        .await
+        .context("metadata HTTP request")?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        bail!("metadata failed: HTTP {status} {text}");
+    }
+    Ok(())
 }
 
 fn open_browser(url: &str) {
