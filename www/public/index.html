@@ -183,9 +183,20 @@ html.dark .nav-logo-icon.light { display: none; }
 
 .nav-links a:hover { color: var(--text); }
 
-/* Auth button */
-.nav-auth {
+/* Auth: Sign in, or Dashboard when logged in */
+.nav-auth-wrap {
   display: none;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.nav-auth-wrap.visible {
+  display: inline-flex;
+}
+
+.nav-auth {
   padding: 6px 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -197,18 +208,13 @@ html.dark .nav-logo-icon.light { display: none; }
   text-decoration: none;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
+  white-space: nowrap;
 }
 
 .nav-auth:hover {
   border-color: var(--border-subtle);
   color: var(--text);
   background: var(--bg-subtle);
-}
-
-.nav-auth.visible {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .nav-auth svg {
@@ -842,7 +848,9 @@ footer .container {
         <li><a href="#feedback">Feedback</a></li>
         <li><a href="#pricing">Pricing</a></li>
       </ul>
-      <a class="nav-auth" id="nav-auth" href="/api/auth/github">Sign in</a>
+      <div class="nav-auth-wrap" id="nav-auth-wrap">
+        <a class="nav-auth" href="/api/auth/github?redirect=/dashboard">Sign in</a>
+      </div>
       <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
         <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -1085,21 +1093,20 @@ function cycleTheme() {
   if (btn) btn.setAttribute('data-mode', stored);
 })();
 
-// Auth check
+// Auth check: Sign in, or Dashboard when logged in
 (function() {
-  var el = document.getElementById('nav-auth');
-  if (!el) return;
+  var wrap = document.getElementById('nav-auth-wrap');
+  if (!wrap) return;
   fetch('/api/auth/session').then(function(res) {
     if (res.ok) return res.json();
     return null;
   }).then(function(data) {
     if (data && data.user) {
-      el.href = '/sessions';
-      el.textContent = 'Dashboard';
+      wrap.innerHTML = '<a href="/dashboard" class="nav-auth">Dashboard</a>';
     }
-    el.classList.add('visible');
+    wrap.classList.add('visible');
   }).catch(function() {
-    el.classList.add('visible');
+    wrap.classList.add('visible');
   });
 })();
 

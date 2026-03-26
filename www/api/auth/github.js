@@ -12,7 +12,7 @@ export default async function handler(req, res) {
 
     const redirectUri = "https://sidekar.dev/api/auth/github";
     const scope = "read:user user:email";
-    const state = req.query.redirect || "/sessions";
+    const state = req.query.redirect || "/dashboard";
     const url = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
     return res.redirect(302, url);
   } catch (err) {
@@ -77,7 +77,7 @@ async function handleCallback(req, res) {
   });
 
   setSessionCookie(res, jwt);
-  const returnTo = req.query.state || "/sessions";
+  const returnTo = req.query.state || "/dashboard";
   return res.redirect(302, returnTo);
   } catch (err) {
     return res.status(500).json({ error: "internal error" });
