@@ -72,20 +72,30 @@
         e.preventDefault();
         var id = this.getAttribute("data-device-id");
         if (!id) return;
-        if (!confirm("Revoke this device? The CLI on that machine will need to run sidekar login again.")) {
-          return;
-        }
         var btn = this;
-        btn.disabled = true;
-        fetch("/api/auth/devices?id=" + encodeURIComponent(id), { method: "DELETE" })
-          .then(function (res) {
-            if (!res.ok) throw new Error("revoke failed");
-            fetchDevices();
-          })
-          .catch(function () {
-            btn.disabled = false;
-            alert("Could not revoke device. Try again.");
-          });
+        sidekarConfirm({
+          title: "Revoke device?",
+          message:
+            "The CLI on that machine will need to run sidekar login again.",
+          confirmLabel: "Revoke",
+          cancelLabel: "Cancel",
+          danger: true,
+        }).then(function (ok) {
+          if (!ok) return;
+          btn.disabled = true;
+          fetch("/api/auth/devices?id=" + encodeURIComponent(id), { method: "DELETE" })
+            .then(function (res) {
+              if (!res.ok) throw new Error("revoke failed");
+              fetchDevices();
+            })
+            .catch(function () {
+              btn.disabled = false;
+              sidekarAlert({
+                title: "Could not revoke",
+                message: "Try again in a moment.",
+              });
+            });
+        });
       });
     }
   }
@@ -96,6 +106,11 @@
     var arch = escapeHtml(d.arch || "-");
     var ver = escapeHtml(d.sidekar_version || "-");
     var last = d.last_seen_at ? formatDate(new Date(d.last_seen_at)) : "-";
+    var lastAgo = d.last_seen_at ? relativeTime(new Date(d.last_seen_at)) : "";
+    var lastDisplay = last;
+    if (last !== "-" && lastAgo) {
+      lastDisplay = last + " (" + lastAgo + ")";
+    }
     var created = d.created_at ? formatDate(new Date(d.created_at)) : "-";
 
     return (
@@ -110,7 +125,7 @@
       '<div class="device-meta-row"><span class="label">OS</span><span class="value">' + os + "</span></div>" +
       '<div class="device-meta-row"><span class="label">Arch</span><span class="value">' + arch + "</span></div>" +
       '<div class="device-meta-row"><span class="label">sidekar</span><span class="value">' + ver + "</span></div>" +
-      '<div class="device-meta-row"><span class="label">Last seen</span><span class="value">' + last + "</span></div>" +
+      '<div class="device-meta-row"><span class="label">Last seen</span><span class="value">' + escapeHtml(lastDisplay) + "</span></div>" +
       '<div class="device-meta-row"><span class="label">Authorized</span><span class="value">' + created + "</span></div>" +
       "</div>" +
       "</div>"
@@ -123,6 +138,20 @@
       dateStyle: "medium",
       timeStyle: "short",
     });
+  }
+
+  function relativeTime(date) {
+    var now = Date.now();
+    var diff = now - date.getTime();
+    if (diff < 0) return "just now";
+    var seconds = Math.floor(diff / 1000);
+    if (seconds < 60) return seconds + "s ago";
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + "m ago";
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + "h ago";
+    var days = Math.floor(hours / 24);
+    return days + "d ago";
   }
 
   function escapeHtml(str) {

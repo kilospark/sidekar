@@ -10,6 +10,7 @@ export default async function handler(req, res) {
   if (action === "create") return handleCreate(req, res);
   if (action === "token") return handleToken(req, res);
   if (action === "approve") return handleApprove(req, res);
+  if (action === "metadata") return handleMetadata(req, res);
 
   return res.status(400).json({ error: "unknown action" });
 }
@@ -91,5 +92,39 @@ async function handleApprove(req, res) {
     { $set: { user_id: user.sub, token } }
   );
 
+  res.json({ ok: true });
+}
+
+/** CLI reports hostname / OS / arch / version after login (Bearer = device token). */
+async function handleMetadata(req, res) {
+  const authHeader = req.headers.authorization || "";
+  const m = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!m) return res.status(401).json({ error: "Authorization: Bearer <device_token> required" });
+
+  const token = m[1].trim();
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+
+  const { hostname, os, arch, sidekar_version } = req.body || {};
+
+  const db = await getDb();
+  const result = await db.collection("devices").updateOne(
+    { token_hash: tokenHash },
+    {
+      $set: {
+        hostname: typeof hostname === "string" && hostname.trim() ? hostname.trim() : "unknown",
+        os: typeof os === "string" && os.trim() ? os.trim() : "unknown",
+        arch: typeof arch === "string" && arch.trim() ? arch.trim() : "unknown",
+        sidekar_version:
+          typeof sidekar_version === "string" && sidekar_version.trim()
+            ? sidekar_version.trim()
+            : "unknown",
+        last_seen_at: new Date(),
+      },
+    }
+  );
+
+  if (result.matchedCount === 0) {
+    return res.status(404).json({ error: "unknown device token" });
+  }
   res.json({ ok: true });
 }
