@@ -209,7 +209,7 @@ fn parse_desktop_pid_and_rest(args: &[String]) -> Result<(i32, Vec<String>)> {
                 );
             }
             "--query" => {
-                // --query is passed by MCP tool schema; consume it and add the value to rest
+                // --query is passed by tool schema; consume it and add the value to rest
                 i += 1;
                 if let Some(v) = args.get(i) {
                     rest.push(v.to_string());

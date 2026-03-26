@@ -15,8 +15,25 @@ const NUDGE_INTERVAL_SECS: u64 = 45;
 const NUDGE_BACKOFF_SECS: u64 = 90;
 const NUDGE_MAX: u32 = 3;
 const NUDGE_POLL_SECS: u64 = 5;
+#[allow(dead_code)]
 const NUDGE_BUSY_CHECK_SECS: u64 = 3;
 const BROKER_TRANSPORT: &str = "broker";
+
+// --- Terminal title helper ---
+
+/// Write an OSC 0 escape sequence to set the terminal title.
+/// Tries `/dev/tty` first (works even when stderr is redirected, e.g. in PTY
+/// mode), then falls back to stderr.
+fn set_terminal_title(title: &str) {
+    use std::io::Write;
+    let seq = format!("\x1b]0;{title}\x07");
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = tty.write_all(seq.as_bytes());
+        let _ = tty.flush();
+    } else {
+        eprint!("{seq}");
+    }
+}
 
 // --- PTY registration inheritance ---
 
@@ -337,8 +354,11 @@ pub struct SidekarBusState {
     pub pane_unique_id: Option<String>,
     pub socket_path: Option<PathBuf>,
     /// True when identity was inherited from a parent PTY wrapper.
-    /// The MCP server should skip starting a duplicate IPC socket.
+    /// Skip starting a duplicate IPC socket when inherited.
     pub inherited_pty: bool,
+    /// True when identity was borrowed from another process (CLI recovering PTY state).
+    /// Drop will NOT unregister — the owning process manages the registration.
+    pub borrowed: bool,
     active_nudges: HashSet<String>,
 }
 
@@ -349,6 +369,7 @@ impl SidekarBusState {
             pane_unique_id: None,
             socket_path: None,
             inherited_pty: false,
+            borrowed: false,
             active_nudges: HashSet::new(),
         }
     }
@@ -439,6 +460,11 @@ impl SidekarBusState {
                 inherited.nick.as_deref().unwrap_or("?"),
                 inherited.session.as_deref().unwrap_or("?"),
             );
+            // Set terminal title with nickname
+            let nick = inherited.nick.as_deref().unwrap_or("?");
+            let name = &inherited.name;
+            let agent_type = detect_agent_type();
+            set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
             self.pane_unique_id = inherited.pane.clone();
             self.inherited_pty = true;
             self.identity = Some(inherited);
@@ -446,9 +472,9 @@ impl SidekarBusState {
             return;
         }
 
-        // Not in a PTY wrapper — register as a standalone MCP session
+        // Not in a PTY wrapper — register as a standalone session
         let channel = crate::pty::detect_channel();
-        let pane_unique = format!("mcp-{}", std::process::id());
+        let pane_unique = format!("cli-{}", std::process::id());
 
         let name = if let Some(custom) = custom_name {
             custom.to_string()
@@ -496,7 +522,7 @@ impl SidekarBusState {
         {
             // Set terminal title
             let agent_type = detect_agent_type();
-            eprint!("\x1b]0;{nick} ({name}) — {agent_type}\x07");
+            set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
             eprintln!(
                 "sidekar bus: registered as \"{name}\" aka \"{nick}\" on channel \"{channel}\""
             );
@@ -508,7 +534,9 @@ impl SidekarBusState {
 
 impl Drop for SidekarBusState {
     fn drop(&mut self) {
-        self.unregister();
+        if !self.borrowed {
+            self.unregister();
+        }
     }
 }
 
@@ -881,7 +909,7 @@ pub fn cmd_signal_done(
     send_directed_envelope(state, ctx, envelope, reply_to, "Handed off")
 }
 
-fn broadcast(ctx: &mut AppContext, channel: &str, my_name: &str, message: &str) -> Result<()> {
+fn broadcast(ctx: &mut AppContext, _channel: &str, my_name: &str, message: &str) -> Result<()> {
     let all_agents = broker::list_agents(None).unwrap_or_default();
     let targets: Vec<_> = all_agents
         .into_iter()
