@@ -67,10 +67,16 @@ main.container { max-width: 720px; padding: 40px 24px 60px; }
 <p class="updated">Last updated: March 26, 2026</p>
 
 <h2>Overview</h2>
-<p>Sidekar is a local-first tool. Your data stays on your machine.</p>
+<p>Sidekar is designed to be local-first. The CLI runs on your machine and does not collect telemetry. Some features — authentication, the dashboard, and session relay — require communication with our servers as described below.</p>
 
-<h2>CLI &amp; MCP Server</h2>
-<p>The <code>sidekar</code> binary runs entirely on your local machine. It does not phone home, collect telemetry, or transmit any data to external servers. Browser sessions, desktop automation, and inter-agent communication all happen locally.</p>
+<h2>CLI</h2>
+<p>The <code>sidekar</code> binary runs on your local machine. It does not phone home or collect telemetry. Browser automation, desktop automation, and inter-agent communication all happen locally.</p>
+<p>The CLI makes outbound network requests in these cases:</p>
+<ul>
+  <li><strong>Authentication:</strong> <code>sidekar login</code> initiates a device-auth code exchange with sidekar.dev to verify your license. An auth token is stored locally in <code>~/.config/sidekar/</code>.</li>
+  <li><strong>Session relay:</strong> when you start a session, the CLI connects to <code>relay.sidekar.dev</code> via WebSocket so that the dashboard can display and interact with your active sessions. Session metadata (name, hostname, working directory, agent type) is transmitted to the relay.</li>
+  <li><strong>Updates:</strong> <code>sidekar update</code> checks GitHub Releases for new versions. This is optional and must be explicitly initiated by you.</li>
+</ul>
 
 <h2>Chrome Extension</h2>
 <p>The Sidekar Chrome extension connects exclusively to <code>127.0.0.1</code> (localhost) via WebSocket. It does not:</p>
@@ -78,25 +84,37 @@ main.container { max-width: 720px; padding: 40px 24px 60px; }
   <li>Send any data to remote servers</li>
   <li>Collect analytics or telemetry</li>
   <li>Track browsing history or behavior</li>
-  <li>Store or transmit page content outside your machine</li>
 </ul>
-<p>The extension reads page content (DOM text, accessibility tree, screenshots) only when the local <code>sidekar</code> process sends a command. A shared secret authenticates the connection between the extension and the local bridge.</p>
+<p>The extension reads page content (DOM text, accessibility tree, screenshots) only when the local <code>sidekar</code> process sends a command. A shared secret authenticates the connection between the extension and the local CLI.</p>
 <p>The extension requests <code>&lt;all_urls&gt;</code> host permission because AI agents may need to interact with any page you direct them to. This permission is never used to access pages without an explicit command from your local agent.</p>
 
-<h2>Website</h2>
-<p>The sidekar.dev website is a static site. It uses no cookies, analytics, or tracking scripts. The optional login flow (for license validation) uses a device-auth code exchange and stores a token locally in <code>~/.config/sidekar/</code>.</p>
+<h2>Website &amp; Dashboard</h2>
+<p>The sidekar.dev website is a static site hosted on Vercel. It uses no cookies, analytics, or tracking scripts.</p>
+<p>When you log in to the dashboard, we store the following server-side:</p>
+<ul>
+  <li><strong>Account information:</strong> your GitHub username and ID (from the OAuth login flow)</li>
+  <li><strong>Devices:</strong> a list of devices you have authorized, including device name and authorization date</li>
+  <li><strong>Session metadata:</strong> active session names, hostnames, working directories, agent types, and connection timestamps. This data is used to display your sessions in the dashboard and is removed when sessions disconnect.</li>
+</ul>
+<p>This data is stored in a MongoDB Atlas database. We do not sell, share, or use this data for any purpose other than operating the Sidekar service.</p>
 
-<h2>Data Storage</h2>
-<p>All sidekar data is stored locally:</p>
+<h2>Local Data Storage</h2>
+<p>The CLI stores the following data on your machine:</p>
 <ul>
   <li>Chrome profiles: <code>~/.sidekar/profiles/</code></li>
   <li>Configuration: <code>~/.config/sidekar/sidekar.json</code></li>
+  <li>Auth token: <code>~/.config/sidekar/</code></li>
   <li>Extension bridge secret: <code>~/.sidekar/ext-secret</code> (0600 permissions)</li>
   <li>Temporary files: <code>/tmp/sidekar-*</code></li>
 </ul>
 
 <h2>Third-Party Services</h2>
-<p>Sidekar does not integrate with any third-party analytics, advertising, or data-collection services. The <code>sidekar update</code> command checks GitHub Releases for new versions — this is the only outbound network request the CLI makes.</p>
+<ul>
+  <li><strong>GitHub:</strong> used for OAuth login and for checking software updates via GitHub Releases</li>
+  <li><strong>Vercel:</strong> hosts the sidekar.dev website and API</li>
+  <li><strong>MongoDB Atlas:</strong> stores account, device, and session metadata as described above</li>
+</ul>
+<p>Sidekar does not integrate with any analytics, advertising, or data-collection services.</p>
 
 <h2>Contact</h2>
 <p>Questions about this policy: <a href="mailto:hello@kilospark.com">hello@kilospark.com</a></p>
