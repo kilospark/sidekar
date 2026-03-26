@@ -147,6 +147,21 @@ function stopKeepalive() {
 // Ref map: tab_id -> { ref_num -> css_path }
 const refMaps = new Map();
 
+/** Safe unwrap of chrome.scripting.executeScript results (empty array / missing result). */
+function firstInjectionResult(exec) {
+  if (!exec || exec.length === 0) {
+    return { error: "No result from executeScript" };
+  }
+  const { result, error } = exec[0];
+  if (error != null && error !== "") {
+    return { error: typeof error === "string" ? error : JSON.stringify(error) };
+  }
+  if (result === undefined) {
+    return { error: "No result from page" };
+  }
+  return result;
+}
+
 async function handleCommand(msg) {
   try {
     switch (msg.command) {
@@ -195,33 +210,42 @@ async function cmdTabs() {
 
 async function cmdRead(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const sel =
-        document.querySelector("article") ||
-        document.querySelector("main") ||
-        document.body;
-      return {
-        url: location.href,
-        title: document.title,
-        text: sel.innerText.substring(0, 50000),
-      };
-    },
-  });
-  return result.result;
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const sel =
+          document.querySelector("article") ||
+          document.querySelector("main") ||
+          document.body;
+        return {
+          url: location.href,
+          title: document.title,
+          text: sel.innerText.substring(0, 50000),
+        };
+      },
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+  return firstInjectionResult(exec);
 }
 
 async function cmdScreenshot(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  const tab = await chrome.tabs.get(tabId);
-  await chrome.tabs.update(tabId, { active: true });
-  await sleep(200);
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: "jpeg",
-    quality: 80,
-  });
-  return { screenshot: dataUrl };
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.tabs.update(tabId, { active: true });
+    await sleep(200);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: "jpeg",
+      quality: 80,
+    });
+    return { screenshot: dataUrl };
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
 }
 
 async function cmdClick(msg) {
@@ -231,9 +255,11 @@ async function cmdClick(msg) {
   // Resolve ref number to data-sidekar-ref attribute
   const refNum = typeof target === "string" && /^\d+$/.test(target) ? parseInt(target) : null;
 
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (target, refNum) => {
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (target, refNum) => {
       let el;
       if (refNum !== null) {
         el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
@@ -262,8 +288,11 @@ async function cmdClick(msg) {
       return { clicked: true, tag: el.tagName, text: el.innerText?.substring(0, 100) };
     },
     args: [target, refNum],
-  });
-  return result.result;
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+  return firstInjectionResult(exec);
 }
 
 async function cmdType(msg) {
@@ -274,9 +303,11 @@ async function cmdType(msg) {
   // Resolve ref number
   const refNum = /^\d+$/.test(selector) ? parseInt(selector) : null;
 
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (selector, text, refNum) => {
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (selector, text, refNum) => {
       let el;
       if (refNum !== null) {
         el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
@@ -298,15 +329,20 @@ async function cmdType(msg) {
       return { typed: true, selector, length: text.length };
     },
     args: [selector, text, refNum],
-  });
-  return result.result;
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+  return firstInjectionResult(exec);
 }
 
 async function cmdAxtree(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
       // Clean up old refs
       document.querySelectorAll("[data-sidekar-ref]").forEach((el) => {
         el.removeAttribute("data-sidekar-ref");
@@ -358,12 +394,15 @@ async function cmdAxtree(msg) {
       walk(document.body);
       return { url: location.href, title: document.title, elements };
     },
-  });
-  // Store ref count for this tab (for validation)
-  if (result.result && result.result.elements) {
-    refMaps.set(tabId, result.result.elements.length);
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
   }
-  return result.result;
+  const out = firstInjectionResult(exec);
+  if (out && out.elements) {
+    refMaps.set(tabId, out.elements.length);
+  }
+  return out;
 }
 
 async function cmdNavigate(msg) {
@@ -426,9 +465,11 @@ async function cmdClose(msg) {
 async function cmdScroll(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
   const direction = msg.direction || "down";
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (direction) => {
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (direction) => {
       const amount = Math.round(window.innerHeight * 0.8);
       switch (direction) {
         case "up": window.scrollBy(0, -amount); break;
@@ -439,24 +480,32 @@ async function cmdScroll(msg) {
       return { scrolled: direction, y: window.scrollY };
     },
     args: [direction],
-  });
-  return result.result;
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+  return firstInjectionResult(exec);
 }
 
 async function cmdEval(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (code) => {
-      try {
-        return { result: String(eval(code)) };
-      } catch (e) {
-        return { error: e.message };
-      }
-    },
-    args: [msg.code],
-  });
-  return result.result;
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (code) => {
+        try {
+          return { result: String(eval(code)) };
+        } catch (e) {
+          return { error: e.message };
+        }
+      },
+      args: [msg.code],
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+  return firstInjectionResult(exec);
 }
 
 // ---------------------------------------------------------------------------
