@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sessions: sidekar</title>
+<title>Devices: sidekar</title>
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
@@ -94,7 +94,6 @@ body {
   min-height: 100vh;
 }
 
-/* Nav */
 nav {
   position: sticky;
   top: 0;
@@ -243,7 +242,6 @@ html.dark .nav-logo-icon.light { display: none; }
 .theme-toggle[data-mode="system"] .icon-system { display: block; }
 .theme-toggle[data-mode="dark"] .icon-dark { display: block; }
 
-/* Footer */
 footer {
   padding: 40px 0;
   border-top: 1px solid var(--border);
@@ -263,122 +261,103 @@ footer .container {
   color: var(--text-muted);
 }
 
-/* Content */
 .container {
   max-width: 1080px;
   margin: 0 auto;
   padding: 32px 24px;
 }
 
-.refresh-note {
-  font-size: 12px;
+.page-intro {
+  font-size: 14px;
   color: var(--text-muted);
   margin-bottom: 24px;
+  max-width: 640px;
 }
 
-/* Session cards */
-.sessions-grid {
+.devices-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
 }
 
-.session-card {
+.device-card {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-  text-decoration: none;
-  display: block;
   color: inherit;
 }
 
-.session-card:hover {
-  border-color: var(--border-subtle);
-  background: var(--bg-muted);
+.device-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.session-name {
-  font-size: 15px;
+.device-name {
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  font-family: var(--mono);
+  font-size: 14px;
+  word-break: break-all;
 }
 
-.agent-nick { color: var(--text-muted); font-weight: 400; font-size: 0.85em; }
-.agent-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  background: var(--bg-muted);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
+.btn-revoke {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
-.session-meta {
+.btn-revoke:hover:not(:disabled) {
+  border-color: #b91c1c;
+  color: #fca5a5;
+  background: rgba(185, 28, 28, 0.12);
+}
+
+.btn-revoke:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+html.light .btn-revoke:hover:not(:disabled) {
+  color: #b91c1c;
+  background: rgba(185, 28, 28, 0.08);
+}
+
+.device-meta {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 12px;
   font-size: 13px;
   color: var(--text-muted);
 }
 
-.session-meta-row {
+.device-meta-row {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.session-meta-row .label {
+.device-meta-row .label {
   color: var(--text-muted);
-  min-width: 60px;
+  min-width: 88px;
 }
 
-.session-meta-row .value {
+.device-meta-row .value {
   color: var(--text-secondary);
   font-family: var(--mono);
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.session-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.viewer-count {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.viewer-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #22c55e;
-  display: inline-block;
-}
-
-/* Empty state */
 .empty-state {
   text-align: center;
   padding: 80px 24px;
@@ -395,6 +374,9 @@ footer .container {
   color: var(--text-muted);
   font-size: 14px;
   margin-bottom: 8px;
+  max-width: 480px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .empty-state code {
@@ -409,7 +391,6 @@ footer .container {
   color: var(--text);
 }
 
-/* Loading */
 .loading {
   text-align: center;
   padding: 80px 24px;
@@ -429,8 +410,8 @@ footer .container {
         </a>
         <div class="nav-dash-links">
           <a href="/dashboard" class="nav-dash-link">Dashboard</a>
-          <a href="/sessions" class="nav-dash-link active">Sessions</a>
-          <a href="/devices" class="nav-dash-link">Devices</a>
+          <a href="/sessions" class="nav-dash-link">Sessions</a>
+          <a href="/devices" class="nav-dash-link active">Devices</a>
         </div>
       </div>
       <div class="nav-right">
@@ -446,9 +427,9 @@ footer .container {
   </nav>
 
   <main class="container">
-    <div class="refresh-note" id="refresh-note"></div>
+    <p class="page-intro">CLI machines you have approved with <code style="font-family:var(--mono);font-size:13px;background:var(--bg-subtle);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">sidekar login</code>. Revoking removes the device token; that machine must log in again.</p>
     <div id="content">
-      <div class="loading">Loading sessions...</div>
+      <div class="loading">Loading devices...</div>
     </div>
   </main>
 
@@ -482,6 +463,6 @@ footer .container {
     if (btn) btn.setAttribute('data-mode', stored);
   })();
   </script>
-  <script src="/js/sessions.js"></script>
+  <script src="/js/devices.js"></script>
 </body>
 </html>

@@ -3,7 +3,6 @@
   var userInfo = document.getElementById("user-info");
   var logoutBtn = document.getElementById("logout-btn");
   var refreshNote = document.getElementById("refresh-note");
-  var refreshTimer = null;
 
   // --- Auth check ---
   function checkAuth() {
@@ -46,7 +45,7 @@
       .then(function (data) {
         if (!data) return;
         renderSessions(data.sessions || []);
-        refreshNote.textContent = "Auto-refreshing every 10s";
+        refreshNote.textContent = "";
       })
       .catch(function () {
         content.innerHTML =
@@ -139,6 +138,5 @@
   checkAuth().then(function (user) {
     if (!user) return;
     fetchSessions();
-    refreshTimer = setInterval(fetchSessions, 10000);
   });
 })();
