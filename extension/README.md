@@ -7,8 +7,7 @@ MV3 extension that connects to the local `sidekar` bridge so terminal agents can
 1. Build or install the `sidekar` binary (`cargo build --release` from the repo root).
 2. Chrome → **Extensions** → enable **Developer mode** → **Load unpacked** → select this `extension/` directory.
 3. Start the bridge and copy the shared secret:
-   - `sidekar ext secret`  
-   - or run `sidekar ext-server` and copy the `Secret:` line from the terminal.
+   - `sidekar ext secret`
 4. Click the Sidekar toolbar icon → paste the secret → **Connect**.
 
 Default WebSocket URL is `ws://127.0.0.1:9876`. If you use another port on the Rust side (`SIDEKAR_EXT_PORT` / `sidekar ext-server`), set the same value as **Bridge port** in the extension popup (stored in `chrome.storage.local`).
