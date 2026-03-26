@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sessions: sidekar</title>
+<title>Dashboard: sidekar</title>
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
@@ -34,7 +34,6 @@
   --text: #fafafa;
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
-  --accent: #e4e4e7;
   --nav-bg: rgba(9, 9, 11, 0.8);
   --font: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
@@ -50,7 +49,6 @@
     --text: #09090b;
     --text-secondary: #52525b;
     --text-muted: #71717a;
-    --accent: #27272a;
     --nav-bg: rgba(255, 255, 255, 0.8);
   }
 }
@@ -64,7 +62,6 @@ html.light {
   --text: #09090b;
   --text-secondary: #52525b;
   --text-muted: #71717a;
-  --accent: #27272a;
   --nav-bg: rgba(255, 255, 255, 0.8);
 }
 
@@ -77,7 +74,6 @@ html.dark {
   --text: #fafafa;
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
-  --accent: #e4e4e7;
   --nav-bg: rgba(9, 9, 11, 0.8);
 }
 
@@ -94,7 +90,6 @@ body {
   min-height: 100vh;
 }
 
-/* Nav */
 nav {
   position: sticky;
   top: 0;
@@ -243,7 +238,6 @@ html.dark .nav-logo-icon.light { display: none; }
 .theme-toggle[data-mode="system"] .icon-system { display: block; }
 .theme-toggle[data-mode="dark"] .icon-dark { display: block; }
 
-/* Footer */
 footer {
   padding: 40px 0;
   border-top: 1px solid var(--border);
@@ -263,158 +257,129 @@ footer .container {
   color: var(--text-muted);
 }
 
-/* Content */
 .container {
   max-width: 1080px;
   margin: 0 auto;
   padding: 32px 24px;
 }
 
-.refresh-note {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 24px;
+.dash-lead {
+  font-size: 18px;
+  color: var(--text-secondary);
+  margin-bottom: 28px;
+  line-height: 1.5;
 }
 
-/* Session cards */
-.sessions-grid {
+.dash-lead strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.dash-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
 }
 
-.session-card {
+.dash-card {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 20px;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-  text-decoration: none;
-  display: block;
-  color: inherit;
-}
-
-.session-card:hover {
-  border-color: var(--border-subtle);
-  background: var(--bg-muted);
-}
-
-.session-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.agent-nick { color: var(--text-muted); font-weight: 400; font-size: 0.85em; }
-.agent-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  background: var(--bg-muted);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.session-meta {
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 12px;
-  font-size: 13px;
-  color: var(--text-muted);
+  gap: 16px;
 }
 
-.session-meta-row {
+.dash-card-top {
   display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.session-meta-row .label {
-  color: var(--text-muted);
-  min-width: 60px;
-}
-
-.session-meta-row .value {
-  color: var(--text-secondary);
-  font-family: var(--mono);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-footer {
-  display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-muted);
+  gap: 12px;
 }
 
-.viewer-count {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.viewer-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #22c55e;
-  display: inline-block;
-}
-
-/* Empty state */
-.empty-state {
-  text-align: center;
-  padding: 80px 24px;
-}
-
-.empty-state h2 {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 12px;
-}
-
-.empty-state p {
-  color: var(--text-muted);
+.dash-card-title {
   font-size: 14px;
-  margin-bottom: 8px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.empty-state code {
+.dash-card-num {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.dash-card-cta {
   display: inline-block;
-  margin-top: 16px;
-  padding: 10px 20px;
-  background: var(--bg-subtle);
+  align-self: flex-start;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 8px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.dash-card-cta:hover {
+  border-color: var(--border-subtle);
+  color: var(--text);
+  background: var(--bg-muted);
+}
+
+.dash-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.dash-hint p {
+  margin: 0;
+}
+
+.dash-hint strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.dash-hint code {
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: 12px;
+  background: var(--bg-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
   color: var(--text);
 }
 
-/* Loading */
+.dash-hint a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dash-hint a:hover {
+  color: var(--text);
+}
+
 .loading {
   text-align: center;
   padding: 80px 24px;
   color: var(--text-muted);
   font-size: 14px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text-muted);
 }
 </style>
 </head>
@@ -428,8 +393,8 @@ footer .container {
           sidekar
         </a>
         <div class="nav-dash-links">
-          <a href="/dashboard" class="nav-dash-link">Dashboard</a>
-          <a href="/sessions" class="nav-dash-link active">Sessions</a>
+          <a href="/dashboard" class="nav-dash-link active">Dashboard</a>
+          <a href="/sessions" class="nav-dash-link">Sessions</a>
           <a href="/devices" class="nav-dash-link">Devices</a>
         </div>
       </div>
@@ -446,9 +411,8 @@ footer .container {
   </nav>
 
   <main class="container">
-    <div class="refresh-note" id="refresh-note"></div>
     <div id="content">
-      <div class="loading">Loading sessions...</div>
+      <div class="loading">Loading dashboard...</div>
     </div>
   </main>
 
@@ -482,6 +446,6 @@ footer .container {
     if (btn) btn.setAttribute('data-mode', stored);
   })();
   </script>
-  <script src="/js/sessions.js"></script>
+  <script src="/js/dashboard.js"></script>
 </body>
 </html>
