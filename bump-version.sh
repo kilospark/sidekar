@@ -7,8 +7,8 @@ set -e
 TYPE=${1:-patch}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Read current version from plugin.json
-CURRENT=$(grep '"version"' "$DIR/.claude-plugin/plugin.json" | head -1 | sed 's/.*"version": *"//;s/".*//')
+# Read current version from Cargo.toml (source of truth)
+CURRENT=$(grep '^version = ' "$DIR/Cargo.toml" | head -1 | sed 's/^version = "\(.*\)"/\1/')
 
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
@@ -21,10 +21,11 @@ esac
 
 NEW="${MAJOR}.${MINOR}.${PATCH}"
 
-# Update all version files
+# Update all version files (JSON manifests)
 sed -i '' "s/\"version\": *\"$CURRENT\"/\"version\": \"$NEW\"/g" \
   "$DIR/.claude-plugin/plugin.json" \
-  "$DIR/.claude-plugin/marketplace.json"
+  "$DIR/.claude-plugin/marketplace.json" \
+  "$DIR/extension/manifest.json"
 
 # Update Cargo.toml version
 sed -i '' "s/^version = \".*\"/version = \"$NEW\"/" "$DIR/Cargo.toml"
