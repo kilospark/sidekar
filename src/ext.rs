@@ -15,6 +15,12 @@ use tokio::sync::{Mutex, oneshot};
 const DEFAULT_PORT: u16 = 9876;
 const TIMEOUT_SECS: u64 = 30;
 
+fn ipc_port_for_ws(port: u16) -> Result<u16> {
+    port.checked_add(1).ok_or_else(|| {
+        anyhow!("SIDEKAR_EXT_PORT cannot be 65535 (IPC needs port+1)")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Shared secret for authentication
 // ---------------------------------------------------------------------------
@@ -97,7 +103,7 @@ pub async fn run_server() -> Result<()> {
             )
         })?;
 
-    let ipc_port = port + 1;
+    let ipc_port = ipc_port_for_ws(port)?;
     let ipc_listener = TcpListener::bind(format!("127.0.0.1:{ipc_port}"))
         .await
         .with_context(|| {
@@ -167,6 +173,12 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState, secr
 
     {
         let mut s = state.lock().await;
+        if s.ext_tx.is_some() {
+            eprintln!("Rejecting duplicate extension connection (one client already connected)");
+            drop(s);
+            // Dropping tx/rx closes this WebSocket without replacing the active sender.
+            return;
+        }
         s.ext_tx = Some(tx);
         s.connected = true;
         s.authenticated = false;
@@ -237,10 +249,17 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState, secr
         }
     }
 
-    let mut s = state.lock().await;
-    s.ext_tx = None;
-    s.connected = false;
-    s.authenticated = false;
+    let pending = {
+        let mut s = state.lock().await;
+        let pending = std::mem::take(&mut s.pending);
+        s.ext_tx = None;
+        s.connected = false;
+        s.authenticated = false;
+        pending
+    };
+    for (_id, tx) in pending {
+        let _ = tx.send(json!({"error": "Extension disconnected"}));
+    }
     eprintln!("Extension disconnected");
 }
 
@@ -259,8 +278,16 @@ async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
         s.pending.insert(id.clone(), tx);
         let text = serde_json::to_string(&msg)?;
         if let Some(ref mut ext_tx) = s.ext_tx {
-            ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(text.into())).await
-                .context("Failed to send to extension")?;
+            match ext_tx
+                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                .await
+            {
+                Ok(()) => {}
+                Err(e) => {
+                    s.pending.remove(&id);
+                    return Err(anyhow::Error::from(e)).context("Failed to send to extension");
+                }
+            }
         }
     }
 
@@ -350,10 +377,24 @@ fn auto_launch_server() -> Result<()> {
 
     eprintln!("Started ext-server (PID {})", child.id());
 
-    // Give it a moment to bind
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    Ok(())
+    let port = std::env::var("SIDEKAR_EXT_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let ipc_port = ipc_port_for_ws(port)?;
+    let ipc_addr = format!("127.0.0.1:{ipc_port}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(&ipc_addr).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    bail!(
+        "ext-server did not open IPC on {ipc_addr} within 4s (child PID {}). See {}",
+        child.id(),
+        log_path.display()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +424,7 @@ pub async fn send_cli_command(command: &str, args: &[String], default_tab: Optio
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
-    let ipc_port = port + 1;
+    let ipc_port = ipc_port_for_ws(port)?;
 
     let msg = build_command(command, args, default_tab)?;
 

@@ -19,10 +19,11 @@
     return match ? match[1] : null;
   }
 
-  // Create terminal
+  // Create terminal (scrollback: lines kept above viewport; sticky scroll in onmessage)
   var term = new Terminal({
     cursorBlink: true,
     fontSize: 14,
+    scrollback: 10000,
     fontFamily: "'SF Mono', Menlo, Consolas, monospace",
     theme: {
       background: "#09090b",
@@ -37,15 +38,75 @@
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
 
-  // Account for status bar height (32px)
-  function fitTerminal() {
+  var LAYOUT_KEY = "terminalLayoutAdaptive";
+  var FIXED_COLS = 80;
+  var FIXED_ROWS = 24;
+
+  var layoutAdaptiveCheckbox = document.getElementById("layout-adaptive");
+  var terminalWrap = document.getElementById("terminal-wrap");
+
+  function loadLayoutPreference() {
+    var stored = localStorage.getItem(LAYOUT_KEY);
+    if (stored === "0") {
+      layoutAdaptiveCheckbox.checked = false;
+    } else if (stored === "1") {
+      layoutAdaptiveCheckbox.checked = true;
+    }
+  }
+
+  function fitTerminalAdaptive() {
     var container = document.getElementById("terminal");
     container.style.height = "calc(100vh - 32px)";
-    container.style.marginTop = "32px";
+    container.style.width = "100%";
     fitAddon.fit();
   }
 
-  fitTerminal();
+  function applyFixedLayout() {
+    var container = document.getElementById("terminal");
+    terminalWrap.className = "layout-fixed";
+    container.style.width = "";
+    container.style.height = "";
+    term.resize(FIXED_COLS, FIXED_ROWS);
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        var el = term.element;
+        if (!el) return;
+        var w = el.offsetWidth;
+        var h = el.offsetHeight;
+        if (w > 0 && h > 0) {
+          container.style.width = w + "px";
+          container.style.height = h + "px";
+        }
+      });
+    });
+  }
+
+  function applyLayout() {
+    var adaptive = layoutAdaptiveCheckbox.checked;
+    localStorage.setItem(LAYOUT_KEY, adaptive ? "1" : "0");
+    var container = document.getElementById("terminal");
+    if (adaptive) {
+      document.body.classList.remove("terminal-layout-fixed");
+      terminalWrap.className = "layout-adaptive";
+      container.style.width = "";
+      container.style.height = "";
+      fitTerminalAdaptive();
+    } else {
+      document.body.classList.add("terminal-layout-fixed");
+      applyFixedLayout();
+    }
+  }
+
+  loadLayoutPreference();
+  layoutAdaptiveCheckbox.addEventListener("change", applyLayout);
+  applyLayout();
+
+  function isViewportNearBottom() {
+    var vp = term.element && term.element.querySelector(".xterm-viewport");
+    if (!vp) return true;
+    var threshold = 48;
+    return vp.scrollHeight - vp.scrollTop - vp.clientHeight <= threshold;
+  }
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -87,8 +148,11 @@
 
         ws.onmessage = function (event) {
           if (typeof event.data === "string") return;
+          // Only follow new output if the user was already at the bottom; otherwise
+          // scrolling up to read history would be undone on every PTY chunk.
+          var stickToBottom = isViewportNearBottom();
           term.write(new Uint8Array(event.data), function () {
-            term.scrollToBottom();
+            if (stickToBottom) term.scrollToBottom();
           });
         };
 
@@ -120,9 +184,12 @@
     }
   });
 
-  // Refit terminal on window resize (viewer adapts to PTY size, not vice versa)
   window.addEventListener("resize", function () {
-    fitTerminal();
+    if (layoutAdaptiveCheckbox.checked) {
+      fitTerminalAdaptive();
+    } else {
+      applyFixedLayout();
+    }
   });
 
   connect();
