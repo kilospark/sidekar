@@ -106,5 +106,5 @@ case ":$PATH:" in
     ;;
 esac
 
-# Configure MCP clients (handled natively by the binary)
+# Install agent skills (SKILL.md into each detected agent's skills dir)
 "${INSTALL_DIR}/${BINARY}" install

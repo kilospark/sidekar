@@ -1,18 +1,18 @@
-# sidekar — the sidecar for AI agents
+# sidekar: the sidecar for AI agents
 
-Browser control, desktop automation, web research, and inter-agent communication. Ships as a single Rust binary with zero runtime dependencies. Works as an MCP server or CLI skill with Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, Goose, OpenCode, and any MCP-compatible client.
+**Browser automation** (Chrome DevTools Protocol plus the optional Chrome extension), **desktop automation** on macOS, **inter-agent communication and orchestration** via a local bus, and **background automation** (tab monitoring and cron). Ships as a single Rust binary with zero runtime dependencies. Works with Claude Code, Codex, Cursor, Copilot, Gemini CLI, OpenCode, and other agents through the bundled skill (`sidekar install`) or the [Vercel skills registry](https://github.com/vercel-labs/skills).
 
 No Playwright, no browser automation frameworks. Raw CDP over WebSocket.
 
 ## Install
 
-### MCP Server (recommended)
+### Recommended
 
 ```bash
 curl -fsSL https://sidekar.dev/install | sh
 ```
 
-Downloads the `sidekar` binary and auto-configures any detected MCP clients (Claude Code, Claude Desktop, ChatGPT Desktop, Cursor, Windsurf, Cline, Codex).
+Downloads the `sidekar` binary, adds it to your `PATH`, and runs `sidekar install` to place `SKILL.md` into each detected agent’s skills directory (Claude Code, Codex, Gemini CLI, OpenCode, Pi, etc.).
 
 ### Uninstall
 
@@ -20,7 +20,7 @@ Downloads the `sidekar` binary and auto-configures any detected MCP clients (Cla
 curl -fsSL https://sidekar.dev/uninstall | sh
 ```
 
-### Agent Skill
+### Agent Skill (registry)
 
 ```bash
 npx skills add kilospark/sidekar
@@ -28,24 +28,29 @@ npx skills add kilospark/sidekar
 
 Works with Claude Code, Cursor, Codex, Windsurf, Cline, Copilot, OpenCode, Goose, and [40+ agents](https://github.com/vercel-labs/skills). Powered by Vercel's [skills](https://github.com/vercel-labs/skills) CLI.
 
-### Manual MCP config
+### Manual skill install
 
-```json
-{
-  "mcpServers": {
-    "sidekar": {
-      "command": "sidekar",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-For Claude Code:
+If you already have the binary:
 
 ```bash
-claude mcp add -s user sidekar sidekar -- mcp
+sidekar install
 ```
+
+Or copy `SKILL.md` from this repo into your agent’s skills folder (see output of `sidekar install` when no agents are detected).
+
+## Step-by-step
+
+1. **Install sidekar.** Download the binary and install the agent skill in one step:
+   ```bash
+   curl -fsSL https://sidekar.dev/install | sh
+   ```
+   This adds `sidekar` to your `PATH` and runs `sidekar install` so `SKILL.md` is copied into each detected agent’s skills directory.
+
+2. **Chrome extension (optional).** To drive your everyday Chrome profile (same cookies and logins as the window you already use), load the MV3 extension from the `extension/` directory, start the bridge (`sidekar ext-server` or any `sidekar ext …` command), paste the shared secret in the extension popup, and connect. See [`extension/README.md`](extension/README.md) for full steps.
+
+3. **`sidekar login` (optional).** Run `sidekar login` to sign in with sidekar.dev and store a device token. Use this when you want remote access to sessions (for example managing or attaching to sessions from the web dashboard) instead of only local use.
+
+4. **Launch an agent with sidekar.** From a terminal, run `sidekar <agent> [args…]` where `<agent>` is any agent CLI on your `PATH` or a shell alias (for example `sidekar claude`, `sidekar codex`). Sidekar wraps the process in a PTY, registers it on the local agent bus, and wires browser and bus tooling for that session.
 
 ## Usage
 
@@ -58,51 +63,37 @@ search google for "best restaurants near me"
 build this component, then open the dev server and verify it renders correctly
 ```
 
-Or describe any goal — the agent will figure out the steps.
+Or describe any goal; the agent will figure out the steps.
 
 ## What it does
 
-### Browser automation
+These are the four capability pillars. Everything else (for example web search, multi-page reads, batch runs) is a **use case** on top of them.
 
-Full Chrome DevTools Protocol access via raw WebSocket. Navigate, click, type, fill forms, handle dialogs, manage cookies, capture network traffic, take screenshots, save PDFs. Token-efficient perception returns compact page summaries instead of raw DOM dumps.
+### 1. Browser automation (CDP + Chrome extension)
 
-### Web research
+Full Chrome DevTools Protocol access via raw WebSocket: navigate, click, type, forms, dialogs, cookies, network capture, screenshots, PDFs. The optional **Chrome extension** extends the same automation story where an in-page bridge helps (see `extension/` and `sidekar ext-server`). Token-efficient perception returns compact page summaries instead of raw DOM dumps. Real-browser search (`search`), parallel URL reads (`readurls`), and similar flows are **uses** of this pillar, not separate products.
 
-Real-browser search and multi-page reading. `search` navigates to Google/Bing/DuckDuckGo, submits the query, and extracts results. `readurls` reads multiple URLs in parallel. No API keys, no rate limits. Handles CAPTCHAs, JavaScript rendering, and redirects that headless fetchers can't.
+### 2. Desktop automation (macOS)
 
-### Desktop automation (macOS)
+Control native applications via the macOS Accessibility API: find and click UI elements, desktop screenshots, launch and quit apps, list windows. Runs without Chrome when you need native UI, including permission dialogs and surfaces outside CDP-driven pages.
 
-Control native applications via the macOS Accessibility API. Find and click UI elements, take desktop screenshots, launch and quit apps, list windows. Works independently of the browser — no Chrome required. Covers Chrome permission dialogs, extension popups, and other browser-native UI that CDP cannot reach.
+### 3. Inter-agent communication and orchestration
 
-### Inter-agent communication
+Agents discover and coordinate via a **local bus** (SQLite broker, Unix sockets): `who`, `bus_send`, `bus_done`, handoffs, and durable message tracking. Multi-terminal workflows often use the PTY helpers (`sidekar claude`, `sidekar codex`, …) for registration and I/O; that is **how** you run agents, not a separate user-facing pillar.
 
-Agents discover and message each other via a local bus backed by a SQLite broker. Register with a name, list other agents with `who`, send requests/responses/broadcasts with `bus_send`, hand off tasks with `bus_done`. Messages are delivered via Unix domain sockets.
+### 4. Background automation
 
-### PTY wrapper (recommended)
-
-`sidekar claude`, `sidekar codex`, etc. launch the agent inside a sidekar-owned PTY with automatic bus registration, input injection, signal forwarding, resize handling, and terminal title updates showing the agent's nickname. The recommended way to run multi-agent workflows. 
-
-### Tab monitoring
-
-Watch browser tabs for title and favicon changes. Detects new Slack messages, new emails, Grafana alerts. Debounced, skips agent-initiated changes, delivers notifications via the agent bus. 
-
-### Cron scheduling
-
-Run sidekar tools on a recurring schedule. Create jobs with standard cron expressions — navigate to a dashboard, take a screenshot, deliver results to any agent. Jobs persist across session restarts via SQLite.
-
-### Batch orchestration
-
-Execute multi-step action sequences in a single call. Smart waits after state-changing actions, per-action retries, optional steps. Reduces round-trips and keeps agents moving.
+**Monitor:** watch tab titles and favicons, debounced, with notifications routed through the bus. **Cron:** run tools on a schedule (standard cron expressions), persist jobs in SQLite, deliver results to agents. Together they cover unattended and reactive work.
 
 ## How it works
 
 The agent follows a **perceive-act loop**:
 
-1. **Plan** — break the goal into steps
-2. **Act** — navigate, click, type via CDP commands
-3. **Perceive** — read the page to see what happened
-4. **Decide** — adapt, continue, or report results
-5. **Repeat** — until the goal is done
+1. **Plan:** break the goal into steps
+2. **Act:** navigate, click, type via CDP commands
+3. **Perceive:** read the page to see what happened
+4. **Decide:** adapt, continue, or report results
+5. **Repeat:** until the goal is done
 
 ## Reading the page
 
@@ -127,7 +118,7 @@ Each agent invocation gets its own **session** with isolated tab tracking. On `l
 
 - Multiple agents can work side by side in the same Chrome instance
 - Each session only sees and controls its own tabs
-- In MCP mode, each agent gets its own Chrome window for full isolation
+- You can also use separate Chrome windows or profiles for stronger isolation when needed
 
 ## Profiles
 
@@ -313,7 +304,7 @@ sidekar cron_list               # List active cron jobs
 sidekar cron_delete <id>        # Delete a cron job
 ```
 
-Jobs execute sidekar tools on a cron schedule and deliver results via the agent bus. Persisted in SQLite — survives session restarts.
+Jobs execute sidekar tools on a cron schedule and deliver results via the agent bus. Persisted in SQLite across session restarts.
 
 ### Batch execution
 
@@ -333,29 +324,29 @@ sidekar unlock                  # Release tab lock
 ```bash
 sidekar config get              # Show current config
 sidekar config set <key> <val>  # Set config (telemetry, feedback, browser, auto_update, cdp_timeout_secs)
-sidekar setup                   # Configure MCP clients without re-download
-sidekar install                 # Register with a specific MCP client
+sidekar install                 # Install SKILL.md into detected agent skill directories
 sidekar update                  # Check for and apply updates
 sidekar feedback <rating> [txt] # Send feedback (1-5)
 ```
 
-**Ref-based targeting:** After `axtree -i`, `observe`, or `text`, use the ref numbers directly as selectors — `click 1`, `type 3 hello`. Cached per URL with 48-hour TTL.
+**Ref-based targeting:** After `axtree -i`, `observe`, or `text`, use the ref numbers directly as selectors (`click 1`, `type 3 hello`). Cached per URL with 48-hour TTL.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  sidekar binary (Rust, ~16k lines)                  │
+│  sidekar binary (Rust)                              │
 │                                                     │
 │  ┌───────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │ MCP Server │  │   CLI    │  │   PTY Wrapper    │ │
-│  │ (stdio)    │  │ dispatch │  │ (fork+exec)      │ │
+│  │ Skill      │  │   CLI    │  │   PTY Wrapper    │ │
+│  │ install    │  │ dispatch │  │ (fork+exec)      │ │
+│  │ (skill.rs) │  │          │  │                  │ │
 │  └─────┬──────┘  └────┬─────┘  └────┬─────────────┘ │
 │        │              │              │               │
 │  ┌─────▼──────────────▼──────────────▼─────────────┐ │
 │  │              Command Dispatch                    │ │
 │  │  core · data · interaction · session · desktop   │ │
-│  │  batch · monitor                                 │ │
+│  │  batch · monitor · cron                          │ │
 │  └─────┬──────────────┬──────────────┬─────────────┘ │
 │        │              │              │               │
 │  ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼────────────┐ │
@@ -365,14 +356,15 @@ sidekar feedback <rating> [txt] # Send feedback (1-5)
 │  └─────────────┘ └────────────┘ └─────────────────┘ │
 │                                                     │
 │  ┌──────────┐  ┌─────────┐  ┌───────────────────┐  │
-│  │ IPC/Unix │  │ Tunnel/ │  │  Telemetry/       │  │
-│  │ Sockets  │  │ Relay   │  │  Auto-update      │  │
+│  │ Extension│  │ Tunnel/ │  │  Telemetry/       │  │
+│  │ bridge   │  │ Relay   │  │  Auto-update      │  │
+│  │ (ext.rs) │  │         │  │                   │  │
 │  └──────────┘  └─────────┘  └───────────────────┘  │
 └─────────────────────────────────────────────────────┘
 ```
 
-- **MCP Server** (`mcp.rs`): JSON-RPC over stdio, tools/list + tools/call, auto-launch browser on first tool call, session cleanup on shutdown, telemetry flush, feedback prompts
-- **CLI** (`main.rs` → `commands/mod.rs`): Direct dispatch to same command implementations
+- **Skill installer** (`skill.rs`): Copies `SKILL.md` into detected agent skill directories; `sidekar install` entry point
+- **CLI** (`main.rs` → `commands/mod.rs`): Command dispatch for browser, desktop, bus, monitor, cron, etc.
 - **PTY Wrapper** (`pty.rs`): Fork+exec agents in a PTY, register on bus, bridge I/O, signal forwarding
 - **CDP Client** (`lib.rs`): Raw WebSocket to Chrome's debug port, request/response matching, event queue, auto-dialog handling, connection retry, TCP keepalive
 - **Agent Bus** (`bus.rs` + `broker.rs` + `message.rs` + `transport.rs`): SQLite-backed agent registry, typed envelope protocol (request/response/fyi/done), delivery via SQLite message queue, nudge timers, timeout tracking
@@ -407,7 +399,7 @@ Several tools give AI agents browser control on top of Playwright: [agent-browse
 
 |  | **sidekar** | **Playwright-based tools** |
 |--|-----------|--------------------------|
-| **What it is** | Rust binary - MCP server + CLI + PTY wrapper + agent bus | CLI / MCP server / SDK wrapping Playwright |
+| **What it is** | Rust binary: CDP + extension bridge, desktop, agent bus, monitor/cron | SDK / CLI wrapping Playwright (often via MCP) |
 | **Architecture** | Direct CDP WebSocket to your Chrome | CLI/SDK → IPC → Playwright → bundled Chromium |
 | **Install size** | Single binary, zero deps | ~200 MB+ (node_modules + Chromium download) |
 | **Uses your browser** | Yes - your Chrome, your cookies, your logins | No - launches bundled Chromium with clean state |
@@ -455,7 +447,7 @@ Stored in `~/.config/sidekar/sidekar.json`:
 git clone https://github.com/kilospark/sidekar.git
 cd sidekar
 cargo build --release
-# Binary: target/release/sidekar (CLI + MCP server via `sidekar mcp`)
+# Binary: target/release/sidekar (CLI; run `sidekar install` for agent skills)
 ```
 
 ## Requirements
@@ -472,7 +464,8 @@ Auto-detected on macOS, Linux, Windows, and WSL. Set `CHROME_PATH` to override.
 src/
 ├── main.rs              # CLI entry point, arg parsing, session discovery
 ├── lib.rs               # AppContext, CdpClient, CDP helpers, session state
-├── mcp.rs               # MCP server (JSON-RPC stdio), tool dispatch, telemetry
+├── skill.rs             # SKILL.md install paths for agent CLIs
+├── ext.rs               # Chrome extension bridge (ext-server)
 ├── commands/
 │   ├── mod.rs           # Command dispatch table (~80 commands)
 │   ├── core.rs          # launch, connect, navigate, read, text, dom, axtree,
@@ -482,6 +475,7 @@ src/
 │   ├── session.rs       # download, activate, minimize, lock/unlock, human-click/type
 │   ├── desktop.rs       # macOS desktop automation commands
 │   ├── batch.rs         # Multi-action batch execution
+│   ├── cron.rs          # Scheduled jobs
 │   ├── monitor.rs       # Tab watching background task
 │   └── interaction/     # Click dispatch, forms, waiting, query helpers
 ├── bus.rs               # Agent bus: registration, messaging, nudge timers
@@ -501,11 +495,11 @@ src/
 ├── utils.rs             # Browser detection, key mapping, file helpers
 ├── config.rs            # SidekarConfig (JSON in ~/.config/sidekar/)
 ├── api_client.rs        # Telemetry, feedback, version check, self-update
-├── mcp_clients.rs       # Auto-configure MCP clients (Claude, Cursor, etc.)
 └── auth.rs              # Device auth flow (GitHub OAuth)
 
 relay/                   # Separate relay server (Fly.io deployed)
 www/                     # Landing page + API (Vercel)
+extension/               # Chrome extension (MV3)
 ```
 
 ## License
