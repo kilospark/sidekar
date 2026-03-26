@@ -117,7 +117,6 @@ pub async fn run_server() -> Result<()> {
     std::fs::write(pid_path(), pid.to_string())?;
 
     eprintln!("sidekar ext-server listening on ws://127.0.0.1:{port}");
-    eprintln!("Secret: {secret}");
     eprintln!("PID: {pid}");
 
     let state: SharedState = Arc::new(Mutex::new(ExtState {
@@ -304,15 +303,31 @@ async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
 async fn handle_cli_connection(stream: TcpStream, state: SharedState) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    const MAX_IPC_MSG: usize = 65536;
     let mut stream = stream;
-    let mut buf = vec![0u8; 65536];
+    let mut buf = Vec::with_capacity(4096);
 
-    let n = match stream.read(&mut buf).await {
-        Ok(n) if n > 0 => n,
-        _ => return,
-    };
+    // Read until EOF (CLI shuts down its write half after sending)
+    loop {
+        let mut chunk = [0u8; 4096];
+        match stream.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => {
+                if buf.len() + n > MAX_IPC_MSG {
+                    let err = json!({"error": "IPC message too large"});
+                    let _ = stream.write_all(serde_json::to_string(&err).unwrap().as_bytes()).await;
+                    return;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            Err(_) => return,
+        }
+    }
+    if buf.is_empty() {
+        return;
+    }
 
-    let command: Value = match serde_json::from_slice(&buf[..n]) {
+    let command: Value = match serde_json::from_slice(&buf) {
         Ok(v) => v,
         Err(e) => {
             let err = json!({"error": format!("Invalid JSON: {e}")});
@@ -365,6 +380,11 @@ fn auto_launch_server() -> Result<()> {
         .append(true)
         .open(&log_path)
         .context("Cannot open ext-server log")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600));
+    }
     let log_err = log_file.try_clone()?;
 
     let child = std::process::Command::new(exe)
