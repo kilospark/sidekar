@@ -484,8 +484,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         // Bus tools — stateless CLI versions that recover identity from env/broker
         "who" => {
             let show_all = args.iter().any(|a| a == "--all" || a == "-a");
-            let mut bus_state = crate::bus::SidekarBusState::new();
-            recover_bus_state(&mut bus_state);
+            let bus_state = recovered_bus_state();
             crate::bus::cmd_who(&bus_state, ctx, show_all)?;
             Ok(())
         }
@@ -495,22 +494,16 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             if to.is_empty() || message.is_empty() {
                 bail!("Usage: sidekar bus_send <to> <message>");
             }
-            let kind = "fyi";
-            let mut bus_state = crate::bus::SidekarBusState::new();
-            recover_bus_state(&mut bus_state);
-            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, None)?;
+            let mut bus_state = recovered_bus_state();
+            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, "fyi", None)?;
             Ok(())
         }
         "bus_done" | "bus-done" => {
             if args.len() < 3 {
                 bail!("Usage: sidekar bus_done <next> <summary> <request>");
             }
-            let next = &args[0];
-            let summary = &args[1];
-            let request = &args[2];
-            let mut bus_state = crate::bus::SidekarBusState::new();
-            recover_bus_state(&mut bus_state);
-            crate::bus::cmd_signal_done(&mut bus_state, ctx, next, summary, request, None)?;
+            let mut bus_state = recovered_bus_state();
+            crate::bus::cmd_signal_done(&mut bus_state, ctx, &args[0], &args[1], &args[2], None)?;
             Ok(())
         }
         // Cron commands — CRUD operates on broker SQLite, execution runs in PTY wrapper
@@ -545,19 +538,20 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
     }
 }
 
-/// Recover bus identity from SIDEKAR_AGENT_NAME env var + broker lookup.
+/// Build a bus state by recovering identity from SIDEKAR_AGENT_NAME env var + broker lookup.
 /// Sets `borrowed = true` so the Drop impl won't unregister the PTY wrapper's agent.
-fn recover_bus_state(state: &mut crate::bus::SidekarBusState) {
-    // If inside a PTY wrapper, recover identity from env
+fn recovered_bus_state() -> crate::bus::SidekarBusState {
+    let mut state = crate::bus::SidekarBusState::new();
     if let Ok(name) = std::env::var("SIDEKAR_AGENT_NAME") {
         if let Ok(Some(agent)) = crate::broker::find_agent(&name, None) {
             state.identity = Some(agent.id);
             state.pane_unique_id = agent.pane_unique_id;
             state.inherited_pty = true;
             state.borrowed = true; // Don't unregister on drop — PTY wrapper owns this
-            return;
+            return state;
         }
     }
     // Fallback: try inheriting from parent PTY registration
     state.do_register(None);
+    state
 }
