@@ -25,6 +25,14 @@ sidekar type 5 "hello"                  # type into ref 5
 sidekar screenshot                      # capture page image
 ```
 
+## Chrome extension bridge
+
+Automate **your normal Chrome profile** (not the CDP-launched browser): install the MV3 extension from the `extension/` directory, then use `sidekar ext …` from the terminal. A local bridge (`sidekar ext-server`, default `ws://127.0.0.1:9876`) forwards commands to the extension; it auto-starts when you run `sidekar ext` unless you start the server yourself.
+
+**Setup:** `sidekar ext secret` → paste the secret into the extension popup (or read the secret printed when `ext-server` starts). Set **Bridge port** in the popup to match `SIDEKAR_EXT_PORT` / `sidekar ext-server` (default **9876**). **List tabs:** `sidekar ext tabs`. **Target a tab:** `sidekar ext read 123` or `sidekar --tab 123 ext read` (subcommand tab id wins if both are given).
+
+**Subcommands:** `tabs`, `read`, `screenshot`, `click`, `type`, `axtree`, `eval`, `navigate`, `newtab`, `close`, `scroll`, plus `status`, `stop`, `secret`. See `sidekar ext` with no args for a short list.
+
 ## Commands
 
 ### Navigation
