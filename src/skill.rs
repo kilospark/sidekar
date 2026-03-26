@@ -17,31 +17,31 @@ pub fn install_skill() {
 
     let mut any = false;
 
-    if has_binary("claude") {
+    if crate::which_bin("claude").is_some() {
         any = true;
         let dir = home_dir().join(".claude/skills/sidekar");
         install_skill_to(&dir, "Claude Code");
     }
 
-    if has_binary("codex") {
+    if crate::which_bin("codex").is_some() {
         any = true;
         let dir = home_dir().join(".codex/skills/sidekar");
         install_skill_to(&dir, "Codex");
     }
 
-    if has_binary("gemini") {
+    if crate::which_bin("gemini").is_some() {
         any = true;
         let dir = home_dir().join(".gemini/skills/sidekar");
         install_skill_to(&dir, "Gemini CLI");
     }
 
-    if has_binary("opencode") {
+    if crate::which_bin("opencode").is_some() {
         any = true;
         let dir = xdg_config_dir().join("opencode/skills/sidekar");
         install_skill_to(&dir, "OpenCode");
     }
 
-    if has_binary("pi") {
+    if crate::which_bin("pi").is_some() {
         any = true;
         let dir = home_dir().join(".pi/skills/sidekar");
         install_skill_to(&dir, "Pi");
@@ -97,19 +97,19 @@ pub fn remove_skill() {
     // --- Legacy MCP client configurations ---
 
     // CLI-based clients
-    if has_binary("claude") && run_silent(&["claude", "mcp", "get", "sidekar"]) {
+    if crate::which_bin("claude").is_some() && run_silent(&["claude", "mcp", "get", "sidekar"]) {
         if run_silent(&["claude", "mcp", "remove", "-s", "user", "sidekar"]) {
             any = true;
             println!("  Claude Code MCP: removed");
         }
     }
-    if has_binary("codex") && run_grep(&["codex", "mcp", "list"], "sidekar") {
+    if crate::which_bin("codex").is_some() && run_grep(&["codex", "mcp", "list"], "sidekar") {
         if run_silent(&["codex", "mcp", "remove", "sidekar"]) {
             any = true;
             println!("  Codex MCP: removed");
         }
     }
-    if has_binary("gemini") && run_grep(&["gemini", "mcp", "list"], "sidekar") {
+    if crate::which_bin("gemini").is_some() && run_grep(&["gemini", "mcp", "list"], "sidekar") {
         if run_silent(&["gemini", "mcp", "remove", "-s", "user", "sidekar"]) {
             any = true;
             println!("  Gemini CLI MCP: removed");
@@ -285,12 +285,3 @@ fn xdg_config_dir() -> PathBuf {
     home_dir().join(".config")
 }
 
-fn has_binary(name: &str) -> bool {
-    Command::new("which")
-        .arg(name)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}

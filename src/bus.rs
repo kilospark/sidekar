@@ -8,6 +8,7 @@ use crate::broker::{self, BrokerAgent};
 use crate::message::{epoch_secs, AgentId, Envelope, MessageKind};
 use crate::transport::Transport;
 use crate::*;
+use std::io::Write as _;
 
 const PENDING_GRACE_SECS: u64 = 30;
 const TIMEOUT_SECS: u64 = 300;
@@ -25,7 +26,6 @@ const BROKER_TRANSPORT: &str = "broker";
 /// Tries `/dev/tty` first (works even when stderr is redirected, e.g. in PTY
 /// mode), then falls back to stderr.
 fn set_terminal_title(title: &str) {
-    use std::io::Write;
     let seq = format!("\x1b]0;{title}\x07");
     if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
         let _ = tty.write_all(seq.as_bytes());
@@ -307,11 +307,6 @@ const NICKNAMES: &[&str] = &[
     "zorilla",
 ];
 
-/// Pick a random unused nickname from the broker pool.
-fn pick_nickname() -> String {
-    pick_nickname_standalone()
-}
-
 /// Pick a nickname using the broker for used-name checks.
 pub fn pick_nickname_standalone() -> String {
     use rand::seq::SliceRandom;
@@ -460,7 +455,6 @@ impl SidekarBusState {
                 inherited.nick.as_deref().unwrap_or("?"),
                 inherited.session.as_deref().unwrap_or("?"),
             );
-            // Set terminal title with nickname
             let nick = inherited.nick.as_deref().unwrap_or("?");
             let name = &inherited.name;
             let agent_type = detect_agent_type();
@@ -496,7 +490,7 @@ impl SidekarBusState {
             }
         };
 
-        let nick = pick_nickname();
+        let nick = pick_nickname_standalone();
 
         let identity = AgentId {
             name,
@@ -520,7 +514,6 @@ impl SidekarBusState {
         if let (Some(name), Some(nick), Some(channel)) =
             (self.name(), self.nick(), self.channel())
         {
-            // Set terminal title
             let agent_type = detect_agent_type();
             set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
             eprintln!(
