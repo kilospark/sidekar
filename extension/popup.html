@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+body { width: 280px; padding: 16px; font-family: -apple-system, sans-serif; font-size: 13px; color: #333; }
+h3 { margin: 0 0 12px; font-size: 14px; }
+#status { padding: 6px 10px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
+.connected { background: #dcfce7; color: #166534; }
+.disconnected { background: #fef2f2; color: #991b1b; }
+.pending { background: #fef9c3; color: #854d0e; }
+#detail { font-size: 11px; color: #991b1b; margin: -4px 0 10px; line-height: 1.35; min-height: 2.7em; }
+label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
+input { width: 100%; padding: 6px 8px; border: 1px solid #d4d4d8; border-radius: 4px; font-family: monospace; font-size: 11px; box-sizing: border-box; margin-bottom: 8px; }
+button { width: 100%; padding: 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; }
+button:hover { background: #f4f4f5; }
+.hint { font-size: 11px; color: #999; margin-top: 8px; }
+code { background: #f4f4f5; padding: 1px 4px; border-radius: 2px; font-size: 11px; }
+</style>
+</head>
+<body>
+<h3>Sidekar</h3>
+<div id="status" class="disconnected">Checking...</div>
+<div id="detail"></div>
+<label>Secret</label>
+<input id="secret" type="text" placeholder="Run: sidekar ext secret" />
+<label>Bridge port</label>
+<input id="port" type="number" min="1" max="65535" value="9876" />
+<button id="save">Connect</button>
+<div class="hint">The bridge must be running on your Mac (same port as here). In Terminal: <code>sidekar ext tabs</code> or <code>sidekar ext-server</code>. Secret: <code>sidekar ext secret</code>.</div>
+<div id="endpoint" class="hint"></div>
+<script src="popup.js"></script>
+</body>
+</html>

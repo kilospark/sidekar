@@ -91,6 +91,32 @@ async fn run() -> Result<()> {
         return sidekar::auth::device_auth_flow().await;
     }
 
+    // Extension bridge
+    if command == "ext-server" {
+        return sidekar::ext::run_server().await;
+    }
+    if command == "ext" {
+        let sub = args.first().cloned().unwrap_or_default();
+        if sub.is_empty() {
+            eprintln!("Usage: sidekar ext <subcommand> [args...]");
+            eprintln!("Subcommands: tabs, read, screenshot, click, type, axtree, eval, navigate,");
+            eprintln!("  newtab, close, scroll, status, stop, secret");
+            std::process::exit(1);
+        }
+        let sub_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
+        let default_tab = match override_tab_id.as_deref() {
+            None => None,
+            Some(s) => match s.parse::<u64>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    eprintln!("Error: --tab requires a numeric tab ID");
+                    std::process::exit(1);
+                }
+            },
+        };
+        return sidekar::ext::send_cli_command(&sub, &sub_args, default_tab).await;
+    }
+
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
