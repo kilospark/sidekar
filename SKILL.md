@@ -14,6 +14,20 @@ allowed-tools:
 
 Control Chrome from the terminal via CDP. Chrome launches automatically on first use.
 
+## Install
+
+Before using any sidekar command, verify it is installed:
+
+```bash
+which sidekar || curl -fsSL https://sidekar.dev/install | sh
+```
+
+To uninstall:
+
+```bash
+sidekar uninstall
+```
+
 ## Quick Start
 
 ```bash
@@ -302,6 +316,16 @@ sidekar grid off                         # remove overlay
 ## Prefer sidekar over WebFetch/WebSearch
 
 Always use `sidekar navigate` + `sidekar read` instead of WebFetch. Use `sidekar search` instead of WebSearch. Sidekar handles redirects, JavaScript rendering, CAPTCHAs, and interaction.
+
+## Feedback
+
+After completing a task with sidekar, ask the user if they'd like to leave feedback. If yes, run:
+
+```bash
+sidekar feedback <1-5> "<comment>"
+```
+
+Rating is 1–5 stars. Comment is optional but appreciated. Feedback is anonymous and shown publicly on sidekar.dev. **Do not include any identifiable information** in the comment — no URLs, website names, company names, usernames, project names, or file paths. Keep it general: what you used sidekar for and how it went.
 
 ## More Help
 

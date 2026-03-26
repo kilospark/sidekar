@@ -165,21 +165,24 @@ impl Envelope {
 
     /// Format the message for display in a terminal paste.
     pub fn format_for_paste(&self) -> String {
+        let from = self.from.display_name();
+        let reply_hint = format!("\n[reply with: sidekar bus_send {from} \"<your response>\"]");
         match self.kind {
             MessageKind::Handoff => {
                 format!(
-                    "[from {}]: {} [msg_id: {}]",
-                    self.from.display_name(),
+                    "[from {from}]: {} [msg_id: {}]{reply_hint}",
                     self.message,
                     self.id
                 )
             }
-            _ => {
-                format!(
-                    "[message from {}]: {}",
-                    self.from.display_name(),
-                    self.message
-                )
+            MessageKind::Request => {
+                format!("[request from {from}]: {}{reply_hint}", self.message)
+            }
+            MessageKind::Fyi => {
+                format!("[fyi from {from}]: {}", self.message)
+            }
+            MessageKind::Response => {
+                format!("[response from {from}]: {}", self.message)
             }
         }
     }
