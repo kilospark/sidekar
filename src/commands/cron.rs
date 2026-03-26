@@ -1,7 +1,7 @@
 //! Cron subsystem — schedule recurring sidekar tool calls.
 //!
 //! Runs as an in-process tokio task (like monitor). Jobs are persisted in the
-//! broker SQLite database and restored on MCP server startup.
+//! broker SQLite database and restored on startup.
 
 use super::monitor::{deliver_notification, resolve_delivery};
 use crate::broker;
@@ -190,16 +190,6 @@ pub(crate) struct CronContext {
 }
 
 impl CronContext {
-    pub fn from_app_context(ctx: &AppContext) -> Self {
-        Self {
-            cdp_port: ctx.cdp_port,
-            cdp_host: ctx.cdp_host.clone(),
-            current_session_id: ctx.current_session_id.clone(),
-            current_profile: ctx.current_profile.clone(),
-            headless: ctx.headless,
-        }
-    }
-
     fn to_app_context(&self) -> Result<AppContext> {
         let mut ctx = AppContext::new()?;
         ctx.cdp_port = self.cdp_port;
@@ -207,13 +197,13 @@ impl CronContext {
         ctx.current_session_id = self.current_session_id.clone();
         ctx.current_profile = self.current_profile.clone();
         ctx.headless = self.headless;
-        ctx.mcp_mode = true; // cron runs in MCP context
+        ctx.isolated = true; // cron runs in isolated context
         Ok(ctx)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Public API — called from mcp.rs
+// Public API
 // ---------------------------------------------------------------------------
 
 /// Update the cron context (e.g. after browser auto-launch sets cdp_port/session).
@@ -608,7 +598,7 @@ async fn execute_cron_job(
 
 /// Map cron action args (JSON object) to CLI arg vector for dispatch.
 fn map_cron_action_args(tool: &str, args: &Value) -> Vec<String> {
-    // Reuse the MCP arg mapping logic pattern
+    // Map action args to CLI args
     let mut cli_args = Vec::new();
 
     if let Some(obj) = args.as_object() {

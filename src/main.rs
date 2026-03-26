@@ -37,14 +37,19 @@ async fn run() -> Result<()> {
         return Ok(());
     }
     if matches!(command.as_str(), "-h" | "--help" | "help") {
-        print_help();
+        if let Some(subcmd) = args.first() {
+            print_command_help(subcmd);
+        } else {
+            print_help();
+        }
         return Ok(());
     }
-    if command == "mcp" {
-        return sidekar::mcp::run_mcp_server().await;
+    if command == "skill" {
+        sidekar::skill::print_skill();
+        return Ok(());
     }
     if command == "install" {
-        sidekar::mcp_clients::configure_clients();
+        sidekar::skill::install_skill();
         return Ok(());
     }
 
@@ -86,12 +91,19 @@ async fn run() -> Result<()> {
         return sidekar::auth::device_auth_flow().await;
     }
 
-    // PTY wrapper: if the command resolves to an external binary or shell alias, launch it
-    if sidekar::pty::is_agent_command(&command) {
+    // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
+    // Only check for unknown commands — known sidekar commands must not be hijacked.
+    if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
         return sidekar::pty::run_agent(&command, &args).await;
     }
 
     let mut ctx = AppContext::new()?;
+
+    // Inside a PTY wrapper — enable isolated mode (own window, no tab activation)
+    if env::var("SIDEKAR_PTY").is_ok() {
+        ctx.isolated = true;
+    }
+
     if let Some(port) = env::var("CDP_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
@@ -162,8 +174,42 @@ async fn run() -> Result<()> {
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
     } else if !matches!(command.as_str(), "launch" | "connect" | "config" | "update") {
-        ctx.auto_discover_last_session()
-            .context("No active session. Run: sidekar launch")?;
+        if ctx.auto_discover_last_session().is_err() {
+            // No session — auto-launch Chrome if inside a PTY wrapper or
+            // if the command clearly needs a browser.
+            let in_pty = env::var("SIDEKAR_PTY").is_ok();
+            let needs_browser = !matches!(
+                command.as_str(),
+                "feedback"
+                    | "telemetry"
+                    | "who"
+                    | "bus_send"
+                    | "bus_done"
+                    | "desktop-screenshot"
+                    | "desktop_screenshot"
+                    | "desktop-apps"
+                    | "desktop_apps"
+                    | "desktop-windows"
+                    | "desktop_windows"
+                    | "desktop-find"
+                    | "desktop_find"
+                    | "desktop-click"
+                    | "desktop_click"
+                    | "desktop-launch"
+                    | "desktop_launch"
+                    | "desktop-activate"
+                    | "desktop_activate"
+                    | "desktop-quit"
+                    | "desktop_quit"
+            );
+            if in_pty && needs_browser {
+                eprintln!("sidekar: no active session, auto-launching Chrome...");
+                commands::dispatch(&mut ctx, "launch", &[]).await?;
+                ctx.output.clear();
+            } else {
+                bail!("No active session. Run: sidekar launch");
+            }
+        }
     }
 
     commands::dispatch(&mut ctx, &command, &args).await?;
