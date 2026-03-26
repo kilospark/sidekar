@@ -486,19 +486,16 @@ async fn watch_session_file(agent_name: String) {
                     .and_then(|v| v.as_str())
                     .unwrap_or("127.0.0.1")
                     .to_string();
-                let headless = false;
-                let profile = state
-                    .get("profile")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("default")
-                    .to_string();
-
                 let cron_ctx = crate::commands::cron::CronContext {
                     cdp_port: port,
                     cdp_host: host,
                     current_session_id: Some(contents.clone()),
-                    current_profile: profile,
-                    headless,
+                    current_profile: state
+                        .get("profile")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("default")
+                        .to_string(),
+                    headless: false,
                 };
                 crate::commands::cron::update_cron_context(cron_ctx).await;
                 // silent — don't print to the pty terminal
@@ -688,10 +685,10 @@ pub(crate) fn effective_channel() -> String {
 
 /// Rewrite OSC 0/2 title sequences (ESC ] 0; ... BEL / ESC ] 2; ... BEL)
 /// to prepend the nick prefix, so the terminal title always shows the agent nickname.
-fn rewrite_osc_titles(data: &[u8], prefix: &str) -> Vec<u8> {
+fn rewrite_osc_titles<'a>(data: &'a [u8], prefix: &str) -> std::borrow::Cow<'a, [u8]> {
     // Fast path: no ESC in data, nothing to rewrite
     if !data.contains(&0x1b) {
-        return data.to_vec();
+        return std::borrow::Cow::Borrowed(data);
     }
 
     let mut out = Vec::with_capacity(data.len() + 64);
@@ -745,7 +742,7 @@ fn rewrite_osc_titles(data: &[u8], prefix: &str) -> Vec<u8> {
         i += 1;
     }
 
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 async fn event_loop(
@@ -914,17 +911,18 @@ async fn event_loop(
                             }
                         }) {
                             Ok(Ok(n)) => {
+                                let raw = &buf_out[..n];
                                 // Rewrite OSC title sequences to prepend nick
-                                let data = rewrite_osc_titles(&buf_out[..n], &nick_prefix);
+                                let data = rewrite_osc_titles(raw, &nick_prefix);
                                 // Write to local stdout
                                 if stdout.write_all(&data).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
 
-                                // Fan-out to tunnel (non-blocking, best-effort)
+                                // Fan-out to tunnel (non-blocking, best-effort) with raw bytes
                                 if let Some(ref tx) = tunnel_tx {
-                                    tx.send_data(buf_out[..n].to_vec());
+                                    tx.send_data(raw.to_vec());
                                 }
                             }
                             Ok(Err(_)) => break,
