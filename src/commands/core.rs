@@ -236,9 +236,9 @@ pub(super) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
     let session_id = new_session_id();
     ctx.set_current_session(session_id.clone());
 
-    // In MCP mode, create a new window for isolation so agents don't
-    // confuse each other's tabs. In CLI mode, use a regular tab.
-    let (new_tab, has_own_window) = if ctx.mcp_mode {
+    // In isolated mode (PTY wrapper or long-running process), create a new window
+    // so agents don't confuse each other's tabs. In plain CLI mode, use a regular tab.
+    let (new_tab, has_own_window) = if ctx.isolated {
         match create_new_window(ctx, None).await {
             Ok(tab) => (tab, true),
             Err(e) => {
@@ -1032,9 +1032,9 @@ pub(super) async fn cmd_tab(ctx: &mut AppContext, tab_id: &str) -> Result<()> {
     state.active_tab_id = Some(tab_id.to_string());
     ctx.save_session_state(&state)?;
 
-    // Only activate in Chrome when running as CLI (not MCP) to avoid
+    // Only activate in Chrome when not in isolated mode to avoid
     // disrupting other agents sharing the same Chrome instance.
-    if !ctx.mcp_mode {
+    if !ctx.isolated {
         let _ = http_put_text(ctx, &format!("/json/activate/{tab_id}")).await;
     }
     out!(
@@ -1652,13 +1652,13 @@ pub(super) async fn cmd_grid(ctx: &mut AppContext, args: &[String]) -> Result<()
 }
 
 pub(super) async fn cmd_setup(_ctx: &mut AppContext) -> Result<()> {
-    crate::mcp_clients::configure_clients();
+    crate::skill::install_skill();
     Ok(())
 }
 
 pub(super) async fn cmd_uninstall(_ctx: &mut AppContext) -> Result<()> {
-    // Remove MCP client configurations
-    crate::mcp_clients::remove_clients();
+    // Remove skill files from agent directories
+    crate::skill::remove_skill();
 
     // Clean up data directory (~/.sidekar/)
     let data_dir = dirs::home_dir()

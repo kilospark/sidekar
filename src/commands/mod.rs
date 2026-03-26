@@ -480,12 +480,84 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-launch" | "desktop_launch" => cmd_desktop_launch(ctx, args).await,
         "desktop-activate" | "desktop_activate" => cmd_desktop_activate(ctx, args).await,
         "desktop-quit" | "desktop_quit" => cmd_desktop_quit(ctx, args).await,
-        "monitor" => {
-            if !ctx.mcp_mode {
-                bail!("monitor is only available in MCP mode (requires a long-running process)");
+        "monitor" => cmd_monitor(ctx, args).await,
+        // Bus tools — stateless CLI versions that recover identity from env/broker
+        "who" => {
+            let show_all = args.iter().any(|a| a == "--all" || a == "-a");
+            let mut bus_state = crate::bus::SidekarBusState::new();
+            recover_bus_state(&mut bus_state);
+            crate::bus::cmd_who(&bus_state, ctx, show_all)?;
+            Ok(())
+        }
+        "bus_send" | "bus-send" => {
+            let to = args.first().map(String::as_str).unwrap_or_default();
+            let message = args.get(1..).map(|a| a.join(" ")).unwrap_or_default();
+            if to.is_empty() || message.is_empty() {
+                bail!("Usage: sidekar bus_send <to> <message>");
             }
-            cmd_monitor(ctx, args).await
+            let kind = "fyi";
+            let mut bus_state = crate::bus::SidekarBusState::new();
+            recover_bus_state(&mut bus_state);
+            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, None)?;
+            Ok(())
+        }
+        "bus_done" | "bus-done" => {
+            if args.len() < 3 {
+                bail!("Usage: sidekar bus_done <next> <summary> <request>");
+            }
+            let next = &args[0];
+            let summary = &args[1];
+            let request = &args[2];
+            let mut bus_state = crate::bus::SidekarBusState::new();
+            recover_bus_state(&mut bus_state);
+            crate::bus::cmd_signal_done(&mut bus_state, ctx, next, summary, request, None)?;
+            Ok(())
+        }
+        // Cron commands — CRUD operates on broker SQLite, execution runs in PTY wrapper
+        "cron_create" | "cron-create" => {
+            if args.len() < 2 {
+                bail!("Usage: sidekar cron_create <schedule> <action_json> [--target=T] [--name=N]");
+            }
+            let schedule = &args[0];
+            let action: serde_json::Value = serde_json::from_str(&args[1])
+                .context("Invalid action JSON. Use: {\"tool\":\"screenshot\"} or {\"batch\":[...]}")?;
+            let target = args.iter()
+                .find_map(|a| a.strip_prefix("--target="))
+                .unwrap_or("self");
+            let name = args.iter()
+                .find_map(|a| a.strip_prefix("--name="));
+            let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
+            let id = cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by).await?;
+            let _ = id; // printed by cmd_cron_create
+            Ok(())
+        }
+        "cron_list" | "cron-list" => {
+            cron::cmd_cron_list(ctx).await
+        }
+        "cron_delete" | "cron-delete" => {
+            let id = args.first().map(String::as_str).unwrap_or_default();
+            if id.is_empty() {
+                bail!("Usage: sidekar cron_delete <job-id>");
+            }
+            cron::cmd_cron_delete(ctx, id).await
         }
         _ => bail!("Unknown command: {command}"),
     }
+}
+
+/// Recover bus identity from SIDEKAR_AGENT_NAME env var + broker lookup.
+/// Sets `borrowed = true` so the Drop impl won't unregister the PTY wrapper's agent.
+fn recover_bus_state(state: &mut crate::bus::SidekarBusState) {
+    // If inside a PTY wrapper, recover identity from env
+    if let Ok(name) = std::env::var("SIDEKAR_AGENT_NAME") {
+        if let Ok(Some(agent)) = crate::broker::find_agent(&name, None) {
+            state.identity = Some(agent.id);
+            state.pane_unique_id = agent.pane_unique_id;
+            state.inherited_pty = true;
+            state.borrowed = true; // Don't unregister on drop — PTY wrapper owns this
+            return;
+        }
+    }
+    // Fallback: try inheriting from parent PTY registration
+    state.do_register(None);
 }

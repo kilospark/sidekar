@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 /// Used for source attribution — title changes within 5s of a tool call are skipped.
 static LAST_TOOL_ACTION_MS: AtomicU64 = AtomicU64::new(0);
 
-/// Update the last tool action timestamp (call from MCP dispatch).
+/// Update the last tool action timestamp (call from dispatch).
 pub fn mark_tool_action() {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -47,7 +47,7 @@ impl Drop for MonitorState {
     }
 }
 
-/// Global monitor state — one per MCP session.
+/// Global monitor state — one per session.
 static MONITOR: tokio::sync::OnceCell<Mutex<Option<MonitorState>>> =
     tokio::sync::OnceCell::const_new();
 

@@ -292,7 +292,7 @@ fn cleanup_child_and_state(
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
-    let (bin_display, bin_c, c_args) = match resolve_agent(agent)? {
+    let (_bin_display, bin_c, c_args) = match resolve_agent(agent)? {
         ResolvedAgent::Binary(path, c_path) => {
             let c_args = prepare_args(&c_path, args)?;
             (path, c_path, c_args)
@@ -414,7 +414,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // Start a background task to watch for the child's Chrome session.
     // When the child calls `sidekar launch` or `sidekar connect`, the
     // last-session file is updated. We read it and update the cron context.
-    let session_watcher = tokio::spawn(watch_session_file());
+    let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
 
     // Set terminal title to show agent nickname and name
     // OSC 0 sets both window title and icon name; works in all major terminals
@@ -424,7 +424,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let raw_guard = RawModeGuard::enter()?;
 
     // Run the async event loop
-    let exit_code = event_loop(&master_arc, child_pid, tunnel).await;
+    let exit_code = event_loop(&master_arc, child_pid, tunnel, &nick).await;
 
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
@@ -436,7 +436,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     crate::poller::shutdown_poller();
 
     // Clean up Chrome resources owned by the child's session
-    cleanup_chrome_session().await;
+    cleanup_chrome_session(&pre_fork_name).await;
 
     let _ = broker::unregister_agent(&identity.name);
 
@@ -448,16 +448,17 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 // Session file watcher — picks up Chrome session from child agent
 // ---------------------------------------------------------------------------
 
-/// Watch `~/.sidekar/last-session` for changes. When the child agent calls
+/// Watch the per-agent session file for changes. When the child agent calls
 /// `sidekar launch` or `sidekar connect`, this file is updated with the session ID.
 /// We read the session state to get CDP port and update the cron context.
-async fn watch_session_file() {
+async fn watch_session_file(agent_name: String) {
     use tokio::time::{Duration, interval};
 
     let data_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".sidekar");
-    let last_session_file = data_dir.join("last-session");
+    let safe_name = crate::sanitize_for_filename(&agent_name);
+    let last_session_file = data_dir.join(format!("last-session-{safe_name}"));
 
     let mut poll = interval(Duration::from_secs(2));
     let mut last_contents = String::new();
@@ -511,11 +512,12 @@ async fn watch_session_file() {
 // ---------------------------------------------------------------------------
 
 /// Close Chrome tabs and windows owned by the child's last session.
-async fn cleanup_chrome_session() {
+async fn cleanup_chrome_session(agent_name: &str) {
     let data_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".sidekar");
-    let last_session_file = data_dir.join("last-session");
+    let safe_name = crate::sanitize_for_filename(agent_name);
+    let last_session_file = data_dir.join(format!("last-session-{safe_name}"));
 
     let session_id = match std::fs::read_to_string(&last_session_file) {
         Ok(s) => s.trim().to_string(),
@@ -554,9 +556,9 @@ async fn cleanup_chrome_session() {
             .await;
     }
 
-    // Clean up session state file
+    // Clean up session state file and per-agent session pointer
     let _ = std::fs::remove_file(&state_file);
-    // silent — don't print to the pty terminal
+    let _ = std::fs::remove_file(&last_session_file);
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +677,7 @@ fn handle_sidekar_command(line: &str) -> String {
 static CHANNEL_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Get the effective channel: override → detect_channel().
+#[allow(dead_code)]
 pub(crate) fn effective_channel() -> String {
     CHANNEL_OVERRIDE
         .lock()
@@ -683,20 +686,86 @@ pub(crate) fn effective_channel() -> String {
         .unwrap_or_else(detect_channel)
 }
 
+/// Rewrite OSC 0/2 title sequences (ESC ] 0; ... BEL / ESC ] 2; ... BEL)
+/// to prepend the nick prefix, so the terminal title always shows the agent nickname.
+fn rewrite_osc_titles(data: &[u8], prefix: &str) -> Vec<u8> {
+    // Fast path: no ESC in data, nothing to rewrite
+    if !data.contains(&0x1b) {
+        return data.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(data.len() + 64);
+    let mut i = 0;
+
+    while i < data.len() {
+        // Look for ESC ] (0x1b 0x5d)
+        if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == 0x5d {
+            // Check for OSC 0; or OSC 2; (set window title)
+            if i + 3 < data.len()
+                && (data[i + 2] == b'0' || data[i + 2] == b'2')
+                && data[i + 3] == b';'
+            {
+                // Find the terminator: BEL (0x07) or ST (ESC \)
+                let start = i + 4; // start of title text
+                let mut end = start;
+                while end < data.len() {
+                    if data[end] == 0x07 {
+                        break;
+                    }
+                    if data[end] == 0x1b && end + 1 < data.len() && data[end + 1] == b'\\' {
+                        break;
+                    }
+                    end += 1;
+                }
+
+                if end < data.len() {
+                    // Write rewritten OSC: ESC ] <digit> ; <prefix><original title> <terminator>
+                    out.push(0x1b);
+                    out.push(0x5d);
+                    out.push(data[i + 2]); // '0' or '2'
+                    out.push(b';');
+                    out.extend_from_slice(prefix.as_bytes());
+                    out.extend_from_slice(&data[start..end]);
+
+                    if data[end] == 0x07 {
+                        out.push(0x07);
+                        i = end + 1;
+                    } else {
+                        // ST: ESC backslash
+                        out.push(0x1b);
+                        out.push(b'\\');
+                        i = end + 2;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        out.push(data[i]);
+        i += 1;
+    }
+
+    out
+}
+
 async fn event_loop(
     master: &Arc<OwnedFd>,
     child_pid: libc::pid_t,
     tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
+    nick: &str,
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
+
+    // Prefix to prepend to any OSC title sequences from the child
+    let nick_prefix = format!("{nick} — ");
 
     let master_fd = master.as_raw_fd();
 
     // Wrap master fd for async I/O
     let master_async = match tokio::io::unix::AsyncFd::new(master_fd) {
         Ok(fd) => fd,
-        Err(e) => {
+        Err(_e) => {
             // silent — error code returned
             return 1;
         }
@@ -845,8 +914,10 @@ async fn event_loop(
                             }
                         }) {
                             Ok(Ok(n)) => {
+                                // Rewrite OSC title sequences to prepend nick
+                                let data = rewrite_osc_titles(&buf_out[..n], &nick_prefix);
                                 // Write to local stdout
-                                if stdout.write_all(&buf_out[..n]).await.is_err() {
+                                if stdout.write_all(&data).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
