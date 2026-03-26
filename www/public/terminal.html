@@ -56,9 +56,9 @@ body {
   overflow: hidden;
 }
 
-#terminal {
-  width: 100vw;
-  height: 100vh;
+/* Fixed terminal layout may need scroll on small viewports */
+body.terminal-layout-fixed {
+  overflow: auto;
 }
 
 #status-bar {
@@ -112,14 +112,58 @@ body {
 #status-dot.error {
   background: #ef4444;
 }
+
+#layout-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bar-text);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#layout-toggle input {
+  cursor: pointer;
+}
+
+#terminal-wrap {
+  margin-top: 32px;
+  min-height: calc(100vh - 32px);
+}
+
+#terminal-wrap.layout-adaptive #terminal {
+  width: 100%;
+  height: calc(100vh - 32px);
+}
+
+#terminal-wrap.layout-fixed {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+#terminal-wrap.layout-fixed #terminal {
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+}
 </style>
 </head>
 <body>
   <div id="status-bar">
     <a id="back-link" href="/sessions">&larr; sessions</a>
+    <label id="layout-toggle" title="Adaptive: xterm fills the window. Fixed: 80×24 cells (typical terminal), centered.">
+      <input type="checkbox" id="layout-adaptive" checked />
+      <span>Fit terminal to browser</span>
+    </label>
     <div id="status"><span id="status-dot"></span> <span id="status-text">connecting...</span></div>
   </div>
-  <div id="terminal"></div>
+  <div id="terminal-wrap" class="layout-adaptive">
+    <div id="terminal"></div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.js"></script>
