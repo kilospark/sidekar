@@ -1,0 +1,647 @@
+//! Extension bridge — WebSocket server for Chrome extension communication.
+//!
+//! `sidekar ext-server` runs a WS server on 127.0.0.1:9876.
+//! `sidekar ext <command>` auto-launches the server if needed, then sends a command.
+
+use anyhow::{Context, Result, anyhow, bail};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Mutex, oneshot};
+
+const DEFAULT_PORT: u16 = 9876;
+const TIMEOUT_SECS: u64 = 30;
+
+// ---------------------------------------------------------------------------
+// Shared secret for authentication
+// ---------------------------------------------------------------------------
+
+fn data_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".sidekar")
+}
+
+fn secret_path() -> PathBuf {
+    data_dir().join("ext-secret")
+}
+
+fn pid_path() -> PathBuf {
+    data_dir().join("ext-server.pid")
+}
+
+/// Get or create the shared secret. Both the server and extension use this.
+fn get_or_create_secret() -> Result<String> {
+    let path = secret_path();
+    if let Ok(secret) = std::fs::read_to_string(&path) {
+        let secret = secret.trim().to_string();
+        if !secret.is_empty() {
+            return Ok(secret);
+        }
+    }
+    // Generate new secret
+    let secret = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
+    std::fs::create_dir_all(data_dir())?;
+    std::fs::write(&path, &secret)?;
+    // Restrict permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(secret)
+}
+
+fn read_secret() -> Result<String> {
+    std::fs::read_to_string(secret_path())
+        .map(|s| s.trim().to_string())
+        .context("No ext-secret found")
+}
+
+// ---------------------------------------------------------------------------
+// Shared state between server and extension connection
+// ---------------------------------------------------------------------------
+
+struct ExtState {
+    ext_tx: Option<futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        tokio_tungstenite::tungstenite::Message,
+    >>,
+    pending: HashMap<String, oneshot::Sender<Value>>,
+    connected: bool,
+    authenticated: bool,
+}
+
+type SharedState = Arc<Mutex<ExtState>>;
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
+
+pub async fn run_server() -> Result<()> {
+    let port = std::env::var("SIDEKAR_EXT_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    let secret = get_or_create_secret()?;
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to bind to port {port}. Another ext-server is probably already running. Try: sidekar ext stop"
+            )
+        })?;
+
+    let ipc_port = port + 1;
+    let ipc_listener = TcpListener::bind(format!("127.0.0.1:{ipc_port}"))
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to bind IPC port {ipc_port} (WebSocket uses {port}). Try: sidekar ext stop"
+            )
+        })?;
+
+    let pid = std::process::id();
+    std::fs::create_dir_all(data_dir())?;
+    std::fs::write(pid_path(), pid.to_string())?;
+
+    eprintln!("sidekar ext-server listening on ws://127.0.0.1:{port}");
+    eprintln!("Secret: {secret}");
+    eprintln!("PID: {pid}");
+
+    let state: SharedState = Arc::new(Mutex::new(ExtState {
+        ext_tx: None,
+        pending: HashMap::new(),
+        connected: false,
+        authenticated: false,
+    }));
+
+    let ipc_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = ipc_listener.accept().await {
+                let s = ipc_state.clone();
+                tokio::spawn(handle_cli_connection(stream, s));
+            }
+        }
+    });
+
+    // Handle SIGTERM/SIGINT for clean shutdown
+    let shutdown_pid_path = pid_path();
+    tokio::spawn(async move {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+        let _ = std::fs::remove_file(&shutdown_pid_path);
+        std::process::exit(0);
+    });
+
+    let server_secret = secret.clone();
+    loop {
+        let (stream, addr) = listener.accept().await?;
+        eprintln!("Connection from {addr}");
+        let s = state.clone();
+        let sec = server_secret.clone();
+        tokio::spawn(handle_extension_connection(stream, s, sec));
+    }
+}
+
+async fn handle_extension_connection(stream: TcpStream, state: SharedState, secret: String) {
+    let ws = match tokio_tungstenite::accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("WebSocket handshake failed: {e}");
+            return;
+        }
+    };
+
+    let (tx, mut rx) = ws.split();
+
+    {
+        let mut s = state.lock().await;
+        s.ext_tx = Some(tx);
+        s.connected = true;
+        s.authenticated = false;
+    }
+
+    eprintln!("WebSocket established, waiting for auth...");
+
+    while let Some(msg) = rx.next().await {
+        match msg {
+            Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                    let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                    if msg_type == "ping" {
+                        continue;
+                    }
+
+                    if msg_type == "hello" {
+                        let provided_secret = val.get("secret").and_then(|v| v.as_str()).unwrap_or("");
+                        if provided_secret == secret {
+                            let mut s = state.lock().await;
+                            s.authenticated = true;
+                            let version = val.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                            eprintln!("Extension authenticated: v{version}");
+                            // Send auth OK
+                            if let Some(ref mut ext_tx) = s.ext_tx {
+                                let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
+                                    json!({"type": "auth_ok"}).to_string().into()
+                                )).await;
+                            }
+                        } else {
+                            eprintln!("Extension auth failed: bad secret");
+                            let mut s = state.lock().await;
+                            if let Some(ref mut ext_tx) = s.ext_tx {
+                                let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
+                                    json!({"type": "auth_fail"}).to_string().into()
+                                )).await;
+                            }
+                            break;
+                        }
+                        continue;
+                    }
+
+                    // All other messages require authentication
+                    {
+                        let s = state.lock().await;
+                        if !s.authenticated {
+                            eprintln!("Ignoring unauthenticated message");
+                            continue;
+                        }
+                    }
+
+                    // Route response to pending request
+                    if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                        let mut s = state.lock().await;
+                        if let Some(tx) = s.pending.remove(id) {
+                            let _ = tx.send(val);
+                        }
+                    }
+                }
+            }
+            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
+            Err(e) => {
+                eprintln!("WebSocket error: {e}");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let mut s = state.lock().await;
+    s.ext_tx = None;
+    s.connected = false;
+    s.authenticated = false;
+    eprintln!("Extension disconnected");
+}
+
+async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
+    let id = format!("{:08x}", rand::random::<u32>());
+    let mut msg = command;
+    msg.as_object_mut().unwrap().insert("id".into(), json!(id));
+
+    let (tx, rx) = oneshot::channel();
+
+    {
+        let mut s = state.lock().await;
+        if !s.connected || !s.authenticated || s.ext_tx.is_none() {
+            bail!("Extension not connected. Is Chrome running with the Sidekar extension?");
+        }
+        s.pending.insert(id.clone(), tx);
+        let text = serde_json::to_string(&msg)?;
+        if let Some(ref mut ext_tx) = s.ext_tx {
+            ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(text.into())).await
+                .context("Failed to send to extension")?;
+        }
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(TIMEOUT_SECS), rx).await {
+        Ok(Ok(val)) => Ok(val),
+        Ok(Err(_)) => bail!("Extension response channel closed"),
+        Err(_) => {
+            state.lock().await.pending.remove(&id);
+            bail!("Extension command timed out ({TIMEOUT_SECS}s)")
+        }
+    }
+}
+
+async fn handle_cli_connection(stream: TcpStream, state: SharedState) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = stream;
+    let mut buf = vec![0u8; 65536];
+
+    let n = match stream.read(&mut buf).await {
+        Ok(n) if n > 0 => n,
+        _ => return,
+    };
+
+    let command: Value = match serde_json::from_slice(&buf[..n]) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = json!({"error": format!("Invalid JSON: {e}")});
+            let _ = stream.write_all(serde_json::to_string(&err).unwrap().as_bytes()).await;
+            return;
+        }
+    };
+
+    let result = match send_command(&state, command).await {
+        Ok(v) => v,
+        Err(e) => json!({"error": e.to_string()}),
+    };
+
+    let _ = stream.write_all(serde_json::to_string(&result).unwrap().as_bytes()).await;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-launch: ensure ext-server is running
+// ---------------------------------------------------------------------------
+
+fn is_server_running() -> bool {
+    let pid_file = pid_path();
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            // Check if process is alive
+            unsafe { libc::kill(pid, 0) == 0 }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+fn auto_launch_server() -> Result<()> {
+    if is_server_running() {
+        return Ok(());
+    }
+
+    // Find our own binary
+    let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
+
+    // Ensure secret exists before spawning
+    get_or_create_secret()?;
+
+    // Spawn detached ext-server process
+    let log_path = data_dir().join("ext-server.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .context("Cannot open ext-server log")?;
+    let log_err = log_file.try_clone()?;
+
+    let child = std::process::Command::new(exe)
+        .arg("ext-server")
+        .stdout(log_file)
+        .stderr(log_err)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to spawn ext-server")?;
+
+    eprintln!("Started ext-server (PID {})", child.id());
+
+    // Give it a moment to bind
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CLI client
+// ---------------------------------------------------------------------------
+
+pub async fn send_cli_command(command: &str, args: &[String], default_tab: Option<u64>) -> Result<()> {
+    // Handle meta commands
+    if command == "stop" {
+        return stop_server();
+    }
+    if command == "status" {
+        return show_status();
+    }
+    if command == "secret" {
+        let secret = get_or_create_secret()?;
+        println!("{secret}");
+        return Ok(());
+    }
+
+    // Auto-launch server
+    auto_launch_server()?;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let port = std::env::var("SIDEKAR_EXT_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let ipc_port = port + 1;
+
+    let msg = build_command(command, args, default_tab)?;
+
+    // Retry connection a few times (server may still be starting)
+    let mut stream = None;
+    for attempt in 0..5 {
+        match TcpStream::connect(format!("127.0.0.1:{ipc_port}")).await {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(_) if attempt < 4 => {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+            Err(e) => bail!("Cannot connect to ext-server: {e}"),
+        }
+    }
+    let mut stream = stream.unwrap();
+
+    stream.write_all(serde_json::to_string(&msg)?.as_bytes()).await?;
+    stream.shutdown().await?;
+
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await?;
+
+    let result: Value = serde_json::from_slice(&buf)
+        .context("Invalid response from ext-server")?;
+
+    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+        bail!("{err}");
+    }
+
+    print_result(command, &result);
+    Ok(())
+}
+
+fn stop_server() -> Result<()> {
+    let pid_file = pid_path();
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            let _ = std::fs::remove_file(&pid_file);
+            println!("Stopped ext-server (PID {pid})");
+            return Ok(());
+        }
+    }
+    println!("No ext-server running");
+    Ok(())
+}
+
+fn show_status() -> Result<()> {
+    if is_server_running() {
+        let pid = std::fs::read_to_string(pid_path())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        println!("ext-server running (PID {pid})");
+        if let Ok(secret) = read_secret() {
+            println!("Secret: {secret}");
+        }
+    } else {
+        println!("ext-server not running");
+    }
+    Ok(())
+}
+
+fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Result<Value> {
+    // Explicit tab id in subcommand args wins over global `--tab`.
+    fn tab_from_arg_or_default(
+        explicit: Option<u64>,
+        default_tab: Option<u64>,
+    ) -> Option<u64> {
+        explicit.or(default_tab)
+    }
+
+    match command {
+        "tabs" => Ok(json!({"command": "tabs"})),
+        "read" => {
+            let tab_id = tab_from_arg_or_default(
+                args.first().and_then(|s| s.parse::<u64>().ok()),
+                default_tab,
+            );
+            let mut cmd = json!({"command": "read"});
+            if let Some(id) = tab_id {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "screenshot" => {
+            let tab_id = tab_from_arg_or_default(
+                args.first().and_then(|s| s.parse::<u64>().ok()),
+                default_tab,
+            );
+            let mut cmd = json!({"command": "screenshot"});
+            if let Some(id) = tab_id {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "click" => {
+            let target = args.first().cloned()
+                .ok_or_else(|| anyhow!("Usage: sidekar ext click <selector|text:...>"))?;
+            let mut cmd = json!({"command": "click", "target": target});
+            if let Some(id) = default_tab {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "type" => {
+            if args.len() < 2 {
+                bail!("Usage: sidekar ext type <selector> <text>");
+            }
+            let mut cmd = json!({"command": "type", "selector": args[0], "text": args[1..].join(" ")});
+            if let Some(id) = default_tab {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "axtree" => {
+            let tab_id = tab_from_arg_or_default(
+                args.first().and_then(|s| s.parse::<u64>().ok()),
+                default_tab,
+            );
+            let mut cmd = json!({"command": "axtree"});
+            if let Some(id) = tab_id {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "eval" => {
+            let code = args.join(" ");
+            if code.is_empty() {
+                bail!("Usage: sidekar ext eval <javascript>");
+            }
+            let mut cmd = json!({"command": "eval", "code": code});
+            if let Some(id) = default_tab {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "navigate" => {
+            if args.is_empty() {
+                bail!("Usage: sidekar ext navigate <url> [tab_id]");
+            }
+            let url = &args[0];
+            let tab_id = tab_from_arg_or_default(
+                args.get(1).and_then(|s| s.parse::<u64>().ok()),
+                default_tab,
+            );
+            let mut cmd = json!({"command": "navigate", "url": url});
+            if let Some(id) = tab_id {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "newtab" => {
+            let url = args.first().cloned().unwrap_or_else(|| "about:blank".to_string());
+            Ok(json!({"command": "newtab", "url": url}))
+        }
+        "close" => {
+            let tab_id = tab_from_arg_or_default(
+                args.first().and_then(|s| s.parse::<u64>().ok()),
+                default_tab,
+            );
+            let mut cmd = json!({"command": "close"});
+            if let Some(id) = tab_id {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "scroll" => {
+            let direction = args.first().map(|s| s.as_str()).unwrap_or("down");
+            let mut cmd = json!({"command": "scroll", "direction": direction});
+            if let Some(id) = default_tab {
+                cmd.as_object_mut().unwrap().insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        _ => bail!("Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, axtree, eval, navigate, newtab, close, scroll, status, stop, secret"),
+    }
+}
+
+fn print_result(command: &str, result: &Value) {
+    match command {
+        "tabs" => {
+            if let Some(tabs) = result.get("tabs").and_then(|v| v.as_array()) {
+                for tab in tabs {
+                    let id = tab.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    let url = tab.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let active = tab.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let marker = if active { " *" } else { "" };
+                    println!("[{id}]{marker} {title}");
+                    println!("  {url}");
+                }
+                println!("\n{} tab(s)", tabs.len());
+            }
+        }
+        "read" => {
+            if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
+                println!("--- {} ---", title);
+            }
+            if let Some(url) = result.get("url").and_then(|v| v.as_str()) {
+                println!("{url}\n");
+            }
+            if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+                println!("{text}");
+            }
+        }
+        "screenshot" => {
+            if let Some(data_url) = result.get("screenshot").and_then(|v| v.as_str()) {
+                if let Some(b64) = data_url.strip_prefix("data:image/jpeg;base64,") {
+                    if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64) {
+                        let path = format!("/tmp/sidekar-ext-screenshot-{}.jpg", rand::random::<u32>());
+                        if std::fs::write(&path, &bytes).is_ok() {
+                            println!("Screenshot saved: {path}");
+                            return;
+                        }
+                    }
+                }
+                println!("Screenshot captured ({} bytes)", data_url.len());
+            }
+        }
+        "axtree" => {
+            if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
+                println!("--- {} ---", title);
+            }
+            if let Some(elements) = result.get("elements").and_then(|v| v.as_array()) {
+                for el in elements {
+                    let r = el.get("ref").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let role = el.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = el.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("[{r}] {role}: {name}");
+                }
+                println!("\n{} interactive element(s)", elements.len());
+            }
+        }
+        "navigate" => {
+            if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
+                println!("--- {} ---", title);
+            }
+            if let Some(url) = result.get("url").and_then(|v| v.as_str()) {
+                println!("{url}");
+            }
+        }
+        "newtab" => {
+            let id = result.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let title = result.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            println!("Opened tab [{id}] {title}");
+            println!("  {url}");
+        }
+        "close" => {
+            let id = result.get("tabId").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("Closed tab [{id}]");
+        }
+        _ => {
+            println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
+        }
+    }
+}
