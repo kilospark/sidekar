@@ -238,8 +238,7 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
                 Ok(sched) => {
                     let action: CronAction = match serde_json::from_str(&rec.action_json) {
                         Ok(a) => a,
-                        Err(e) => {
-                            eprintln!("cron: failed to parse action for job {}: {e}", rec.id);
+                        Err(_) => {
                             continue;
                         }
                     };
@@ -254,14 +253,10 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
                         running: Arc::new(AtomicBool::new(false)),
                     });
                 }
-                Err(e) => {
-                    eprintln!("cron: invalid schedule for job {}: {e}", rec.id);
-                }
+                Err(_) => {}
             }
         }
-        if !loaded.is_empty() {
-            eprintln!("cron: restored {} persisted job(s)", loaded.len());
-        }
+        // silently restored
     }
 
     let r = running.clone();
@@ -453,7 +448,7 @@ async fn cron_loop(
     jobs: Arc<Mutex<Vec<CronJob>>>,
     cron_ctx: CronContext,
 ) {
-    eprintln!("cron: background loop started");
+    // cron loop started — no terminal output
 
     // Align to the next minute boundary so we check exactly on the minute
     let now_secs = epoch_now();
@@ -536,7 +531,6 @@ async fn cron_loop(
                     }
                     Err(e) => {
                         let err_msg = format!("{e:#}");
-                        eprintln!("cron: job {jid} failed: {err_msg}");
                         let _ = broker::update_cron_job_run(&jid, Some(&err_msg));
                     }
                 }
@@ -553,7 +547,7 @@ async fn cron_loop(
         }
     }
 
-    eprintln!("cron: background loop stopped");
+    // cron loop stopped
 }
 
 /// Execute a single cron job's action and deliver the result.
@@ -563,7 +557,7 @@ async fn execute_cron_job(
     action: &CronAction,
     target: &str,
 ) -> Result<()> {
-    eprintln!("cron: executing job {job_id}");
+    // executing job — no terminal output
 
     // Use the latest shared context (updated after browser auto-launch), fall back to initial
     let cron_ctx = SHARED_CRON_CTX.lock().await.clone().unwrap_or_else(|| fallback_ctx.clone());
@@ -614,19 +608,13 @@ async fn execute_cron_job(
             // Deliver to self via broker queue
             match resolve_delivery() {
                 Ok(delivery) => {
-                    if let Err(e) = deliver_notification(&delivery, &msg) {
-                        eprintln!("cron: delivery to self failed: {e}");
-                    }
+                    let _ = deliver_notification(&delivery, &msg);
                 }
-                Err(e) => {
-                    eprintln!("cron: cannot deliver to self: {e}");
-                }
+                Err(_) => {}
             }
         } else {
             // Deliver to named agent via broker queue
-            if let Err(e) = crate::broker::enqueue_message("sidekar-cron", target, &msg) {
-                eprintln!("cron: delivery to {target} failed: {e}");
-            }
+            let _ = crate::broker::enqueue_message("sidekar-cron", target, &msg);
         }
     }
 

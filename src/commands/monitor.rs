@@ -109,7 +109,7 @@ async fn start_monitor(
     if let Some(old) = guard.take() {
         old.running.store(false, Ordering::Relaxed);
         old.task_handle.abort();
-        eprintln!("monitor: stopped previous monitor");
+        // stopped previous monitor
     }
 
     // Resolve tab IDs to CDP target IDs
@@ -172,9 +172,7 @@ async fn start_monitor(
     let targets = cdp_target_ids.clone();
 
     let task_handle = tokio::spawn(async move {
-        if let Err(e) = run_title_watcher(r, targets, ws_url, delivery, ec, le, erc, lerr).await {
-            eprintln!("monitor: title watcher exited: {e}");
-        }
+        let _ = run_title_watcher(r, targets, ws_url, delivery, ec, le, erc, lerr).await;
     });
 
     *guard = Some(MonitorState {
@@ -236,7 +234,7 @@ async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option
     let session_id = match result {
         Ok(v) => v.get("sessionId").and_then(Value::as_str)?.to_string(),
         Err(e) => {
-            eprintln!("monitor: failed to attach to {target_id}: {e}");
+            let _ = e;
             return None;
         }
     };
@@ -250,7 +248,7 @@ async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option
         )
         .await
     {
-        eprintln!("monitor: failed to add binding on {target_id}: {e}");
+        let _ = e;
     }
 
     // Enable Runtime domain so bindingCalled events are delivered
@@ -258,7 +256,7 @@ async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option
         .send_to_session("Runtime.enable", json!({}), &session_id)
         .await
     {
-        eprintln!("monitor: failed to enable Runtime on {target_id}: {e}");
+        let _ = e;
     }
 
     // Enable Page domain for frameNavigated events (re-inject after navigation)
@@ -266,7 +264,7 @@ async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option
         .send_to_session("Page.enable", json!({}), &session_id)
         .await
     {
-        eprintln!("monitor: failed to enable Page on {target_id}: {e}");
+        let _ = e;
     }
 
     // Inject the observer script
@@ -278,10 +276,10 @@ async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option
         )
         .await
     {
-        eprintln!("monitor: failed to inject favicon observer on {target_id}: {e}");
+        let _ = e;
     }
 
-    eprintln!("monitor: favicon observer injected on {target_id} (session {session_id})");
+    // favicon observer injected
     Some(session_id)
 }
 
@@ -310,11 +308,7 @@ async fn run_title_watcher(
         }
     }
 
-    eprintln!(
-        "monitor: CDP watcher connected, watching {} targets ({} with favicon observers)",
-        watched_targets.len(),
-        session_to_target.len()
-    );
+    // CDP watcher connected
 
     // known: target_id -> (title, url, favicon_href)
     let mut known: HashMap<String, (String, String, String)> = HashMap::new();
@@ -358,7 +352,7 @@ async fn run_title_watcher(
                     .as_millis() as u64;
                 let last_action = last_tool_action_ms();
                 if last_action > 0 && now_ms.saturating_sub(last_action) <= 5000 {
-                    eprintln!("monitor: skipping agent-initiated {kind} change on {target_id}");
+                    // skipping agent-initiated change
                     continue;
                 }
 
@@ -373,7 +367,7 @@ async fn run_title_watcher(
                         old_val, new_val, url
                     )
                 };
-                eprintln!("monitor: delivering notification: {}", message);
+                // delivering notification
 
                 match deliver_notification(&delivery, &message) {
                     Ok(()) => {
@@ -381,7 +375,7 @@ async fn run_title_watcher(
                         last_event_ms.store(now_ms, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        eprintln!("monitor: delivery failed: {e}");
+                        let _ = &e;
                         error_count.fetch_add(1, Ordering::Relaxed);
                         *last_error.lock().await = Some(format!("{e}"));
                     }
@@ -393,7 +387,7 @@ async fn run_title_watcher(
             Ok(Some(ev)) => ev,
             Ok(None) => continue,
             Err(e) => {
-                eprintln!("monitor: CDP event read error: {e}");
+                let _ = e;
                 break;
             }
         };
@@ -469,9 +463,7 @@ async fn run_title_watcher(
                         .find(|(_, tid)| **tid == target_id)
                         .map(|(sid, _)| sid.clone())
                     {
-                        eprintln!(
-                            "monitor: URL changed on {target_id}, re-injecting favicon observer"
-                        );
+                        // URL changed, re-injecting favicon observer
                         // Small delay to let the page load
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         let _ = cdp
@@ -534,10 +526,7 @@ async fn run_title_watcher(
                     entry.2 = new_fav.clone();
                 }
 
-                eprintln!(
-                    "monitor: favicon changed on {target_id}: {} -> {}",
-                    old_fav, new_fav
-                );
+                // favicon changed
 
                 // Use a separate debounce key so favicon and title don't clobber each other
                 let key = format!("{target_id}:favicon");
@@ -561,16 +550,14 @@ async fn run_title_watcher(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                if let Some(target_id) = session_to_target.get(&session_id) {
+                if let Some(_target_id) = session_to_target.get(&session_id) {
                     // Only re-inject for top-level frame navigations
                     let is_top = event
                         .pointer("/params/frame/parentId")
                         .and_then(Value::as_str)
                         .is_none();
                     if is_top {
-                        eprintln!(
-                            "monitor: page navigated on {target_id}, re-injecting favicon observer"
-                        );
+                        // page navigated, re-injecting
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         let _ = cdp
                             .send_to_session(

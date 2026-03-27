@@ -489,13 +489,20 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "bus_send" | "bus-send" => {
-            let to = args.first().map(String::as_str).unwrap_or_default();
-            let message = args.get(1..).map(|a| a.join(" ")).unwrap_or_default();
+            let kind = args.iter()
+                .find_map(|a| a.strip_prefix("--kind="))
+                .unwrap_or("request");
+            let filtered: Vec<&str> = args.iter()
+                .filter(|a| !a.starts_with("--kind="))
+                .map(String::as_str)
+                .collect();
+            let to = filtered.first().copied().unwrap_or_default();
+            let message = if filtered.len() > 1 { filtered[1..].join(" ") } else { String::new() };
             if to.is_empty() || message.is_empty() {
-                bail!("Usage: sidekar bus_send <to> <message>");
+                bail!("Usage: sidekar bus_send <to> <message> [--kind=request|fyi|response]");
             }
             let mut bus_state = recovered_bus_state();
-            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, "fyi", None)?;
+            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, None)?;
             Ok(())
         }
         "bus_done" | "bus-done" => {
