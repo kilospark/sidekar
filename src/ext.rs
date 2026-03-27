@@ -348,7 +348,7 @@ async fn handle_cli_connection(stream: TcpStream, state: SharedState) {
 // Auto-launch: ensure ext-server is running
 // ---------------------------------------------------------------------------
 
-fn is_server_running() -> bool {
+pub fn is_server_running() -> bool {
     let pid_file = pid_path();
     if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
@@ -362,7 +362,7 @@ fn is_server_running() -> bool {
     }
 }
 
-fn auto_launch_server() -> Result<()> {
+pub fn auto_launch_server() -> Result<()> {
     if is_server_running() {
         return Ok(());
     }
