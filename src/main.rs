@@ -125,6 +125,15 @@ async fn run() -> Result<()> {
 
     let mut ctx = AppContext::new()?;
 
+    // Fetch encryption key from server if logged in
+    if !matches!(command.as_str(), "login") {
+        if crate::auth::auth_token().is_some() {
+            if let Err(e) = crate::broker::fetch_encryption_key().await {
+                eprintln!("Warning: could not fetch encryption key: {}", e);
+            }
+        }
+    }
+
     // Inside a PTY wrapper — enable isolated mode (own window, no tab activation)
     if env::var("SIDEKAR_PTY").is_ok() {
         ctx.isolated = true;

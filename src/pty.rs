@@ -386,16 +386,22 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         }
     };
 
-    // Optionally establish tunnel to relay for web terminal access
+    // Optionally establish tunnel to relay for web terminal access (dashboard / web terminal).
     let tunnel = if let Some(token) = crate::auth::auth_token() {
         let cwd_str = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".into());
         match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str, &nick).await {
             Ok(t) => Some(t),
-            Err(_) => None,
+            Err(e) => {
+                wlog!(
+                    "relay tunnel not available (session will not show online): {e:#} — check `sidekar login`, SIDEKAR_RELAY_URL, and that Fly relay can reach MongoDB"
+                );
+                None
+            }
         }
     } else {
+        wlog!("relay tunnel skipped: no device token (~/.config/sidekar/auth.json). Run: sidekar login");
         None
     };
 

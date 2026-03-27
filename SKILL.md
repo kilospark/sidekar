@@ -187,6 +187,26 @@ sidekar bus_send <to> <message>           Send message to agent (or @all)
 sidekar bus_done <next> <summary> <req>   Hand off to another agent
 ```
 
+### TOTP (Two-Factor Codes)
+```
+sidekar totp add <service> <account> <secret>  Add TOTP secret (base32)
+sidekar totp list                             List stored TOTP secrets
+sidekar totp get <service> <account>          Get current code
+sidekar totp remove <id>                      Delete a secret
+```
+
+### KV Store (Project State)
+```
+sidekar kv set <key> <value>           Set project-scoped key (by cwd)
+sidekar kv set <key> <value> --global Set global key (shared across projects)
+sidekar kv get <key>                   Get value
+sidekar kv get <key> --global          Get global value
+sidekar kv list                         List project keys
+sidekar kv list --global                List global keys
+sidekar kv delete <key>                 Delete key
+sidekar kv delete <key> --global        Delete global key
+```
+
 ### Config
 ```
 sidekar config get                        Show configuration

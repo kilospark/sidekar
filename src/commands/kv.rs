@@ -13,8 +13,8 @@ pub async fn cmd_kv(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
 }
 
-fn get_agent_id() -> Option<String> {
-    std::env::var("SIDEKAR_AGENT_NAME").ok()
+fn get_project_id() -> Option<String> {
+    std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
 }
 
 async fn cmd_kv_set(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -25,11 +25,11 @@ async fn cmd_kv_set(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let value = &args[1];
     let global = args.iter().any(|a| a == "--global");
 
-    let aid = get_agent_id();
-    let agent_id = if global { None } else { aid.as_deref() };
+    let project = get_project_id();
+    let scope_id = if global { None } else { project.as_deref() };
 
-    crate::broker::kv_set(agent_id, key, value)?;
-    let scope = if global { "global" } else { "agent" };
+    crate::broker::kv_set(scope_id, key, value)?;
+    let scope = if global { "global" } else { "project" };
     out!(ctx, "Set {} = {} ({})", key, value, scope);
     Ok(())
 }
@@ -41,10 +41,10 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
     let global = args.iter().any(|a| a == "--global");
 
-    let aid = get_agent_id();
-    let agent_id = if global { None } else { aid.as_deref() };
+    let project = get_project_id();
+    let scope_id = if global { None } else { project.as_deref() };
 
-    let entry = crate::broker::kv_get(agent_id, key)?
+    let entry = crate::broker::kv_get(scope_id, key)?
         .ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
 
     out!(ctx, "{}", entry.value);
@@ -54,17 +54,17 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let global = args.iter().any(|a| a == "--global");
 
-    let aid = get_agent_id();
-    let agent_id = if global { None } else { aid.as_deref() };
-    let entries = crate::broker::kv_list(agent_id)?;
+    let project = get_project_id();
+    let scope_id = if global { None } else { project.as_deref() };
+    let entries = crate::broker::kv_list(scope_id)?;
 
     if entries.is_empty() {
-        let scope = if global { "global" } else { "your agent" };
+        let scope = if global { "global" } else { "project" };
         out!(ctx, "No KV entries for {}.", scope);
         return Ok(());
     }
 
-    let scope = if global { "global" } else { "agent" };
+    let scope = if global { "global" } else { "project" };
     out!(ctx, "KV entries ({}):", scope);
     for e in entries {
         out!(ctx, "  {} = {}", e.key, e.value);
@@ -79,10 +79,10 @@ async fn cmd_kv_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
     let global = args.iter().any(|a| a == "--global");
 
-    let aid = get_agent_id();
-    let agent_id = if global { None } else { aid.as_deref() };
+    let project = get_project_id();
+    let scope_id = if global { None } else { project.as_deref() };
 
-    crate::broker::kv_delete(agent_id, key)?;
+    crate::broker::kv_delete(scope_id, key)?;
     out!(ctx, "Deleted key '{}'.", key);
     Ok(())
 }
