@@ -211,7 +211,7 @@ async fn run() -> Result<()> {
     } else if !matches!(command.as_str(),
         "launch" | "connect" | "config" | "update"
         | "who" | "bus_send" | "bus-send" | "bus_done" | "bus-done"
-        | "feedback" | "telemetry"
+        | "feedback" | "errors" | "telemetry"
         | "cron_create" | "cron-create" | "cron_list" | "cron-list" | "cron_delete" | "cron-delete"
         | "desktop-screenshot" | "desktop_screenshot"
         | "desktop-apps" | "desktop_apps"

@@ -387,6 +387,35 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             Ok(())
         }
+        "errors" => {
+            let n = args
+                .first()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(50);
+            let rows = crate::broker::error_events_recent(n)?;
+            if rows.is_empty() {
+                out!(ctx, "No rows in local error log (~/.sidekar/broker.sqlite3 error_events).");
+                return Ok(());
+            }
+            out!(ctx, "id\tcreated_at\tsource\tmessage");
+            for r in rows {
+                let details = r.details.as_deref().unwrap_or("");
+                let msg = if details.is_empty() {
+                    r.message.clone()
+                } else {
+                    format!("{} | {}", r.message, details)
+                };
+                out!(
+                    ctx,
+                    "{}\t{}\t{}\t{}",
+                    r.id,
+                    r.created_at,
+                    r.source,
+                    msg
+                );
+            }
+            Ok(())
+        }
         "telemetry" => {
             let action = args.first().map(String::as_str).unwrap_or("status");
             let mut config = crate::config::load_config();

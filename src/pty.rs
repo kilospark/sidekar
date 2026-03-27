@@ -397,6 +397,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
                 wlog!(
                     "relay tunnel not available (session will not show online): {e:#} — check `sidekar login`, SIDEKAR_RELAY_URL, and that Fly relay can reach MongoDB"
                 );
+                crate::broker::try_log_error_event("relay_tunnel", &format!("{e:#}"), None);
                 None
             }
         }
