@@ -51,6 +51,8 @@
   var fitDebounceTimer = null;
   /** Skip fit when container dimensions are unchanged (resize storms). */
   var lastAdaptiveFitKey = "";
+  /** Prevent concurrent layout operations. */
+  var layoutInProgress = false;
 
   function loadLayoutPreference() {
     var stored = localStorage.getItem(LAYOUT_KEY);
@@ -105,6 +107,9 @@
   }
 
   function applyLayout() {
+    if (layoutInProgress) return;
+    layoutInProgress = true;
+    
     var adaptive = layoutAdaptiveCheckbox.checked;
     localStorage.setItem(LAYOUT_KEY, adaptive ? "1" : "0");
     var container = document.getElementById("terminal");
@@ -118,17 +123,25 @@
       requestAnimationFrame(function () {
         requestAnimationFrame(function () {
           fitTerminalAdaptive();
+          layoutInProgress = false;
         });
       });
     } else {
       document.body.classList.add("terminal-layout-fixed");
       lastAdaptiveFitKey = "";
       applyFixedLayout();
+      layoutInProgress = false;
     }
   }
 
+  var layoutDebounceTimer = null;
+  function onLayoutCheckboxChange() {
+    if (layoutDebounceTimer) clearTimeout(layoutDebounceTimer);
+    layoutDebounceTimer = setTimeout(applyLayout, 50);
+  }
+
   loadLayoutPreference();
-  layoutAdaptiveCheckbox.addEventListener("change", applyLayout);
+  layoutAdaptiveCheckbox.addEventListener("change", onLayoutCheckboxChange);
   applyLayout();
 
   function isViewportNearBottom() {
@@ -319,6 +332,7 @@
   });
 
   window.addEventListener("resize", function () {
+    if (layoutInProgress) return;
     if (layoutAdaptiveCheckbox.checked) {
       scheduleAdaptiveFit();
     } else {
@@ -328,6 +342,7 @@
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
+      if (layoutInProgress) return;
       if (layoutAdaptiveCheckbox.checked) scheduleAdaptiveFit();
     });
   }
