@@ -73,6 +73,8 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     // Create channel for data flowing TO the tunnel (from viewers)
     let (tunnel_tx, mut tunnel_rx) = mpsc::unbounded_channel::<crate::registry::TunnelMsg>();
 
+    let multiplex = register_msg.proto.unwrap_or(1) >= 2;
+
     // Register session
     let session_id = state
         .registry
@@ -83,6 +85,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
             register_msg.cwd,
             register_msg.hostname,
             register_msg.nickname,
+            multiplex,
             tunnel_tx,
         )
         .await;
@@ -93,6 +96,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     let confirmation = serde_json::json!({
         "type": "registered",
         "session_id": session_id,
+        "proto": if multiplex { 2 } else { 1 },
     });
     if ws_tx
         .send(Message::Text(confirmation.to_string().into()))
@@ -114,8 +118,16 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                         state.registry.broadcast_to_viewers(&session_id, &data).await;
                     }
                     Some(Ok(Message::Text(text))) => {
-                        // Control message (e.g., resize) — could forward to viewers
-                        tracing::debug!(session_id = %session_id, "tunnel control: {text}");
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
+                                state
+                                    .registry
+                                    .forward_bus_to_peers(&session_id, &text)
+                                    .await;
+                                continue;
+                            }
+                        }
+                        tracing::debug!(session_id = %session_id, "tunnel text (ignored): {text}");
                     }
                     Some(Ok(Message::Close(_))) | None => {
                         tracing::info!(session_id = %session_id, "tunnel disconnected");
@@ -131,10 +143,19 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                     _ => {}
                 }
             }
-            // Viewer keyboard input → send to tunnel as binary
-            Some(crate::registry::TunnelMsg::Data(data)) = tunnel_rx.recv() => {
-                if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
-                    break;
+            // Viewer keyboard input or peer bus → tunnel
+            Some(msg) = tunnel_rx.recv() => {
+                match msg {
+                    crate::registry::TunnelMsg::Data(data) => {
+                        if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
+                            break;
+                        }
+                    }
+                    crate::registry::TunnelMsg::Text(text) => {
+                        if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -143,6 +164,51 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     // Cleanup
     state.registry.unregister(&session_id).await;
     tracing::info!(session_id = %session_id, "tunnel session cleaned up");
+}
+
+// ─── Relay bus HTTP (device token) ────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RelayBusIn {
+    pub recipient: String,
+    pub sender: String,
+    pub body: String,
+}
+
+/// POST /relay/bus — deliver a bus message to all multiplex tunnels for this user.
+pub async fn handle_relay_bus(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RelayBusIn>,
+) -> Response {
+    let token = match extract_bearer_token(&headers) {
+        Some(t) => t,
+        None => {
+            return (axum::http::StatusCode::UNAUTHORIZED, "missing Authorization header")
+                .into_response()
+        }
+    };
+
+    let user_id = match auth::validate_device_token(&state.db, &token).await {
+        Some(uid) => uid,
+        None => {
+            return (axum::http::StatusCode::UNAUTHORIZED, "invalid device token").into_response()
+        }
+    };
+
+    let envelope = serde_json::json!({
+        "ch": "bus",
+        "v": 1,
+        "recipient": body.recipient,
+        "sender": body.sender,
+        "body": body.body,
+    });
+    state
+        .registry
+        .forward_bus_json_to_user_multiplex(&user_id, &envelope.to_string())
+        .await;
+
+    Json(serde_json::json!({ "ok": true })).into_response()
 }
 
 // ─── Viewer handler ───────────────────────────────────────────────
@@ -314,21 +380,30 @@ pub async fn handle_list_sessions(
     headers: HeaderMap,
     Query(query): Query<ViewerQuery>,
 ) -> Response {
-    let jwt = query
-        .token
-        .or_else(|| extract_cookie_token(&headers, "sidekar_session"));
-
-    let jwt = match jwt {
-        Some(t) => t,
-        None => {
-            return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response()
+    let user_id = if let Some(bearer) = extract_bearer_token(&headers) {
+        match auth::validate_device_token(&state.db, &bearer).await {
+            Some(uid) => uid,
+            None => {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid device token").into_response()
+            }
         }
-    };
+    } else {
+        let jwt = query
+            .token
+            .or_else(|| extract_cookie_token(&headers, "sidekar_session"));
 
-    let user_id = match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
-        Some(uid) => uid,
-        None => {
-            return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response()
+        let jwt = match jwt {
+            Some(t) => t,
+            None => {
+                return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response()
+            }
+        };
+
+        match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
+            Some(uid) => uid,
+            None => {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response()
+            }
         }
     };
 

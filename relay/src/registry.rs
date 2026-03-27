@@ -8,9 +8,11 @@ const REPLAY_BUFFER_SIZE: usize = 8 * 1024;
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const SESSION_TTL_SECS: i64 = 90; // sessions expire if no heartbeat for 90s
 
-/// Message sent to the tunnel WebSocket from viewers.
+/// Message sent to the tunnel WebSocket from viewers or peer bus relay.
 pub enum TunnelMsg {
     Data(Vec<u8>),
+    /// Multiplex bus JSON (WebSocket text frame).
+    Text(String),
 }
 
 /// A connected viewer.
@@ -23,6 +25,8 @@ pub struct ViewerHandle {
 pub struct LiveSession {
     pub session_id: String,
     pub user_id: String,
+    /// When true, tunnel may send/receive `ch: "bus"` on text frames.
+    pub multiplex: bool,
     pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     pub viewers: Arc<RwLock<Vec<ViewerHandle>>>,
     pub replay_buffer: Arc<RwLock<ReplayBuffer>>,
@@ -114,6 +118,7 @@ impl Registry {
         cwd: String,
         hostname: String,
         nickname: Option<String>,
+        multiplex: bool,
         tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     ) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -141,6 +146,7 @@ impl Registry {
         let live_session = LiveSession {
             session_id: session_id.clone(),
             user_id,
+            multiplex,
             tunnel_tx,
             viewers: Arc::new(RwLock::new(Vec::new())),
             replay_buffer: Arc::new(RwLock::new(ReplayBuffer::new(REPLAY_BUFFER_SIZE))),
@@ -284,6 +290,48 @@ impl Registry {
             for viewer in viewers.iter() {
                 let _ = viewer.tx.send(data.to_vec());
             }
+        }
+    }
+
+    /// Forward a bus JSON text frame to other multiplex tunnels for the same user.
+    pub async fn forward_bus_to_peers(&self, from_session_id: &str, text: &str) {
+        let user_id = {
+            let live = self.live.read().await;
+            let Some(sess) = live.get(from_session_id) else {
+                return;
+            };
+            if !sess.multiplex {
+                return;
+            }
+            sess.user_id.clone()
+        };
+
+        let live = self.live.read().await;
+        for (sid, sess) in live.iter() {
+            if sess.user_id != user_id {
+                continue;
+            }
+            if sid == from_session_id {
+                continue;
+            }
+            if !sess.multiplex {
+                continue;
+            }
+            let _ = sess.tunnel_tx.send(TunnelMsg::Text(text.to_string()));
+        }
+    }
+
+    /// Push a bus JSON text frame to every multiplex tunnel for this user (e.g. HTTP ingress).
+    pub async fn forward_bus_json_to_user_multiplex(&self, user_id: &str, text: &str) {
+        let live = self.live.read().await;
+        for (_sid, sess) in live.iter() {
+            if sess.user_id != user_id {
+                continue;
+            }
+            if !sess.multiplex {
+                continue;
+            }
+            let _ = sess.tunnel_tx.send(TunnelMsg::Text(text.to_string()));
         }
     }
 }

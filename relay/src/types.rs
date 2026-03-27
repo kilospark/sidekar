@@ -11,6 +11,9 @@ pub struct RegisterMsg {
     pub hostname: String,
     #[serde(default)]
     pub nickname: Option<String>,
+    /// 1 = legacy PTY-only tunnel; 2 = multiplex (bus JSON on text frames).
+    #[serde(default)]
+    pub proto: Option<u8>,
 }
 
 /// Session info returned in the session list API.

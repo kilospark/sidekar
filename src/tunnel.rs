@@ -2,7 +2,7 @@
 //!
 //! Establishes a WSS connection to the relay server, registers the session,
 //! and bridges PTY I/O over binary WebSocket frames. JSON text frames carry
-//! control messages (register, resize, viewer notifications).
+//! the multiplex bus (`ch: "bus"`) between machines; binary frames remain PTY.
 //!
 //! The public API returns a `(TunnelSender, TunnelReceiver)` pair designed
 //! to integrate into a `tokio::select!` event loop (see `pty.rs`).
@@ -10,6 +10,7 @@
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -34,6 +35,14 @@ fn relay_url() -> String {
 pub enum TunnelEvent {
     /// Raw bytes from a browser viewer (keyboard input).
     Data(Vec<u8>),
+    /// Routed bus: enqueue locally when `recipient` matches this agent name.
+    BusRelay {
+        recipient: String,
+        sender: String,
+        body: String,
+    },
+    /// Legacy/simple bus frame (body only) — written to PTY.
+    BusPlain(String),
     /// The tunnel has disconnected (reconnect is happening in the background).
     Disconnected,
 }
@@ -43,6 +52,8 @@ pub enum TunnelEvent {
 enum TunnelCommand {
     /// Raw PTY output bytes to forward to viewers.
     Data(Vec<u8>),
+    /// Multiplex bus JSON (WebSocket text frame).
+    BusText(String),
     /// Graceful shutdown.
     Shutdown,
 }
@@ -51,12 +62,29 @@ enum TunnelCommand {
 #[derive(Clone)]
 pub struct TunnelSender {
     tx: mpsc::Sender<TunnelCommand>,
+    session_id: Arc<Mutex<String>>,
 }
 
 impl TunnelSender {
     /// Send raw PTY output bytes to the tunnel (non-blocking, drops on full channel).
     pub fn send_data(&self, data: Vec<u8>) {
         let _ = self.tx.try_send(TunnelCommand::Data(data));
+    }
+
+    /// Send a routed bus message to other multiplex tunnels for this user (non-blocking).
+    pub fn send_bus_routed(&self, recipient: &str, sender: &str, body: &str) {
+        let sid = self.session_id.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        let json = serde_json::json!({
+            "ch": "bus",
+            "v": 1,
+            "from_session": sid,
+            "recipient": recipient,
+            "sender": sender,
+            "body": body,
+        });
+        let _ = self
+            .tx
+            .try_send(TunnelCommand::BusText(json.to_string()));
     }
 
     /// Request graceful shutdown of the tunnel background task.
@@ -80,6 +108,8 @@ struct RegisterMsg<'a> {
     cwd: &'a str,
     hostname: &'a str,
     nickname: &'a str,
+    /// 2 = multiplex (bus on text frames).
+    proto: u8,
 }
 
 /// Relay sends JSON text frames during registration handshake only.
@@ -138,11 +168,24 @@ pub async fn connect(
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<TunnelCommand>(CHANNEL_CAPACITY);
     let (evt_tx, evt_rx) = mpsc::channel::<TunnelEvent>(CHANNEL_CAPACITY);
+    let session_id_shared = Arc::new(Mutex::new(session_id));
 
     // Spawn the background I/O loop
-    tokio::spawn(tunnel_task(ws, session_id, params, cmd_rx, evt_tx));
+    tokio::spawn(tunnel_task(
+        ws,
+        session_id_shared.clone(),
+        params,
+        cmd_rx,
+        evt_tx,
+    ));
 
-    Ok((TunnelSender { tx: cmd_tx }, evt_rx))
+    Ok((
+        TunnelSender {
+            tx: cmd_tx,
+            session_id: session_id_shared,
+        },
+        evt_rx,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +223,7 @@ async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, St
         cwd: &params.cwd,
         hostname: &params.hostname,
         nickname: &params.nickname,
+        proto: 2,
     };
     let register_json = serde_json::to_string(&register).context("serialize register")?;
     ws.send(Message::Text(register_json.into()))
@@ -225,7 +269,7 @@ async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, St
 
 async fn tunnel_task(
     ws: WsStream,
-    _session_id: String,
+    session_id: Arc<Mutex<String>>,
     params: ConnectParams,
     mut cmd_rx: mpsc::Receiver<TunnelCommand>,
     evt_tx: mpsc::Sender<TunnelEvent>,
@@ -250,7 +294,10 @@ async fn tunnel_task(
             tokio::time::sleep(backoff).await;
 
             match ws_connect_and_register(&params).await {
-                Ok((stream, _new_session_id)) => {
+                Ok((stream, new_session_id)) => {
+                    if let Ok(mut g) = session_id.lock() {
+                        *g = new_session_id;
+                    }
                     ws = Some(stream);
                     backoff = RECONNECT_BASE;
                     break;
@@ -290,6 +337,11 @@ async fn io_loop(
                             return false;
                         }
                     }
+                    Some(TunnelCommand::BusText(json)) => {
+                        if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                            return false;
+                        }
+                    }
                     Some(TunnelCommand::Shutdown) | None => {
                         let _ = ws_sink.close().await;
                         return true;
@@ -297,11 +349,34 @@ async fn io_loop(
                 }
             }
 
-            // Relay → PTY input (binary = viewer keystrokes, text = ignored)
+            // Relay → PTY input (binary = viewer keystrokes; text = bus multiplex)
             msg = ws_stream.next() => {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
                         let _ = evt_tx.try_send(TunnelEvent::Data(data.into()));
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
+                                let body_str = v
+                                    .get("body")
+                                    .and_then(|b| b.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                if let (Some(recipient), Some(sender)) = (
+                                    v.get("recipient").and_then(|x| x.as_str()),
+                                    v.get("sender").and_then(|x| x.as_str()),
+                                ) {
+                                    let _ = evt_tx.try_send(TunnelEvent::BusRelay {
+                                        recipient: recipient.to_string(),
+                                        sender: sender.to_string(),
+                                        body: body_str,
+                                    });
+                                } else {
+                                    let _ = evt_tx.try_send(TunnelEvent::BusPlain(body_str));
+                                }
+                            }
+                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_sink.send(Message::Pong(data)).await;

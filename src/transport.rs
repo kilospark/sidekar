@@ -5,7 +5,8 @@
 //! transports only care about getting bytes to a destination.
 
 use crate::message::DeliveryResult;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -41,5 +42,86 @@ impl Transport for Broker {
 
     fn name(&self) -> &'static str {
         "broker"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Relay HTTP (device token → relay fans out to multiplex tunnels)
+// ---------------------------------------------------------------------------
+
+/// HTTPS API base derived from `SIDEKAR_RELAY_URL` (e.g. `https://relay.sidekar.dev`).
+pub(crate) fn relay_http_base() -> String {
+    let u = std::env::var("SIDEKAR_RELAY_URL")
+        .unwrap_or_else(|_| "wss://relay.sidekar.dev/tunnel".into());
+    u.replace("wss://", "https://")
+        .replace("ws://", "http://")
+        .trim_end_matches("/tunnel")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct RelaySessionInfo {
+    #[allow(dead_code)]
+    id: String,
+    pub name: String,
+    pub nickname: Option<String>,
+    pub hostname: String,
+}
+
+pub(crate) fn fetch_relay_sessions() -> Result<Vec<RelaySessionInfo>> {
+    let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("no device token"))?;
+    let base = relay_http_base();
+    let url = format!("{}/sessions", base.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .with_context(|| format!("GET {url}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("relay /sessions: HTTP {}", resp.status());
+    }
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        sessions: Vec<RelaySessionInfo>,
+    }
+    let r: Resp = resp.json().context("parse relay /sessions JSON")?;
+    Ok(r.sessions)
+}
+
+pub struct RelayHttp;
+
+impl Transport for RelayHttp {
+    fn deliver(&self, target: &str, message: &str, from: &str) -> Result<DeliveryResult> {
+        let token = crate::auth::auth_token()
+            .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar login"))?;
+        let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&serde_json::json!({
+                "recipient": target,
+                "sender": from,
+                "body": message,
+            }))
+            .send()
+            .with_context(|| format!("POST {url}"))?;
+        if resp.status().is_success() {
+            Ok(DeliveryResult::Delivered)
+        } else {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            Ok(DeliveryResult::Failed(format!("relay HTTP {status}: {body}")))
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "relay_http"
     }
 }
