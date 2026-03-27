@@ -195,6 +195,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // Local error log (durable, queryable; ~/.sidekar/broker.sqlite3)
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS error_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            message TEXT NOT NULL,
+            details TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_error_events_created
+            ON error_events(created_at);
+        ",
+    )?;
+
     Ok(())
 }
 
@@ -1073,6 +1088,53 @@ pub fn decrypt(encrypted: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
     String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e))
+}
+
+/// One row from `error_events` (local SQLite log).
+#[derive(Debug, Clone)]
+pub struct ErrorEventRow {
+    pub id: i64,
+    pub created_at: i64,
+    pub source: String,
+    pub message: String,
+    pub details: Option<String>,
+}
+
+/// Append an error row. Prefer [`try_log_error_event`] from call sites where failure must not propagate.
+pub fn log_error_event(source: &str, message: &str, details: Option<&str>) -> Result<()> {
+    let conn = open()?;
+    let now = crate::message::epoch_secs() as i64;
+    conn.execute(
+        "INSERT INTO error_events (created_at, source, message, details) VALUES (?1, ?2, ?3, ?4)",
+        params![now, source, message, details],
+    )?;
+    Ok(())
+}
+
+/// Best-effort persist; logs to stderr only if SQLite write fails.
+pub fn try_log_error_event(source: &str, message: &str, details: Option<&str>) {
+    if let Err(e) = log_error_event(source, message, details) {
+        wlog!("could not write error_events row: {e}");
+    }
+}
+
+/// Recent errors, newest first (cap 500).
+pub fn error_events_recent(limit: usize) -> Result<Vec<ErrorEventRow>> {
+    let conn = open()?;
+    let lim = limit.min(500).max(1) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, source, message, details FROM error_events ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![lim], |row| {
+        Ok(ErrorEventRow {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            source: row.get(2)?,
+            message: row.get(3)?,
+            details: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 #[cfg(test)]
