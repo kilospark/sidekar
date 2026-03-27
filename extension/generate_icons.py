@@ -38,7 +38,7 @@ def has_rsvg() -> bool:
 def rasterize_svg(svg_path: Path, variant: str) -> None:
     ICONS.mkdir(parents=True, exist_ok=True)
     for s in SIZES:
-        out = ICONS / f"icon-{s}.png"
+        out = ICONS / f"icon-{variant}-{s}.png"
         subprocess.run(
             ["rsvg-convert", "-w", str(s), "-h", str(s), "-o", str(out), str(svg_path)],
             check=True,
@@ -52,29 +52,27 @@ def rasterize_png(png_path: Path, variant: str) -> None:
     ICONS.mkdir(parents=True, exist_ok=True)
     im = Image.open(png_path).convert("RGBA")
     for s in SIZES:
-        out = ICONS / f"icon-{s}.png"
+        out = ICONS / f"icon-{variant}-{s}.png"
         im.resize((s, s), Image.Resampling.LANCZOS).save(out, "PNG")
         print(out)
 
 
 def main() -> None:
-    variant = os.environ.get("SIDEKAR_EXT_ICON", "light").lower()
-    if variant not in SOURCES_SVG:
-        print(f"Unknown SIDEKAR_EXT_ICON={variant!r}, use dark or light", file=sys.stderr)
-        sys.exit(1)
+    use_rsvg = has_rsvg()
 
-    svg = SOURCES_SVG[variant]
-    png = SOURCES_PNG[variant]
+    for variant in ("dark", "light"):
+        svg = SOURCES_SVG[variant]
+        png = SOURCES_PNG[variant]
 
-    if svg.is_file() and has_rsvg():
-        print(f"Rasterizing {svg.name} via rsvg-convert")
-        rasterize_svg(svg, variant)
-    elif png.is_file():
-        print(f"Resizing {png.name} via Pillow (install librsvg for SVG source)")
-        rasterize_png(png, variant)
-    else:
-        print(f"No source icon found for {variant!r}", file=sys.stderr)
-        sys.exit(1)
+        if svg.is_file() and use_rsvg:
+            print(f"Rasterizing {svg.name} via rsvg-convert")
+            rasterize_svg(svg, variant)
+        elif png.is_file():
+            print(f"Resizing {png.name} via Pillow (install librsvg for SVG source)")
+            rasterize_png(png, variant)
+        else:
+            print(f"No source icon found for {variant!r}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

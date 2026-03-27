@@ -303,13 +303,11 @@ pub(crate) async fn cmd_cron_create(
         }
     }
 
-    // Check job limit
-    let cell = cron_cell().await;
-    let mut guard = cell.lock().await;
+    // Check job limit (use broker as source of truth — works with or without cron loop)
     let max_jobs = crate::config::load_config().max_cron_jobs;
-
-    let state = guard.as_mut().ok_or_else(|| anyhow!("Cron loop not started"))?;
-    let current_count = state.jobs.lock().await.len();
+    let current_count = broker::list_cron_jobs(true)
+        .map(|jobs| jobs.len())
+        .unwrap_or(0);
     if current_count >= max_jobs {
         bail!("Cron job limit reached ({max_jobs}). Delete a job first, or increase max_cron_jobs in config.");
     }
@@ -317,21 +315,25 @@ pub(crate) async fn cmd_cron_create(
     // Generate ID
     let id = format!("{:08x}", rand::random::<u32>());
 
-    // Persist to broker
+    // Persist to broker (works from any shell — the running PTY wrapper picks it up)
     let action_json = serde_json::to_string(&action_parsed)?;
     broker::create_cron_job(&id, name, schedule_expr, &action_json, target, created_by)?;
 
-    // Add to in-memory state
-    state.jobs.lock().await.push(CronJob {
-        id: id.clone(),
-        name: name.map(String::from),
-        schedule,
-        schedule_expr: schedule_expr.to_string(),
-        action: action_parsed,
-        target: target.to_string(),
-        last_run_at: None,
-        running: Arc::new(AtomicBool::new(false)),
-    });
+    // Add to in-memory state if cron loop is running
+    let cell = cron_cell().await;
+    let guard = cell.lock().await;
+    if let Some(state) = guard.as_ref() {
+        state.jobs.lock().await.push(CronJob {
+            id: id.clone(),
+            name: name.map(String::from),
+            schedule,
+            schedule_expr: schedule_expr.to_string(),
+            action: action_parsed,
+            target: target.to_string(),
+            last_run_at: None,
+            running: Arc::new(AtomicBool::new(false)),
+        });
+    }
 
     out!(ctx, "Cron job created: {id}");
     if let Some(n) = name {
@@ -467,6 +469,41 @@ async fn cron_loop(
 
         if !running.load(Ordering::Relaxed) {
             break;
+        }
+
+        // Reload jobs from broker to pick up externally-created jobs
+        if let Ok(records) = broker::list_cron_jobs(true) {
+            let mut mem_jobs = jobs.lock().await;
+            for rec in records {
+                if mem_jobs.iter().any(|j| j.id == rec.id) {
+                    continue; // already loaded
+                }
+                match CronSchedule::parse(&rec.schedule) {
+                    Ok(sched) => {
+                        let action: CronAction = match serde_json::from_str(&rec.action_json) {
+                            Ok(a) => a,
+                            Err(_) => continue,
+                        };
+                        mem_jobs.push(CronJob {
+                            id: rec.id,
+                            name: rec.name,
+                            schedule: sched,
+                            schedule_expr: rec.schedule,
+                            action,
+                            target: rec.target,
+                            last_run_at: rec.last_run_at,
+                            running: Arc::new(AtomicBool::new(false)),
+                        });
+                    }
+                    Err(_) => continue,
+                }
+            }
+            // Remove jobs that were deleted from broker
+            let broker_ids: std::collections::HashSet<String> =
+                broker::list_cron_jobs(true)
+                    .map(|recs| recs.into_iter().map(|r| r.id).collect())
+                    .unwrap_or_default();
+            mem_jobs.retain(|j| broker_ids.contains(&j.id));
         }
 
         // Get current local time components
