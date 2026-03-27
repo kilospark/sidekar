@@ -994,9 +994,13 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     if !resp.status().is_success() {
         bail!("Failed to fetch encryption key: HTTP {}", resp.status());
     }
-    let key: String = resp.text().await.context("Failed to read encryption key")?;
+    #[derive(serde::Deserialize)]
+    struct KeyResp {
+        key: String,
+    }
+    let body: KeyResp = resp.json().await.context("Failed to parse encryption key response")?;
     let decoded = base64::engine::general_purpose::STANDARD
-        .decode(key.trim())
+        .decode(body.key.trim())
         .context("Invalid encryption key format")?;
 
     set_encryption_key(decoded.clone());

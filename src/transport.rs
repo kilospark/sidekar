@@ -73,23 +73,30 @@ pub(crate) fn fetch_relay_sessions() -> Result<Vec<RelaySessionInfo>> {
     let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("no device token"))?;
     let base = relay_http_base();
     let url = format!("{}/sessions", base.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()?;
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .with_context(|| format!("GET {url}"))?;
-    if !resp.status().is_success() {
-        anyhow::bail!("relay /sessions: HTTP {}", resp.status());
-    }
-    #[derive(serde::Deserialize)]
-    struct Resp {
-        sessions: Vec<RelaySessionInfo>,
-    }
-    let r: Resp = resp.json().context("parse relay /sessions JSON")?;
-    Ok(r.sessions)
+
+    // Run blocking HTTP on a dedicated OS thread to avoid panicking when
+    // called from within a tokio runtime (reqwest::blocking creates its own runtime).
+    std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            anyhow::bail!("relay /sessions: HTTP {}", resp.status());
+        }
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            sessions: Vec<RelaySessionInfo>,
+        }
+        let r: Resp = resp.json().context("parse relay /sessions JSON")?;
+        Ok(r.sessions)
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("fetch_relay_sessions thread panicked"))?
 }
 
 pub struct RelayHttp;
@@ -99,26 +106,36 @@ impl Transport for RelayHttp {
         let token = crate::auth::auth_token()
             .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar login"))?;
         let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()?;
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .json(&serde_json::json!({
-                "recipient": target,
-                "sender": from,
-                "body": message,
-            }))
-            .send()
-            .with_context(|| format!("POST {url}"))?;
-        if resp.status().is_success() {
-            Ok(DeliveryResult::Delivered)
-        } else {
-            let status = resp.status();
-            let body = resp.text().unwrap_or_default();
-            Ok(DeliveryResult::Failed(format!("relay HTTP {status}: {body}")))
-        }
+        let target = target.to_string();
+        let from = from.to_string();
+        let message = message.to_string();
+
+        // Run blocking HTTP on a dedicated OS thread to avoid panicking when
+        // called from within a tokio runtime (reqwest::blocking creates its own runtime).
+        std::thread::spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()?;
+            let resp = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .json(&serde_json::json!({
+                    "recipient": target,
+                    "sender": from,
+                    "body": message,
+                }))
+                .send()
+                .with_context(|| format!("POST {url}"))?;
+            if resp.status().is_success() {
+                Ok(DeliveryResult::Delivered)
+            } else {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                Ok(DeliveryResult::Failed(format!("relay HTTP {status}: {body}")))
+            }
+        })
+        .join()
+        .map_err(|_| anyhow::anyhow!("RelayHttp::deliver thread panicked"))?
     }
 
     fn name(&self) -> &'static str {

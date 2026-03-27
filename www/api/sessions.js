@@ -1,4 +1,4 @@
-import { getUser } from "./_auth.js";
+import { getUserOrDevice } from "./_auth.js";
 import { getDb } from "./_db.js";
 
 const SESSION_TTL_MS = 90 * 1000; // matches relay's SESSION_TTL_SECS
@@ -6,12 +6,11 @@ const SESSION_TTL_MS = 90 * 1000; // matches relay's SESSION_TTL_SECS
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
 
-  const user = await getUser(req);
+  const user = await getUserOrDevice(req);
   if (!user) return res.status(401).json({ error: "not authenticated" });
 
   try {
-    // JWT uses `sub` (see auth/github.js).
-    const userId = user.sub || user.id;
+    const userId = user.user_id;
     if (!userId) {
       return res.status(401).json({ error: "invalid session token" });
     }

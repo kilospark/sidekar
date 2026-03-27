@@ -173,7 +173,12 @@ pub struct RelayBusIn {
     pub recipient: String,
     pub sender: String,
     pub body: String,
+    /// If set, skip this session when forwarding (prevents self-delivery loops).
+    #[serde(default)]
+    pub from_session: Option<String>,
 }
+
+const MAX_BUS_BODY_BYTES: usize = 64 * 1024; // 64 KB
 
 /// POST /relay/bus — deliver a bus message to all multiplex tunnels for this user.
 pub async fn handle_relay_bus(
@@ -181,6 +186,14 @@ pub async fn handle_relay_bus(
     headers: HeaderMap,
     Json(body): Json<RelayBusIn>,
 ) -> Response {
+    if body.body.len() > MAX_BUS_BODY_BYTES {
+        return (
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "body exceeds 64KB limit",
+        )
+            .into_response();
+    }
+
     let token = match extract_bearer_token(&headers) {
         Some(t) => t,
         None => {
@@ -205,7 +218,11 @@ pub async fn handle_relay_bus(
     });
     state
         .registry
-        .forward_bus_json_to_user_multiplex(&user_id, &envelope.to_string())
+        .forward_bus_json_to_user_multiplex(
+            &user_id,
+            &envelope.to_string(),
+            body.from_session.as_deref(),
+        )
         .await;
 
     Json(serde_json::json!({ "ok": true })).into_response()

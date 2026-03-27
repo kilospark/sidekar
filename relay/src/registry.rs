@@ -322,13 +322,22 @@ impl Registry {
     }
 
     /// Push a bus JSON text frame to every multiplex tunnel for this user (e.g. HTTP ingress).
-    pub async fn forward_bus_json_to_user_multiplex(&self, user_id: &str, text: &str) {
+    /// If `exclude_session` is provided, skip that session (prevents self-delivery loops).
+    pub async fn forward_bus_json_to_user_multiplex(
+        &self,
+        user_id: &str,
+        text: &str,
+        exclude_session: Option<&str>,
+    ) {
         let live = self.live.read().await;
-        for (_sid, sess) in live.iter() {
+        for (sid, sess) in live.iter() {
             if sess.user_id != user_id {
                 continue;
             }
             if !sess.multiplex {
+                continue;
+            }
+            if exclude_session == Some(sid.as_str()) {
                 continue;
             }
             let _ = sess.tunnel_tx.send(TunnelMsg::Text(text.to_string()));
