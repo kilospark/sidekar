@@ -400,9 +400,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     };
 
     // Ensure the Chrome extension bridge is running
-    if let Err(e) = crate::ext::auto_launch_server() {
-        eprintln!("sidekar: ext-server auto-launch failed: {e}");
-    }
+    let _ = crate::ext::auto_launch_server();
 
     // Start the cron background loop (will pick up Chrome session when available)
     {

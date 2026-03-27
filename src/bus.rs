@@ -393,18 +393,14 @@ impl SidekarBusState {
 
     pub fn touch(&self) {
         if let Some(name) = self.name() {
-            if let Err(e) = broker::touch_agent(name) {
-                eprintln!("sidekar bus: failed to heartbeat agent {name}: {e}");
-            }
+            let _ = broker::touch_agent(name);
         }
     }
 
     pub fn set_socket_path(&mut self, socket_path: Option<PathBuf>) {
         self.socket_path = socket_path.clone();
         if let Some(name) = self.name() {
-            if let Err(e) = broker::set_agent_socket_path(name, socket_path.as_deref()) {
-                eprintln!("sidekar bus: failed to update socket path for {name}: {e}");
-            }
+            let _ = broker::set_agent_socket_path(name, socket_path.as_deref());
         }
     }
 
@@ -424,17 +420,13 @@ impl SidekarBusState {
                     self.ensure_nudge_timer(&request.msg_id);
                 }
             }
-            Err(e) => eprintln!("sidekar bus: failed to restore outbound state for {name}: {e}"),
+            Err(_) => {},
         }
     }
 
     pub fn unregister(&mut self) {
         if let Some(name) = self.name().map(String::from) {
-            if let Err(e) = broker::unregister_agent(&name) {
-                eprintln!("sidekar bus: broker unregister failed for {name}: {e}");
-            } else {
-                eprintln!("sidekar bus: unregistered \"{name}\"");
-            }
+            let _ = broker::unregister_agent(&name);
         }
 
         self.identity = None;
@@ -449,12 +441,7 @@ impl SidekarBusState {
 
         // Check if a parent PTY wrapper already registered us
         if let Some(inherited) = inherit_pty_registration() {
-            eprintln!(
-                "sidekar bus: inherited PTY registration as \"{}\" aka \"{}\" on channel \"{}\"",
-                inherited.name,
-                inherited.nick.as_deref().unwrap_or("?"),
-                inherited.session.as_deref().unwrap_or("?"),
-            );
+            // inherited PTY registration
             let nick = inherited.nick.as_deref().unwrap_or("?");
             let name = &inherited.name;
             let agent_type = detect_agent_type();
@@ -501,24 +488,19 @@ impl SidekarBusState {
         };
 
         if let Err(e) = broker::register_agent(&identity, Some(&pane_unique)) {
-            eprintln!(
-                "sidekar bus: broker register failed for {}: {e}",
-                identity.name
-            );
+            let _ = e;
         }
 
         self.identity = Some(identity);
         self.pane_unique_id = Some(pane_unique);
         self.active_nudges.clear();
 
-        if let (Some(name), Some(nick), Some(channel)) =
+        if let (Some(name), Some(nick), Some(_channel)) =
             (self.name(), self.nick(), self.channel())
         {
             let agent_type = detect_agent_type();
             set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
-            eprintln!(
-                "sidekar bus: registered as \"{name}\" aka \"{nick}\" on channel \"{channel}\""
-            );
+            // registered on bus
         }
 
         self.resume_nudges();
@@ -701,10 +683,7 @@ fn maybe_track_request(
         return;
     }
     if let Err(e) = broker::set_pending(envelope) {
-        eprintln!(
-            "sidekar bus: failed to persist pending {}: {e}",
-            envelope.id
-        );
+        let _ = e;
         return;
     }
     if let Err(e) = broker::set_outbound_request(
@@ -716,10 +695,7 @@ fn maybe_track_request(
         &delivery.transport_target,
         envelope.created_at,
     ) {
-        eprintln!(
-            "sidekar bus: failed to persist outbound {}: {e}",
-            envelope.id
-        );
+        let _ = e;
         return;
     }
     state.ensure_nudge_timer(&envelope.id);
