@@ -14,7 +14,9 @@ pub async fn cmd_kv(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 fn get_project_id() -> Option<String> {
-    std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
+    std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 async fn cmd_kv_set(ctx: &mut AppContext, args: &[String]) -> Result<()> {

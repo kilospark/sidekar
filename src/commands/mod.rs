@@ -394,7 +394,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .unwrap_or(50);
             let rows = crate::broker::error_events_recent(n)?;
             if rows.is_empty() {
-                out!(ctx, "No rows in local error log (~/.sidekar/broker.sqlite3 error_events).");
+                out!(ctx, "No rows in error_events (~/.sidekar/broker.sqlite3).");
                 return Ok(());
             }
             out!(ctx, "id\tcreated_at\tsource\tmessage");

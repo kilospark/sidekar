@@ -1111,11 +1111,9 @@ pub fn log_error_event(source: &str, message: &str, details: Option<&str>) -> Re
     Ok(())
 }
 
-/// Best-effort persist; logs to stderr only if SQLite write fails.
+/// Best-effort persist. If the DB is unavailable, the event is dropped (no stderr spam).
 pub fn try_log_error_event(source: &str, message: &str, details: Option<&str>) {
-    if let Err(e) = log_error_event(source, message, details) {
-        wlog!("could not write error_events row: {e}");
-    }
+    let _ = log_error_event(source, message, details);
 }
 
 /// Recent errors, newest first (cap 500).
