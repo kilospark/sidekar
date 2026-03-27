@@ -297,43 +297,49 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
     }
 
     // Try to reuse stored nickname for this project (only if not already taken)
-    if let Some(proj) = project {
+    let chosen = if let Some(proj) = project {
         let stored = broker::kv_get(Some(proj), "_agent_nick")
             .ok()
             .flatten()
             .map(|e| e.value);
+
         if let Some(nick) = stored {
             if !used.contains(&nick) {
                 return nick; // reused successfully
             }
             // stored nickname is taken - fall through to pick new one
-            // DON'T update KV - keep the original for when that agent restarts
         }
-    }
 
-    let mut available: Vec<&str> = NICKNAMES
-        .iter()
-        .filter(|n| !used.contains(**n))
-        .copied()
-        .collect();
-    available.shuffle(&mut rand::rng());
-    let chosen = available.first().map(|s| s.to_string()).unwrap_or_else(|| {
-        let r: u16 = rand::random();
-        format!("agent-{:04x}", r)
-    });
+        // Pick new from available
+        let mut available: Vec<&str> = NICKNAMES
+            .iter()
+            .filter(|n| !used.contains(**n))
+            .copied()
+            .collect();
+        available.shuffle(&mut rand::rng());
+        let picked = available.first().map(|s| s.to_string()).unwrap_or_else(|| {
+            let r: u16 = rand::random();
+            format!("agent-{:04x}", r)
+        });
 
-    // Only store if this is the standalone case (no project) or project provided but
-    // we picked from available (stored was valid). Don't store if we picked different from stored.
-    // Actually, simplest: only store on first use (when no stored value existed)
-    if let Some(proj) = project {
-        let has_stored = broker::kv_get(Some(proj), "_agent_nick")
-            .ok()
-            .flatten()
-            .is_some();
-        if !has_stored {
-            let _ = broker::kv_set(Some(proj), "_agent_nick", &chosen);
+        // Store whatever nickname we got assigned
+        if let Err(e) = broker::kv_set(Some(proj), "_agent_nick", &picked) {
+            let _ = e;
         }
-    }
+        picked
+    } else {
+        // Standalone - no project, just pick random
+        let mut available: Vec<&str> = NICKNAMES
+            .iter()
+            .filter(|n| !used.contains(**n))
+            .copied()
+            .collect();
+        available.shuffle(&mut rand::rng());
+        available.first().map(|s| s.to_string()).unwrap_or_else(|| {
+            let r: u16 = rand::random();
+            format!("agent-{:04x}", r)
+        })
+    };
 
     chosen
 }
