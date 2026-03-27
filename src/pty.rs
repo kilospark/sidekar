@@ -317,7 +317,10 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     // Build identity before fork so env vars are inherited by child.
     let channel = detect_channel();
-    let nick = crate::bus::pick_nickname_standalone();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let nick = crate::bus::pick_nickname_for_project(Some(&cwd));
     let pre_fork_name = unique_agent_name(agent, &channel);
 
     // Set env vars before fork — child inherits them.

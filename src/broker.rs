@@ -789,10 +789,12 @@ pub fn totp_add(
     let now = crate::message::epoch_secs() as i64;
 
     let secret_to_store = if get_encryption_key().is_some() {
-        if let Ok(enc) = encrypt(secret) {
-            enc
-        } else {
-            secret.to_string()
+        match encrypt(secret) {
+            Ok(enc) => enc,
+            Err(e) => {
+                eprintln!("Warning: encryption key available but encrypt failed: {}. Storing plaintext.", e);
+                secret.to_string()
+            }
         }
     } else {
         secret.to_string()
@@ -887,10 +889,12 @@ pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
     let now = crate::message::epoch_secs() as i64;
 
     let value_to_store = if get_encryption_key().is_some() {
-        if let Ok(enc) = encrypt(value) {
-            enc
-        } else {
-            value.to_string()
+        match encrypt(value) {
+            Ok(enc) => enc,
+            Err(e) => {
+                eprintln!("Warning: encryption key available but encrypt failed: {}. Storing plaintext.", e);
+                value.to_string()
+            }
         }
     } else {
         value.to_string()
