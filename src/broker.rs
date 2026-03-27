@@ -166,7 +166,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // KV store table (per-agent + global)
+    // KV store table (per-project + global) — project = cwd path
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS kv_store (
@@ -773,7 +773,7 @@ pub fn totp_add(
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
 
-    let secret_to_store = if let Some(key) = get_encryption_key() {
+    let secret_to_store = if get_encryption_key().is_some() {
         if let Ok(enc) = encrypt(secret) {
             enc
         } else {
@@ -795,36 +795,41 @@ pub fn totp_list() -> Result<Vec<TotpSecret>> {
     let conn = open()?;
     let mut stmt = conn.prepare("SELECT id, service, account, secret, algorithm, digits, period, created_at FROM totp_secrets ORDER BY service, account")?;
     let rows = stmt.query_map([], |row| {
+        let secret: String = row.get(3)?;
+        let decrypted = if is_encrypted(&secret) {
+            decrypt(&secret).unwrap_or(secret)
+        } else {
+            secret
+        };
         Ok(TotpSecret {
             id: row.get(0)?,
             service: row.get(1)?,
             account: row.get(2)?,
-            secret: row.get(3)?,
+            secret: decrypted,
             algorithm: row.get(4)?,
             digits: row.get(5)?,
             period: row.get(6)?,
             created_at: row.get::<_, i64>(7)? as u64,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// Get TOTP secret for a service+account
 pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
     let conn = open()?;
-    let mut stmt = conn.prepare("SELECT id, service, account, secret, algorithm, digits, period, created_at FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
-    let secret: String = stmt
-        .query_row(params![service, account], |row| row.get(3))
+    let mut stmt =
+        conn.prepare("SELECT secret FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
+    let secret: Option<String> = stmt
+        .query_row(params![service, account], |row| row.get(0))
         .optional()?
-        .map(|s| {
+        .map(|s: String| {
             if is_encrypted(&s) {
                 decrypt(&s).unwrap_or(s)
             } else {
                 s
             }
-        })
-        .transpose()?;
+        });
 
     let mut stmt = conn.prepare("SELECT id, service, account, algorithm, digits, period, created_at FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
     stmt.query_row(params![service, account], |row| {
@@ -832,7 +837,7 @@ pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
             id: row.get(0)?,
             service: row.get(1)?,
             account: row.get(2)?,
-            secret: secret.clone(),
+            secret: secret.unwrap_or_default(),
             algorithm: row.get(3)?,
             digits: row.get(4)?,
             period: row.get(5)?,
@@ -865,9 +870,20 @@ pub struct KvEntry {
 pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
+
+    let value_to_store = if get_encryption_key().is_some() {
+        if let Ok(enc) = encrypt(value) {
+            enc
+        } else {
+            value.to_string()
+        }
+    } else {
+        value.to_string()
+    };
+
     conn.execute(
         "INSERT INTO kv_store (agent_id, key, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(agent_id, key) DO UPDATE SET value = ?3, updated_at = ?5",
-        params![agent_id, key, value, now, now],
+        params![agent_id, key, value_to_store, now, now],
     )?;
     Ok(())
 }
@@ -875,17 +891,31 @@ pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
 /// Get a KV value
 pub fn kv_get(agent_id: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
     let conn = open()?;
-    let mut stmt = conn.prepare("SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 AND key = ?2")?;
     let placeholder = agent_id.map(|s| s.to_string());
+    let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE agent_id IS ?1 AND key = ?2")?;
+    let value: Option<String> = stmt
+        .query_row(params![placeholder.as_deref(), key], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?
+        .map(|v: String| {
+            if is_encrypted(&v) {
+                decrypt(&v).unwrap_or(v)
+            } else {
+                v
+            }
+        });
+
+    let mut stmt = conn.prepare("SELECT id, agent_id, key, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 AND key = ?2")?;
     stmt.query_row(params![placeholder.as_deref(), key], |row| {
         let agent_id_out: Option<String> = row.get(1)?;
         Ok(KvEntry {
             id: row.get(0)?,
             agent_id: agent_id_out,
             key: row.get(2)?,
-            value: row.get(3)?,
-            created_at: row.get::<_, i64>(4)? as u64,
-            updated_at: row.get::<_, i64>(5)? as u64,
+            value: value.unwrap_or_default(),
+            created_at: row.get::<_, i64>(3)? as u64,
+            updated_at: row.get::<_, i64>(4)? as u64,
         })
     })
     .optional()
@@ -899,11 +929,17 @@ pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
     let mut stmt = conn.prepare("SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 ORDER BY key")?;
     let rows = stmt.query_map(params![placeholder.as_deref()], |row| {
         let agent_id_out: Option<String> = row.get(1)?;
+        let value: String = row.get(3)?;
+        let decrypted = if is_encrypted(&value) {
+            decrypt(&value).unwrap_or(value)
+        } else {
+            value
+        };
         Ok(KvEntry {
             id: row.get(0)?,
             agent_id: agent_id_out,
             key: row.get(2)?,
-            value: row.get(3)?,
+            value: decrypted,
             created_at: row.get::<_, i64>(4)? as u64,
             updated_at: row.get::<_, i64>(5)? as u64,
         })
@@ -923,27 +959,28 @@ pub fn kv_delete(agent_id: Option<&str>, key: &str) -> Result<()> {
 }
 
 /// Get encryption key from server (if logged in) and store in memory
-pub fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
-    use base64::Engine;
-
+pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("Not logged in"))?;
     let base =
         std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| "https://sidekar.dev".to_string());
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
     let resp = client
         .get(format!("{}/api/v1/encryption-key", base))
         .header("Authorization", format!("Bearer {}", token))
         .send()
+        .await
         .context("Failed to fetch encryption key")?;
     if !resp.status().is_success() {
         bail!("Failed to fetch encryption key: HTTP {}", resp.status());
     }
-    let key: String = resp.text().context("Failed to read encryption key")?;
+    let key: String = resp.text().await.context("Failed to read encryption key")?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(key.trim())
         .context("Invalid encryption key format")?;
+
+    set_encryption_key(decoded.clone());
     Ok(Some(decoded))
 }
 

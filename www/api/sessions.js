@@ -10,13 +10,19 @@ export default async function handler(req, res) {
   if (!user) return res.status(401).json({ error: "not authenticated" });
 
   try {
+    // JWT uses `sub` (see auth/github.js).
+    const userId = user.sub || user.id;
+    if (!userId) {
+      return res.status(401).json({ error: "invalid session token" });
+    }
+
     const db = await getDb();
     const cutoff = new Date(Date.now() - SESSION_TTL_MS);
 
     const docs = await db
       .collection("sessions")
       .find({
-        user_id: user.id,
+        user_id: userId,
         last_heartbeat: { $gt: cutoff },
       })
       .sort({ connected_at: -1 })
@@ -33,7 +39,8 @@ export default async function handler(req, res) {
     }));
 
     res.json({ sessions });
-  } catch {
-    res.json({ sessions: [] });
+  } catch (err) {
+    console.error("sessions list failed:", err);
+    return res.status(500).json({ error: "failed to load sessions" });
   }
 }
