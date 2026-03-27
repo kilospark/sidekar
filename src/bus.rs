@@ -296,7 +296,7 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
         }
     }
 
-    // Try to reuse stored nickname for this project
+    // Try to reuse stored nickname for this project (only if not already taken)
     if let Some(proj) = project {
         let stored = broker::kv_get(Some(proj), "_agent_nick")
             .ok()
@@ -304,8 +304,10 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
             .map(|e| e.value);
         if let Some(nick) = stored {
             if !used.contains(&nick) {
-                return nick;
+                return nick; // reused successfully
             }
+            // stored nickname is taken - fall through to pick new one
+            // DON'T update KV - keep the original for when that agent restarts
         }
     }
 
@@ -320,9 +322,17 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
         format!("agent-{:04x}", r)
     });
 
-    // Store the chosen nickname for this project
+    // Only store if this is the standalone case (no project) or project provided but
+    // we picked from available (stored was valid). Don't store if we picked different from stored.
+    // Actually, simplest: only store on first use (when no stored value existed)
     if let Some(proj) = project {
-        let _ = broker::kv_set(Some(proj), "_agent_nick", &chosen);
+        let has_stored = broker::kv_get(Some(proj), "_agent_nick")
+            .ok()
+            .flatten()
+            .is_some();
+        if !has_stored {
+            let _ = broker::kv_set(Some(proj), "_agent_nick", &chosen);
+        }
     }
 
     chosen
