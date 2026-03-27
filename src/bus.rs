@@ -134,39 +134,11 @@ fn detect_agent_type() -> String {
 }
 
 /// Detect the project name from the pane's working directory.
-/// Tries git repo root name first, falls back to the cwd basename.
+/// Uses the full path for consistency with KV store.
 fn detect_project_name() -> String {
-    if let Ok(output) = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-    {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Some(name) = path.rsplit('/').next() {
-                if !name.is_empty() {
-                    let clean: String = name
-                        .to_lowercase()
-                        .chars()
-                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                        .collect();
-                    return clean.trim_matches('-').to_string();
-                }
-            }
-        }
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(name) = cwd.file_name() {
-            let name = name.to_string_lossy().to_lowercase();
-            let clean: String = name
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            return clean.trim_matches('-').to_string();
-        }
-    }
-
-    "unknown".into()
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 /// 100 short, memorable nicknames for agents.
@@ -307,8 +279,12 @@ const NICKNAMES: &[&str] = &[
     "zorilla",
 ];
 
-/// Pick a nickname using the broker for used-name checks.
+/// Pick a nickname for a project, trying to reuse previous if available.
 pub fn pick_nickname_standalone() -> String {
+    pick_nickname_for_project(None)
+}
+
+pub fn pick_nickname_for_project(project: Option<&str>) -> String {
     use rand::seq::SliceRandom;
 
     let mut used: HashSet<String> = HashSet::new();
@@ -319,16 +295,37 @@ pub fn pick_nickname_standalone() -> String {
             }
         }
     }
+
+    // Try to reuse stored nickname for this project
+    if let Some(proj) = project {
+        let stored = broker::kv_get(Some(proj), "_agent_nick")
+            .ok()
+            .flatten()
+            .map(|e| e.value);
+        if let Some(nick) = stored {
+            if !used.contains(&nick) {
+                return nick;
+            }
+        }
+    }
+
     let mut available: Vec<&str> = NICKNAMES
         .iter()
         .filter(|n| !used.contains(**n))
         .copied()
         .collect();
     available.shuffle(&mut rand::rng());
-    available.first().map(|s| s.to_string()).unwrap_or_else(|| {
+    let chosen = available.first().map(|s| s.to_string()).unwrap_or_else(|| {
         let r: u16 = rand::random();
         format!("agent-{:04x}", r)
-    })
+    });
+
+    // Store the chosen nickname for this project
+    if let Some(proj) = project {
+        let _ = broker::kv_set(Some(proj), "_agent_nick", &chosen);
+    }
+
+    chosen
 }
 
 #[derive(Debug, Clone)]
@@ -338,10 +335,7 @@ struct DeliveryTarget {
     output_label: String,
 }
 
-#[derive(Debug, Clone)]
-
-
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SidekarBusState {
     /// Agent identity (None if not registered).
     pub identity: Option<AgentId>,
@@ -420,7 +414,7 @@ impl SidekarBusState {
                     self.ensure_nudge_timer(&request.msg_id);
                 }
             }
-            Err(_) => {},
+            Err(_) => {}
         }
     }
 
@@ -456,12 +450,12 @@ impl SidekarBusState {
         // Not in a PTY wrapper — register as a standalone session
         let channel = crate::pty::detect_channel();
         let pane_unique = format!("cli-{}", std::process::id());
+        let project = detect_project_name();
 
         let name = if let Some(custom) = custom_name {
             custom.to_string()
         } else {
             let agent_type = detect_agent_type();
-            let project = detect_project_name();
             let existing_names: HashSet<String> = broker::list_agents(None)
                 .unwrap_or_default()
                 .into_iter()
@@ -477,7 +471,7 @@ impl SidekarBusState {
             }
         };
 
-        let nick = pick_nickname_standalone();
+        let nick = pick_nickname_for_project(Some(&project));
 
         let identity = AgentId {
             name,
@@ -495,8 +489,7 @@ impl SidekarBusState {
         self.pane_unique_id = Some(pane_unique);
         self.active_nudges.clear();
 
-        if let (Some(name), Some(nick), Some(_channel)) =
-            (self.name(), self.nick(), self.channel())
+        if let (Some(name), Some(nick), Some(_channel)) = (self.name(), self.nick(), self.channel())
         {
             let agent_type = detect_agent_type();
             set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
@@ -727,10 +720,7 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
         return Some(DeliveryTarget {
             transport_name: BROKER_TRANSPORT,
             transport_target: agent.id.name.clone(),
-            output_label: format!(
-                "via broker ({})",
-                agent.id.pane.as_deref().unwrap_or("?")
-            ),
+            output_label: format!("via broker ({})", agent.id.pane.as_deref().unwrap_or("?")),
         });
     }
 
@@ -824,11 +814,15 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
 
     for a in &agents {
         let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick = a.id.nick.as_deref()
-            .map(|n| format!(" \"{n}\""))
-            .unwrap_or_default();
+        let nick =
+            a.id.nick
+                .as_deref()
+                .map(|n| format!(" \"{n}\""))
+                .unwrap_or_default();
         let pane = a.id.pane.as_deref().unwrap_or("?");
-        let cwd = a.cwd.as_deref()
+        let cwd = a
+            .cwd
+            .as_deref()
             .map(|c| format!(", cwd: {c}"))
             .unwrap_or_default();
         lines.push(format!(

@@ -394,15 +394,16 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str, &nick).await {
             Ok(t) => Some(t),
             Err(e) => {
-                wlog!(
-                    "relay tunnel not available (session will not show online): {e:#} — check `sidekar login`, SIDEKAR_RELAY_URL, and that Fly relay can reach MongoDB"
-                );
                 crate::broker::try_log_error_event("relay_tunnel", &format!("{e:#}"), None);
                 None
             }
         }
     } else {
-        wlog!("relay tunnel skipped: no device token (~/.config/sidekar/auth.json). Run: sidekar login");
+        crate::broker::try_log_error_event(
+            "relay_tunnel",
+            "skipped: no device token (~/.config/sidekar/auth.json); run: sidekar login",
+            None,
+        );
         None
     };
 
@@ -787,14 +788,22 @@ async fn event_loop(
     let mut sigwinch = match signal(SignalKind::window_change()) {
         Ok(s) => Some(s),
         Err(e) => {
-            wlog!("SIGWINCH handler unavailable: {e}");
+            crate::broker::try_log_error_event(
+                "signal",
+                &format!("SIGWINCH handler unavailable: {e}"),
+                None,
+            );
             None
         }
     };
     let mut sigterm_sig = match signal(SignalKind::terminate()) {
         Ok(s) => Some(s),
         Err(e) => {
-            wlog!("SIGTERM handler unavailable: {e}");
+            crate::broker::try_log_error_event(
+                "signal",
+                &format!("SIGTERM handler unavailable: {e}"),
+                None,
+            );
             None
         }
     };
