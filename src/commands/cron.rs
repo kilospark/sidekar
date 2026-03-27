@@ -187,6 +187,7 @@ pub(crate) struct CronContext {
     pub current_session_id: Option<String>,
     pub current_profile: String,
     pub headless: bool,
+    pub agent_name: Option<String>,
 }
 
 impl CronContext {
@@ -557,10 +558,20 @@ async fn execute_cron_job(
     action: &CronAction,
     target: &str,
 ) -> Result<()> {
-    // executing job — no terminal output
-
     // Use the latest shared context (updated after browser auto-launch), fall back to initial
     let cron_ctx = SHARED_CRON_CTX.lock().await.clone().unwrap_or_else(|| fallback_ctx.clone());
+
+    // Set agent name so dispatched commands recover the PTY wrapper's bus identity
+    // instead of registering a new throwaway agent.
+    if let Some(ref name) = cron_ctx.agent_name {
+        unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", name) };
+        // Also set channel so broker lookup succeeds
+        if let Ok(Some(agent)) = crate::broker::find_agent(name, None) {
+            if let Some(ref session) = agent.id.session {
+                unsafe { std::env::set_var("SIDEKAR_CHANNEL", session) };
+            }
+        }
+    }
 
     // Mark tool action so monitor doesn't double-notify
     super::monitor::mark_tool_action();
@@ -572,6 +583,7 @@ async fn execute_cron_job(
             // Build CLI args from the action args
             let cli_args = map_cron_action_args(tool, args);
             let mut ctx = cron_ctx.to_app_context()?;
+            ctx.isolated = true;
             let result = tokio::time::timeout(
                 timeout,
                 crate::commands::dispatch(&mut ctx, tool, &cli_args),
@@ -587,6 +599,7 @@ async fn execute_cron_job(
             let batch_input = json!({ "actions": batch });
             let batch_json = serde_json::to_string(&batch_input)?;
             let mut ctx = cron_ctx.to_app_context()?;
+            ctx.isolated = true;
             let result = tokio::time::timeout(
                 timeout,
                 crate::commands::dispatch(&mut ctx, "batch", &[batch_json]),

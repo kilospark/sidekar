@@ -265,6 +265,16 @@ impl Registry {
         }
     }
 
+    /// Snapshot of the current replay ring buffer (for on-demand history in the web terminal).
+    pub async fn replay_snapshot(&self, session_id: &str) -> Vec<u8> {
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
+            session.replay_buffer.read().await.snapshot()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Broadcast data from tunnel to all viewers and append to replay buffer.
     pub async fn broadcast_to_viewers(&self, session_id: &str, data: &[u8]) {
         let live = self.live.read().await;

@@ -136,14 +136,28 @@ pub async fn run_server() -> Result<()> {
         }
     });
 
-    // Handle SIGTERM/SIGINT for clean shutdown
+    // Handle SIGTERM/SIGINT for clean shutdown (registration can fail under FD pressure — do not panic).
     let shutdown_pid_path = pid_path();
     tokio::spawn(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
-        tokio::select! {
-            _ = sigterm.recv() => {}
-            _ = sigint.recv() => {}
+        let st = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+        let si = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+        match (st, si) {
+            (Ok(mut sigterm), Ok(mut sigint)) => {
+                tokio::select! {
+                    _ = sigterm.recv() => {}
+                    _ = sigint.recv() => {}
+                }
+            }
+            (Ok(mut sigterm), Err(_)) => {
+                let _ = sigterm.recv().await;
+            }
+            (Err(_), Ok(mut sigint)) => {
+                let _ = sigint.recv().await;
+            }
+            (Err(e1), Err(e2)) => {
+                eprintln!("sidekar: signal handlers unavailable ({e1}; {e2}); use kill to stop ext-server");
+                std::future::pending::<()>().await
+            }
         }
         let _ = std::fs::remove_file(&shutdown_pid_path);
         std::process::exit(0);

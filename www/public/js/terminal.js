@@ -35,6 +35,8 @@
 
   var fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
+  var serializeAddon = new SerializeAddon();
+  term.loadAddon(serializeAddon);
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
 
@@ -44,6 +46,10 @@
 
   var layoutAdaptiveCheckbox = document.getElementById("layout-adaptive");
   var terminalWrap = document.getElementById("terminal-wrap");
+  /** Debounce viewport-driven fits; rapid resize + fit() caused flicker / duplicated lines. */
+  var fitDebounceTimer = null;
+  /** Skip fit when container dimensions are unchanged (resize storms). */
+  var lastAdaptiveFitKey = "";
 
   function loadLayoutPreference() {
     var stored = localStorage.getItem(LAYOUT_KEY);
@@ -58,7 +64,23 @@
     var container = document.getElementById("terminal");
     container.style.height = "calc(100vh - 32px)";
     container.style.width = "100%";
+    var w = container.clientWidth;
+    var h = container.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    var key = w + "x" + h;
+    if (key === lastAdaptiveFitKey) return;
+    lastAdaptiveFitKey = key;
     fitAddon.fit();
+  }
+
+  function scheduleAdaptiveFit() {
+    if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
+    fitDebounceTimer = setTimeout(function () {
+      fitDebounceTimer = null;
+      if (!layoutAdaptiveCheckbox.checked) return;
+      lastAdaptiveFitKey = "";
+      fitTerminalAdaptive();
+    }, 120);
   }
 
   function applyFixedLayout() {
@@ -90,9 +112,16 @@
       terminalWrap.className = "layout-adaptive";
       container.style.width = "";
       container.style.height = "";
-      fitTerminalAdaptive();
+      lastAdaptiveFitKey = "";
+      // Let CSS settle before measuring; avoids fit/resize feedback with the checkbox toggle.
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          fitTerminalAdaptive();
+        });
+      });
     } else {
       document.body.classList.add("terminal-layout-fixed");
+      lastAdaptiveFitKey = "";
       applyFixedLayout();
     }
   }
@@ -111,6 +140,54 @@
   function setStatus(state, text) {
     statusDot.className = state;
     statusText.textContent = text;
+  }
+
+  // --- Relay replay buffer: defer initial snapshot; merge on scroll-up or on-demand ---
+  var sessionProtocolReady = false;
+  var legacyRelay = false;
+  var expectReplayBytes = 0;
+  var expectHistoryBytes = 0;
+  var pendingReplay = null;
+  var initialReplayMerged = false;
+  var historyFetchInFlight = false;
+  var viewportScrollAttached = false;
+
+  function injectReplayBeforeCurrentBuffer(replayBytes) {
+    if (!replayBytes || replayBytes.length === 0) return;
+    // Serialize entire buffer (active + scrollback); omit options = full buffer.
+    var live = serializeAddon.serialize();
+    term.reset();
+    term.write(replayBytes);
+    term.write(live);
+  }
+
+  function tryFetchHistoryOnScroll() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (historyFetchInFlight) return;
+
+    if (pendingReplay && pendingReplay.length > 0 && !initialReplayMerged) {
+      injectReplayBeforeCurrentBuffer(pendingReplay);
+      pendingReplay = null;
+      initialReplayMerged = true;
+      return;
+    }
+
+    historyFetchInFlight = true;
+    ws.send(JSON.stringify({ type: "history", v: 1 }));
+  }
+
+  function attachViewportScrollListener() {
+    if (viewportScrollAttached) return;
+    var vp = term.element && term.element.querySelector(".xterm-viewport");
+    if (!vp) return;
+    viewportScrollAttached = true;
+    var scrollTimer = null;
+    vp.addEventListener("scroll", function () {
+      if (scrollTimer) clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(function () {
+        if (vp.scrollTop < 48) tryFetchHistoryOnScroll();
+      }, 100);
+    });
   }
 
   function connect() {
@@ -144,14 +221,64 @@
 
         ws.onopen = function () {
           setStatus("connected", "connected");
+          sessionProtocolReady = false;
+          legacyRelay = false;
+          expectReplayBytes = 0;
+          expectHistoryBytes = 0;
+          pendingReplay = null;
+          initialReplayMerged = false;
+          historyFetchInFlight = false;
+          attachViewportScrollListener();
         };
 
         ws.onmessage = function (event) {
-          if (typeof event.data === "string") return;
-          // Only follow new output if the user was already at the bottom; otherwise
-          // scrolling up to read history would be undone on every PTY chunk.
+          if (typeof event.data === "string") {
+            try {
+              var j = JSON.parse(event.data);
+              if (j.type === "session" && j.v === 1) {
+                sessionProtocolReady = true;
+                expectReplayBytes = j.replay_len | 0;
+                return;
+              }
+              if (j.type === "history" && j.v === 1) {
+                if (j.empty) {
+                  historyFetchInFlight = false;
+                  return;
+                }
+                expectHistoryBytes = j.bytes | 0;
+                return;
+              }
+            } catch (e) {}
+            return;
+          }
+
+          var u8 = new Uint8Array(event.data);
+
+          if (!sessionProtocolReady && !legacyRelay) {
+            legacyRelay = true;
+            sessionProtocolReady = true;
+            var stickLegacy = isViewportNearBottom();
+            term.write(u8, function () {
+              if (stickLegacy) term.scrollToBottom();
+            });
+            return;
+          }
+
+          if (expectReplayBytes > 0) {
+            pendingReplay = u8;
+            expectReplayBytes = 0;
+            return;
+          }
+
+          if (expectHistoryBytes > 0) {
+            expectHistoryBytes = 0;
+            historyFetchInFlight = false;
+            injectReplayBeforeCurrentBuffer(u8);
+            return;
+          }
+
           var stickToBottom = isViewportNearBottom();
-          term.write(new Uint8Array(event.data), function () {
+          term.write(u8, function () {
             if (stickToBottom) term.scrollToBottom();
           });
         };
@@ -186,11 +313,17 @@
 
   window.addEventListener("resize", function () {
     if (layoutAdaptiveCheckbox.checked) {
-      fitTerminalAdaptive();
+      scheduleAdaptiveFit();
     } else {
       applyFixedLayout();
     }
   });
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", function () {
+      if (layoutAdaptiveCheckbox.checked) scheduleAdaptiveFit();
+    });
+  }
 
   connect();
 })();

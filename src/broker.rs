@@ -6,7 +6,13 @@
 
 use crate::message::{AgentId, Envelope};
 use crate::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use base64::Engine;
+use rand::Rng;
+use rusqlite::{params, Connection, OptionalExtension};
 
 const DB_FILE: &str = "broker.sqlite3";
 
@@ -140,6 +146,55 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON cron_jobs(active);
         ",
     )?;
+
+    // TOTP secrets table
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS totp_secrets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service TEXT NOT NULL,
+            account TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            algorithm TEXT NOT NULL DEFAULT 'SHA1',
+            digits INTEGER NOT NULL DEFAULT 6,
+            period INTEGER NOT NULL DEFAULT 30,
+            created_at INTEGER NOT NULL,
+            UNIQUE(service, account)
+        );
+        CREATE INDEX IF NOT EXISTS idx_totp_service
+            ON totp_secrets(service);
+        ",
+    )?;
+
+    // KV store table (per-agent + global)
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS kv_store (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(agent_id, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_kv_agent
+            ON kv_store(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_kv_global
+            ON kv_store(agent_id, key) WHERE agent_id IS NULL;
+        ",
+    )?;
+
+    // Encryption key marker
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS encryption_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        ",
+    )?;
+
     Ok(())
 }
 
@@ -659,16 +714,16 @@ pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
             "SELECT id, sender, recipient, body, created_at FROM bus_queue WHERE recipient = ?1 ORDER BY id"
         )?;
         stmt.query_map(params![recipient], |row| {
-                Ok(QueuedMessage {
-                    id: row.get(0)?,
-                    sender: row.get(1)?,
-                    recipient: row.get(2)?,
-                    body: row.get(3)?,
-                    created_at: row.get::<_, i64>(4)? as u64,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect()
+            Ok(QueuedMessage {
+                id: row.get(0)?,
+                sender: row.get(1)?,
+                recipient: row.get(2)?,
+                body: row.get(3)?,
+                created_at: row.get::<_, i64>(4)? as u64,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect()
     }; // stmt dropped here, releasing borrow on tx
 
     if !messages.is_empty() {
@@ -691,6 +746,296 @@ pub fn cleanup_old_messages(max_age_secs: u64) -> Result<usize> {
         params![cutoff],
     )?;
     Ok(deleted)
+}
+
+/// TOTP secret record
+#[derive(Debug, Clone)]
+pub struct TotpSecret {
+    pub id: i64,
+    pub service: String,
+    pub account: String,
+    pub secret: String,
+    pub algorithm: String,
+    pub digits: i32,
+    pub period: i32,
+    pub created_at: u64,
+}
+
+/// Add a TOTP secret
+pub fn totp_add(
+    service: &str,
+    account: &str,
+    secret: &str,
+    algorithm: &str,
+    digits: i32,
+    period: i32,
+) -> Result<i64> {
+    let conn = open()?;
+    let now = crate::message::epoch_secs() as i64;
+
+    let secret_to_store = if let Some(key) = get_encryption_key() {
+        if let Ok(enc) = encrypt(secret) {
+            enc
+        } else {
+            secret.to_string()
+        }
+    } else {
+        secret.to_string()
+    };
+
+    conn.execute(
+        "INSERT OR REPLACE INTO totp_secrets (service, account, secret, algorithm, digits, period, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![service, account, secret_to_store, algorithm, digits, period, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// List all TOTP secrets
+pub fn totp_list() -> Result<Vec<TotpSecret>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare("SELECT id, service, account, secret, algorithm, digits, period, created_at FROM totp_secrets ORDER BY service, account")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(TotpSecret {
+            id: row.get(0)?,
+            service: row.get(1)?,
+            account: row.get(2)?,
+            secret: row.get(3)?,
+            algorithm: row.get(4)?,
+            digits: row.get(5)?,
+            period: row.get(6)?,
+            created_at: row.get::<_, i64>(7)? as u64,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Get TOTP secret for a service+account
+pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare("SELECT id, service, account, secret, algorithm, digits, period, created_at FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
+    let secret: String = stmt
+        .query_row(params![service, account], |row| row.get(3))
+        .optional()?
+        .map(|s| {
+            if is_encrypted(&s) {
+                decrypt(&s).unwrap_or(s)
+            } else {
+                s
+            }
+        })
+        .transpose()?;
+
+    let mut stmt = conn.prepare("SELECT id, service, account, algorithm, digits, period, created_at FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
+    stmt.query_row(params![service, account], |row| {
+        Ok(TotpSecret {
+            id: row.get(0)?,
+            service: row.get(1)?,
+            account: row.get(2)?,
+            secret: secret.clone(),
+            algorithm: row.get(3)?,
+            digits: row.get(4)?,
+            period: row.get(5)?,
+            created_at: row.get::<_, i64>(6)? as u64,
+        })
+    })
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Delete a TOTP secret
+pub fn totp_delete(id: i64) -> Result<()> {
+    let conn = open()?;
+    conn.execute("DELETE FROM totp_secrets WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// KV store record
+#[derive(Debug, Clone)]
+pub struct KvEntry {
+    pub id: i64,
+    pub agent_id: Option<String>,
+    pub key: String,
+    pub value: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Set a KV value (per-agent or global if agent_id is None)
+pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
+    let conn = open()?;
+    let now = crate::message::epoch_secs() as i64;
+    conn.execute(
+        "INSERT INTO kv_store (agent_id, key, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(agent_id, key) DO UPDATE SET value = ?3, updated_at = ?5",
+        params![agent_id, key, value, now, now],
+    )?;
+    Ok(())
+}
+
+/// Get a KV value
+pub fn kv_get(agent_id: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare("SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 AND key = ?2")?;
+    let placeholder = agent_id.map(|s| s.to_string());
+    stmt.query_row(params![placeholder.as_deref(), key], |row| {
+        let agent_id_out: Option<String> = row.get(1)?;
+        Ok(KvEntry {
+            id: row.get(0)?,
+            agent_id: agent_id_out,
+            key: row.get(2)?,
+            value: row.get(3)?,
+            created_at: row.get::<_, i64>(4)? as u64,
+            updated_at: row.get::<_, i64>(5)? as u64,
+        })
+    })
+    .optional()
+    .map_err(Into::into)
+}
+
+/// List KV entries for an agent (or global if None)
+pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
+    let conn = open()?;
+    let placeholder = agent_id.map(|s| s.to_string());
+    let mut stmt = conn.prepare("SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 ORDER BY key")?;
+    let rows = stmt.query_map(params![placeholder.as_deref()], |row| {
+        let agent_id_out: Option<String> = row.get(1)?;
+        Ok(KvEntry {
+            id: row.get(0)?,
+            agent_id: agent_id_out,
+            key: row.get(2)?,
+            value: row.get(3)?,
+            created_at: row.get::<_, i64>(4)? as u64,
+            updated_at: row.get::<_, i64>(5)? as u64,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Delete a KV entry
+pub fn kv_delete(agent_id: Option<&str>, key: &str) -> Result<()> {
+    let conn = open()?;
+    let placeholder = agent_id.map(|s| s.to_string());
+    conn.execute(
+        "DELETE FROM kv_store WHERE agent_id IS ?1 AND key = ?2",
+        params![placeholder.as_deref(), key],
+    )?;
+    Ok(())
+}
+
+/// Get encryption key from server (if logged in) and store in memory
+pub fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
+    use base64::Engine;
+
+    let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("Not logged in"))?;
+    let base =
+        std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| "https://sidekar.dev".to_string());
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .get(format!("{}/api/v1/encryption-key", base))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .context("Failed to fetch encryption key")?;
+    if !resp.status().is_success() {
+        bail!("Failed to fetch encryption key: HTTP {}", resp.status());
+    }
+    let key: String = resp.text().context("Failed to read encryption key")?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(key.trim())
+        .context("Invalid encryption key format")?;
+    Ok(Some(decoded))
+}
+
+/// Check if encryption is enabled (DB has encrypted data)
+pub fn is_encryption_enabled() -> Result<bool> {
+    let conn = open()?;
+    let count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM encryption_meta WHERE key = 'enabled'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Mark encryption as enabled
+pub fn set_encryption_enabled() -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "INSERT OR IGNORE INTO encryption_meta (key, value) VALUES ('enabled', '1')",
+        [],
+    )?;
+    Ok(())
+}
+
+use std::sync::Mutex;
+
+static ENCRYPTION_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+pub fn set_encryption_key(key: Vec<u8>) {
+    let mut guard = ENCRYPTION_KEY.lock().unwrap();
+    *guard = Some(key);
+}
+
+pub fn clear_encryption_key() {
+    let mut guard = ENCRYPTION_KEY.lock().unwrap();
+    *guard = None;
+}
+
+pub fn get_encryption_key() -> Option<Vec<u8>> {
+    ENCRYPTION_KEY.lock().unwrap().clone()
+}
+
+pub fn is_encrypted(value: &str) -> bool {
+    value.starts_with("$encrypted$")
+}
+
+pub fn encrypt(plaintext: &str) -> Result<String> {
+    let key = ENCRYPTION_KEY.lock().unwrap();
+    let key = key.as_ref().context("No encryption key set")?;
+    let cipher = Aes256Gcm::new_from_slice(key)?;
+
+    let nonce_bytes: [u8; 12] = rand::rng().random();
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+
+    let mut combined = nonce_bytes.to_vec();
+    combined.extend(ciphertext);
+
+    Ok(format!(
+        "$encrypted${}",
+        base64::engine::general_purpose::STANDARD.encode(combined)
+    ))
+}
+
+pub fn decrypt(encrypted: &str) -> Result<String> {
+    let key = ENCRYPTION_KEY.lock().unwrap();
+    let key = key.as_ref().context("No encryption key set")?;
+    let cipher = Aes256Gcm::new_from_slice(key)?;
+
+    let data = encrypted
+        .strip_prefix("$encrypted$")
+        .context("Invalid encrypted format")?;
+
+    let combined = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .context("Invalid base64 in encrypted data")?;
+
+    if combined.len() < 12 {
+        anyhow::bail!("Encrypted data too short");
+    }
+
+    let (nonce_bytes, ciphertext) = combined.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
+
+    String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e))
 }
 
 #[cfg(test)]

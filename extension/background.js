@@ -527,6 +527,10 @@ function sleep(ms) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "colorScheme") {
+    setIconForScheme(msg.dark);
+    return false;
+  }
   if (msg.type === "status") {
     (async () => {
       const { extPort } = await getBridgeConfig();
@@ -567,6 +571,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ---------------------------------------------------------------------------
+// Theme-adaptive icon (Chrome has no manifest-level theme_icons)
+// ---------------------------------------------------------------------------
+
+function setIconForScheme(dark) {
+  const variant = dark ? "dark" : "light";
+  chrome.action.setIcon({
+    path: {
+      16: `icons/icon-${variant}-16.png`,
+      48: `icons/icon-${variant}-48.png`,
+      128: `icons/icon-${variant}-128.png`,
+    },
+  });
+}
+
+async function ensureOffscreen() {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+  });
+  if (contexts.length === 0) {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["MATCH_MEDIA"],
+      justification: "Detect light/dark color scheme for toolbar icon",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 
@@ -581,10 +613,15 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 connect();
+ensureOffscreen().catch(() => {});
 console.log("[sidekar] service worker started");
 
-chrome.runtime.onStartup.addListener(connect);
+chrome.runtime.onStartup.addListener(() => {
+  connect();
+  ensureOffscreen().catch(() => {});
+});
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[sidekar] extension installed/updated");
   connect();
+  ensureOffscreen().catch(() => {});
 });

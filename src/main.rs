@@ -212,6 +212,8 @@ async fn run() -> Result<()> {
         | "desktop-launch" | "desktop_launch"
         | "desktop-activate" | "desktop_activate"
         | "desktop-quit" | "desktop_quit"
+        | "totp"
+        | "kv"
     ) {
         if ctx.auto_discover_last_session().is_err() {
             // No session — auto-launch Chrome if inside a PTY wrapper or
@@ -240,6 +242,8 @@ async fn run() -> Result<()> {
                     | "desktop_activate"
                     | "desktop-quit"
                     | "desktop_quit"
+                    | "totp"
+                    | "kv"
             );
             if in_pty && needs_browser {
                 eprintln!("sidekar: no active session, auto-launching Chrome...");
