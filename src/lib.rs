@@ -189,8 +189,8 @@ pub fn is_known_command(cmd: &str) -> bool {
             | "cron-list"
             | "cron_delete"
             | "cron-delete"
-            | "ext"
-            | "ext-server"
+            | "totp"
+            | "kv"
     )
 }
 

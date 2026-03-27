@@ -410,6 +410,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
             current_session_id: None,
             current_profile: "default".to_string(),
             headless: false,
+            agent_name: Some(identity.name.clone()),
         };
         crate::commands::cron::start_cron_loop(cron_ctx).await;
     }
@@ -499,6 +500,7 @@ async fn watch_session_file(agent_name: String) {
                         .unwrap_or("default")
                         .to_string(),
                     headless: false,
+                    agent_name: Some(agent_name.clone()),
                 };
                 crate::commands::cron::update_cron_context(cron_ctx).await;
                 // silent — don't print to the pty terminal
@@ -774,8 +776,21 @@ async fn event_loop(
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
 
-    let mut sigwinch = signal(SignalKind::window_change()).unwrap();
-    let mut sigterm = signal(SignalKind::terminate()).unwrap();
+    // Signal registration can fail (FD limits, sandbox). Do not panic — abort would kill the PTY wrapper.
+    let mut sigwinch = match signal(SignalKind::window_change()) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            wlog!("SIGWINCH handler unavailable: {e}");
+            None
+        }
+    };
+    let mut sigterm_sig = match signal(SignalKind::terminate()) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            wlog!("SIGTERM handler unavailable: {e}");
+            None
+        }
+    };
 
     let mut buf_in = [0u8; 4096];
     let mut buf_out = [0u8; 8192];
@@ -796,12 +811,22 @@ async fn event_loop(
             biased;
 
             // SIGWINCH: resize child PTY
-            _ = sigwinch.recv() => {
+            _ = async {
+                match &mut sigwinch {
+                    Some(s) => s.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 let _ = copy_terminal_size(master_fd);
             }
 
             // SIGTERM: forward to child, exit
-            _ = sigterm.recv() => {
+            _ = async {
+                match &mut sigterm_sig {
+                    Some(s) => s.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 unsafe { libc::kill(child_pid, libc::SIGTERM) };
                 break;
             }

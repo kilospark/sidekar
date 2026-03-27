@@ -8,6 +8,8 @@ mod desktop;
 mod interaction;
 pub mod monitor;
 mod session;
+pub mod totp;
+pub mod kv;
 
 use batch::*;
 use core::*;
@@ -16,6 +18,8 @@ use desktop::*;
 use interaction::*;
 use monitor::*;
 use session::*;
+use totp::*;
+use kv::*;
 
 pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> Result<()> {
     match command {
@@ -541,6 +545,16 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             cron::cmd_cron_delete(ctx, id).await
         }
+        // TOTP commands
+        "totp" => {
+            cmd_totp(ctx, args).await?;
+            Ok(())
+        }
+        // KV store commands
+        "kv" => {
+            cmd_kv(ctx, args).await?;
+            Ok(())
+        }
         _ => bail!("Unknown command: {command}"),
     }
 }
@@ -557,6 +571,10 @@ fn recovered_bus_state() -> crate::bus::SidekarBusState {
             state.borrowed = true; // Don't unregister on drop — PTY wrapper owns this
             return state;
         }
+        // Agent name is set but not found in broker — don't register a new one,
+        // just return an unregistered state to avoid ghost agent spam.
+        state.borrowed = true;
+        return state;
     }
     // Fallback: try inheriting from parent PTY registration
     state.do_register(None);
