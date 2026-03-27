@@ -42,14 +42,35 @@ pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>) {
                 Err(_) => {} // SQLite busy or locked, retry next poll
             }
 
-            // Periodic cleanup of old undelivered messages
+            // Periodic cleanup
             poll_count += 1;
             if poll_count >= CLEANUP_INTERVAL_POLLS {
                 poll_count = 0;
                 let _ = broker::cleanup_old_messages(MAX_MESSAGE_AGE_SECS);
+                sweep_dead_agents();
             }
         }
     });
+}
+
+/// Sweep dead agents from the broker. Checks each agent's PTY PID and
+/// unregisters any whose process is no longer alive.
+fn sweep_dead_agents() {
+    let agents = match broker::list_agents(None) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    for agent in agents {
+        if let Some(ref pane) = agent.id.pane {
+            if let Some(pid_str) = pane.strip_prefix("pty-") {
+                if let Ok(pid) = pid_str.parse::<i32>() {
+                    if unsafe { libc::kill(pid, 0) } != 0 {
+                        let _ = broker::unregister_agent(&agent.id.name);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn deliver_to_pty(fd: &OwnedFd, message: &str) {
