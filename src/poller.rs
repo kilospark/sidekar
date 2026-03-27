@@ -75,11 +75,63 @@ fn sweep_dead_agents() {
 
 fn deliver_to_pty(fd: &OwnedFd, message: &str) {
     let raw_fd = fd.as_raw_fd();
+
+    // Wait for user to stop typing (1 second of inactivity)
+    // Check multiple times - if there's input, wait more
+    let mut quiet_count = 0;
+    while quiet_count < 10 {
+        if is_data_available(raw_fd) {
+            quiet_count = 0; // user typed something, reset counter
+        } else {
+            quiet_count += 1;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Save any user input that was being typed
+    let saved_input = read_pending_input(raw_fd);
+
     // Write message text
     let _ = write_all_raw(raw_fd, message.as_bytes());
     // Brief pause then send Enter (CR)
     std::thread::sleep(Duration::from_millis(150));
     let _ = write_all_raw(raw_fd, b"\r");
+
+    // Restore user's saved input
+    if !saved_input.is_empty() {
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = write_all_raw(raw_fd, saved_input.as_bytes());
+    }
+}
+
+/// Check if there's data available to read from the PTY
+fn is_data_available(fd: i32) -> bool {
+    use std::mem::MaybeUninit;
+
+    let mut pollfd = MaybeUninit::<libc::pollfd>::zeroed();
+    unsafe {
+        let pfd = pollfd.as_mut_ptr();
+        (*pfd).fd = fd;
+        (*pfd).events = libc::POLLIN;
+        (*pfd).revents = 0;
+
+        if libc::poll(pfd, 1, 0) > 0 {
+            ((*pfd).revents & libc::POLLIN) != 0
+        } else {
+            false
+        }
+    }
+}
+
+/// Read any pending input from the PTY (user's typing)
+fn read_pending_input(fd: i32) -> String {
+    let mut buf = [0u8; 1024];
+    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+    if n > 0 {
+        String::from_utf8_lossy(&buf[..n as usize]).to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
