@@ -35,7 +35,8 @@
 
   var fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
-  var serializeAddon = new SerializeAddon();
+  // UMD build exports the class as SerializeAddon.SerializeAddon (same pattern as WebLinksAddon).
+  var serializeAddon = new SerializeAddon.SerializeAddon();
   term.loadAddon(serializeAddon);
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
@@ -264,9 +265,15 @@
             return;
           }
 
+          // Replay snapshot: show immediately. (Deferring only on scroll left a quiet PTY looking "blank".)
           if (expectReplayBytes > 0) {
-            pendingReplay = u8;
             expectReplayBytes = 0;
+            pendingReplay = null;
+            initialReplayMerged = true;
+            var stickReplay = isViewportNearBottom();
+            term.write(u8, function () {
+              if (stickReplay) term.scrollToBottom();
+            });
             return;
           }
 
