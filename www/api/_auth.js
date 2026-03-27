@@ -26,7 +26,15 @@ export function parseCookie(req) {
 }
 
 export async function getUser(req) {
-  const token = parseCookie(req);
+  // Try cookie first
+  let token = parseCookie(req);
+  if (!token) {
+    // Try Authorization header (Bearer token)
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith("Bearer ")) {
+      token = auth.slice(7);
+    }
+  }
   if (!token) return null;
   return verifyToken(token);
 }
