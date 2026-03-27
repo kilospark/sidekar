@@ -6,6 +6,7 @@ sidekar-darwin-arm64.tar.gz.minisig
 .DS_Store
 screenshots/
 native/macos-automation/.build/
+# Site download payloads (built in CI / Vercel — not tracked)
 www/public/binaries/
 .env
 .env.*
