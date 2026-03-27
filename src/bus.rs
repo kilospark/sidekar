@@ -19,6 +19,7 @@ const NUDGE_POLL_SECS: u64 = 5;
 #[allow(dead_code)]
 const NUDGE_BUSY_CHECK_SECS: u64 = 3;
 const BROKER_TRANSPORT: &str = "broker";
+const RELAY_HTTP_TRANSPORT: &str = "relay_http";
 
 // --- Terminal title helper ---
 
@@ -559,6 +560,7 @@ fn pending_message_exists(msg_id: &str) -> bool {
 fn deliver_via(transport_name: &str, target: &str, message: &str, from: &str) -> Result<()> {
     let result = match transport_name {
         BROKER_TRANSPORT => crate::transport::Broker.deliver(target, message, from)?,
+        RELAY_HTTP_TRANSPORT => crate::transport::RelayHttp.deliver(target, message, from)?,
         other => bail!("unknown transport: {other}"),
     };
     match result {
@@ -721,6 +723,14 @@ fn resolve_reply(reply_to: Option<&str>) {
     }
 }
 
+fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionInfo> {
+    if crate::auth::auth_token().is_none() {
+        return None;
+    }
+    let sessions = crate::transport::fetch_relay_sessions().ok()?;
+    sessions.into_iter().find(|s| s.name == to || s.nickname.as_deref() == Some(to))
+}
+
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
     // Try same-channel first, then any agent
     if let Some(agent) = find_agent_on_channel(to, channel) {
@@ -737,6 +747,15 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
             transport_name: BROKER_TRANSPORT,
             transport_target: agent.id.name.clone(),
             output_label: format!("via broker ({})", agent.id.pane.as_deref().unwrap_or("?")),
+        });
+    }
+
+    // Remote relay: another machine / session for this user (device token + live tunnel on relay)
+    if let Some(sess) = relay_session_for_target(to) {
+        return Some(DeliveryTarget {
+            transport_name: RELAY_HTTP_TRANSPORT,
+            transport_target: sess.name.clone(),
+            output_label: format!("via relay ({})", sess.hostname),
         });
     }
 

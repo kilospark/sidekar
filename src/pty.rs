@@ -439,7 +439,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let raw_guard = RawModeGuard::enter()?;
 
     // Run the async event loop
-    let exit_code = event_loop(&master_arc, child_pid, tunnel, &nick).await;
+    let exit_code = event_loop(&master_arc, child_pid, tunnel, &nick, &identity.name).await;
 
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
@@ -766,6 +766,7 @@ async fn event_loop(
     child_pid: libc::pid_t,
     tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
     nick: &str,
+    agent_name: &str,
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
@@ -860,6 +861,19 @@ async fn event_loop(
                 match event {
                     Some(crate::tunnel::TunnelEvent::Data(data)) => {
                         let _ = write_all_fd(master_fd, &data);
+                    }
+                    Some(crate::tunnel::TunnelEvent::BusRelay {
+                        recipient,
+                        sender,
+                        body,
+                    }) => {
+                        if recipient == agent_name {
+                            let _ = crate::broker::enqueue_message(&sender, &recipient, &body);
+                        }
+                    }
+                    Some(crate::tunnel::TunnelEvent::BusPlain(body)) => {
+                        let _ = write_all_fd(master_fd, body.as_bytes());
+                        let _ = write_all_fd(master_fd, b"\r\n");
                     }
                     Some(crate::tunnel::TunnelEvent::Disconnected) => {}
                     None => {

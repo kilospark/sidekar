@@ -3,7 +3,7 @@ mod bridge;
 mod registry;
 mod types;
 
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 use bridge::AppState;
 use registry::Registry;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -62,6 +62,7 @@ async fn main() {
         .route("/tunnel", get(bridge::handle_tunnel_upgrade))
         .route("/session/{id}", get(bridge::handle_viewer_upgrade))
         .route("/sessions", get(bridge::handle_list_sessions))
+        .route("/relay/bus", post(bridge::handle_relay_bus))
         .layer(cors)
         .with_state(state);
 
