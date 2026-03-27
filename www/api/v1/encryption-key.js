@@ -1,8 +1,8 @@
 import { getDb } from "../_db.js";
-import { getUser } from "../_auth.js";
+import { getUserOrDevice } from "../_auth.js";
 
 export default async function handler(req, res) {
-  const user = await getUser(req);
+  const user = await getUserOrDevice(req);
   if (!user) {
     return res.status(401).json({ error: "Not authenticated" });
   }
