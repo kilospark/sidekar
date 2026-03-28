@@ -9,8 +9,12 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Mutex;
+
+use crate::ext::{ExtState, SharedExtState};
 
 fn data_dir() -> PathBuf {
     dirs::home_dir()
@@ -138,10 +142,18 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
 // Daemon process (runs when `sidekar daemon run` is invoked)
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
 struct DaemonState {
-    // ext-bridge state will go here
+    ext_state: SharedExtState,
     ext_port: Option<u16>,
+}
+
+impl DaemonState {
+    fn new() -> Self {
+        Self {
+            ext_state: Arc::new(Mutex::new(ExtState::default())),
+            ext_port: None,
+        }
+    }
 }
 
 /// Run the daemon (called by `sidekar daemon run`).
@@ -174,7 +186,7 @@ pub async fn run() -> Result<()> {
     eprintln!("sidekar daemon running (PID {pid})");
     eprintln!("Socket: {}", sock_path.display());
 
-    let state = std::sync::Arc::new(tokio::sync::Mutex::new(DaemonState::default()));
+    let state = Arc::new(Mutex::new(DaemonState::new()));
 
     // Signal handling for graceful shutdown
     let shutdown_sock = sock_path.clone();
@@ -199,7 +211,19 @@ pub async fn run() -> Result<()> {
         std::process::exit(0);
     });
 
-    // TODO: Start ext-bridge subsystem (WebSocket listener for extension)
+    // Start ext-bridge subsystem (WebSocket listener for extension)
+    {
+        let ext_state = state.lock().await.ext_state.clone();
+        match crate::ext::start_ext_bridge(ext_state).await {
+            Ok(port) => {
+                state.lock().await.ext_port = Some(port);
+            }
+            Err(e) => {
+                eprintln!("Failed to start ext-bridge: {e}");
+            }
+        }
+    }
+
     // TODO: Start bus-housekeeping subsystem
     // TODO: Start cron subsystem
     // TODO: Start monitor subsystem
@@ -248,7 +272,7 @@ async fn handle_connection(
 
 async fn handle_command(
     cmd: &Value,
-    _state: &std::sync::Arc<tokio::sync::Mutex<DaemonState>>,
+    state: &Arc<Mutex<DaemonState>>,
 ) -> Value {
     let cmd_type = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -256,15 +280,17 @@ async fn handle_command(
         "ping" => json!({"pong": true}),
 
         "status" => {
+            let s = state.lock().await;
+            let ext_status = crate::ext::get_status(&s.ext_state).await;
             json!({
                 "running": true,
                 "pid": std::process::id(),
-                // TODO: add ext-bridge status, cron count, monitor count
+                "ext_port": s.ext_port,
+                "ext": ext_status,
             })
         }
 
         "stop" => {
-            // Schedule shutdown
             tokio::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 let _ = std::fs::remove_file(pid_path());
@@ -274,7 +300,18 @@ async fn handle_command(
             json!({"ok": true, "message": "Daemon stopping"})
         }
 
-        // TODO: ext commands (tabs, click, read, etc.)
+        // Extension commands - forward to ext-bridge
+        "ext" => {
+            let ext_cmd = cmd.get("command").cloned().unwrap_or(json!({}));
+            let s = state.lock().await;
+            crate::ext::forward_command(&s.ext_state, ext_cmd).await
+        }
+
+        "ext_status" => {
+            let s = state.lock().await;
+            crate::ext::get_status(&s.ext_state).await
+        }
+
         // TODO: cron commands (create, list, delete)
         // TODO: monitor commands (start, stop)
 
