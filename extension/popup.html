@@ -27,6 +27,7 @@ code { background: #f4f4f5; padding: 1px 4px; border-radius: 2px; font-size: 11p
 <h3>Sidekar</h3>
 <div id="status" class="disconnected">Checking...</div>
 <div id="detail"></div>
+<button id="retry-btn" style="display:none; font-size:11px; padding:4px; margin-bottom:8px;">Retry connection</button>
 
 <div id="auth-section">
   <button id="login-btn">Login with GitHub</button>
@@ -37,7 +38,7 @@ code { background: #f4f4f5; padding: 1px 4px; border-radius: 2px; font-size: 11p
   <button id="logout-btn">Sign out</button>
 </div>
 
-<div class="hint">Requires: <code>sidekar login</code> and <code>sidekar ext install-host</code></div>
+<div class="hint">Requires <code>sidekar login</code> in terminal</div>
 <script src="popup.js"></script>
 </body>
 </html>

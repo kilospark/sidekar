@@ -2,6 +2,7 @@ const status = document.getElementById("status");
 const detailEl = document.getElementById("detail");
 const loginBtn = document.getElementById("login-btn");
 const logoutBtn = document.getElementById("logout-btn");
+const retryBtn = document.getElementById("retry-btn");
 const authSection = document.getElementById("auth-section");
 const loggedInSection = document.getElementById("logged-in-section");
 
@@ -10,17 +11,20 @@ function applyStatus(res) {
     status.textContent = "Connected & authenticated";
     status.className = "connected";
     detailEl.textContent = "";
+    retryBtn.style.display = "none";
     return;
   }
   if (res && res.connected) {
     status.textContent = "Connected, waiting for auth...";
     status.className = "pending";
     detailEl.textContent = "";
+    retryBtn.style.display = "none";
     return;
   }
   status.textContent = "Not connected";
   status.className = "disconnected";
   detailEl.textContent = res && res.lastError ? res.lastError : "";
+  retryBtn.style.display = "block";
 }
 
 function refreshStatus() {
@@ -48,12 +52,29 @@ function updateAuthUI() {
 refreshStatus();
 updateAuthUI();
 
+// Auto-refresh status every 2 seconds while popup is open
+setInterval(refreshStatus, 2000);
+
 // Listen for storage changes to update UI when token is set by background
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.extToken) {
     updateAuthUI();
     refreshStatus();
   }
+});
+
+// --- Retry connection ---
+
+retryBtn.addEventListener("click", () => {
+  retryBtn.disabled = true;
+  retryBtn.textContent = "Retrying...";
+  chrome.runtime.sendMessage({ type: "reconnect" }, () => {
+    setTimeout(() => {
+      retryBtn.disabled = false;
+      retryBtn.textContent = "Retry connection";
+      refreshStatus();
+    }, 1000);
+  });
 });
 
 // --- GitHub OAuth Login ---
