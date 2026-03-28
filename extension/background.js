@@ -96,7 +96,8 @@ async function connect() {
   currentPort = port;
   const url = wsUrl(port);
   sawAuthFail = false;
-  lastConnectError = null;
+  // Don't clear lastConnectError here - preserve auth_fail reason across reconnects
+  // Only clear it on successful auth_ok
 
   try {
     ws = new WebSocket(url);
@@ -137,7 +138,8 @@ async function connect() {
       lastConnectError = msg.reason ||
         "Authentication failed — try logging in again from the extension popup.";
       console.log("[sidekar] auth failed:", msg.reason || "check credentials");
-      ws.close();
+      // Don't call ws.close() - let the server's close frame arrive naturally
+      // This avoids race conditions with onerror/onclose handlers
       return;
     }
 
@@ -158,7 +160,7 @@ async function connect() {
         if (ev.reason && ev.reason.length > 0) {
           lastConnectError = ev.reason;
         } else {
-          lastConnectError = "Auth failed. Run 'sidekar login' in terminal first.";
+          lastConnectError = "Run 'sidekar login' in terminal to complete the authentication.";
         }
       } else {
         lastConnectError = `Disconnected (code ${ev.code})`;
@@ -168,7 +170,10 @@ async function connect() {
   };
 
   ws.onerror = () => {
-    lastConnectError = "WebSocket connection error";
+    // Don't overwrite if we already have a real error from auth_fail
+    if (!sawAuthFail && !lastConnectError) {
+      lastConnectError = "WebSocket connection error";
+    }
     console.error("[sidekar] WebSocket error to", url);
   };
 }
@@ -604,6 +609,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     ws = null;
     authenticated = false;
+    lastConnectError = null;  // Clear error for fresh retry
     connect();
     sendResponse({ ok: true });
     return false;

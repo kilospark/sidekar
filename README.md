@@ -46,7 +46,7 @@ Or copy `SKILL.md` from this repo into your agent's skills folder (see output of
    ```
    This adds `sidekar` to your `PATH` and runs `sidekar install` so `SKILL.md` is copied into each detected agent's skills directory.
 
-2. **Chrome extension (optional).** To drive your everyday Chrome profile (same cookies and logins as the window you already use), load the MV3 extension from the `extension/` directory, start the bridge (`sidekar ext-server` or any `sidekar ext ...` command), paste the shared secret in the extension popup, and connect. See [`extension/README.md`](extension/README.md) for full steps.
+2. **Chrome extension (optional).** To drive your everyday Chrome profile (same cookies and logins as the window you already use), load the MV3 extension from the `extension/` directory and click **Login with GitHub** in the popup. The bridge starts automatically. See [`extension/README.md`](extension/README.md) for details.
 
 3. **`sidekar login` (optional).** Run `sidekar login` to authenticate with sidekar.dev. This unlocks the relay tunnel, the web terminal, and the dashboard -- everything that connects agents and sessions across machines.
 

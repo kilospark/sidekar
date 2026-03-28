@@ -5,11 +5,11 @@ MV3 extension that connects to the local `sidekar` bridge so terminal agents can
 ## Install
 
 1. Build or install the `sidekar` binary (`cargo build --release` from the repo root).
-2. Log in to sidekar.dev: `sidekar login`
+2. Log in: `sidekar login` (this also installs native messaging for the extension).
 3. Chrome → **Extensions** → enable **Developer mode** → **Load unpacked** → select this `extension/` directory.
 4. Click the Sidekar toolbar icon → **Login with GitHub**.
 
-Default WebSocket URL is `ws://127.0.0.1:9876`. If you use another port on the Rust side (`SIDEKAR_EXT_PORT` / `sidekar ext-server`), set the same value as **Bridge port** in the extension popup.
+The extension auto-discovers the local bridge via native messaging—no port configuration needed.
 
 ## Terminal usage
 
@@ -24,9 +24,7 @@ sidekar ext click '#submit'
 sidekar ext status
 ```
 
-The first `sidekar ext …` command starts `ext-server` in the background if it is not already running.
-
-**Popup stays on "Not connected"** — the extension does not start the Rust process; it only connects to WebSockets. Start the bridge first (`sidekar ext tabs` or `sidekar ext-server`), then the extension will auto-connect. The popup shows an error when the socket cannot connect or auth fails.
+The bridge starts automatically when needed.
 
 ## Files
 
