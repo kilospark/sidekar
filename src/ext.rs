@@ -878,8 +878,8 @@ pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
     let exe_path = std::env::current_exe()
         .context("Cannot determine sidekar executable path")?;
 
-    // Use provided extension ID or a placeholder
-    let ext_id = extension_id.unwrap_or("EXTENSION_ID_HERE");
+    // Use provided extension ID or the official published ID
+    let ext_id = extension_id.unwrap_or("ieggclnoffcnljcjeadgogpfbnhogncc");
 
     let manifest = json!({
         "name": NATIVE_HOST_NAME,
@@ -917,12 +917,6 @@ pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
     println!();
     println!("Manifest contents:");
     println!("{manifest_json}");
-
-    if extension_id.is_none() {
-        println!();
-        println!("NOTE: Replace EXTENSION_ID_HERE with your actual extension ID.");
-        println!("Find it at chrome://extensions with Developer mode enabled.");
-    }
 
     Ok(())
 }
