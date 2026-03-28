@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>sidekar: the sidecar for AI agents</title>
-<meta name="description" content="Browser automation (CDP + Chrome extension), desktop automation, inter-agent orchestration, and background automation for Claude Code, Codex, Cursor, and more. Single Rust binary, zero dependencies.">
+<meta name="description" content="Sidekar: automation sidecar for Claude Code, Codex, Cursor, Copilot, Gemini CLI, and more. Local bus, optional relay, token-efficient browser automation, macOS desktop, monitoring and cron, encrypted KV and TOTP. Optionally sign in for web terminal and dashboard. One Rust binary.">
 <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="icon" href="favicon.ico" sizes="32x32">
@@ -248,6 +248,10 @@ h1 {
 .feature {
   background: var(--bg);
   padding: 40px 36px;
+}
+
+.feature-wide {
+  grid-column: 1 / -1;
 }
 
 .feature-icon {
@@ -621,6 +625,10 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .feature-wide {
+    grid-column: auto;
+  }
+
   .steps {
     grid-template-columns: 1fr;
     gap: 24px;
@@ -659,7 +667,7 @@ h1 {
   <div class="container">
     <h1>The sidecar for<br>AI agents</h1>
     <p class="hero-sub">
-      sidekar gives agents real browser automation (Chrome DevTools Protocol plus the optional Chrome extension), desktop automation on macOS, inter-agent orchestration over a local bus, and background automation: tab monitoring, scheduled runs, and alerts routed to agents.
+      Sidekar is an automation sidecar for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a local message bus with optional cross-machine relay, token-efficient browser automation through a dedicated CLI and optional Chrome extension, macOS desktop automation, background monitoring and cron, and encrypted key-value storage with TOTP—so agents can finish logins and act on your behalf without exposing secrets in chat. Optionally sign in to sidekar.dev for a web terminal and dashboard with remote session visibility. One Rust binary. Runs alongside your existing agent; it doesn't replace it.
     </p>
     <div class="install-block" onclick="copyInstall(this)">
       <code>curl -fsSL sidekar.dev/install | sh</code>
@@ -678,9 +686,9 @@ h1 {
 <section class="problem">
   <div class="container">
     <div class="problem-text">
-      <h2>What sidekar enables</h2>
+      <h2>Why sidekar</h2>
       <p>
-        <strong>Browser automation</strong> through CDP and the extension bridge, <strong>desktop automation</strong> for native macOS UI, <strong>inter-agent orchestration</strong> for discovery and handoffs, and <strong>background automation</strong> for monitors and cron. One binary ties them together so agents can act in the browser, on the desktop, with each other, and while you step away.
+        CLI agents can reason and write code, but they can't see a browser, talk to each other, or log in to anything. sidekar fills every gap: a <strong>message bus</strong> that works across machines, a <strong>real browser</strong> they can see and control, <strong>macOS desktop</strong> access, <strong>encrypted credentials</strong> with TOTP for 2FA, and <strong>background scheduling</strong>. The pieces compose: an agent on your laptop can hand off to one on a server, which logs in to a service using stored credentials, runs a workflow, and sends the results back.
       </p>
     </div>
   </div>
@@ -694,10 +702,24 @@ h1 {
     <div class="features-grid">
       <div class="feature">
         <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <h3>Agent communication bus</h3>
+        <p>Agents find each other and exchange typed messages -- requests, responses, handoffs -- whether they're in the same terminal or on different continents. A local SQLite broker handles same-machine delivery; a WSS relay tunnel carries everything else.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <h3>Web terminal</h3>
+        <p>Start an agent on your desktop, then watch it work from your phone. Every PTY session streams live to sidekar.dev/terminal with full xterm rendering and scrollback. No SSH, no port forwarding -- just open a browser anywhere.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
         </div>
         <h3>Browser automation</h3>
-        <p>Chrome DevTools Protocol plus the optional Chrome extension, one automation story. Navigate, interact, read pages efficiently, capture screenshots and network traffic. Search, multi-tab reads, and testing flows are use cases on the same stack.</p>
+        <p>Raw Chrome DevTools Protocol over WebSocket, plus an optional Chrome extension for your everyday profile. Navigate, click, type, read pages, screenshot, capture network traffic -- all in your actual Chrome with your cookies and logins.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">
@@ -708,17 +730,17 @@ h1 {
       </div>
       <div class="feature">
         <div class="feature-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-        </div>
-        <h3>Inter-agent orchestration</h3>
-        <p>Local bus: discover other agents, send messages, hand off work, persist coordination in SQLite. Multi-agent workflows share one coordination layer for handoffs and shared state.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </div>
         <h3>Background automation</h3>
-        <p>Watch tabs for meaningful changes and run tools on a cron schedule. Reactive alerts and unattended runs, with results routed to agents on the bus.</p>
+        <p>Monitor open tabs for meaningful changes and run commands on a cron schedule. Results flow back through the bus, so agents pick them up automatically. Keeps working after you close the lid.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>Credentials and encrypted storage</h3>
+        <p>The missing piece for fully autonomous agents. An encrypted KV store holds usernames, passwords, and API keys (AES-256-GCM at rest). TOTP generates 2FA codes on demand. Combined with browser automation, agents can log in to any service end-to-end without secrets ever appearing in chat or tool output.</p>
       </div>
     </div>
   </div>
@@ -741,7 +763,7 @@ h1 {
       <div class="step">
         <div class="step-num">03</div>
         <h3><code>sidekar login</code> (optional)</h3>
-        <p>Run <code>sidekar login</code> to authenticate with sidekar.dev if you want to attach to or manage sessions from the web dashboard and remote workflows, not only on this machine.</p>
+        <p>Authenticate with sidekar.dev to unlock the relay tunnel, the web terminal, and the dashboard. This is what connects agents and sessions across machines.</p>
       </div>
       <div class="step">
         <div class="step-num">04</div>
@@ -773,9 +795,14 @@ h1 {
         <div class="example-result">Navigates to the form, fills fields, submits, reads error messages, reports what passed and what didn't.</div>
       </div>
       <div class="example">
-        <div class="example-label">Collaboration</div>
-        <div class="example-prompt">"Agent A (Claude), build the API. Agent B (Codex), build the frontend. Coordinate when the API is ready."</div>
-        <div class="example-result">Agents message each other via the bus. B waits for A's signal, then tests the integration end-to-end.</div>
+        <div class="example-label">Multi-agent</div>
+        <div class="example-prompt">"Build the API, then tell the frontend agent it's ready to integrate."</div>
+        <div class="example-result">Finishes the work, discovers the other agent on the bus, sends a handoff with context. The frontend agent picks it up and starts testing.</div>
+      </div>
+      <div class="example">
+        <div class="example-label">Remote</div>
+        <div class="example-prompt">"Ask the agent on the staging server to run the migration and report back."</div>
+        <div class="example-result">Finds the remote agent through the relay tunnel, sends a request, waits for the response with results.</div>
       </div>
       <div class="example">
         <div class="example-label">Monitoring</div>
@@ -786,6 +813,11 @@ h1 {
         <div class="example-label">Desktop</div>
         <div class="example-prompt">"Check if there are any unread messages in Slack."</div>
         <div class="example-result">Uses the macOS Accessibility API to inspect Slack's UI, finds unread indicators, reports back.</div>
+      </div>
+      <div class="example">
+        <div class="example-label">Credentials</div>
+        <div class="example-prompt">"Log in to the AWS console -- the credentials and TOTP secret are in the KV store."</div>
+        <div class="example-result">Pulls the password from encrypted storage, generates the current 2FA code, fills the login form, and navigates to the dashboard.</div>
       </div>
     </div>
   </div>

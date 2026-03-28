@@ -22,11 +22,13 @@ function wsUrl(port) {
   return `ws://127.0.0.1:${port}`;
 }
 
-// Secret and extPort (must match sidekar / SIDEKAR_EXT_PORT) live in chrome.storage.local
+// Auth credentials and extPort live in chrome.storage.local
+// Supports both token-based auth (OAuth) and legacy secret-based auth
 function getBridgeConfig() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["secret", "extPort"], (data) => {
+    chrome.storage.local.get(["extToken", "secret", "extPort"], (data) => {
       resolve({
+        extToken: String(data.extToken || "").trim(),
         secret: String(data.secret || "").trim(),
         extPort: normalizePort(data.extPort),
       });
@@ -37,10 +39,10 @@ function getBridgeConfig() {
 async function connect() {
   if (ws && ws.readyState <= 1) return;
 
-  const { secret, extPort } = await getBridgeConfig();
-  if (!secret) {
-    console.log("[sidekar] no secret configured — click extension icon to set it");
-    lastConnectError = "Set a secret from: sidekar ext secret";
+  const { extToken, secret, extPort } = await getBridgeConfig();
+  if (!extToken && !secret) {
+    console.log("[sidekar] no credentials configured — click extension icon to log in");
+    lastConnectError = "Click the Sidekar icon to log in with GitHub";
     return;
   }
 
@@ -59,7 +61,14 @@ async function connect() {
 
   ws.onopen = () => {
     console.log("[sidekar] connected to", url);
-    send({ type: "hello", version: chrome.runtime.getManifest().version, secret });
+    // Prefer token-based auth (OAuth), fall back to legacy secret
+    const hello = { type: "hello", version: chrome.runtime.getManifest().version };
+    if (extToken) {
+      hello.token = extToken;
+    } else {
+      hello.secret = secret;
+    }
+    send(hello);
     startKeepalive();
   };
 
@@ -80,9 +89,9 @@ async function connect() {
     if (msg.type === "auth_fail") {
       authenticated = false;
       sawAuthFail = true;
-      lastConnectError =
-        "Secret rejected — run sidekar ext secret and paste the value again (no spaces).";
-      console.log("[sidekar] auth failed — check secret");
+      lastConnectError = msg.reason ||
+        "Authentication failed — try logging in again from the extension popup.";
+      console.log("[sidekar] auth failed:", msg.reason || "check credentials");
       ws.close();
       return;
     }
@@ -552,6 +561,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     connect();
     sendResponse({ ok: true });
     return false;
+  }
+  if (msg.type === "setToken") {
+    const extPort = normalizePort(msg.extPort);
+    const extToken = String(msg.extToken || "").trim();
+    // Clear legacy secret when using token auth
+    chrome.storage.local.set({ extToken, extPort }, () => {
+      chrome.storage.local.remove(["secret"], () => {
+        if (ws) {
+          try { ws.close(); } catch {}
+        }
+        ws = null;
+        authenticated = false;
+        connect();
+        sendResponse({ ok: true });
+      });
+    });
+    return true;
   }
   if (msg.type === "setSecret") {
     const extPort = normalizePort(msg.extPort);

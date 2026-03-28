@@ -413,6 +413,24 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // Ensure the Chrome extension bridge is running
     let _ = crate::ext::auto_launch_server();
 
+    // Background auto-update: check + install so the next launch uses the new version.
+    if crate::config::load_config().auto_update && crate::api_client::should_check_for_update() {
+        tokio::spawn(async {
+            match crate::api_client::check_for_update().await {
+                Ok(Some(latest)) => {
+                    eprintln!("sidekar: update v{latest} available, installing in background...");
+                    if let Err(e) = crate::api_client::self_update(&latest).await {
+                        eprintln!("sidekar: background update failed: {e:#}");
+                    } else {
+                        eprintln!("sidekar: updated to v{latest} (takes effect on next launch)");
+                    }
+                }
+                Ok(None) => {} // already up to date
+                Err(_) => {}   // network error, silently skip
+            }
+        });
+    }
+
     // Start the cron background loop (will pick up Chrome session when available)
     {
         let cron_ctx = crate::commands::cron::CronContext {
