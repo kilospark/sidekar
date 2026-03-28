@@ -69,8 +69,6 @@ pub fn ensure_running() -> Result<()> {
         .spawn()
         .context("Failed to spawn daemon")?;
 
-    eprintln!("Started daemon (PID {})", child.id());
-
     // Wait for socket to appear
     let sock = socket_path();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
