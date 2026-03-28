@@ -11,6 +11,13 @@ async fn main() {
 async fn run() -> Result<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
 
+    // Parse global --verbose flag
+    if let Some(pos) = args.iter().position(|a| a == "--verbose") {
+        args.remove(pos);
+        // SAFETY: We're single-threaded at this point during startup
+        unsafe { std::env::set_var("SIDEKAR_VERBOSE", "1"); }
+    }
+
     // Parse global --tab <id> flag before extracting the command
     let override_tab_id = if let Some(pos) = args.iter().position(|a| a == "--tab") {
         if pos + 1 < args.len() {

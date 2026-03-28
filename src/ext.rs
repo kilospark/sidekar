@@ -573,6 +573,10 @@ pub fn auto_launch_server() -> Result<()> {
         .spawn()
         .context("Failed to spawn ext-server")?;
 
+    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+        eprintln!("Started ext-server (PID {})", child.id());
+    }
+
     let port = std::env::var("SIDEKAR_EXT_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
