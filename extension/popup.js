@@ -11,11 +11,13 @@ const hintEl = document.querySelector(".hint");
 
 function updateHint(res) {
   if (!hintEl) return;
-  // Hide hint if authenticated or if error message already explains the issue
   if (res && res.authenticated) {
     hintEl.style.display = "none";
   } else if (res && res.lastError) {
-    // Error message already shown in detail area - don't duplicate
+    // Error message already shown in detail area
+    hintEl.style.display = "none";
+  } else if (res && res.cliLoggedIn) {
+    // CLI is ready, just need extension sign-in
     hintEl.style.display = "none";
   } else {
     hintEl.innerHTML = "Run <code>sidekar login</code>";
@@ -39,8 +41,14 @@ function applyStatus(res) {
     retryBtn.style.display = "none";
     return;
   }
-  status.textContent = "Not connected";
-  status.className = "disconnected";
+  // Show CLI status based on actual CLI login state
+  if (res && res.cliLoggedIn) {
+    status.textContent = "Ready";
+    status.className = "connected";
+  } else {
+    status.textContent = "Not logged in";
+    status.className = "disconnected";
+  }
   
   // Check if error is about needing to run sidekar login
   const needsLogin = res && res.lastError && (
