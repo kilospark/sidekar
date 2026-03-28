@@ -12,6 +12,10 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, oneshot};
 
+use crate::auth;
+
+const DEFAULT_API_URL: &str = "https://sidekar.dev";
+
 const DEFAULT_PORT: u16 = 9876;
 const TIMEOUT_SECS: u64 = 30;
 
@@ -79,6 +83,50 @@ struct ExtState {
     pending: HashMap<String, oneshot::Sender<Value>>,
     connected: bool,
     authenticated: bool,
+    /// Cached user_id from a successful token verification (avoids repeated API calls).
+    verified_user_id: Option<String>,
+}
+
+fn ext_api_base() -> String {
+    std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
+}
+
+/// Verify that the extension token and CLI device token belong to the same user.
+/// Calls the sidekar.dev API and returns the user_id on success.
+async fn verify_ext_token(ext_token: &str) -> Result<String> {
+    let device_token = auth::auth_token()
+        .ok_or_else(|| anyhow!("No CLI device token found. Run `sidekar login` first."))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
+    let url = format!("{}/api/auth/verify-ext", ext_api_base());
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", device_token))
+        .json(&json!({ "ext_token": ext_token }))
+        .send()
+        .await
+        .context("Failed to contact sidekar.dev for token verification")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("Token verification failed: HTTP {status} — {body}");
+    }
+
+    let data: Value = resp.json().await.context("Invalid response from verify-ext")?;
+
+    let matched = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !matched {
+        bail!("Extension token and CLI token belong to different users");
+    }
+
+    data.get("user_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("No user_id in verification response"))
 }
 
 type SharedState = Arc<Mutex<ExtState>>;
@@ -124,6 +172,7 @@ pub async fn run_server() -> Result<()> {
         pending: HashMap::new(),
         connected: false,
         authenticated: false,
+        verified_user_id: None,
     }));
 
     let ipc_state = state.clone();
@@ -210,24 +259,57 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState, secr
                     }
 
                     if msg_type == "hello" {
+                        let version = val.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                        let provided_token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
                         let provided_secret = val.get("secret").and_then(|v| v.as_str()).unwrap_or("");
-                        if provided_secret == secret {
+
+                        if !provided_token.is_empty() {
+                            // Token-based auth (OAuth flow)
+                            match verify_ext_token(provided_token).await {
+                                Ok(user_id) => {
+                                    let mut s = state.lock().await;
+                                    s.authenticated = true;
+                                    s.verified_user_id = Some(user_id.clone());
+                                    eprintln!("Extension authenticated via token: v{version} (user {user_id})");
+                                    if let Some(ref mut ext_tx) = s.ext_tx {
+                                        let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
+                                            json!({"type": "auth_ok"}).to_string().into()
+                                        )).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    let reason = format!("{e:#}");
+                                    eprintln!("Extension token auth failed: {reason}");
+                                    let mut s = state.lock().await;
+                                    if let Some(ref mut ext_tx) = s.ext_tx {
+                                        let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
+                                            json!({"type": "auth_fail", "reason": reason}).to_string().into()
+                                        )).await;
+                                    }
+                                    break;
+                                }
+                            }
+                        } else if !provided_secret.is_empty() && provided_secret == secret {
+                            // Legacy secret-based auth (backwards compat)
                             let mut s = state.lock().await;
                             s.authenticated = true;
-                            let version = val.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                            eprintln!("Extension authenticated: v{version}");
-                            // Send auth OK
+                            eprintln!("Extension authenticated via secret: v{version}");
                             if let Some(ref mut ext_tx) = s.ext_tx {
                                 let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
                                     json!({"type": "auth_ok"}).to_string().into()
                                 )).await;
                             }
                         } else {
-                            eprintln!("Extension auth failed: bad secret");
+                            let reason = if !provided_secret.is_empty() {
+                                "Bad secret — run `sidekar ext secret` and paste the value again"
+                            } else {
+                                "No credentials provided — log in from the extension popup"
+                            };
+                            eprintln!("Extension auth failed: {reason}");
                             let mut s = state.lock().await;
                             if let Some(ref mut ext_tx) = s.ext_tx {
                                 let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
-                                    json!({"type": "auth_fail"}).to_string().into()
+                                    json!({"type": "auth_fail", "reason": reason}).to_string().into()
                                 )).await;
                             }
                             break;
@@ -268,6 +350,7 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState, secr
         s.ext_tx = None;
         s.connected = false;
         s.authenticated = false;
+        s.verified_user_id = None;
         pending
     };
     for (_id, tx) in pending {
@@ -350,6 +433,17 @@ async fn handle_cli_connection(stream: TcpStream, state: SharedState) {
         }
     };
 
+    // Quick status query — answered by server, not forwarded to extension
+    if command.get("query").and_then(|v| v.as_str()) == Some("status") {
+        let s = state.lock().await;
+        let result = json!({
+            "connected": s.connected,
+            "authenticated": s.authenticated,
+        });
+        let _ = stream.write_all(serde_json::to_string(&result).unwrap().as_bytes()).await;
+        return;
+    }
+
     let result = match send_command(&state, command).await {
         Ok(v) => v,
         Err(e) => json!({"error": e.to_string()}),
@@ -373,6 +467,59 @@ pub fn is_server_running() -> bool {
         }
     } else {
         false
+    }
+}
+
+/// Check if the extension is connected and authenticated (blocking, 500ms max).
+///
+/// Used by the auto-routing logic in main.rs to decide whether browser commands
+/// should be routed through the Chrome extension instead of CDP.
+pub fn is_ext_available() -> bool {
+    use std::io::{Read, Write};
+
+    if !is_server_running() {
+        return false;
+    }
+
+    let port = std::env::var("SIDEKAR_EXT_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let ipc_port = match ipc_port_for_ws(port) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    let timeout = std::time::Duration::from_millis(500);
+
+    let mut stream = match std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{ipc_port}").parse().unwrap(),
+        timeout,
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    let msg = r#"{"query":"status"}"#;
+    if stream.write_all(msg.as_bytes()).is_err() {
+        return false;
+    }
+    // Shut down the write half so the server sees EOF and responds
+    if stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return false;
+    }
+
+    let mut buf = Vec::with_capacity(256);
+    if stream.read_to_end(&mut buf).is_err() {
+        return false;
+    }
+
+    match serde_json::from_slice::<Value>(&buf) {
+        Ok(val) => val.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
+        Err(_) => false,
     }
 }
 

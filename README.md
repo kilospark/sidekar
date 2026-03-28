@@ -1,8 +1,8 @@
 # sidekar: the sidecar for AI agents
 
-**Browser automation** (Chrome DevTools Protocol plus the optional Chrome extension), **desktop automation** on macOS, **inter-agent communication and orchestration** via a local bus, and **background automation** (tab monitoring and cron). Ships as a single Rust binary with zero runtime dependencies. Works with Claude Code, Codex, Cursor, Copilot, Gemini CLI, OpenCode, and other agents through the bundled skill (`sidekar install`) or the [Vercel skills registry](https://github.com/vercel-labs/skills).
+Sidekar is an automation sidecar for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a local message bus with optional cross-machine relay, token-efficient browser automation through a dedicated CLI and optional Chrome extension, macOS desktop automation, background monitoring and cron, and encrypted key-value storage with TOTP—so agents can finish logins and act on your behalf without exposing secrets in chat. Optionally sign in to sidekar.dev for a web terminal and dashboard with remote session visibility. One Rust binary. Runs alongside your existing agent; it doesn't replace it.
 
-No Playwright, no browser automation frameworks. Raw CDP over WebSocket.
+Works with Claude Code, Codex, Cursor, Copilot, Gemini CLI, OpenCode, and other agents through the bundled skill (`sidekar install`) or the [Vercel skills registry](https://github.com/vercel-labs/skills).
 
 ## Install
 
@@ -12,7 +12,7 @@ No Playwright, no browser automation frameworks. Raw CDP over WebSocket.
 curl -fsSL https://sidekar.dev/install | sh
 ```
 
-Downloads the `sidekar` binary, adds it to your `PATH`, and runs `sidekar install` to place `SKILL.md` into each detected agent’s skills directory (Claude Code, Codex, Gemini CLI, OpenCode, Pi, etc.).
+Downloads the `sidekar` binary, adds it to your `PATH`, and runs `sidekar install` to place `SKILL.md` into each detected agent's skills directory (Claude Code, Codex, Gemini CLI, OpenCode, Pi, etc.).
 
 ### Uninstall
 
@@ -36,7 +36,7 @@ If you already have the binary:
 sidekar install
 ```
 
-Or copy `SKILL.md` from this repo into your agent’s skills folder (see output of `sidekar install` when no agents are detected).
+Or copy `SKILL.md` from this repo into your agent's skills folder (see output of `sidekar install` when no agents are detected).
 
 ## Step-by-step
 
@@ -44,13 +44,13 @@ Or copy `SKILL.md` from this repo into your agent’s skills folder (see output 
    ```bash
    curl -fsSL https://sidekar.dev/install | sh
    ```
-   This adds `sidekar` to your `PATH` and runs `sidekar install` so `SKILL.md` is copied into each detected agent’s skills directory.
+   This adds `sidekar` to your `PATH` and runs `sidekar install` so `SKILL.md` is copied into each detected agent's skills directory.
 
-2. **Chrome extension (optional).** To drive your everyday Chrome profile (same cookies and logins as the window you already use), load the MV3 extension from the `extension/` directory, start the bridge (`sidekar ext-server` or any `sidekar ext …` command), paste the shared secret in the extension popup, and connect. See [`extension/README.md`](extension/README.md) for full steps.
+2. **Chrome extension (optional).** To drive your everyday Chrome profile (same cookies and logins as the window you already use), load the MV3 extension from the `extension/` directory, start the bridge (`sidekar ext-server` or any `sidekar ext ...` command), paste the shared secret in the extension popup, and connect. See [`extension/README.md`](extension/README.md) for full steps.
 
-3. **`sidekar login` (optional).** Run `sidekar login` to sign in with sidekar.dev and store a device token. Use this when you want remote access to sessions (for example managing or attaching to sessions from the web dashboard) instead of only local use.
+3. **`sidekar login` (optional).** Run `sidekar login` to authenticate with sidekar.dev. This unlocks the relay tunnel, the web terminal, and the dashboard -- everything that connects agents and sessions across machines.
 
-4. **Launch an agent with sidekar.** From a terminal, run `sidekar <agent> [args…]` where `<agent>` is any agent CLI on your `PATH` or a shell alias (for example `sidekar claude`, `sidekar codex`). Sidekar wraps the process in a PTY, registers it on the local agent bus, and wires browser and bus tooling for that session.
+4. **Launch an agent with sidekar.** Run `sidekar <agent> [args...]` where `<agent>` is any CLI on your `PATH` (e.g. `sidekar claude`, `sidekar codex`). Sidekar wraps the process in a PTY, registers it on the bus, opens a tunnel to the relay, and wires up browser and messaging for that session.
 
 ## Usage
 
@@ -67,23 +67,33 @@ Or describe any goal; the agent will figure out the steps.
 
 ## What it does
 
-These are the four capability pillars. Everything else (for example web search, multi-page reads, batch runs) is a **use case** on top of them.
+Six capability pillars. Everything else (web search, multi-page reads, batch runs) is a use case on top of them.
 
-### 1. Browser automation (CDP + Chrome extension)
+### 1. Agent communication bus
 
-Full Chrome DevTools Protocol access via raw WebSocket: navigate, click, type, forms, dialogs, cookies, network capture, screenshots, PDFs. The optional **Chrome extension** extends the same automation story where an in-page bridge helps (see `extension/` and `sidekar ext-server`). Token-efficient perception returns compact page summaries instead of raw DOM dumps. Real-browser search (`search`), parallel URL reads (`readurls`), and similar flows are **uses** of this pillar, not separate products.
+Agents find each other and coordinate through a shared message bus. On a single machine, messages flow through a SQLite broker. Across machines, a persistent WSS tunnel to `relay.sidekar.dev` carries bus traffic alongside PTY data on the same connection. From the agent's perspective there's no difference -- `bus_send` delivers locally or remotely depending on where the recipient is, and `who` lists everyone reachable.
 
-### 2. Desktop automation (macOS)
+Messages use a typed envelope protocol with four kinds: **request**, **response**, **fyi**, and **handoff**. Each carries a message ID, timestamp, and threading info. Unanswered requests trigger automatic nudge reminders. Agents get auto-assigned nicknames that persist per project across restarts, and `bus_send @all` broadcasts to every agent on the channel.
+
+### 2. Web terminal
+
+Every PTY session streams live to [sidekar.dev/terminal](https://sidekar.dev/terminal). Open it from your phone, a tablet, or any browser and see exactly what your agents are doing in real time. The terminal renders full xterm output with scrollback, so you get the same view as the local terminal window. Combined with the relay tunnel, this means you can start an agent on your desktop, walk away, and check on it from anywhere.
+
+### 3. Browser automation (CDP + Chrome extension)
+
+Direct Chrome DevTools Protocol over WebSocket -- navigate, click, type, fill forms, handle dialogs, capture network traffic, screenshot, and export PDFs. This is your actual Chrome with your cookies and logins, not a sandboxed Chromium instance. The optional **Chrome extension** bridges the same commands into your everyday browser profile for sites that need in-page context. Page perception is token-efficient: compact summaries instead of raw DOM dumps.
+
+### 4. Desktop automation (macOS)
 
 Control native applications via the macOS Accessibility API: find and click UI elements, desktop screenshots, launch and quit apps, list windows. Runs without Chrome when you need native UI, including permission dialogs and surfaces outside CDP-driven pages.
 
-### 3. Inter-agent communication and orchestration
-
-Agents discover and coordinate via a **local bus** (SQLite broker, Unix sockets): `who`, `bus_send`, `bus_done`, handoffs, and durable message tracking. Multi-terminal workflows often use the PTY helpers (`sidekar claude`, `sidekar codex`, …) for registration and I/O; that is **how** you run agents, not a separate user-facing pillar.
-
-### 4. Background automation
+### 5. Background automation
 
 **Monitor:** watch tab titles and favicons, debounced, with notifications routed through the bus. **Cron:** run tools on a schedule (standard cron expressions), persist jobs in SQLite, deliver results to agents. Together they cover unattended and reactive work.
+
+### 6. Credentials and encrypted storage
+
+This is what closes the loop on fully autonomous agents. The **encrypted KV store** holds usernames, passwords, API keys, and any other secrets -- AES-256-GCM encrypted at rest, scoped per project or shared globally. **TOTP** stores 2FA secrets and generates time-based codes on demand. Together with browser automation, an agent can log in to any service end-to-end: pull credentials from KV, generate a TOTP code, fill the login form, handle MFA, and proceed -- without secrets ever appearing in chat history or tool output. **Error log** (`sidekar errors`) surfaces recent failures for debugging.
 
 ## How it works
 
@@ -135,6 +145,26 @@ sidekar launch --headless                # Headless mode (no visible window)
 Each profile runs its own browser process. The default profile is persistent and shared. Custom profiles can be killed with `kill`, which closes the browser and cleans up the profile directory.
 
 ## CLI
+
+### Agent bus
+
+```bash
+sidekar who                     # List agents on your channel (local + relay)
+sidekar bus_send <to> <message> # Send a message to another agent (or @all)
+sidekar bus_done <next>         # Hand off to another agent with summary
+sidekar register [name]         # Register on the bus
+sidekar unregister              # Leave the bus
+```
+
+### PTY wrapper (recommended for multi-agent)
+
+```bash
+sidekar claude [args]           # Launch Claude Code in a sidekar PTY
+sidekar codex [args]            # Launch Codex in a sidekar PTY
+sidekar copilot [args]          # Launch any agent with bus integration
+```
+
+Each agent gets automatic bus registration, a persistent nickname, a relay tunnel, and its PTY output streamed to the [web terminal](https://sidekar.dev/terminal).
 
 ### Browser control
 
@@ -266,26 +296,6 @@ sidekar desktop-activate --app X # Bring app to foreground
 sidekar desktop-quit --app X    # Quit an app gracefully
 ```
 
-### Agent bus
-
-```bash
-sidekar who                     # List agents on your channel
-sidekar bus_send <to> <message> # Send a message to another agent
-sidekar bus_done <next>         # Hand off to another agent with summary
-sidekar register [name]         # Register on the bus
-sidekar unregister              # Leave the bus
-```
-
-### PTY wrapper (recommended for multi-agent)
-
-```bash
-sidekar claude [args]           # Launch Claude Code in a sidekar PTY
-sidekar codex [args]            # Launch Codex in a sidekar PTY
-sidekar copilot [args]          # Launch any agent with bus integration
-```
-
-Each agent gets automatic bus registration, a unique nickname shown in the terminal title, and input injection via Unix sockets. 
-
 ### Monitoring
 
 ```bash
@@ -293,8 +303,6 @@ sidekar monitor start <tabs>    # Watch tabs for title/favicon changes
 sidekar monitor stop            # Stop watching
 sidekar monitor status          # Show watcher state
 ```
-
-
 
 ### Scheduling
 
@@ -305,6 +313,41 @@ sidekar cron_delete <id>        # Delete a cron job
 ```
 
 Jobs execute sidekar tools on a cron schedule and deliver results via the agent bus. Persisted in SQLite across session restarts.
+
+### TOTP (two-factor codes)
+
+```bash
+sidekar totp add <service> <account> <secret>  # Store a TOTP secret (base32)
+sidekar totp list                               # List stored TOTP entries
+sidekar totp get <service> <account>            # Generate current 6-digit code
+sidekar totp remove <id>                        # Delete a stored secret
+```
+
+Useful for automated login flows that require two-factor authentication. Secrets are stored encrypted on disk.
+
+### KV store (persistent agent state)
+
+```bash
+sidekar kv set <key> <value>             # Set project-scoped key (scoped by cwd)
+sidekar kv set <key> <value> --global    # Set global key (shared across projects)
+sidekar kv get <key>                     # Get project-scoped value
+sidekar kv get <key> --global            # Get global value
+sidekar kv list                          # List project-scoped keys
+sidekar kv list --global                 # List global keys
+sidekar kv delete <key>                  # Delete project-scoped key
+sidekar kv delete <key> --global         # Delete global key
+```
+
+Project-scoped keys are tied to the current working directory. Global keys are shared across all projects. Both persist across sessions in SQLite.
+
+### Error log
+
+```bash
+sidekar errors                  # Show recent errors (default 10)
+sidekar errors 25               # Show last 25 errors
+```
+
+Surfaces recent sidekar errors for debugging failed commands or transport issues.
 
 ### Batch execution
 
@@ -334,64 +377,60 @@ sidekar feedback <rating> [txt] # Send feedback (1-5)
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  sidekar binary (Rust)                              │
-│                                                     │
-│  ┌───────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │ Skill      │  │   CLI    │  │   PTY Wrapper    │ │
-│  │ install    │  │ dispatch │  │ (fork+exec)      │ │
-│  │ (skill.rs) │  │          │  │                  │ │
-│  └─────┬──────┘  └────┬─────┘  └────┬─────────────┘ │
-│        │              │              │               │
-│  ┌─────▼──────────────▼──────────────▼─────────────┐ │
-│  │              Command Dispatch                    │ │
-│  │  core · data · interaction · session · desktop   │ │
-│  │  batch · monitor · cron                          │ │
-│  └─────┬──────────────┬──────────────┬─────────────┘ │
-│        │              │              │               │
-│  ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼────────────┐ │
-│  │  CDP Client │ │  Agent Bus │ │ Desktop (macOS) │ │
-│  │  WebSocket  │ │  SQLite    │ │ Accessibility   │ │
-│  │  to Chrome  │ │  Broker    │ │ API + Screen    │ │
-│  └─────────────┘ └────────────┘ └─────────────────┘ │
-│                                                     │
-│  ┌──────────┐  ┌─────────┐  ┌───────────────────┐  │
-│  │ Extension│  │ Tunnel/ │  │  Telemetry/       │  │
-│  │ bridge   │  │ Relay   │  │  Auto-update      │  │
-│  │ (ext.rs) │  │         │  │                   │  │
-│  └──────────┘  └─────────┘  └───────────────────┘  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  sidekar binary (Rust)                                       │
+│                                                              │
+│  ┌───────────┐  ┌──────────┐  ┌──────────────────┐          │
+│  │ Skill      │  │   CLI    │  │   PTY Wrapper    │          │
+│  │ install    │  │ dispatch │  │ (fork+exec)      │          │
+│  │ (skill.rs) │  │          │  │                  │          │
+│  └─────┬──────┘  └────┬─────┘  └────┬─────────────┘          │
+│        │              │              │                        │
+│  ┌─────▼──────────────▼──────────────▼──────────────────────┐ │
+│  │              Command Dispatch                             │ │
+│  │  core · data · interaction · session · desktop            │ │
+│  │  batch · monitor · cron · totp · kv · errors              │ │
+│  └─────┬──────────────┬──────────────┬──────────────────────┘ │
+│        │              │              │                        │
+│  ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼────────────┐          │
+│  │  CDP Client │ │  Agent Bus │ │ Desktop (macOS) │          │
+│  │  WebSocket  │ │  SQLite    │ │ Accessibility   │          │
+│  │  to Chrome  │ │  Broker    │ │ API + Screen    │          │
+│  └─────────────┘ └─────┬──────┘ └─────────────────┘          │
+│                        │                                     │
+│              ┌─────────▼─────────┐                           │
+│              │  Transport Layer  │                           │
+│              │                   │                           │
+│              │  Broker (local)   │                           │
+│              │  RelayHttp (remote)│                          │
+│              └─────────┬─────────┘                           │
+│                        │                                     │
+│  ┌──────────┐  ┌───────▼───────┐  ┌───────────────────┐     │
+│  │ Extension│  │ WSS Tunnel    │  │  Telemetry/       │     │
+│  │ bridge   │  │ (tunnel.rs)   │  │  Auto-update      │     │
+│  │ (ext.rs) │  │               │  │                   │     │
+│  └──────────┘  └───────┬───────┘  └───────────────────┘     │
+└────────────────────────┼────────────────────────────────────┘
+                         │ WSS
+                         ▼
+              ┌──────────────────┐
+              │ relay.sidekar.dev│
+              │                  │
+              │  PTY multiplex   │
+              │  Bus relay       │
+              │  Session registry│
+              └──────────────────┘
 ```
 
 - **Skill installer** (`skill.rs`): Copies `SKILL.md` into detected agent skill directories; `sidekar install` entry point
-- **CLI** (`main.rs` → `commands/mod.rs`): Command dispatch for browser, desktop, bus, monitor, cron, etc.
-- **PTY Wrapper** (`pty.rs`): Fork+exec agents in a PTY, register on bus, bridge I/O, signal forwarding
+- **CLI** (`main.rs` -> `commands/mod.rs`): Command dispatch for browser, desktop, bus, monitor, cron, etc.
+- **PTY Wrapper** (`pty.rs`): Fork+exec agents in a PTY, register on bus, open WSS tunnel, bridge I/O, signal forwarding
+- **Agent Bus** (`bus.rs` + `broker.rs` + `message.rs`): SQLite-backed agent registry, typed envelope protocol (request/response/fyi/handoff), delivery via SQLite message queue, nudge timers, timeout tracking
+- **Transport** (`transport.rs`): `Broker` for local delivery (SQLite queue), `RelayHttp` for cross-machine delivery (HTTPS POST to relay, fanned out to recipient's WSS tunnel)
+- **Tunnel** (`tunnel.rs`): Persistent WSS connection to `relay.sidekar.dev`, multiplexes PTY I/O (binary frames) and bus messages (JSON text frames with `ch: "bus"`), heartbeat keepalive, auto-reconnect with exponential backoff
 - **CDP Client** (`lib.rs`): Raw WebSocket to Chrome's debug port, request/response matching, event queue, auto-dialog handling, connection retry, TCP keepalive
-- **Agent Bus** (`bus.rs` + `broker.rs` + `message.rs` + `transport.rs`): SQLite-backed agent registry, typed envelope protocol (request/response/fyi/done), delivery via SQLite message queue, nudge timers, timeout tracking
 - **Desktop** (`desktop/`): macOS-only Accessibility API (`objc2-app-kit`), screen capture (`screencapturekit`), input simulation (`enigo`)
-- **Monitor** (`commands/monitor.rs`): Background task watches tab titles/favicons via CDP, delivers notifications via bus transport. 
-
-- **Tunnel** (`tunnel.rs`): WSS connection to relay server for remote session access, auto-reconnect with exponential backoff
-
-## Token Stats
-
-Each command is designed to minimize token usage while giving the agent enough context to decide its next step.
-
-| Command | sidekar output | Playwright equivalent | Savings |
-|---------|--------------|----------------------|---------|
-| **brief** (auto) | ~200 chars | No equivalent - `page.content()` returns ~50k-500k chars | **~99%** |
-| **read** | ~1k-4k chars (clean text) | No equivalent - manual extraction needed | - |
-| **text** | ~1k-4k chars (text + refs) | `page.accessibility.snapshot()` ~10k-50k chars | **~90%** |
-| **dom** | ~1k-4k chars (compact HTML) | `page.content()` ~50k-500k chars (full raw HTML) | **~95%** |
-| **axtree -i** | ~500-1.5k chars (flat list) | `page.accessibility.snapshot()` ~10k-50k chars | **~95%** |
-
-**Recommended flow for minimal token usage:**
-1. State-changing commands auto-print the **brief** (~200 chars) - often enough to decide next step
-2. Need to read page content? Use **read** - strips UI chrome, returns clean text
-3. Need to see everything + interact? Use **text** - full page with refs
-4. Need just interactive elements? Use **axtree -i** (~500 tokens)
-5. Need HTML structure? Use **dom** with a selector to scope
-6. Reserve **screenshot** for visual-heavy pages where text extraction is insufficient
+- **Monitor** (`commands/monitor.rs`): Background task watches tab titles/favicons via CDP, delivers notifications via bus transport
 
 ## vs. Playwright-based tools
 
@@ -400,33 +439,13 @@ Several tools give AI agents browser control on top of Playwright: [agent-browse
 |  | **sidekar** | **Playwright-based tools** |
 |--|-----------|--------------------------|
 | **What it is** | Rust binary: CDP + extension bridge, desktop, agent bus, monitor/cron | SDK / CLI wrapping Playwright (often via MCP) |
-| **Architecture** | Direct CDP WebSocket to your Chrome | CLI/SDK → IPC → Playwright → bundled Chromium |
+| **Architecture** | Direct CDP WebSocket to your Chrome | CLI/SDK -> IPC -> Playwright -> bundled Chromium |
 | **Install size** | Single binary, zero deps | ~200 MB+ (node_modules + Chromium download) |
 | **Uses your browser** | Yes - your Chrome, your cookies, your logins | No - launches bundled Chromium with clean state |
 | **User agent** | Your real Chrome user agent | Modified Playwright/Chromium UA - detectable |
 | **Headed mode** | Always (unless `--headless`) - you see what the agent sees | Headless by default |
-| **Multi-agent** | Built-in bus for agent discovery and messaging | None |
+| **Multi-agent** | Built-in bus for agent discovery and messaging (local + cross-machine) | None |
 | **Desktop control** | macOS Accessibility API integration | None |
-
-### Token comparison (same pages, measured output)
-
-| Scenario | **sidekar** | **Playwright-based*** | Savings |
-|----------|-----------|------------------|---------|
-| **Navigate + see page** | `navigate` = 186 chars | `open` + `snapshot -i` = 7,974 chars | **98%** |
-| **Navigate + see page** | `navigate` = 756 chars | `open` + `snapshot -i` = 8,486 chars | **91%** |
-| **Full page read** | `read` = ~3,000 chars | No equivalent (manual extraction) | - |
-| **Full page + refs** | `text` = ~4,000 chars | `snapshot` = 104,890 chars | **96%** |
-| **Interactive elements** | `axtree -i` = 5,997 chars | `snapshot -i` = 7,901 chars | **24%** |
-
-## Data directories
-
-| Path | Purpose |
-|------|---------|
-| `~/.sidekar/` | Session state, action cache, tab locks, broker DB, Chrome profiles |
-| `~/.sidekar/profiles/default/` | Default Chrome user data directory |
-| `~/.sidekar/broker.sqlite3` | Agent bus registry and message tracking |
-| `~/.config/sidekar/sidekar.json` | User configuration (telemetry, browser, timeouts) |
-| `/tmp/sidekar-*` | Screenshots, PDFs, network captures, command files |
 
 ## Configuration
 
@@ -481,10 +500,11 @@ src/
 ├── bus.rs               # Agent bus: registration, messaging, nudge timers
 ├── broker.rs            # SQLite-backed agent registry and message persistence
 ├── message.rs           # Typed envelope protocol (AgentId, Envelope, MessageKind)
-├── transport.rs         # Message delivery trait + SQLite broker transport
+├── transport.rs         # Transport trait, Broker (local SQLite), RelayHttp (remote HTTPS)
+├── poller.rs            # Message queue poller, delivers queued messages to agents
 ├── ipc.rs               # Legacy stub (sockets replaced by SQLite queue)
-├── pty.rs               # PTY wrapper for launching agents (fork+exec)
-├── tunnel.rs            # WSS tunnel client for relay server
+├── pty.rs               # PTY wrapper for launching agents (fork+exec, tunnel, bus)
+├── tunnel.rs            # WSS tunnel client to relay.sidekar.dev (PTY + bus multiplex)
 ├── desktop/
 │   ├── macos.rs         # Accessibility API: find, click, list apps/windows
 │   ├── screen.rs        # Screen capture via ScreenCaptureKit
@@ -497,7 +517,7 @@ src/
 ├── api_client.rs        # Telemetry, feedback, version check, self-update
 └── auth.rs              # Device auth flow (GitHub OAuth)
 
-relay/                   # Separate relay server (Fly.io deployed)
+relay/                   # Relay server (Fly.io deployed, WSS + bus fan-out)
 www/                     # Landing page + API (Vercel)
 extension/               # Chrome extension (MV3)
 ```

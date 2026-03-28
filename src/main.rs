@@ -57,15 +57,13 @@ async fn run() -> Result<()> {
     if sidekar::config::is_first_run() && !matches!(command.as_str(), "telemetry" | "config") {
         let config = sidekar::config::SidekarConfig::default();
         let _ = sidekar::config::save_config(&config);
-        let config_path = sidekar::config::config_path();
         eprintln!("");
         eprintln!("Thanks for installing sidekar!");
         eprintln!("");
         eprintln!("Anonymous telemetry is enabled by default to help us improve.");
         eprintln!("It collects: tool usage counts, error counts (no personal data).");
         eprintln!("");
-        eprintln!("Config file: {}", config_path.display());
-        eprintln!("To disable: set \"telemetry\": false in the config file");
+        eprintln!("To disable: sidekar config set telemetry false");
         eprintln!("");
     }
 
@@ -121,6 +119,26 @@ async fn run() -> Result<()> {
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
         return sidekar::pty::run_agent(&command, &args).await;
+    }
+
+    // Auto-route browser commands through the Chrome extension if it is connected
+    // and authenticated, unless an explicit --profile was used (which implies CDP).
+    const EXT_ROUTABLE: &[&str] = &[
+        "tabs", "read", "screenshot", "click", "type", "axtree",
+        "eval", "navigate", "newtab", "close", "scroll",
+    ];
+    if EXT_ROUTABLE.contains(&command.as_str()) && sidekar::ext::is_ext_available() {
+        let default_tab = match override_tab_id.as_deref() {
+            None => None,
+            Some(s) => match s.parse::<u64>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    eprintln!("Error: --tab requires a numeric tab ID");
+                    std::process::exit(1);
+                }
+            },
+        };
+        return sidekar::ext::send_cli_command(&command, &args, default_tab).await;
     }
 
     let mut ctx = AppContext::new()?;

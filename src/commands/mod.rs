@@ -440,50 +440,89 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "install" => cmd_setup(ctx).await,
         "uninstall" => cmd_uninstall(ctx).await,
         "config" => {
-            let action = args.first().map(String::as_str).unwrap_or("get");
+            let action = args.first().map(String::as_str).unwrap_or("list");
             match action {
+                "list" | "ls" => {
+                    let items = crate::config::config_list();
+                    let max_key = items.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+                    for (key, val, is_default) in &items {
+                        let display_val = if val.is_empty() { "(not set)" } else { val.as_str() };
+                        let marker = if *is_default { " (default)" } else { "" };
+                        let desc = crate::config::find_key(key)
+                            .map(|k| k.description)
+                            .unwrap_or("");
+                        out!(ctx, "{:<width$}  {}{}", key, display_val, marker, width = max_key);
+                        if !desc.is_empty() {
+                            out!(ctx, "{:<width$}  # {}", "", desc, width = max_key);
+                        }
+                    }
+                    Ok(())
+                }
                 "get" => {
-                    let config = crate::config::load_config();
-                    let json = serde_json::to_string_pretty(&config)?;
-                    out!(ctx, "{json}");
+                    let key = args.get(1).map(String::as_str).unwrap_or("");
+                    if key.is_empty() {
+                        // No key specified — show all (same as list)
+                        let items = crate::config::config_list();
+                        let max_key = items.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+                        for (key, val, is_default) in &items {
+                            let display_val = if val.is_empty() { "(not set)" } else { val.as_str() };
+                            let marker = if *is_default { " (default)" } else { "" };
+                            out!(ctx, "{:<width$}  {}{}", key, display_val, marker, width = max_key);
+                        }
+                        return Ok(());
+                    }
+                    if crate::config::find_key(key).is_none() {
+                        let valid: Vec<&str> = crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
+                        bail!("Unknown config key: {key}. Valid keys: {}", valid.join(", "));
+                    }
+                    let val = crate::config::config_get(key);
+                    out!(ctx, "{}", if val.is_empty() { "(not set)".to_string() } else { val });
                     Ok(())
                 }
                 "set" => {
                     let key = args.get(1).map(String::as_str).unwrap_or("");
-                    let raw_value = args.get(2).map(String::as_str).unwrap_or("true");
-                    let mut config = crate::config::load_config();
-                    match key {
-                        "telemetry" => config.telemetry = raw_value == "true",
-                        "feedback" => config.feedback = raw_value == "true",
-                        "browser" => {
-                            if raw_value == "false" || raw_value == "none" || raw_value == "default"
-                            {
-                                config.browser = None;
-                                crate::config::save_config(&config)?;
-                                out!(ctx, "Cleared browser preference (will use system default)");
-                                return Ok(());
-                            }
-                            // Validate the browser name
-                            if find_browser_by_name(raw_value).is_none() {
-                                bail!(
-                                    "Browser '{raw_value}' not found. Available: chrome, edge, brave, arc, vivaldi, chromium, canary"
-                                );
-                            }
-                            config.browser = Some(raw_value.to_string());
-                        }
-                        "auto_update" => config.auto_update = raw_value == "true",
-                        "cdp_timeout_secs" => {
-                            config.cdp_timeout_secs = raw_value.parse().unwrap_or(60);
-                        }
-                        _ => bail!(
-                            "Unknown config key: {key}. Valid keys: telemetry, feedback, browser, auto_update, cdp_timeout_secs"
-                        ),
+                    if key.is_empty() {
+                        bail!("Usage: sidekar config set <key> <value>");
                     }
-                    crate::config::save_config(&config)?;
+                    let ck = crate::config::find_key(key);
+                    if ck.is_none() {
+                        let valid: Vec<&str> = crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
+                        bail!("Unknown config key: {key}. Valid keys: {}", valid.join(", "));
+                    }
+                    let raw_value = args.get(2).map(String::as_str).unwrap_or("true");
+                    // Browser validation
+                    if key == "browser" {
+                        if raw_value == "false" || raw_value == "none" || raw_value == "default" {
+                            crate::config::config_delete(key)?;
+                            out!(ctx, "Cleared browser preference (will use system default)");
+                            return Ok(());
+                        }
+                        if find_browser_by_name(raw_value).is_none() {
+                            bail!(
+                                "Browser '{raw_value}' not found. Available: chrome, edge, brave, arc, vivaldi, chromium, canary"
+                            );
+                        }
+                    }
+                    crate::config::config_set(key, raw_value)?;
                     out!(ctx, "Set {key} = {raw_value}");
                     Ok(())
                 }
-                _ => bail!("Usage: config get | config set <key> <true|false>"),
+                "reset" => {
+                    let key = args.get(1).map(String::as_str).unwrap_or("");
+                    if key.is_empty() {
+                        bail!("Usage: sidekar config reset <key>");
+                    }
+                    if crate::config::find_key(key).is_none() {
+                        let valid: Vec<&str> = crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
+                        bail!("Unknown config key: {key}. Valid keys: {}", valid.join(", "));
+                    }
+                    crate::config::config_delete(key)?;
+                    let default = crate::config::find_key(key).unwrap().default;
+                    let display = if default.is_empty() { "(not set)" } else { default };
+                    out!(ctx, "Reset {key} to default: {display}");
+                    Ok(())
+                }
+                _ => bail!("Usage: sidekar config [list|get <key>|set <key> <value>|reset <key>]"),
             }
         }
         "update" => {

@@ -48,6 +48,11 @@ pub fn db_path() -> PathBuf {
     data_dir().join(DB_FILE)
 }
 
+/// Open the broker SQLite database (creating it + schema if needed).
+pub fn open_db() -> Result<Connection> {
+    open()
+}
+
 fn open() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
     let path = db_path();
@@ -189,6 +194,16 @@ fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS encryption_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        ",
+    )?;
+
+    // Config key-value store (replaces ~/.config/sidekar/sidekar.json)
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS config (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );

@@ -2310,16 +2310,23 @@ sidekar bus_done <next> <summary> <request>
   Example: sidekar bus_done claude-2 \"Finished API tests\" \"Run integration tests\"",
 
         "config" => "\
-sidekar config <get|set> [key] [value]
+sidekar config [list|get|set|reset] [key] [value]
 
-  Get or set configuration. Stored in ~/.config/sidekar/sidekar.json
+  Manage configuration (stored in ~/.sidekar/broker.sqlite3).
 
-  Keys: telemetry, feedback, browser, auto_update, cdp_timeout_secs
+  Commands:
+    config list              Show all settings with defaults
+    config get <key>         Get a single setting
+    config set <key> <val>   Set a value
+    config reset <key>       Revert to default
+
+  Keys: telemetry, feedback, browser, auto_update, max_tabs, cdp_timeout_secs, max_cron_jobs
 
   Examples:
-    sidekar config get
+    sidekar config list
     sidekar config set telemetry false
-    sidekar config set browser brave",
+    sidekar config set browser brave
+    sidekar config reset browser",
 
         "install" => "\
 sidekar install
