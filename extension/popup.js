@@ -40,7 +40,9 @@ function applyStatus(res) {
   status.textContent = "Not connected";
   status.className = "disconnected";
   detailEl.textContent = res && res.lastError ? res.lastError : "";
-  retryBtn.style.display = "block";
+  // Only show retry if there's an actual error (not just "not logged in")
+  const hasRealError = res && res.lastError && !res.lastError.includes("log in");
+  retryBtn.style.display = hasRealError ? "block" : "none";
 }
 
 function refreshStatus() {
