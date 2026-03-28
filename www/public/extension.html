@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sidekar Chrome Extension</title>
-<meta name="description" content="The Sidekar Chrome extension connects your local Sidekar CLI to your everyday Chrome profile. Learn how it works, why it needs native messaging and localhost, and how to install it safely.">
+<meta name="description" content="The Sidekar Chrome extension adds stronger in-page control for Gmail, Google Docs, and other SPA-heavy sites. Learn how it works, why it needs native messaging and localhost, and how to install it safely.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -388,8 +388,8 @@ footer {
     <section class="hero">
       <div>
         <div class="eyebrow">Chrome extension</div>
-        <h1>Use Sidekar with the Chrome profile you already use.</h1>
-        <p>The Sidekar Chrome extension lets your local Sidekar CLI interact with the Chrome profile you already use. It is for the cases where the agent needs your real tabs, cookies, or logged-in sessions instead of a clean automation profile.</p>
+        <h1>Add stronger in-page control for Gmail, Docs, and other SPA-heavy sites.</h1>
+        <p>The Sidekar Chrome extension adds an in-page bridge for the web apps that push past plain browser automation. Use it for the harder cases, not as the default path for every site.</p>
         <div class="cta-row">
           <a href="/install" class="btn-primary">Install the CLI first</a>
           <a href="https://github.com/kilospark/sidekar/issues" class="btn-secondary">Support on GitHub</a>
@@ -427,25 +427,25 @@ footer {
           <div class="label">What it does</div>
           <div>
             <h2>Why the extension exists</h2>
-            <p>CDP is excellent for isolated automation. The extension exists for the cases where isolation is the wrong tool and the agent needs the browser you already use.</p>
+            <p>CDP is enough for a lot of browser automation. The extension is for the cases where an in-page bridge is more reliable: rich editors, dense client-side UIs, and apps that keep most of their behavior inside the page.</p>
           </div>
         </div>
         <div class="cards">
           <article class="card">
-            <h3>Use your real tabs</h3>
-            <p>Read, click, type, and inspect pages in the Chrome profile you already keep signed in.</p>
+            <h3>Handle SPA-heavy apps</h3>
+            <p>Use Sidekar more effectively on apps like Gmail and Google Docs where the interface keeps shifting inside a long-lived client-side shell.</p>
           </article>
           <article class="card">
             <h3>Keep local control</h3>
             <p>The extension talks to a local bridge on <code>127.0.0.1</code>. It is not a hosted browser service.</p>
           </article>
           <article class="card">
-            <h3>Support login-heavy sites</h3>
-            <p>Use the browser state you already have instead of recreating sessions in a separate automation profile.</p>
+            <h3>Use your signed-in browser state</h3>
+            <p>Work inside the browser you already use instead of recreating cookies, sessions, and app state in a separate automation environment.</p>
           </article>
           <article class="card">
-            <h3>Stay inside Sidekar</h3>
-            <p>The extension is one part of Sidekar’s browser story, alongside direct CDP automation for isolated sessions.</p>
+            <h3>Keep CDP as the default</h3>
+            <p>The extension is an extra layer for specific sites. Most browser work should still run through Sidekar’s normal browser commands.</p>
           </article>
         </div>
       </section>
@@ -520,7 +520,7 @@ footer {
         </article>
         <article class="faq-item">
           <h3>What happens if I do not install the extension?</h3>
-          <p>Sidekar still supports browser automation through direct CDP. The extension is only for the cases where the agent needs your everyday Chrome profile.</p>
+          <p>Sidekar still supports browser automation through direct CDP. Skip the extension unless the site really benefits from the in-page bridge.</p>
         </article>
       </div>
     </section>

@@ -181,8 +181,10 @@ Actions run sequentially. Smart 500ms waits after state-changing actions.
 Per-action: `wait` (ms), `retries`/`retry_delay`, `optional` (continue on failure).
 
 ### Multi-Agent Bus
+Agents are scoped to channels (based on working directory). By default you only see agents in your project.
 ```
 sidekar who                               List agents on your channel
+sidekar who --all                         List all agents across all channels
 sidekar bus_send <to> <message>           Send message to agent (or @all)
 sidekar bus_done <next> <summary> <req>   Hand off to another agent
 ```
