@@ -965,7 +965,7 @@ fn handle_native_message(msg: &Value) -> Value {
 }
 
 /// Install the native messaging host manifest for Chrome.
-pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
+fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result<()> {
     let exe_path = std::env::current_exe()
         .context("Cannot determine sidekar executable path")?;
 
@@ -1021,11 +1021,21 @@ pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
     std::fs::write(&manifest_path, &manifest_json)
         .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
 
-    println!("Installed native messaging host manifest:");
-    println!("  {}", manifest_path.display());
-    println!();
-    println!("Manifest contents:");
-    println!("{manifest_json}");
+    if verbose {
+        println!("Installed native messaging host manifest:");
+        println!("  {}", manifest_path.display());
+        println!();
+        println!("Manifest contents:");
+        println!("{manifest_json}");
+    }
 
     Ok(())
+}
+
+pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
+    install_native_host_impl(extension_id, true)
+}
+
+pub(crate) fn install_native_host_quiet(extension_id: Option<&str>) -> Result<()> {
+    install_native_host_impl(extension_id, false)
 }
