@@ -65,7 +65,7 @@ async fn verify_ext_token(ext_token: &str) -> Result<String> {
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
-    let url = format!("{}/api/auth/verify-ext", ext_api_base());
+    let url = format!("{}/api/auth/ext-token?verify=1", ext_api_base());
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", device_token))

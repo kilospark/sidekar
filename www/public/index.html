@@ -956,7 +956,7 @@ function starsHtml(rating, size) {
 fetch('/v1/stats')
   .then(function(r) { return r.json(); })
   .then(function(stats) {
-    return fetch('/v1/reviews')
+    return fetch('/v1/stats?reviews=1')
       .then(function(r) { return r.json(); })
       .then(function(data) {
         renderFeedback(stats, data.reviews || []);
