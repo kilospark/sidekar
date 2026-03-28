@@ -10,7 +10,11 @@ const hintEl = document.querySelector(".hint");
 
 function updateHint(res) {
   if (!hintEl) return;
+  // Hide hint if authenticated or if error message already explains the issue
   if (res && res.authenticated) {
+    hintEl.style.display = "none";
+  } else if (res && res.lastError) {
+    // Error message already shown in detail area - don't duplicate
     hintEl.style.display = "none";
   } else if (res && res.cliLoggedIn) {
     hintEl.innerHTML = "CLI ready. Log in above to connect.";
@@ -40,9 +44,13 @@ function applyStatus(res) {
   status.textContent = "Not connected";
   status.className = "disconnected";
   detailEl.textContent = res && res.lastError ? res.lastError : "";
-  // Only show retry if there's an actual error (not just "not logged in")
-  const hasRealError = res && res.lastError && !res.lastError.includes("log in");
-  retryBtn.style.display = hasRealError ? "block" : "none";
+  // Only show retry for connection errors, not auth/login issues
+  const isAuthIssue = res && res.lastError && (
+    res.lastError.includes("login") || 
+    res.lastError.includes("token") ||
+    res.lastError.includes("Auth")
+  );
+  retryBtn.style.display = (res && res.lastError && !isAuthIssue) ? "block" : "none";
 }
 
 function refreshStatus() {
