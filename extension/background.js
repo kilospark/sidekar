@@ -74,7 +74,7 @@ async function connect() {
   const extToken = await getExtToken();
   if (!extToken) {
     console.log("[sidekar] no token configured — click extension icon to log in");
-    lastConnectError = "Click the Sidekar icon to log in with GitHub";
+    lastConnectError = null;
     return;
   }
 
