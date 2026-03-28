@@ -306,6 +306,54 @@ async fn do_self_update(version: &str) -> Result<()> {
     Ok(())
 }
 
+/// List devices registered to the current user.
+pub async fn list_devices() -> Result<Value> {
+    let token = crate::auth::auth_token()
+        .ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
+
+    let url = format!("{}/api/auth/devices", api_base());
+    let resp = HTTP_CLIENT
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .context("Failed to fetch devices")?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        bail!("Session expired. Run: sidekar login");
+    }
+    if !status.is_success() {
+        bail!("Failed to fetch devices: HTTP {}", status);
+    }
+
+    resp.json().await.context("Invalid response")
+}
+
+/// List active sessions for the current user.
+pub async fn list_sessions() -> Result<Value> {
+    let token = crate::auth::auth_token()
+        .ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
+
+    let url = format!("{}/api/sessions", api_base());
+    let resp = HTTP_CLIENT
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .context("Failed to fetch sessions")?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        bail!("Session expired. Run: sidekar login");
+    }
+    if !status.is_success() {
+        bail!("Failed to fetch sessions: HTTP {}", status);
+    }
+
+    resp.json().await.context("Invalid response")
+}
+
 fn verify_signature(binary: &[u8], signature: &[u8]) -> Result<()> {
     use minisign_verify::{PublicKey, Signature};
 
