@@ -7,8 +7,6 @@ const logoutBtn = document.getElementById("logout-btn");
 const authSection = document.getElementById("auth-section");
 const loggedInSection = document.getElementById("logged-in-section");
 const userInfoEl = document.getElementById("user-info");
-const secretInput = document.getElementById("secret");
-const saveSecretBtn = document.getElementById("save-secret");
 const savePortBtn = document.getElementById("save-port");
 
 const DEFAULT_EXT_PORT = 9876;
@@ -46,15 +44,10 @@ function refreshStatus() {
 }
 
 function updateAuthUI() {
-  chrome.storage.local.get(["extToken", "secret"], (data) => {
+  chrome.storage.local.get(["extToken"], (data) => {
     if (data.extToken) {
       authSection.style.display = "none";
       loggedInSection.style.display = "block";
-      userInfoEl.textContent = "Authenticated via GitHub";
-    } else if (data.secret) {
-      authSection.style.display = "none";
-      loggedInSection.style.display = "block";
-      userInfoEl.textContent = "Authenticated via shared secret";
     } else {
       authSection.style.display = "block";
       loggedInSection.style.display = "none";
@@ -153,38 +146,12 @@ loginBtn.addEventListener("click", () => {
 // --- Logout ---
 
 logoutBtn.addEventListener("click", () => {
-  chrome.storage.local.remove(["extToken", "secret"], () => {
+  chrome.storage.local.remove(["extToken"], () => {
     chrome.runtime.sendMessage({ type: "reconnect" }, () => {
       updateAuthUI();
       refreshStatus();
     });
   });
-});
-
-// --- Manual secret (backwards compat) ---
-
-saveSecretBtn.addEventListener("click", () => {
-  const secret = secretInput.value.trim();
-  if (!secret) return;
-
-  status.textContent = "Connecting...";
-  status.className = "pending";
-  detailEl.textContent = "";
-
-  chrome.runtime.sendMessage(
-    { type: "setSecret", secret, extPort: getPort() },
-    () => {
-      if (chrome.runtime.lastError) {
-        detailEl.textContent = chrome.runtime.lastError.message || "";
-        status.textContent = "Not connected";
-        status.className = "disconnected";
-        return;
-      }
-      updateAuthUI();
-      const delays = [400, 1200, 2500, 5000];
-      delays.forEach((ms) => setTimeout(refreshStatus, ms));
-    }
-  );
 });
 
 // --- Port update ---
