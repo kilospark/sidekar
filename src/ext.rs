@@ -25,50 +25,14 @@ fn ipc_port_for_ws(port: u16) -> Result<u16> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Shared secret for authentication
-// ---------------------------------------------------------------------------
-
 fn data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".sidekar")
 }
 
-fn secret_path() -> PathBuf {
-    data_dir().join("ext-secret")
-}
-
 fn pid_path() -> PathBuf {
     data_dir().join("ext-server.pid")
-}
-
-/// Get or create the shared secret. Both the server and extension use this.
-fn get_or_create_secret() -> Result<String> {
-    let path = secret_path();
-    if let Ok(secret) = std::fs::read_to_string(&path) {
-        let secret = secret.trim().to_string();
-        if !secret.is_empty() {
-            return Ok(secret);
-        }
-    }
-    // Generate new secret
-    let secret = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
-    std::fs::create_dir_all(data_dir())?;
-    std::fs::write(&path, &secret)?;
-    // Restrict permissions
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(secret)
-}
-
-fn read_secret() -> Result<String> {
-    std::fs::read_to_string(secret_path())
-        .map(|s| s.trim().to_string())
-        .context("No ext-secret found")
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +105,6 @@ pub async fn run_server() -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let secret = get_or_create_secret()?;
-
     let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
         .with_context(|| {
@@ -212,17 +174,15 @@ pub async fn run_server() -> Result<()> {
         std::process::exit(0);
     });
 
-    let server_secret = secret.clone();
     loop {
         let (stream, addr) = listener.accept().await?;
         eprintln!("Connection from {addr}");
         let s = state.clone();
-        let sec = server_secret.clone();
-        tokio::spawn(handle_extension_connection(stream, s, sec));
+        tokio::spawn(handle_extension_connection(stream, s));
     }
 }
 
-async fn handle_extension_connection(stream: TcpStream, state: SharedState, secret: String) {
+async fn handle_extension_connection(stream: TcpStream, state: SharedState) {
     let ws = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -261,7 +221,6 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState, secr
                     if msg_type == "hello" {
                         let version = val.get("version").and_then(|v| v.as_str()).unwrap_or("?");
                         let provided_token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
-                        let provided_secret = val.get("secret").and_then(|v| v.as_str()).unwrap_or("");
 
                         if !provided_token.is_empty() {
                             // Token-based auth (OAuth flow)
@@ -289,22 +248,8 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState, secr
                                     break;
                                 }
                             }
-                        } else if !provided_secret.is_empty() && provided_secret == secret {
-                            // Legacy secret-based auth (backwards compat)
-                            let mut s = state.lock().await;
-                            s.authenticated = true;
-                            eprintln!("Extension authenticated via secret: v{version}");
-                            if let Some(ref mut ext_tx) = s.ext_tx {
-                                let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
-                                    json!({"type": "auth_ok"}).to_string().into()
-                                )).await;
-                            }
                         } else {
-                            let reason = if !provided_secret.is_empty() {
-                                "Bad secret — run `sidekar ext secret` and paste the value again"
-                            } else {
-                                "No credentials provided — log in from the extension popup"
-                            };
+                            let reason = "No token provided — log in from the extension popup";
                             eprintln!("Extension auth failed: {reason}");
                             let mut s = state.lock().await;
                             if let Some(ref mut ext_tx) = s.ext_tx {
@@ -531,27 +476,11 @@ pub fn auto_launch_server() -> Result<()> {
     // Find our own binary
     let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
 
-    // Ensure secret exists before spawning
-    get_or_create_secret()?;
-
-    // Spawn detached ext-server process
-    let log_path = data_dir().join("ext-server.log");
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .context("Cannot open ext-server log")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600));
-    }
-    let log_err = log_file.try_clone()?;
-
+    // Spawn detached ext-server process (logs to stderr, errors to SQLite)
     let child = std::process::Command::new(exe)
         .arg("ext-server")
-        .stdout(log_file)
-        .stderr(log_err)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .stdin(std::process::Stdio::null())
         .spawn()
         .context("Failed to spawn ext-server")?;
@@ -572,9 +501,8 @@ pub fn auto_launch_server() -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     bail!(
-        "ext-server did not open IPC on {ipc_addr} within 4s (child PID {}). See {}",
-        child.id(),
-        log_path.display()
+        "ext-server did not open IPC on {ipc_addr} within 4s (child PID {})",
+        child.id()
     );
 }
 
@@ -589,11 +517,6 @@ pub async fn send_cli_command(command: &str, args: &[String], default_tab: Optio
     }
     if command == "status" {
         return show_status();
-    }
-    if command == "secret" {
-        let secret = get_or_create_secret()?;
-        println!("{secret}");
-        return Ok(());
     }
 
     // Auto-launch server
@@ -663,9 +586,6 @@ fn show_status() -> Result<()> {
             .trim()
             .to_string();
         println!("ext-server running (PID {pid})");
-        if let Ok(secret) = read_secret() {
-            println!("Secret: {secret}");
-        }
     } else {
         println!("ext-server not running");
     }
@@ -784,7 +704,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             }
             Ok(cmd)
         }
-        _ => bail!("Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, axtree, eval, navigate, newtab, close, scroll, status, stop, secret"),
+        _ => bail!("Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, axtree, eval, navigate, newtab, close, scroll, status, stop"),
     }
 }
 

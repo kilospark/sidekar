@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
@@ -19,57 +17,23 @@ fn api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
 }
 
-fn auth_file() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("sidekar")
-        .join("auth.json")
-}
-
 /// Read the stored device token, if any.
 pub fn auth_token() -> Option<String> {
-    let path = auth_file();
-    let content = fs::read_to_string(&path).ok()?;
-    let parsed: Value = serde_json::from_str(&content).ok()?;
-    parsed.get("token")?.as_str().map(|s| s.to_string())
+    crate::broker::auth_get("token")
 }
 
 /// Remove the stored device token and clear in-memory encryption state.
 pub fn logout() -> Result<()> {
-    let path = auth_file();
-    if path.exists() {
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to remove {}", path.display()))?;
-    }
+    crate::broker::auth_clear()?;
     crate::broker::clear_encryption_key();
     crate::broker::clear_current_user_id();
     Ok(())
 }
 
-/// Save a device token to ~/.config/sidekar/auth.json.
+/// Save a device token.
 pub fn save_token(token: &str) -> Result<()> {
-    let path = auth_file();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    // ISO 8601 timestamp without external crate
-    let now = iso_now();
-    let data = json!({
-        "token": token,
-        "created_at": now,
-    });
-    fs::write(&path, serde_json::to_string_pretty(&data)?)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-
-    // Restrict permissions to owner-only on unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
-
+    crate::broker::auth_set("token", token)?;
+    crate::broker::auth_set("created_at", &iso_now())?;
     Ok(())
 }
 
@@ -166,7 +130,7 @@ pub async fn device_auth_flow() -> Result<()> {
             if let Err(e) = push_device_metadata(token).await {
                 eprintln!("sidekar: could not register device info with sidekar.dev: {e:#}");
             }
-            println!("Logged in successfully! Token saved to {}", auth_file().display());
+            println!("Logged in successfully!");
             return Ok(());
         }
     }

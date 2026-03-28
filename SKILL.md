@@ -195,16 +195,12 @@ sidekar totp get <service> <account>          Get current code
 sidekar totp remove <id>                      Delete a secret
 ```
 
-### KV Store (Project State)
+### KV Store (Encrypted Storage)
 ```
-sidekar kv set <key> <value>           Set project-scoped key (by cwd)
-sidekar kv set <key> <value> --global Set global key (shared across projects)
-sidekar kv get <key>                   Get value
-sidekar kv get <key> --global          Get global value
-sidekar kv list                         List project keys
-sidekar kv list --global                List global keys
-sidekar kv delete <key>                 Delete key
-sidekar kv delete <key> --global        Delete global key
+sidekar kv set <key> <value>    Store a value (encrypted at rest)
+sidekar kv get <key>            Retrieve a value
+sidekar kv list                 List all keys
+sidekar kv delete <key>         Delete a key
 ```
 
 ### Config

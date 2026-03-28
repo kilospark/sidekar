@@ -2313,7 +2313,7 @@ sidekar bus_done <next> <summary> <request>
         "config" => "\
 sidekar config [list|get|set|reset] [key] [value]
 
-  Manage configuration (stored in ~/.sidekar/broker.sqlite3).
+  Manage configuration (stored in ~/.sidekar/sidekar.sqlite3).
 
   Commands:
     config list              Show all settings with defaults

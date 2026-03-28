@@ -93,7 +93,7 @@ Control native applications via the macOS Accessibility API: find and click UI e
 
 ### 6. Credentials and encrypted storage
 
-This is what closes the loop on fully autonomous agents. The **encrypted KV store** holds usernames, passwords, API keys, and any other secrets -- AES-256-GCM encrypted at rest, scoped per project or shared globally. **TOTP** stores 2FA secrets and generates time-based codes on demand. Together with browser automation, an agent can log in to any service end-to-end: pull credentials from KV, generate a TOTP code, fill the login form, handle MFA, and proceed -- without secrets ever appearing in chat history or tool output. **Error log** (`sidekar errors`) surfaces recent failures for debugging.
+This is what closes the loop on fully autonomous agents. The **encrypted KV store** holds usernames, passwords, API keys, and any other secrets -- AES-256-GCM encrypted at rest. **TOTP** stores 2FA secrets and generates time-based codes on demand. Together with browser automation, an agent can log in to any service end-to-end: pull credentials from KV, generate a TOTP code, fill the login form, handle MFA, and proceed -- without secrets ever appearing in chat history or tool output. **Error log** (`sidekar errors`) surfaces recent failures for debugging.
 
 ## How it works
 
@@ -325,18 +325,16 @@ sidekar totp remove <id>                        # Delete a stored secret
 
 Useful for automated login flows that require two-factor authentication. Secrets are stored encrypted on disk.
 
-### KV store (persistent agent state)
+### KV store (encrypted key-value storage)
 
 ```bash
-sidekar kv set <key> <value>             # Set project-scoped key (scoped by cwd)
-sidekar kv set <key> <value> --global    # Set global key (shared across projects)
-sidekar kv get <key>                     # Get project-scoped value
-sidekar kv get <key> --global            # Get global value
-sidekar kv list                          # List project-scoped keys
-sidekar kv list --global                 # List global keys
-sidekar kv delete <key>                  # Delete project-scoped key
-sidekar kv delete <key> --global         # Delete global key
+sidekar kv set <key> <value>    # Store a value
+sidekar kv get <key>            # Retrieve a value
+sidekar kv list                 # List all keys
+sidekar kv delete <key>         # Delete a key
 ```
+
+Values are encrypted at rest (AES-256-GCM) when logged in to sidekar.dev.
 
 Project-scoped keys are tied to the current working directory. Global keys are shared across all projects. Both persist across sessions in SQLite.
 
