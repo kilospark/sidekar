@@ -282,11 +282,13 @@ async fn handle_command(
         "status" => {
             let s = state.lock().await;
             let ext_status = crate::ext::get_status(&s.ext_state).await;
+            let cli_logged_in = crate::auth::auth_token().is_some();
             json!({
                 "running": true,
                 "pid": std::process::id(),
                 "ext_port": s.ext_port,
                 "ext": ext_status,
+                "cli_logged_in": cli_logged_in,
             })
         }
 

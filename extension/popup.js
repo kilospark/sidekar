@@ -8,13 +8,26 @@ const loggedInSection = document.getElementById("logged-in-section");
 
 const hintEl = document.querySelector(".hint");
 
+function updateHint(res) {
+  if (!hintEl) return;
+  if (res && res.authenticated) {
+    hintEl.style.display = "none";
+  } else if (res && res.cliLoggedIn) {
+    hintEl.innerHTML = "CLI ready. Log in above to connect.";
+    hintEl.style.display = "block";
+  } else {
+    hintEl.innerHTML = "Run <code>sidekar login</code> in terminal first";
+    hintEl.style.display = "block";
+  }
+}
+
 function applyStatus(res) {
+  updateHint(res);
   if (res && res.authenticated) {
     status.textContent = "Connected & authenticated";
     status.className = "connected";
     detailEl.textContent = "";
     retryBtn.style.display = "none";
-    if (hintEl) hintEl.style.display = "none";
     return;
   }
   if (res && res.connected) {
@@ -22,14 +35,12 @@ function applyStatus(res) {
     status.className = "pending";
     detailEl.textContent = "";
     retryBtn.style.display = "none";
-    if (hintEl) hintEl.style.display = "block";
     return;
   }
   status.textContent = "Not connected";
   status.className = "disconnected";
   detailEl.textContent = res && res.lastError ? res.lastError : "";
   retryBtn.style.display = "block";
-  if (hintEl) hintEl.style.display = "block";
 }
 
 function refreshStatus() {
