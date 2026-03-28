@@ -878,13 +878,31 @@ pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
     let exe_path = std::env::current_exe()
         .context("Cannot determine sidekar executable path")?;
 
+    // Create a wrapper script that calls sidekar with the native-messaging-host command
+    let wrapper_path = exe_path.parent()
+        .unwrap_or(std::path::Path::new("/usr/local/bin"))
+        .join("sidekar-native-host");
+    
+    let wrapper_script = format!(
+        "#!/bin/bash\nexec \"{}\" native-messaging-host \"$@\"\n",
+        exe_path.display()
+    );
+    std::fs::write(&wrapper_path, &wrapper_script)
+        .with_context(|| format!("Failed to write wrapper script to {}", wrapper_path.display()))?;
+    
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
     // Use provided extension ID or the official published ID
     let ext_id = extension_id.unwrap_or("ieggclnoffcnljcjeadgogpfbnhogncc");
 
     let manifest = json!({
         "name": NATIVE_HOST_NAME,
         "description": "Sidekar native messaging host",
-        "path": exe_path.to_string_lossy(),
+        "path": wrapper_path.to_string_lossy(),
         "type": "stdio",
         "allowed_origins": [format!("chrome-extension://{ext_id}/")]
     });
