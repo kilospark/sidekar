@@ -39,17 +39,30 @@ fn pid_path() -> PathBuf {
 // Shared state between server and extension connection
 // ---------------------------------------------------------------------------
 
-struct ExtState {
-    ext_tx: Option<futures_util::stream::SplitSink<
+pub struct ExtState {
+    pub ext_tx: Option<futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<TcpStream>,
         tokio_tungstenite::tungstenite::Message,
     >>,
-    pending: HashMap<String, oneshot::Sender<Value>>,
-    connected: bool,
-    authenticated: bool,
-    /// Cached user_id from a successful token verification (avoids repeated API calls).
-    verified_user_id: Option<String>,
+    pub pending: HashMap<String, oneshot::Sender<Value>>,
+    pub connected: bool,
+    pub authenticated: bool,
+    pub verified_user_id: Option<String>,
 }
+
+impl Default for ExtState {
+    fn default() -> Self {
+        Self {
+            ext_tx: None,
+            pending: HashMap::new(),
+            connected: false,
+            authenticated: false,
+            verified_user_id: None,
+        }
+    }
+}
+
+pub type SharedExtState = Arc<Mutex<ExtState>>;
 
 fn ext_api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
@@ -96,7 +109,66 @@ async fn verify_ext_token(ext_token: &str) -> Result<String> {
 type SharedState = Arc<Mutex<ExtState>>;
 
 // ---------------------------------------------------------------------------
-// Server
+// Ext bridge for daemon
+// ---------------------------------------------------------------------------
+
+/// Start the extension bridge WebSocket listener.
+/// Called by the daemon to run ext-bridge as a subsystem.
+/// Returns the port number on success.
+pub async fn start_ext_bridge(state: SharedExtState) -> Result<u16> {
+    let port = std::env::var("SIDEKAR_EXT_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to bind ext-bridge on port {port}. Is another instance running?"
+            )
+        })?;
+
+    eprintln!("ext-bridge listening on ws://127.0.0.1:{port}");
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    eprintln!("Extension connection from {addr}");
+                    let s = state.clone();
+                    tokio::spawn(handle_extension_connection(stream, s));
+                }
+                Err(e) => {
+                    eprintln!("ext-bridge accept error: {e}");
+                }
+            }
+        }
+    });
+
+    Ok(port)
+}
+
+/// Send a command to the extension via the shared state.
+/// Used by daemon to forward ext commands from unix socket.
+pub async fn forward_command(state: &SharedExtState, command: Value) -> Value {
+    match send_command(state, command).await {
+        Ok(v) => v,
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+/// Get extension connection status.
+pub async fn get_status(state: &SharedExtState) -> Value {
+    let s = state.lock().await;
+    json!({
+        "connected": s.connected,
+        "authenticated": s.authenticated,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Standalone server (legacy - will be deprecated)
 // ---------------------------------------------------------------------------
 
 pub async fn run_server() -> Result<()> {
@@ -850,20 +922,20 @@ fn handle_native_message(msg: &Value) -> Value {
 
     match cmd {
         "get_config" => {
-            // Return port and server status
+            // Return port and daemon status
             let port = std::env::var("SIDEKAR_EXT_PORT")
                 .ok()
                 .and_then(|v| v.parse::<u16>().ok())
                 .unwrap_or(DEFAULT_PORT);
-            let running = is_server_running();
+            let running = crate::daemon::is_running();
             json!({
                 "port": port,
                 "running": running
             })
         }
         "ensure_server" => {
-            // Start ext-server if not running, return port
-            match auto_launch_server() {
+            // Start daemon if not running, return port
+            match crate::daemon::ensure_running() {
                 Ok(()) => {
                     let port = std::env::var("SIDEKAR_EXT_PORT")
                         .ok()
