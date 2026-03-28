@@ -603,6 +603,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ensureServerViaNative().then((nativeResult) => {
       if (!nativeResult.error) {
         cliLoggedIn = nativeResult.cli_logged_in === true;
+        // If CLI is now logged in but we're not connected, reconnect
+        if (cliLoggedIn && (!ws || ws.readyState !== 1)) {
+          lastConnectError = null;
+          connect();
+        }
       }
       sendResponse({
         connected: ws !== null && ws.readyState === 1,
