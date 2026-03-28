@@ -1,4 +1,5 @@
 const status = document.getElementById("status");
+const extStatus = document.getElementById("ext-status");
 const detailEl = document.getElementById("detail");
 const loginBtn = document.getElementById("login-btn");
 const logoutBtn = document.getElementById("logout-btn");
@@ -97,9 +98,13 @@ function updateAuthUI() {
     if (data.extToken) {
       authSection.style.display = "none";
       loggedInSection.style.display = "block";
+      extStatus.textContent = "Signed in";
+      extStatus.className = "connected";
     } else {
       authSection.style.display = "block";
       loggedInSection.style.display = "none";
+      extStatus.textContent = "Not signed in";
+      extStatus.className = "disconnected";
     }
   });
 }
