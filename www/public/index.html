@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>sidekar: the sidecar for AI agents</title>
-<meta name="description" content="Sidekar: automation sidecar for Claude Code, Codex, Cursor, Copilot, Gemini CLI, and more. Local bus, optional relay, token-efficient browser automation, macOS desktop, monitoring and cron, encrypted KV and TOTP. Optionally sign in for web terminal and dashboard. One Rust binary.">
+<meta name="description" content="Sidekar is a coordination and automation substrate for AI CLI agents. Shared bus, optional relay, browser automation, macOS desktop automation, monitoring, cron, encrypted KV, and TOTP. It equips autonomous agents without replacing them.">
 <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="icon" href="favicon.ico" sizes="32x32">
@@ -667,7 +667,7 @@ h1 {
   <div class="container">
     <h1>The sidecar for<br>AI agents</h1>
     <p class="hero-sub">
-      Sidekar is an automation sidecar for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a local message bus with optional cross-machine relay, token-efficient browser automation through a dedicated CLI and optional Chrome extension, macOS desktop automation, background monitoring and cron, and encrypted key-value storage with TOTP—so agents can finish logins and act on your behalf without exposing secrets in chat. Optionally sign in to sidekar.dev for a web terminal and dashboard with remote session visibility. One Rust binary. Runs alongside your existing agent; it doesn't replace it.
+      Sidekar is a coordination and automation substrate for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a shared message bus, browser and desktop automation, background monitoring, and encrypted credentials with TOTP, so autonomous agents can communicate and act without giving up their own control loop. It runs alongside your existing agent; it does not replace it.
     </p>
     <div class="install-block" onclick="copyInstall(this)">
       <code>curl -fsSL sidekar.dev/install | sh</code>
@@ -688,7 +688,7 @@ h1 {
     <div class="problem-text">
       <h2>Why sidekar</h2>
       <p>
-        CLI agents can reason and write code, but they can't see a browser, talk to each other, or log in to anything. sidekar fills every gap: a <strong>message bus</strong> that works across machines, a <strong>real browser</strong> they can see and control, <strong>macOS desktop</strong> access, <strong>encrypted credentials</strong> with TOTP for 2FA, and <strong>background scheduling</strong>. The pieces compose: an agent on your laptop can hand off to one on a server, which logs in to a service using stored credentials, runs a workflow, and sends the results back.
+        CLI agents can reason and write code, but they usually cannot see a browser, talk to each other, or finish real-world login flows. sidekar fills those gaps with a <strong>shared message bus</strong>, a <strong>real browser</strong> they can see and control, <strong>macOS desktop</strong> access, <strong>encrypted credentials</strong> with TOTP for 2FA, and <strong>background scheduling</strong>. It equips agents without subordinating them: the agent keeps its own planning loop, and sidekar provides the surfaces it can act through.
       </p>
     </div>
   </div>

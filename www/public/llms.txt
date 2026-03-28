@@ -1,10 +1,10 @@
 # sidekar
 
-> The sidecar for AI agents. Four capability pillars: browser automation (CDP + Chrome extension), desktop automation (macOS), inter-agent orchestration, and background automation (monitor + cron).
+> The sidecar for AI agents. A coordination and automation substrate with four capability pillars: browser automation (CDP + Chrome extension), desktop automation (macOS), an agent communication bus, and background automation (monitor + cron).
 
 ## What is sidekar?
 
-sidekar is a single binary that gives AI agents real browser and desktop control plus local multi-agent coordination.
+sidekar is a single binary that gives AI agents real browser and desktop control plus a shared coordination substrate. It equips autonomous agents without replacing their control loop.
 
 ## Getting started (step by step)
 
@@ -19,7 +19,7 @@ sidekar is a single binary that gives AI agents real browser and desktop control
 
 2. **Desktop automation:** macOS Accessibility API for native apps, windows, UI elements, and screenshots without requiring the browser.
 
-3. **Inter-agent orchestration:** Local bus (SQLite broker): `who`, `bus_send`, `bus_done`, registration, handoffs.
+3. **Agent communication bus:** Local bus (SQLite broker): `who`, `bus_send`, `bus_done`, registration, handoffs.
 
 4. **Background automation:** Tab monitoring (title/favicon) and cron-scheduled tool runs; results via the bus.
 
