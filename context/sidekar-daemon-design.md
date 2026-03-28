@@ -2,43 +2,67 @@
 
 ## Problem
 
-sidekar needs background capabilities that outlive individual MCP sessions:
+sidekar has multiple background process concepts without a single owning daemon:
 
-- **Monitor** (reactive): watch browser tabs for state changes, notify agents
-- **Cron** (proactive): run scheduled actions on intervals, notify agents
+- **ext-server**: WebSocket bridge for Chrome extension + IPC for CLI commands
+- **Monitor** (planned): watch browser tabs for state changes, notify agents
+- **Cron** (planned): run scheduled actions on intervals, notify agents
+- **Bus poller**: background message delivery to agent PTYs
 
-Bolting cron onto the `monitor` tool creates naming confusion — monitoring implies passive observation, cron is active scheduling. Both need a long-running process, so they should share one.
+These should be one process, not four.
 
 ## Decision
 
 Introduce `sidekar daemon` — a single background process that owns all long-running subsystems.
 
-MCP tools (`monitor`, `cron_create`, etc.) become thin clients that talk to the daemon over a unix socket. The daemon is the thing that actually runs, persists state, and delivers results via bus messages.
+All CLI tools and the native messaging host talk to the daemon over a unix socket. The daemon runs, persists state, and delivers results.
 
 ## Architecture
 
 ```
 sidekar daemon
+├── ext-bridge subsystem
+│   └── WebSocket listener (port 9876) → Chrome extension connection
 ├── monitor subsystem (reactive)
 │   └── watch tabs via CDP → detect changes → bus_send to requesting agent
 ├── cron subsystem (proactive)
 │   └── schedule fires → execute tool/batch → bus_send result to target agent
-└── unix socket (receives commands from MCP sessions)
-    ├── monitor_start { session, tabs, patterns }
-    ├── monitor_stop { session }
-    ├── cron_create { schedule, action, target }
-    ├── cron_list
-    ├── cron_delete { id }
-    └── status
+├── bus-housekeeping subsystem
+│   └── cleanup old messages, orphaned agents
+└── unix socket (control interface)
+    ├── ext commands (tabs, click, read, etc.)
+    ├── monitor_start / monitor_stop
+    ├── cron_create / cron_list / cron_delete
+    └── status / stop
 ```
+
+## What gets consolidated
+
+| Before | After |
+|--------|-------|
+| `sidekar ext-server` (separate process) | ext-bridge subsystem in daemon |
+| IPC TCP port (9877) for CLI→ext-server | Unix socket in daemon |
+| Native host bootstraps ext-server | Native host talks to daemon |
+| Planned cron daemon | cron subsystem in daemon |
+| Planned monitor daemon | monitor subsystem in daemon |
 
 ## Lifecycle
 
-- **Auto-launch**: first MCP session that needs monitor or cron starts the daemon if not running
-- **Persist across sessions**: MCP sessions come and go, daemon stays
-- **Graceful shutdown**: daemon exits when no active monitors or cron jobs remain (or after idle timeout)
-- **PID file**: `~/.sidekar/daemon.pid` for lifecycle management
+- **Auto-launch**: first command that needs daemon (ext, monitor, cron) starts it if not running
+- **Persist**: daemon stays running across CLI/MCP sessions
+- **Native messaging**: Chrome extension triggers daemon via native host
+- **Graceful shutdown**: `sidekar daemon stop` or SIGTERM
+- **PID file**: `~/.sidekar/daemon.pid`
 - **Socket**: `~/.sidekar/daemon.sock` (permissions 0600)
+- **Logs**: stderr or `~/.sidekar/daemon.log`
+
+### Migration from ext-server
+
+1. `sidekar ext-server` becomes `sidekar daemon` (or auto-launches daemon)
+2. `sidekar ext stop` becomes `sidekar daemon stop`
+3. Native host calls daemon instead of ext-server
+4. IPC TCP port (9877) removed — use unix socket
+5. PID file moves from `~/.sidekar/ext-server.pid` to `~/.sidekar/daemon.pid`
 
 ## Cron Subsystem
 
@@ -76,7 +100,7 @@ cron_delete:
 
 ### Persistence
 
-Cron jobs stored in `~/.config/sidekar/cron.json` (or SQLite if complexity warrants it). Survives daemon restarts.
+Cron jobs stored in SQLite (`cron_jobs` table). Survives daemon restarts.
 
 ### Delivery
 
@@ -102,7 +126,9 @@ The MCP `monitor` tool becomes a thin client:
 1. **Shared socket**: one well-known address for all background services
 2. **Shared lifecycle**: one process to manage, one PID file, one log stream
 3. **Shared bus access**: daemon has one bus connection, routes to agents
-4. **Extensible**: future background capabilities (file watchers, webhook listeners) slot in as subsystems without new processes
+4. **Simpler native messaging**: native host only talks to daemon, not separate ext-server
+5. **No IPC TCP port**: unix socket is cleaner, more secure (file permissions)
+6. **Extensible**: future background capabilities (file watchers, webhook listeners) slot in as subsystems
 
 ## Relationship to Orchestration Plan
 
@@ -112,7 +138,10 @@ If/when the broker is built, the daemon's subsystems could migrate into it. For 
 
 ## Implementation Order
 
-1. Daemon skeleton: process management, socket, PID file
-2. Monitor subsystem: move existing monitor design into daemon
-3. Cron subsystem: schedule persistence, execution, delivery
-4. MCP tool updates: monitor and cron_* tools become socket clients
+1. **Daemon skeleton**: process management, unix socket, PID file
+2. **Absorb ext-server**: move WebSocket listener + extension handling into daemon
+3. **Update native host**: talk to daemon socket instead of spawning ext-server
+4. **Remove IPC TCP port**: CLI ext commands go through unix socket
+5. **Monitor subsystem**: tab watching via CDP, bus notifications
+6. **Cron subsystem**: schedule persistence, execution, bus delivery
+7. **Deprecate ext-server**: `sidekar ext-server` becomes alias for `sidekar daemon`
