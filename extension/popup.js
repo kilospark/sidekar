@@ -65,53 +65,64 @@ loginBtn.addEventListener("click", () => {
       if (changeInfo.status !== "complete") return;
       if (!updatedTab.url || !updatedTab.url.startsWith(CALLBACK_URL)) return;
 
-      // The ext-callback page has loaded — inject a script to read the token
-      chrome.scripting.executeScript(
-        {
-          target: { tabId: authTabId },
-          func: () => {
-            const el = document.getElementById("ext-token");
-            return el ? el.getAttribute("data-token") : null;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+
+      // The page loads async, so poll for the token
+      let attempts = 0;
+      const maxAttempts = 20;
+
+      function tryReadToken() {
+        chrome.scripting.executeScript(
+          {
+            target: { tabId: authTabId },
+            func: () => {
+              const el = document.getElementById("ext-token");
+              return el ? el.getAttribute("data-token") : null;
+            },
           },
-        },
-        (results) => {
-          chrome.tabs.onUpdated.removeListener(onUpdated);
-          chrome.tabs.onRemoved.removeListener(onRemoved);
+          (results) => {
+            if (chrome.runtime.lastError) {
+              detailEl.textContent = "Could not read token from callback page.";
+              return;
+            }
 
-          if (chrome.runtime.lastError) {
-            detailEl.textContent = "Could not read token from callback page.";
-            return;
-          }
+            const token =
+              results && results[0] && results[0].result
+                ? results[0].result
+                : null;
 
-          const token =
-            results && results[0] && results[0].result
-              ? results[0].result
-              : null;
-
-          if (token) {
-            // Store the token and reconnect
-            chrome.runtime.sendMessage(
-              { type: "setToken", extToken: token },
-              () => {
-                if (chrome.runtime.lastError) {
-                  detailEl.textContent =
-                    chrome.runtime.lastError.message || "";
-                  return;
+            if (token && token.length > 0) {
+              // Store the token and reconnect
+              chrome.runtime.sendMessage(
+                { type: "setToken", extToken: token },
+                () => {
+                  if (chrome.runtime.lastError) {
+                    detailEl.textContent =
+                      chrome.runtime.lastError.message || "";
+                    return;
+                  }
+                  updateAuthUI();
+                  const delays = [400, 1200, 2500, 5000];
+                  delays.forEach((ms) => setTimeout(refreshStatus, ms));
                 }
-                updateAuthUI();
-                const delays = [400, 1200, 2500, 5000];
-                delays.forEach((ms) => setTimeout(refreshStatus, ms));
-              }
-            );
+              );
 
-            // Close the callback tab
-            chrome.tabs.remove(authTabId).catch(() => {});
-          } else {
-            detailEl.textContent =
-              "Token not found on callback page. Check if you are logged in to sidekar.dev.";
+              // Close the callback tab
+              chrome.tabs.remove(authTabId).catch(() => {});
+            } else if (++attempts < maxAttempts) {
+              // Token not ready yet, retry
+              setTimeout(tryReadToken, 250);
+            } else {
+              detailEl.textContent =
+                "Token not found on callback page. Check if you are logged in to sidekar.dev.";
+            }
           }
-        }
-      );
+        );
+      }
+
+      // Start polling after a brief delay
+      setTimeout(tryReadToken, 300);
     }
 
     function onRemoved(tabId) {
