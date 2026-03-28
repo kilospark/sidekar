@@ -94,7 +94,29 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Extension bridge
+    // Daemon
+    if command == "daemon" {
+        let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+        match sub {
+            "run" => return sidekar::daemon::run().await,
+            "stop" => return sidekar::daemon::stop(),
+            "status" => return sidekar::daemon::status(),
+            "" => {
+                // Default: show status or start
+                if sidekar::daemon::is_running() {
+                    return sidekar::daemon::status();
+                } else {
+                    return sidekar::daemon::ensure_running();
+                }
+            }
+            _ => {
+                eprintln!("Usage: sidekar daemon [run|stop|status]");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Extension bridge (legacy - will be absorbed into daemon)
     if command == "ext-server" {
         return sidekar::ext::run_server().await;
     }

@@ -45,6 +45,7 @@ macro_rules! wlog {
 }
 
 pub mod api_client;
+pub mod daemon;
 pub mod ext;
 pub mod auth;
 pub mod broker;

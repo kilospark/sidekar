@@ -1,6 +1,8 @@
 # sidekar: the sidecar for AI agents
 
-Sidekar is an automation sidecar for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a local message bus with optional cross-machine relay, token-efficient browser automation through a dedicated CLI and optional Chrome extension, macOS desktop automation, background monitoring and cron, and encrypted key-value storage with TOTP—so agents can finish logins and act on your behalf without exposing secrets in chat. Optionally sign in to sidekar.dev for a web terminal and dashboard with remote session visibility. One Rust binary. Runs alongside your existing agent; it doesn't replace it.
+Sidekar is a coordination and automation substrate for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a local message bus with optional cross-machine relay, token-efficient browser automation through a dedicated CLI and optional Chrome extension, macOS desktop automation, background monitoring and cron, and encrypted key-value storage with TOTP. The point is simple: equip autonomous agents with shared surfaces to communicate and act through, without taking over their control loop.
+
+Sidekar is not an agent orchestrator, not an agent harness, and not an agent OS. It runs alongside your existing agent; it does not replace it.
 
 Works with Claude Code, Codex, Cursor, Copilot, Gemini CLI, OpenCode, and other agents through the bundled skill (`sidekar install`) or the [Vercel skills registry](https://github.com/vercel-labs/skills).
 
