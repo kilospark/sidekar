@@ -131,7 +131,7 @@ pub async fn device_auth_flow() -> Result<()> {
                 eprintln!("sidekar: could not register device info with sidekar.dev: {e:#}");
             }
             // Auto-install native messaging host for Chrome extension
-            if let Err(e) = crate::ext::install_native_host(None) {
+            if let Err(e) = crate::ext::install_native_host_quiet(None) {
                 eprintln!("sidekar: could not install native messaging host: {e:#}");
             }
             println!("Logged in successfully!");
