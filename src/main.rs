@@ -93,6 +93,43 @@ async fn run() -> Result<()> {
         println!("Logged out. Device token removed.");
         return Ok(());
     }
+    if command == "devices" {
+        let data = sidekar::api_client::list_devices().await?;
+        if let Some(devices) = data.get("devices").and_then(|v| v.as_array()) {
+            if devices.is_empty() {
+                println!("No devices registered.");
+            } else {
+                println!("{:<20} {:<10} {:<8} {:<12} {}", "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN");
+                for d in devices {
+                    let hostname = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                    let os = d.get("os").and_then(|v| v.as_str()).unwrap_or("-");
+                    let arch = d.get("arch").and_then(|v| v.as_str()).unwrap_or("-");
+                    let version = d.get("sidekar_version").and_then(|v| v.as_str()).unwrap_or("-");
+                    let last_seen = d.get("last_seen_at").and_then(|v| v.as_str()).unwrap_or("-");
+                    println!("{:<20} {:<10} {:<8} {:<12} {}", hostname, os, arch, version, last_seen);
+                }
+            }
+        }
+        return Ok(());
+    }
+    if command == "sessions" {
+        let data = sidekar::api_client::list_sessions().await?;
+        if let Some(sessions) = data.get("sessions").and_then(|v| v.as_array()) {
+            if sessions.is_empty() {
+                println!("No active sessions.");
+            } else {
+                println!("{:<20} {:<15} {:<12} {}", "NAME", "AGENT", "HOSTNAME", "CWD");
+                for s in sessions {
+                    let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                    let agent = s.get("agent_type").and_then(|v| v.as_str()).unwrap_or("-");
+                    let hostname = s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                    let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("-");
+                    println!("{:<20} {:<15} {:<12} {}", name, agent, hostname, cwd);
+                }
+            }
+        }
+        return Ok(());
+    }
 
     // Daemon
     if command == "daemon" {
