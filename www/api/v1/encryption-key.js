@@ -24,10 +24,10 @@ export default async function handler(req, res) {
         updated_at: new Date(),
       });
       
-      return res.json({ key });
+      return res.json({ key, user_id: user.user_id });
     }
-    
-    return res.json({ key: keyDoc.key });
+
+    return res.json({ key: keyDoc.key, user_id: user.user_id });
   }
   
   if (req.method === "DELETE") {

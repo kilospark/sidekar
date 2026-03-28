@@ -190,6 +190,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // Migration: add user_id to kv_store and totp_secrets for multi-account isolation
+    let _ = conn.execute_batch("ALTER TABLE kv_store ADD COLUMN user_id TEXT");
+    let _ = conn.execute_batch("ALTER TABLE totp_secrets ADD COLUMN user_id TEXT");
+    // New unique constraints including user_id (old constraint stays, new one takes priority)
+    let _ = conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_agent_key ON kv_store(user_id, agent_id, key);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_totp_user_service_account ON totp_secrets(user_id, service, account);",
+    );
+
     // Encryption key marker
     conn.execute_batch(
         "
@@ -791,7 +800,7 @@ pub struct TotpSecret {
     pub created_at: u64,
 }
 
-/// Add a TOTP secret
+/// Add a TOTP secret, scoped to current user.
 pub fn totp_add(
     service: &str,
     account: &str,
@@ -802,6 +811,7 @@ pub fn totp_add(
 ) -> Result<i64> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
+    let uid = current_user_id();
 
     let secret_to_store = if get_encryption_key().is_some() {
         match encrypt(secret) {
@@ -816,17 +826,54 @@ pub fn totp_add(
     };
 
     conn.execute(
-        "INSERT OR REPLACE INTO totp_secrets (service, account, secret, algorithm, digits, period, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![service, account, secret_to_store, algorithm, digits, period, now],
+        "INSERT INTO totp_secrets (user_id, service, account, secret, algorithm, digits, period, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+         ON CONFLICT(user_id, service, account) DO UPDATE SET secret = ?4, algorithm = ?5, digits = ?6, period = ?7",
+        params![uid, service, account, secret_to_store, algorithm, digits, period, now],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
-/// List all TOTP secrets
+/// List all TOTP secrets for current user.
 pub fn totp_list() -> Result<Vec<TotpSecret>> {
     let conn = open()?;
-    let mut stmt = conn.prepare("SELECT id, service, account, secret, algorithm, digits, period, created_at FROM totp_secrets ORDER BY service, account")?;
-    let rows = stmt.query_map([], |row| {
+    let uid = current_user_id();
+    let mut stmt = conn.prepare(
+        "SELECT id, service, account, secret, algorithm, digits, period, created_at \
+         FROM totp_secrets WHERE user_id IS ?1 ORDER BY service, account",
+    )?;
+    let mut out = Vec::new();
+    let mut rows = stmt.query(params![uid])?;
+    while let Some(row) = rows.next()? {
+        let secret: String = row.get(3)?;
+        let decrypted = if is_encrypted(&secret) {
+            decrypt(&secret).unwrap_or(secret)
+        } else {
+            secret
+        };
+        out.push(TotpSecret {
+            id: row.get(0)?,
+            service: row.get(1)?,
+            account: row.get(2)?,
+            secret: decrypted,
+            algorithm: row.get(4)?,
+            digits: row.get(5)?,
+            period: row.get(6)?,
+            created_at: row.get::<_, i64>(7)? as u64,
+        });
+    }
+    Ok(out)
+}
+
+/// Get TOTP secret for a service+account, scoped to current user.
+pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
+    let conn = open()?;
+    let uid = current_user_id();
+    let mut stmt = conn.prepare(
+        "SELECT id, service, account, secret, algorithm, digits, period, created_at \
+         FROM totp_secrets WHERE user_id IS ?1 AND service = ?2 AND account = ?3",
+    )?;
+    stmt.query_row(params![uid, service, account], |row| {
         let secret: String = row.get(3)?;
         let decrypted = if is_encrypted(&secret) {
             decrypt(&secret).unwrap_or(secret)
@@ -843,47 +890,19 @@ pub fn totp_list() -> Result<Vec<TotpSecret>> {
             period: row.get(6)?,
             created_at: row.get::<_, i64>(7)? as u64,
         })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-/// Get TOTP secret for a service+account
-pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
-    let conn = open()?;
-    let mut stmt =
-        conn.prepare("SELECT secret FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
-    let secret: Option<String> = stmt
-        .query_row(params![service, account], |row| row.get(0))
-        .optional()?
-        .map(|s: String| {
-            if is_encrypted(&s) {
-                decrypt(&s).unwrap_or(s)
-            } else {
-                s
-            }
-        });
-
-    let mut stmt = conn.prepare("SELECT id, service, account, algorithm, digits, period, created_at FROM totp_secrets WHERE service = ?1 AND account = ?2")?;
-    stmt.query_row(params![service, account], |row| {
-        Ok(TotpSecret {
-            id: row.get(0)?,
-            service: row.get(1)?,
-            account: row.get(2)?,
-            secret: secret.unwrap_or_default(),
-            algorithm: row.get(3)?,
-            digits: row.get(4)?,
-            period: row.get(5)?,
-            created_at: row.get::<_, i64>(6)? as u64,
-        })
     })
     .optional()
     .map_err(Into::into)
 }
 
-/// Delete a TOTP secret
+/// Delete a TOTP secret (by id — already scoped by user via query)
 pub fn totp_delete(id: i64) -> Result<()> {
     let conn = open()?;
-    conn.execute("DELETE FROM totp_secrets WHERE id = ?1", params![id])?;
+    let uid = current_user_id();
+    conn.execute(
+        "DELETE FROM totp_secrets WHERE id = ?1 AND user_id IS ?2",
+        params![id, uid],
+    )?;
     Ok(())
 }
 
@@ -898,10 +917,11 @@ pub struct KvEntry {
     pub updated_at: u64,
 }
 
-/// Set a KV value (per-agent or global if agent_id is None)
+/// Set a KV value (per-agent or global if agent_id is None), scoped to current user.
 pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
+    let uid = current_user_id();
 
     let value_to_store = if get_encryption_key().is_some() {
         match encrypt(value) {
@@ -916,53 +936,25 @@ pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
     };
 
     conn.execute(
-        "INSERT INTO kv_store (agent_id, key, value, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(agent_id, key) DO UPDATE SET value = ?3, updated_at = ?5",
-        params![agent_id, key, value_to_store, now, now],
+        "INSERT INTO kv_store (user_id, agent_id, key, value, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(user_id, agent_id, key) DO UPDATE SET value = ?4, updated_at = ?6",
+        params![uid, agent_id, key, value_to_store, now, now],
     )?;
     Ok(())
 }
 
-/// Get a KV value
+/// Get a KV value, scoped to current user.
 pub fn kv_get(agent_id: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
     let conn = open()?;
-    let placeholder = agent_id.map(|s| s.to_string());
-    let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE agent_id IS ?1 AND key = ?2")?;
-    let value: Option<String> = stmt
-        .query_row(params![placeholder.as_deref(), key], |row| {
-            row.get::<_, String>(0)
-        })
-        .optional()?
-        .map(|v: String| {
-            if is_encrypted(&v) {
-                decrypt(&v).unwrap_or(v)
-            } else {
-                v
-            }
-        });
+    let uid = current_user_id();
+    let agent = agent_id.map(|s| s.to_string());
 
-    let mut stmt = conn.prepare("SELECT id, agent_id, key, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 AND key = ?2")?;
-    stmt.query_row(params![placeholder.as_deref(), key], |row| {
-        let agent_id_out: Option<String> = row.get(1)?;
-        Ok(KvEntry {
-            id: row.get(0)?,
-            agent_id: agent_id_out,
-            key: row.get(2)?,
-            value: value.unwrap_or_default(),
-            created_at: row.get::<_, i64>(3)? as u64,
-            updated_at: row.get::<_, i64>(4)? as u64,
-        })
-    })
-    .optional()
-    .map_err(Into::into)
-}
-
-/// List KV entries for an agent (or global if None)
-pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
-    let conn = open()?;
-    let placeholder = agent_id.map(|s| s.to_string());
-    let mut stmt = conn.prepare("SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store WHERE agent_id IS ?1 ORDER BY key")?;
-    let rows = stmt.query_map(params![placeholder.as_deref()], |row| {
-        let agent_id_out: Option<String> = row.get(1)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store \
+         WHERE user_id IS ?1 AND agent_id IS ?2 AND key = ?3",
+    )?;
+    stmt.query_row(params![uid, agent.as_deref(), key], |row| {
         let value: String = row.get(3)?;
         let decrypted = if is_encrypted(&value) {
             decrypt(&value).unwrap_or(value)
@@ -971,23 +963,56 @@ pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
         };
         Ok(KvEntry {
             id: row.get(0)?,
-            agent_id: agent_id_out,
+            agent_id: row.get(1)?,
             key: row.get(2)?,
             value: decrypted,
             created_at: row.get::<_, i64>(4)? as u64,
             updated_at: row.get::<_, i64>(5)? as u64,
         })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    })
+    .optional()
+    .map_err(Into::into)
 }
 
-/// Delete a KV entry
+/// List KV entries for an agent (or global if None), scoped to current user.
+pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
+    let conn = open()?;
+    let uid = current_user_id();
+    let agent = agent_id.map(|s| s.to_string());
+
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store \
+         WHERE user_id IS ?1 AND agent_id IS ?2 ORDER BY key",
+    )?;
+    let mut out = Vec::new();
+    let mut rows = stmt.query(params![uid, agent.as_deref()])?;
+    while let Some(row) = rows.next()? {
+        let value: String = row.get(3)?;
+        let decrypted = if is_encrypted(&value) {
+            decrypt(&value).unwrap_or(value)
+        } else {
+            value
+        };
+        out.push(KvEntry {
+            id: row.get(0)?,
+            agent_id: row.get(1)?,
+            key: row.get(2)?,
+            value: decrypted,
+            created_at: row.get::<_, i64>(4)? as u64,
+            updated_at: row.get::<_, i64>(5)? as u64,
+        });
+    }
+    Ok(out)
+}
+
+/// Delete a KV entry, scoped to current user.
 pub fn kv_delete(agent_id: Option<&str>, key: &str) -> Result<()> {
     let conn = open()?;
-    let placeholder = agent_id.map(|s| s.to_string());
+    let uid = current_user_id();
+    let agent = agent_id.map(|s| s.to_string());
     conn.execute(
-        "DELETE FROM kv_store WHERE agent_id IS ?1 AND key = ?2",
-        params![placeholder.as_deref(), key],
+        "DELETE FROM kv_store WHERE user_id IS ?1 AND agent_id IS ?2 AND key = ?3",
+        params![uid, agent.as_deref(), key],
     )?;
     Ok(())
 }
@@ -1012,6 +1037,7 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     #[derive(serde::Deserialize)]
     struct KeyResp {
         key: String,
+        user_id: Option<String>,
     }
     let body: KeyResp = resp.json().await.context("Failed to parse encryption key response")?;
     let decoded = base64::engine::general_purpose::STANDARD
@@ -1019,33 +1045,156 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
         .context("Invalid encryption key format")?;
 
     set_encryption_key(decoded.clone());
+
+    // Store user_id for scoping KV/TOTP data
+    if let Some(ref uid) = body.user_id {
+        set_current_user_id(uid.clone());
+        // Persist in encryption_meta so we can detect account switches
+        let _ = store_meta("user_id", uid);
+    }
+
+    // One-time pass per user: encrypt any plaintext rows owned by this user
+    // (or unowned rows from before user_id scoping was added).
+    let migration_key = format!("encrypted:{}", body.user_id.as_deref().unwrap_or("unknown"));
+    if !has_meta(&migration_key).unwrap_or(true) {
+        if let Err(e) = encrypt_plaintext_rows() {
+            eprintln!("Warning: failed to encrypt existing plaintext data: {e}");
+        } else {
+            let _ = store_meta(&migration_key, "1");
+        }
+    }
+
     Ok(Some(decoded))
 }
 
-/// Check if encryption is enabled (DB has encrypted data)
-pub fn is_encryption_enabled() -> Result<bool> {
+/// Check if a key exists in encryption_meta.
+fn has_meta(key: &str) -> Result<bool> {
     let conn = open()?;
     let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM encryption_meta WHERE key = 'enabled'",
-        [],
+        "SELECT COUNT(*) FROM encryption_meta WHERE key = ?1",
+        [key],
         |row| row.get(0),
     )?;
     Ok(count > 0)
 }
 
-/// Mark encryption as enabled
-pub fn set_encryption_enabled() -> Result<()> {
+/// Store a value in encryption_meta (upsert).
+fn store_meta(key: &str, value: &str) -> Result<()> {
     let conn = open()?;
     conn.execute(
-        "INSERT OR IGNORE INTO encryption_meta (key, value) VALUES ('enabled', '1')",
-        [],
+        "INSERT INTO encryption_meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![key, value],
     )?;
+    Ok(())
+}
+
+/// Read a value from encryption_meta.
+pub fn read_meta(key: &str) -> Result<Option<String>> {
+    let conn = open()?;
+    conn.query_row(
+        "SELECT value FROM encryption_meta WHERE key = ?1",
+        [key],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// One-time migration per user: encrypt all plaintext KV/TOTP rows and claim
+/// any unowned rows (user_id IS NULL) for the current user.
+fn encrypt_plaintext_rows() -> Result<()> {
+    let conn = open()?;
+    let uid = current_user_id();
+
+    // Claim unowned rows for this user (pre-user_id data from before this migration)
+    conn.execute(
+        "UPDATE kv_store SET user_id = ?1 WHERE user_id IS NULL",
+        params![uid],
+    )?;
+    conn.execute(
+        "UPDATE totp_secrets SET user_id = ?1 WHERE user_id IS NULL",
+        params![uid],
+    )?;
+
+    // Collect plaintext KV rows for this user
+    let kv_rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, value FROM kv_store WHERE user_id IS ?1",
+        )?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query(params![uid])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let val: String = row.get(1)?;
+            if !is_encrypted(&val) {
+                out.push((id, val));
+            }
+        }
+        out
+    };
+
+    // Collect plaintext TOTP rows for this user
+    let totp_rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, secret FROM totp_secrets WHERE user_id IS ?1",
+        )?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query(params![uid])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let val: String = row.get(1)?;
+            if !is_encrypted(&val) {
+                out.push((id, val));
+            }
+        }
+        out
+    };
+
+    // Encrypt KV rows in a transaction
+    let mut kv_count = 0usize;
+    if !kv_rows.is_empty() {
+        let tx = conn.unchecked_transaction()?;
+        for (id, plaintext) in &kv_rows {
+            if let Ok(encrypted) = encrypt(plaintext) {
+                tx.execute(
+                    "UPDATE kv_store SET value = ?1 WHERE id = ?2",
+                    params![encrypted, id],
+                )?;
+                kv_count += 1;
+            }
+        }
+        tx.commit()?;
+    }
+
+    // Encrypt TOTP rows in a transaction
+    let mut totp_count = 0usize;
+    if !totp_rows.is_empty() {
+        let tx = conn.unchecked_transaction()?;
+        for (id, plaintext) in &totp_rows {
+            if let Ok(encrypted) = encrypt(plaintext) {
+                tx.execute(
+                    "UPDATE totp_secrets SET secret = ?1 WHERE id = ?2",
+                    params![encrypted, id],
+                )?;
+                totp_count += 1;
+            }
+        }
+        tx.commit()?;
+    }
+
+    if kv_count > 0 || totp_count > 0 {
+        eprintln!(
+            "sidekar: encrypted {kv_count} KV value(s) and {totp_count} TOTP secret(s) at rest"
+        );
+    }
+
     Ok(())
 }
 
 use std::sync::Mutex;
 
 static ENCRYPTION_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+static CURRENT_USER_ID: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn set_encryption_key(key: Vec<u8>) {
     let mut guard = ENCRYPTION_KEY.lock().unwrap();
@@ -1059,6 +1208,20 @@ pub fn clear_encryption_key() {
 
 pub fn get_encryption_key() -> Option<Vec<u8>> {
     ENCRYPTION_KEY.lock().unwrap().clone()
+}
+
+pub fn set_current_user_id(user_id: String) {
+    let mut guard = CURRENT_USER_ID.lock().unwrap();
+    *guard = Some(user_id);
+}
+
+pub fn clear_current_user_id() {
+    let mut guard = CURRENT_USER_ID.lock().unwrap();
+    *guard = None;
+}
+
+pub fn current_user_id() -> Option<String> {
+    CURRENT_USER_ID.lock().unwrap().clone()
 }
 
 pub fn is_encrypted(value: &str) -> bool {

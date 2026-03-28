@@ -35,6 +35,18 @@ pub fn auth_token() -> Option<String> {
     parsed.get("token")?.as_str().map(|s| s.to_string())
 }
 
+/// Remove the stored device token and clear in-memory encryption state.
+pub fn logout() -> Result<()> {
+    let path = auth_file();
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("Failed to remove {}", path.display()))?;
+    }
+    crate::broker::clear_encryption_key();
+    crate::broker::clear_current_user_id();
+    Ok(())
+}
+
 /// Save a device token to ~/.config/sidekar/auth.json.
 pub fn save_token(token: &str) -> Result<()> {
     let path = auth_file();
