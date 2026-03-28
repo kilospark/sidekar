@@ -43,7 +43,33 @@ function applyStatus(res) {
   }
   status.textContent = "Not connected";
   status.className = "disconnected";
-  detailEl.textContent = res && res.lastError ? res.lastError : "";
+  
+  // Check if error is about needing to run sidekar login
+  const needsLogin = res && res.lastError && (
+    res.lastError.includes("login") || 
+    res.lastError.includes("token")
+  );
+  
+  if (needsLogin) {
+    detailEl.innerHTML = "";
+    const cmdCopy = document.createElement("span");
+    cmdCopy.className = "cmd-copy";
+    cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+    cmdCopy.onclick = () => {
+      navigator.clipboard.writeText("sidekar login").then(() => {
+        cmdCopy.classList.add("copied");
+        cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
+        setTimeout(() => {
+          cmdCopy.classList.remove("copied");
+          cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+        }, 2000);
+      });
+    };
+    detailEl.appendChild(cmdCopy);
+  } else {
+    detailEl.textContent = res && res.lastError ? res.lastError : "";
+  }
+  
   // Only show retry for connection errors, not auth/login issues
   const isAuthIssue = res && res.lastError && (
     res.lastError.includes("login") || 
