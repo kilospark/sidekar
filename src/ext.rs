@@ -268,14 +268,17 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState) {
     {
         let mut s = state.lock().await;
         if s.ext_tx.is_some() {
-            eprintln!("Rejecting duplicate extension connection (one client already connected)");
-            drop(s);
-            // Dropping tx/rx closes this WebSocket without replacing the active sender.
-            return;
+            // Close old stale connection and accept the new one
+            eprintln!("Replacing stale extension connection with new one");
+            if let Some(mut old_tx) = s.ext_tx.take() {
+                let _ = old_tx.close().await;
+            }
+            s.pending.clear();
         }
         s.ext_tx = Some(tx);
         s.connected = true;
         s.authenticated = false;
+        s.verified_user_id = None;
     }
 
     eprintln!("WebSocket established, waiting for auth...");
@@ -287,6 +290,13 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState) {
                     let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                     if msg_type == "ping" {
+                        // Respond to keepalive pings
+                        let mut s = state.lock().await;
+                        if let Some(ref mut ext_tx) = s.ext_tx {
+                            let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
+                                json!({"type": "pong"}).to_string().into()
+                            )).await;
+                        }
                         continue;
                     }
 

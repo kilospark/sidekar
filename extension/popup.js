@@ -6,12 +6,15 @@ const retryBtn = document.getElementById("retry-btn");
 const authSection = document.getElementById("auth-section");
 const loggedInSection = document.getElementById("logged-in-section");
 
+const hintEl = document.querySelector(".hint");
+
 function applyStatus(res) {
   if (res && res.authenticated) {
     status.textContent = "Connected & authenticated";
     status.className = "connected";
     detailEl.textContent = "";
     retryBtn.style.display = "none";
+    if (hintEl) hintEl.style.display = "none";
     return;
   }
   if (res && res.connected) {
@@ -19,12 +22,14 @@ function applyStatus(res) {
     status.className = "pending";
     detailEl.textContent = "";
     retryBtn.style.display = "none";
+    if (hintEl) hintEl.style.display = "block";
     return;
   }
   status.textContent = "Not connected";
   status.className = "disconnected";
   detailEl.textContent = res && res.lastError ? res.lastError : "";
   retryBtn.style.display = "block";
+  if (hintEl) hintEl.style.display = "block";
 }
 
 function refreshStatus() {
