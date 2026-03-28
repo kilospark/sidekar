@@ -176,27 +176,30 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "
         CREATE TABLE IF NOT EXISTS kv_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_id TEXT,
+            scope TEXT,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            UNIQUE(agent_id, key)
+            UNIQUE(scope, key)
         );
-        CREATE INDEX IF NOT EXISTS idx_kv_agent
-            ON kv_store(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_kv_scope
+            ON kv_store(scope);
         CREATE INDEX IF NOT EXISTS idx_kv_global
-            ON kv_store(agent_id, key) WHERE agent_id IS NULL;
+            ON kv_store(scope, key) WHERE scope IS NULL;
         ",
     )?;
 
     // Migration: add user_id to kv_store and totp_secrets for multi-account isolation
     let _ = conn.execute_batch("ALTER TABLE kv_store ADD COLUMN user_id TEXT");
     let _ = conn.execute_batch("ALTER TABLE totp_secrets ADD COLUMN user_id TEXT");
+    // Migration: rename agent_id → scope in kv_store
+    let _ = conn.execute_batch("ALTER TABLE kv_store RENAME COLUMN agent_id TO scope");
     // New unique constraints including user_id (old constraint stays, new one takes priority)
     let _ = conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_agent_key ON kv_store(user_id, agent_id, key);
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_totp_user_service_account ON totp_secrets(user_id, service, account);",
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_totp_user_service_account ON totp_secrets(user_id, service, account);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_scope_key ON kv_store(user_id, scope, key);",
     );
 
     // Encryption key marker
@@ -910,15 +913,15 @@ pub fn totp_delete(id: i64) -> Result<()> {
 #[derive(Debug, Clone)]
 pub struct KvEntry {
     pub id: i64,
-    pub agent_id: Option<String>,
+    pub scope: Option<String>,
     pub key: String,
     pub value: String,
     pub created_at: u64,
     pub updated_at: u64,
 }
 
-/// Set a KV value (per-agent or global if agent_id is None), scoped to current user.
-pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
+/// Set a KV value (per-scope or global if scope is None), scoped to current user.
+pub fn kv_set(scope: Option<&str>, key: &str, value: &str) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
     let uid = current_user_id();
@@ -936,25 +939,25 @@ pub fn kv_set(agent_id: Option<&str>, key: &str, value: &str) -> Result<()> {
     };
 
     conn.execute(
-        "INSERT INTO kv_store (user_id, agent_id, key, value, created_at, updated_at) \
+        "INSERT INTO kv_store (user_id, scope, key, value, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-         ON CONFLICT(user_id, agent_id, key) DO UPDATE SET value = ?4, updated_at = ?6",
-        params![uid, agent_id, key, value_to_store, now, now],
+         ON CONFLICT(user_id, scope, key) DO UPDATE SET value = ?4, updated_at = ?6",
+        params![uid, scope, key, value_to_store, now, now],
     )?;
     Ok(())
 }
 
 /// Get a KV value, scoped to current user.
-pub fn kv_get(agent_id: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
+pub fn kv_get(scope: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
     let conn = open()?;
     let uid = current_user_id();
-    let agent = agent_id.map(|s| s.to_string());
+    let scope_val = scope.map(|s| s.to_string());
 
     let mut stmt = conn.prepare(
-        "SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store \
-         WHERE user_id IS ?1 AND agent_id IS ?2 AND key = ?3",
+        "SELECT id, scope, key, value, created_at, updated_at FROM kv_store \
+         WHERE user_id IS ?1 AND scope IS ?2 AND key = ?3",
     )?;
-    stmt.query_row(params![uid, agent.as_deref(), key], |row| {
+    stmt.query_row(params![uid, scope_val.as_deref(), key], |row| {
         let value: String = row.get(3)?;
         let decrypted = if is_encrypted(&value) {
             decrypt(&value).unwrap_or(value)
@@ -963,7 +966,7 @@ pub fn kv_get(agent_id: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
         };
         Ok(KvEntry {
             id: row.get(0)?,
-            agent_id: row.get(1)?,
+            scope: row.get(1)?,
             key: row.get(2)?,
             value: decrypted,
             created_at: row.get::<_, i64>(4)? as u64,
@@ -974,18 +977,18 @@ pub fn kv_get(agent_id: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
     .map_err(Into::into)
 }
 
-/// List KV entries for an agent (or global if None), scoped to current user.
-pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
+/// List KV entries for a scope (or global if None), scoped to current user.
+pub fn kv_list(scope: Option<&str>) -> Result<Vec<KvEntry>> {
     let conn = open()?;
     let uid = current_user_id();
-    let agent = agent_id.map(|s| s.to_string());
+    let scope_val = scope.map(|s| s.to_string());
 
     let mut stmt = conn.prepare(
-        "SELECT id, agent_id, key, value, created_at, updated_at FROM kv_store \
-         WHERE user_id IS ?1 AND agent_id IS ?2 ORDER BY key",
+        "SELECT id, scope, key, value, created_at, updated_at FROM kv_store \
+         WHERE user_id IS ?1 AND scope IS ?2 ORDER BY key",
     )?;
     let mut out = Vec::new();
-    let mut rows = stmt.query(params![uid, agent.as_deref()])?;
+    let mut rows = stmt.query(params![uid, scope_val.as_deref()])?;
     while let Some(row) = rows.next()? {
         let value: String = row.get(3)?;
         let decrypted = if is_encrypted(&value) {
@@ -995,7 +998,7 @@ pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
         };
         out.push(KvEntry {
             id: row.get(0)?,
-            agent_id: row.get(1)?,
+            scope: row.get(1)?,
             key: row.get(2)?,
             value: decrypted,
             created_at: row.get::<_, i64>(4)? as u64,
@@ -1006,13 +1009,13 @@ pub fn kv_list(agent_id: Option<&str>) -> Result<Vec<KvEntry>> {
 }
 
 /// Delete a KV entry, scoped to current user.
-pub fn kv_delete(agent_id: Option<&str>, key: &str) -> Result<()> {
+pub fn kv_delete(scope: Option<&str>, key: &str) -> Result<()> {
     let conn = open()?;
     let uid = current_user_id();
-    let agent = agent_id.map(|s| s.to_string());
+    let scope_val = scope.map(|s| s.to_string());
     conn.execute(
-        "DELETE FROM kv_store WHERE user_id IS ?1 AND agent_id IS ?2 AND key = ?3",
-        params![uid, agent.as_deref(), key],
+        "DELETE FROM kv_store WHERE user_id IS ?1 AND scope IS ?2 AND key = ?3",
+        params![uid, scope_val.as_deref(), key],
     )?;
     Ok(())
 }
