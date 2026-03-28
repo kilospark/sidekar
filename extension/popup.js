@@ -51,7 +51,8 @@ function applyStatus(res) {
   );
   
   if (needsLogin) {
-    detailEl.innerHTML = "";
+    detailEl.style.color = "#666";
+    detailEl.innerHTML = "Run ";
     const cmdCopy = document.createElement("span");
     cmdCopy.className = "cmd-copy";
     cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
@@ -67,6 +68,7 @@ function applyStatus(res) {
     };
     detailEl.appendChild(cmdCopy);
   } else {
+    detailEl.style.color = "#991b1b";
     detailEl.textContent = res && res.lastError ? res.lastError : "";
   }
   
