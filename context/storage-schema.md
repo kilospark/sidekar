@@ -30,6 +30,20 @@ Example keys:
 - `telemetry` - Whether to send anonymous usage counts
 - `browser` - Preferred browser for CDP sessions
 
+## Bus table triad
+
+Three tables work together for agent-to-agent messaging:
+
+| Table | Role | Payload |
+|-------|------|---------|
+| `bus_queue` | Delivery | Plain text to paste into PTY |
+| `pending_requests` | Recipient tracking | Full `Envelope` (awaiting reply) |
+| `outbound_requests` | Sender tracking | Metadata (nudges, timeouts) |
+
+These are **not duplicates**:
+- `bus_queue` is the transport pipe (read-and-delete delivery)
+- `pending_requests` + `outbound_requests` track request lifecycle (cleared on reply)
+
 ## Encryption
 
 `kv_store` and `totp_secrets` are encrypted at rest using AES-256-GCM. The encryption key is derived from the device token and stored markers in `encryption_meta`.
