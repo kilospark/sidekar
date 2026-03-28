@@ -11,7 +11,7 @@ All persistent state lives in `~/.sidekar/sidekar.sqlite3`.
 | `totp_secrets` | TOTP authentication secrets | Yes |
 | `cron_jobs` | Scheduled tasks | No |
 | `agents` | Registered agents on the bus | No |
-| `pending_messages` | Message bus envelopes | No |
+| `pending_requests` | Recipient-side request tracking | No |
 | `outbound_requests` | Request tracking for replies | No |
 | `bus_queue` | Direct agent-to-agent messages | No |
 | `error_events` | Append-only error log | No |
