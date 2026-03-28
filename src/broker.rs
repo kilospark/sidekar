@@ -100,14 +100,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_agents_nick
             ON agents(nick);
 
-        CREATE TABLE IF NOT EXISTS pending_messages (
+        CREATE TABLE IF NOT EXISTS pending_requests (
             id TEXT PRIMARY KEY,
             recipient_name TEXT NOT NULL,
             envelope_json TEXT NOT NULL,
             created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_pending_recipient
-            ON pending_messages(recipient_name, created_at);
+            ON pending_requests(recipient_name, created_at);
 
         CREATE TABLE IF NOT EXISTS outbound_requests (
             msg_id TEXT PRIMARY KEY,
@@ -125,6 +125,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     // Migration: add cwd column if missing (existing databases)
     let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN cwd TEXT");
+
+    // Migration: rename pending_messages -> pending_requests (clarity)
+    // Must copy data since CREATE TABLE IF NOT EXISTS runs first
+    let _ = conn.execute_batch(
+        "INSERT OR IGNORE INTO pending_requests SELECT * FROM pending_messages;
+         DROP TABLE IF EXISTS pending_messages;",
+    );
 
     // Bus message queue — replaces IPC sockets for agent-to-agent delivery.
     // Writer inserts a row, recipient's poller reads and deletes it.
@@ -327,7 +334,7 @@ pub fn unregister_agent(name: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM agents WHERE name = ?1", params![name])?;
     tx.execute(
-        "DELETE FROM pending_messages WHERE recipient_name = ?1",
+        "DELETE FROM pending_requests WHERE recipient_name = ?1",
         params![name],
     )?;
     tx.execute(
@@ -410,7 +417,7 @@ pub fn set_pending(envelope: &Envelope) -> Result<()> {
     let conn = open()?;
     let envelope_json = serde_json::to_string(envelope)?;
     conn.execute(
-        "INSERT OR REPLACE INTO pending_messages (id, recipient_name, envelope_json, created_at)
+        "INSERT OR REPLACE INTO pending_requests (id, recipient_name, envelope_json, created_at)
          VALUES (?1, ?2, ?3, ?4)",
         params![
             envelope.id,
@@ -425,7 +432,7 @@ pub fn set_pending(envelope: &Envelope) -> Result<()> {
 pub fn clear_pending(msg_id: &str) -> Result<()> {
     let conn = open()?;
     conn.execute(
-        "DELETE FROM pending_messages WHERE id = ?1",
+        "DELETE FROM pending_requests WHERE id = ?1",
         params![msg_id],
     )?;
     Ok(())
@@ -434,7 +441,7 @@ pub fn clear_pending(msg_id: &str) -> Result<()> {
 pub fn clear_pending_for_agent(name: &str) -> Result<()> {
     let conn = open()?;
     conn.execute(
-        "DELETE FROM pending_messages WHERE recipient_name = ?1",
+        "DELETE FROM pending_requests WHERE recipient_name = ?1",
         params![name],
     )?;
     Ok(())
@@ -444,7 +451,7 @@ pub fn pending_for_agent(name: &str) -> Result<Vec<Envelope>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
         "SELECT envelope_json
-         FROM pending_messages
+         FROM pending_requests
          WHERE recipient_name = ?1
          ORDER BY created_at ASC",
     )?;
@@ -462,7 +469,7 @@ pub fn pending_message(msg_id: &str) -> Result<Option<Envelope>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
         "SELECT envelope_json
-         FROM pending_messages
+         FROM pending_requests
          WHERE id = ?1
          LIMIT 1",
     )?;
@@ -522,7 +529,7 @@ pub fn resolve_reply(msg_id: &str) -> Result<()> {
     let conn = open()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "DELETE FROM pending_messages WHERE id = ?1",
+        "DELETE FROM pending_requests WHERE id = ?1",
         params![msg_id],
     )?;
     tx.execute(
