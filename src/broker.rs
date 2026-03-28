@@ -227,7 +227,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Auth (device token)
+    // Auth table (legacy - data migrated to config with 'auth:' prefix)
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS auth (
@@ -236,6 +236,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+
+    // Migrate auth table data to config table with 'auth:' prefix
+    let _ = conn.execute_batch(
+        "INSERT OR IGNORE INTO config (key, value)
+         SELECT 'auth:' || key, value FROM auth;
+         DELETE FROM auth;",
+    );
 
     // Local error log (durable, queryable)
     conn.execute_batch(
@@ -1334,15 +1341,16 @@ pub fn error_events_recent(limit: usize) -> Result<Vec<ErrorEventRow>> {
 }
 
 // ---------------------------------------------------------------------------
-// Auth (device token storage)
+// Auth (device token storage) - stored in config table with "auth:" prefix
 // ---------------------------------------------------------------------------
 
 /// Get a stored auth value (e.g., "token", "created_at").
 pub fn auth_get(key: &str) -> Option<String> {
     let conn = open().ok()?;
+    let prefixed_key = format!("auth:{key}");
     conn.query_row(
-        "SELECT value FROM auth WHERE key = ?1",
-        params![key],
+        "SELECT value FROM config WHERE key = ?1",
+        params![prefixed_key],
         |r| r.get(0),
     )
     .ok()
@@ -1351,9 +1359,10 @@ pub fn auth_get(key: &str) -> Option<String> {
 /// Set an auth value.
 pub fn auth_set(key: &str, value: &str) -> Result<()> {
     let conn = open()?;
+    let prefixed_key = format!("auth:{key}");
     conn.execute(
-        "INSERT INTO auth (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-        params![key, value],
+        "INSERT INTO config (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![prefixed_key, value],
     )?;
     Ok(())
 }
@@ -1361,14 +1370,15 @@ pub fn auth_set(key: &str, value: &str) -> Result<()> {
 /// Delete an auth value.
 pub fn auth_delete(key: &str) -> Result<()> {
     let conn = open()?;
-    conn.execute("DELETE FROM auth WHERE key = ?1", params![key])?;
+    let prefixed_key = format!("auth:{key}");
+    conn.execute("DELETE FROM config WHERE key = ?1", params![prefixed_key])?;
     Ok(())
 }
 
 /// Clear all auth data (for logout).
 pub fn auth_clear() -> Result<()> {
     let conn = open()?;
-    conn.execute("DELETE FROM auth", [])?;
+    conn.execute("DELETE FROM config WHERE key LIKE 'auth:%'", [])?;
     Ok(())
 }
 
