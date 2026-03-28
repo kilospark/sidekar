@@ -20,7 +20,7 @@ function updateHint(res) {
     hintEl.innerHTML = "CLI ready. Log in above to connect.";
     hintEl.style.display = "block";
   } else {
-    hintEl.innerHTML = "Run <code>sidekar login</code> in terminal first";
+    hintEl.innerHTML = "Run <code>sidekar login</code>";
     hintEl.style.display = "block";
   }
 }

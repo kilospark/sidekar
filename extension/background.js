@@ -164,7 +164,7 @@ async function connect() {
         if (ev.reason && ev.reason.length > 0) {
           lastConnectError = ev.reason;
         } else {
-          lastConnectError = "Run 'sidekar login' in terminal to complete the authentication.";
+          lastConnectError = "Run `sidekar login`";
         }
       } else {
         lastConnectError = `Disconnected (code ${ev.code})`;
