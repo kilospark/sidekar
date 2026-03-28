@@ -14,7 +14,8 @@ use base64::Engine;
 use rand::Rng;
 use rusqlite::{params, Connection, OptionalExtension};
 
-const DB_FILE: &str = "broker.sqlite3";
+const DB_FILE: &str = "sidekar.sqlite3";
+const LEGACY_DB_FILE: &str = "broker.sqlite3";
 
 #[derive(Debug, Clone)]
 pub struct BrokerAgent {
@@ -48,6 +49,10 @@ pub fn db_path() -> PathBuf {
     data_dir().join(DB_FILE)
 }
 
+fn legacy_db_path() -> PathBuf {
+    data_dir().join(LEGACY_DB_FILE)
+}
+
 /// Open the broker SQLite database (creating it + schema if needed).
 pub fn open_db() -> Result<Connection> {
     open()
@@ -55,9 +60,16 @@ pub fn open_db() -> Result<Connection> {
 
 fn open() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
-    let path = db_path();
-    let conn = Connection::open(&path)
-        .with_context(|| format!("failed to open broker database at {}", path.display()))?;
+    
+    // Migrate: rename broker.sqlite3 → sidekar.sqlite3
+    let legacy = legacy_db_path();
+    let current = db_path();
+    if legacy.exists() && !current.exists() {
+        let _ = fs::rename(&legacy, &current);
+    }
+    
+    let conn = Connection::open(&current)
+        .with_context(|| format!("failed to open database at {}", current.display()))?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -171,35 +183,28 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // KV store table (per-project + global) — project = cwd path
+    // KV store table (global, scoped by user_id)
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS kv_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            scope TEXT,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            UNIQUE(scope, key)
+            UNIQUE(key)
         );
-        CREATE INDEX IF NOT EXISTS idx_kv_scope
-            ON kv_store(scope);
-        CREATE INDEX IF NOT EXISTS idx_kv_global
-            ON kv_store(scope, key) WHERE scope IS NULL;
         ",
     )?;
 
     // Migration: add user_id to kv_store and totp_secrets for multi-account isolation
     let _ = conn.execute_batch("ALTER TABLE kv_store ADD COLUMN user_id TEXT");
     let _ = conn.execute_batch("ALTER TABLE totp_secrets ADD COLUMN user_id TEXT");
-    // Migration: rename agent_id → scope in kv_store
-    let _ = conn.execute_batch("ALTER TABLE kv_store RENAME COLUMN agent_id TO scope");
-    // New unique constraints including user_id (old constraint stays, new one takes priority)
+    // Migration: drop scope column from kv_store (SQLite doesn't support DROP COLUMN directly,
+    // so we just ignore it and use user_id+key as the unique constraint going forward)
     let _ = conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_agent_key ON kv_store(user_id, agent_id, key);
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_totp_user_service_account ON totp_secrets(user_id, service, account);
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_scope_key ON kv_store(user_id, scope, key);",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_key ON kv_store(user_id, key);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_totp_user_service_account ON totp_secrets(user_id, service, account);",
     );
 
     // Encryption key marker
@@ -212,7 +217,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Config key-value store (replaces ~/.config/sidekar/sidekar.json)
+    // Config key-value store
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS config (
@@ -222,7 +227,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Local error log (durable, queryable; ~/.sidekar/broker.sqlite3)
+    // Auth (device token)
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS auth (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        ",
+    )?;
+
+    // Local error log (durable, queryable)
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS error_events (
@@ -913,15 +928,14 @@ pub fn totp_delete(id: i64) -> Result<()> {
 #[derive(Debug, Clone)]
 pub struct KvEntry {
     pub id: i64,
-    pub scope: Option<String>,
     pub key: String,
     pub value: String,
     pub created_at: u64,
     pub updated_at: u64,
 }
 
-/// Set a KV value (per-scope or global if scope is None), scoped to current user.
-pub fn kv_set(scope: Option<&str>, key: &str, value: &str) -> Result<()> {
+/// Set a KV value, scoped to current user.
+pub fn kv_set(key: &str, value: &str) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
     let uid = current_user_id();
@@ -939,26 +953,25 @@ pub fn kv_set(scope: Option<&str>, key: &str, value: &str) -> Result<()> {
     };
 
     conn.execute(
-        "INSERT INTO kv_store (user_id, scope, key, value, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-         ON CONFLICT(user_id, scope, key) DO UPDATE SET value = ?4, updated_at = ?6",
-        params![uid, scope, key, value_to_store, now, now],
+        "INSERT INTO kv_store (user_id, key, value, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(user_id, key) DO UPDATE SET value = ?3, updated_at = ?5",
+        params![uid, key, value_to_store, now, now],
     )?;
     Ok(())
 }
 
 /// Get a KV value, scoped to current user.
-pub fn kv_get(scope: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
+pub fn kv_get(key: &str) -> Result<Option<KvEntry>> {
     let conn = open()?;
     let uid = current_user_id();
-    let scope_val = scope.map(|s| s.to_string());
 
     let mut stmt = conn.prepare(
-        "SELECT id, scope, key, value, created_at, updated_at FROM kv_store \
-         WHERE user_id IS ?1 AND scope IS ?2 AND key = ?3",
+        "SELECT id, key, value, created_at, updated_at FROM kv_store \
+         WHERE user_id IS ?1 AND key = ?2",
     )?;
-    stmt.query_row(params![uid, scope_val.as_deref(), key], |row| {
-        let value: String = row.get(3)?;
+    stmt.query_row(params![uid, key], |row| {
+        let value: String = row.get(2)?;
         let decrypted = if is_encrypted(&value) {
             decrypt(&value).unwrap_or(value)
         } else {
@@ -966,31 +979,29 @@ pub fn kv_get(scope: Option<&str>, key: &str) -> Result<Option<KvEntry>> {
         };
         Ok(KvEntry {
             id: row.get(0)?,
-            scope: row.get(1)?,
-            key: row.get(2)?,
+            key: row.get(1)?,
             value: decrypted,
-            created_at: row.get::<_, i64>(4)? as u64,
-            updated_at: row.get::<_, i64>(5)? as u64,
+            created_at: row.get::<_, i64>(3)? as u64,
+            updated_at: row.get::<_, i64>(4)? as u64,
         })
     })
     .optional()
     .map_err(Into::into)
 }
 
-/// List KV entries for a scope (or global if None), scoped to current user.
-pub fn kv_list(scope: Option<&str>) -> Result<Vec<KvEntry>> {
+/// List all KV entries for current user.
+pub fn kv_list() -> Result<Vec<KvEntry>> {
     let conn = open()?;
     let uid = current_user_id();
-    let scope_val = scope.map(|s| s.to_string());
 
     let mut stmt = conn.prepare(
-        "SELECT id, scope, key, value, created_at, updated_at FROM kv_store \
-         WHERE user_id IS ?1 AND scope IS ?2 ORDER BY key",
+        "SELECT id, key, value, created_at, updated_at FROM kv_store \
+         WHERE user_id IS ?1 ORDER BY key",
     )?;
     let mut out = Vec::new();
-    let mut rows = stmt.query(params![uid, scope_val.as_deref()])?;
+    let mut rows = stmt.query(params![uid])?;
     while let Some(row) = rows.next()? {
-        let value: String = row.get(3)?;
+        let value: String = row.get(2)?;
         let decrypted = if is_encrypted(&value) {
             decrypt(&value).unwrap_or(value)
         } else {
@@ -998,24 +1009,22 @@ pub fn kv_list(scope: Option<&str>) -> Result<Vec<KvEntry>> {
         };
         out.push(KvEntry {
             id: row.get(0)?,
-            scope: row.get(1)?,
-            key: row.get(2)?,
+            key: row.get(1)?,
             value: decrypted,
-            created_at: row.get::<_, i64>(4)? as u64,
-            updated_at: row.get::<_, i64>(5)? as u64,
+            created_at: row.get::<_, i64>(3)? as u64,
+            updated_at: row.get::<_, i64>(4)? as u64,
         });
     }
     Ok(out)
 }
 
 /// Delete a KV entry, scoped to current user.
-pub fn kv_delete(scope: Option<&str>, key: &str) -> Result<()> {
+pub fn kv_delete(key: &str) -> Result<()> {
     let conn = open()?;
     let uid = current_user_id();
-    let scope_val = scope.map(|s| s.to_string());
     conn.execute(
-        "DELETE FROM kv_store WHERE user_id IS ?1 AND scope IS ?2 AND key = ?3",
-        params![uid, scope_val.as_deref(), key],
+        "DELETE FROM kv_store WHERE user_id IS ?1 AND key = ?2",
+        params![uid, key],
     )?;
     Ok(())
 }
@@ -1322,6 +1331,45 @@ pub fn error_events_recent(limit: usize) -> Result<Vec<ErrorEventRow>> {
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+// ---------------------------------------------------------------------------
+// Auth (device token storage)
+// ---------------------------------------------------------------------------
+
+/// Get a stored auth value (e.g., "token", "created_at").
+pub fn auth_get(key: &str) -> Option<String> {
+    let conn = open().ok()?;
+    conn.query_row(
+        "SELECT value FROM auth WHERE key = ?1",
+        params![key],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// Set an auth value.
+pub fn auth_set(key: &str, value: &str) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "INSERT INTO auth (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Delete an auth value.
+pub fn auth_delete(key: &str) -> Result<()> {
+    let conn = open()?;
+    conn.execute("DELETE FROM auth WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
+/// Clear all auth data (for logout).
+pub fn auth_clear() -> Result<()> {
+    let conn = open()?;
+    conn.execute("DELETE FROM auth", [])?;
+    Ok(())
 }
 
 #[cfg(test)]

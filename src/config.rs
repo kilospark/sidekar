@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Once;
 
 /// All known config keys with their types and defaults.
 /// This is the single source of truth for config schema.
@@ -70,65 +69,12 @@ impl Default for SidekarConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Legacy JSON path (for migration + first-run detection)
-// ---------------------------------------------------------------------------
-
-fn legacy_json_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("sidekar")
-        .join("sidekar.json")
-}
-
-/// Still used by first-run detection in main.rs
 pub fn config_path() -> PathBuf {
     crate::broker::db_path()
 }
 
 pub fn is_first_run() -> bool {
-    // First run if neither the SQLite DB nor the legacy JSON exist
-    !crate::broker::db_path().exists() && !legacy_json_path().exists()
-}
-
-// ---------------------------------------------------------------------------
-// One-time migration from JSON → SQLite
-// ---------------------------------------------------------------------------
-
-static MIGRATION: Once = Once::new();
-
-fn migrate_json_if_needed() {
-    MIGRATION.call_once(|| {
-        let path = legacy_json_path();
-        if !path.exists() {
-            return;
-        }
-        // Check if we already migrated (any config row exists)
-        if let Ok(conn) = crate::broker::open_db() {
-            let has_rows: bool = conn
-                .query_row("SELECT COUNT(*) > 0 FROM config", [], |r| r.get(0))
-                .unwrap_or(false);
-            if has_rows {
-                return; // already migrated
-            }
-        }
-        // Read legacy JSON and import
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Ok(old) = serde_json::from_str::<SidekarConfig>(&contents) {
-                let _ = config_set("telemetry", &old.telemetry.to_string());
-                let _ = config_set("feedback", &old.feedback.to_string());
-                if let Some(ref b) = old.browser {
-                    let _ = config_set("browser", b);
-                }
-                let _ = config_set("auto_update", &old.auto_update.to_string());
-                let _ = config_set("max_tabs", &old.max_tabs.to_string());
-                let _ = config_set("cdp_timeout_secs", &old.cdp_timeout_secs.to_string());
-                let _ = config_set("max_cron_jobs", &old.max_cron_jobs.to_string());
-                eprintln!("sidekar: migrated config from {} to SQLite", path.display());
-            }
-        }
-    });
+    !crate::broker::db_path().exists()
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +83,6 @@ fn migrate_json_if_needed() {
 
 /// Get a single config value, returning the default if not set.
 pub fn config_get(key: &str) -> String {
-    migrate_json_if_needed();
     if let Ok(conn) = crate::broker::open_db() {
         if let Ok(val) = conn.query_row(
             "SELECT value FROM config WHERE key = ?1",
@@ -153,7 +98,6 @@ pub fn config_get(key: &str) -> String {
 
 /// Set a config value. Returns error if key is unknown.
 pub fn config_set(key: &str, value: &str) -> Result<()> {
-    migrate_json_if_needed();
     let conn = crate::broker::open_db()?;
     conn.execute(
         "INSERT INTO config (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
@@ -171,7 +115,6 @@ pub fn config_delete(key: &str) -> Result<()> {
 
 /// Get all config values (including defaults for unset keys).
 pub fn config_list() -> Vec<(String, String, bool)> {
-    migrate_json_if_needed();
     let mut set_values = std::collections::HashMap::new();
     if let Ok(conn) = crate::broker::open_db() {
         if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM config") {
@@ -222,7 +165,6 @@ fn get_u64(key: &str) -> u64 {
 }
 
 pub fn load_config() -> SidekarConfig {
-    migrate_json_if_needed();
     let browser_val = config_get("browser");
     SidekarConfig {
         telemetry: get_bool("telemetry"),

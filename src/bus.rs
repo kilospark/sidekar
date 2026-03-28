@@ -299,7 +299,8 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
 
     // Try to reuse stored nickname for this project (only if not already taken)
     let chosen = if let Some(proj) = project {
-        let stored = broker::kv_get(Some(proj), "_agent_nick")
+        let nick_key = format!("_nick:{}", proj);
+        let stored = broker::kv_get(&nick_key)
             .ok()
             .flatten()
             .map(|e| e.value);
@@ -324,9 +325,7 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
         });
 
         // Store whatever nickname we got assigned
-        if let Err(e) = broker::kv_set(Some(proj), "_agent_nick", &picked) {
-            let _ = e;
-        }
+        let _ = broker::kv_set(&nick_key, &picked);
         picked
     } else {
         // Standalone - no project, just pick random
