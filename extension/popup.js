@@ -7,26 +7,47 @@ const retryBtn = document.getElementById("retry-btn");
 const authSection = document.getElementById("auth-section");
 const loggedInSection = document.getElementById("logged-in-section");
 
-const hintEl = document.querySelector(".hint");
-
-function updateHint(res) {
-  if (!hintEl) return;
-  if (res && res.authenticated) {
-    hintEl.style.display = "none";
-  } else if (res && res.lastError) {
-    // Error message already shown in detail area
-    hintEl.style.display = "none";
-  } else if (res && res.cliLoggedIn) {
-    // CLI is ready, just need extension sign-in
-    hintEl.style.display = "none";
-  } else {
-    hintEl.innerHTML = "Run <code>sidekar login</code>";
-    hintEl.style.display = "block";
+function loginCommandMarkup(copied = false) {
+  if (copied) {
+    return `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
   }
+  return `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+}
+
+function createCopyCommand() {
+  const cmdCopy = document.createElement("span");
+  cmdCopy.className = "cmd-copy";
+  cmdCopy.innerHTML = loginCommandMarkup(false);
+  cmdCopy.onclick = () => {
+    navigator.clipboard.writeText("sidekar login").then(() => {
+      cmdCopy.classList.add("copied");
+      cmdCopy.innerHTML = loginCommandMarkup(true);
+      setTimeout(() => {
+        cmdCopy.classList.remove("copied");
+        cmdCopy.innerHTML = loginCommandMarkup(false);
+      }, 2000);
+    });
+  };
+  return cmdCopy;
+}
+
+function renderCliLoginAction() {
+  status.className = "action-status";
+  status.textContent = "";
+
+  const wrapper = document.createElement("span");
+  wrapper.className = "status-copy";
+
+  const prefix = document.createElement("span");
+  prefix.className = "status-prefix";
+  prefix.textContent = "Run";
+
+  wrapper.appendChild(prefix);
+  wrapper.appendChild(createCopyCommand());
+  status.appendChild(wrapper);
 }
 
 function applyStatus(res) {
-  updateHint(res);
   if (res && res.authenticated) {
     status.textContent = "Connected & authenticated";
     status.className = "connected";
@@ -46,8 +67,7 @@ function applyStatus(res) {
     status.textContent = "Ready";
     status.className = "connected";
   } else {
-    status.textContent = "Not logged in";
-    status.className = "disconnected";
+    renderCliLoginAction();
   }
   
   // Check if error is about needing to run sidekar login
@@ -58,21 +78,7 @@ function applyStatus(res) {
   
   if (needsLogin) {
     detailEl.style.color = "#666";
-    detailEl.innerHTML = "Run ";
-    const cmdCopy = document.createElement("span");
-    cmdCopy.className = "cmd-copy";
-    cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
-    cmdCopy.onclick = () => {
-      navigator.clipboard.writeText("sidekar login").then(() => {
-        cmdCopy.classList.add("copied");
-        cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
-        setTimeout(() => {
-          cmdCopy.classList.remove("copied");
-          cmdCopy.innerHTML = `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
-        }, 2000);
-      });
-    };
-    detailEl.appendChild(cmdCopy);
+    detailEl.textContent = "";
   } else {
     detailEl.style.color = "#991b1b";
     detailEl.textContent = res && res.lastError ? res.lastError : "";
@@ -91,7 +97,7 @@ function refreshStatus() {
   chrome.runtime.sendMessage({ type: "status" }, (res) => {
     if (chrome.runtime.lastError) {
       detailEl.textContent = chrome.runtime.lastError.message || "";
-      updateHint({ cliLoggedIn: false, authenticated: false });
+      renderCliLoginAction();
       return;
     }
     applyStatus(res);
