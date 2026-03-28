@@ -98,13 +98,22 @@ async fn run() -> Result<()> {
     if command == "ext-server" {
         return sidekar::ext::run_server().await;
     }
+    // Native messaging host (invoked by Chrome extension)
+    if command == "native-messaging-host" {
+        return sidekar::ext::run_native_host();
+    }
     if command == "ext" {
         let sub = args.first().cloned().unwrap_or_default();
         if sub.is_empty() {
             eprintln!("Usage: sidekar ext <subcommand> [args...]");
             eprintln!("Subcommands: tabs, read, screenshot, click, type, axtree, eval, navigate,");
-            eprintln!("  newtab, close, scroll, status, stop, secret");
+            eprintln!("  newtab, close, scroll, status, stop, install-host");
             std::process::exit(1);
+        }
+        // Handle install-host subcommand
+        if sub == "install-host" {
+            let ext_id = args.get(1).map(|s| s.as_str());
+            return sidekar::ext::install_native_host(ext_id);
         }
         let sub_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
         let default_tab = match override_tab_id.as_deref() {

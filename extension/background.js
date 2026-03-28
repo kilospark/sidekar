@@ -1,7 +1,7 @@
 // Sidekar Chrome Extension — Service Worker
 // Connects to local sidekar WebSocket server and executes commands in the user's browser.
 
-const DEFAULT_EXT_PORT = 9876;
+const NATIVE_HOST_NAME = "dev.sidekar";
 const RECONNECT_DELAY_MS = 3000;
 const KEEPALIVE_INTERVAL_MS = 20000;
 
@@ -10,48 +10,98 @@ let keepaliveTimer = null;
 let authenticated = false;
 let lastConnectError = null;
 let sawAuthFail = false;
-
-function normalizePort(raw) {
-  if (raw === undefined || raw === null || raw === "") return DEFAULT_EXT_PORT;
-  const n = typeof raw === "string" ? parseInt(raw, 10) : Number(raw);
-  if (!Number.isFinite(n) || n < 1 || n > 65535) return DEFAULT_EXT_PORT;
-  return n;
-}
+let currentPort = null;
 
 function wsUrl(port) {
   return `ws://127.0.0.1:${port}`;
 }
 
-// Auth credentials and extPort live in chrome.storage.local
-function getBridgeConfig() {
+function getExtToken() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["extToken", "extPort"], (data) => {
-      resolve({
-        extToken: String(data.extToken || "").trim(),
-        extPort: normalizePort(data.extPort),
-      });
+    chrome.storage.local.get(["extToken"], (data) => {
+      resolve(String(data.extToken || "").trim());
     });
+  });
+}
+
+// Use native messaging to ensure ext-server is running and get the port
+function ensureServerViaNative() {
+  return new Promise((resolve) => {
+    let port;
+    try {
+      port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+    } catch (e) {
+      console.error("[sidekar] Failed to connect to native host:", e);
+      resolve({ error: "Native host not installed. Run: sidekar ext install-host" });
+      return;
+    }
+
+    let resolved = false;
+
+    port.onMessage.addListener((msg) => {
+      if (!resolved) {
+        resolved = true;
+        port.disconnect();
+        resolve(msg);
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (!resolved) {
+        resolved = true;
+        const err = chrome.runtime.lastError?.message || "Native host disconnected";
+        resolve({ error: err });
+      }
+    });
+
+    port.postMessage({ type: "ensure_server" });
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        port.disconnect();
+        resolve({ error: "Native host timeout" });
+      }
+    }, 5000);
   });
 }
 
 async function connect() {
   if (ws && ws.readyState <= 1) return;
 
-  const { extToken, extPort } = await getBridgeConfig();
+  const extToken = await getExtToken();
   if (!extToken) {
     console.log("[sidekar] no token configured — click extension icon to log in");
     lastConnectError = "Click the Sidekar icon to log in with GitHub";
     return;
   }
 
-  const url = wsUrl(extPort);
+  // Use native messaging to ensure server is running and get port
+  const nativeResult = await ensureServerViaNative();
+  if (nativeResult.error) {
+    console.error("[sidekar] Native host error:", nativeResult.error);
+    lastConnectError = nativeResult.error;
+    scheduleReconnect();
+    return;
+  }
+
+  const port = nativeResult.port;
+  if (!port) {
+    lastConnectError = "Native host did not return a port";
+    scheduleReconnect();
+    return;
+  }
+
+  currentPort = port;
+  const url = wsUrl(port);
   sawAuthFail = false;
   lastConnectError = null;
 
   try {
     ws = new WebSocket(url);
   } catch (e) {
-    lastConnectError = "Could not create WebSocket — is the bridge running? (sidekar ext tabs)";
+    lastConnectError = "Could not create WebSocket";
     console.error("[sidekar] WebSocket constructor failed", e);
     scheduleReconnect();
     return;
@@ -103,18 +153,16 @@ async function connect() {
     stopKeepalive();
     if (!sawAuthFail && !lastConnectError) {
       if (ev.code === 1006) {
-        lastConnectError =
-          "Cannot reach the bridge on this port. In a terminal run: sidekar ext tabs (or sidekar ext-server).";
+        lastConnectError = "Bridge disconnected unexpectedly";
       } else if (ev.code !== 1000) {
-        lastConnectError = `Disconnected (code ${ev.code}). Is sidekar ext-server running on port ${extPort}?`;
+        lastConnectError = `Disconnected (code ${ev.code})`;
       }
     }
     scheduleReconnect();
   };
 
   ws.onerror = () => {
-    lastConnectError =
-      "Connection error — start the bridge: sidekar ext tabs (uses port " + extPort + ")";
+    lastConnectError = "WebSocket connection error";
     console.error("[sidekar] WebSocket error to", url);
   };
 }
@@ -536,16 +584,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === "status") {
-    (async () => {
-      const { extPort } = await getBridgeConfig();
-      sendResponse({
-        connected: ws !== null && ws.readyState === 1,
-        authenticated,
-        wsUrl: wsUrl(extPort),
-        lastError: lastConnectError,
-      });
-    })();
-    return true;
+    sendResponse({
+      connected: ws !== null && ws.readyState === 1,
+      authenticated,
+      wsUrl: currentPort ? wsUrl(currentPort) : null,
+      lastError: lastConnectError,
+    });
+    return false;
   }
   if (msg.type === "reconnect") {
     if (ws) {
@@ -558,9 +603,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === "setToken") {
-    const extPort = normalizePort(msg.extPort);
     const extToken = String(msg.extToken || "").trim();
-    chrome.storage.local.set({ extToken, extPort }, () => {
+    chrome.storage.local.set({ extToken }, () => {
       if (ws) {
         try { ws.close(); } catch {}
       }

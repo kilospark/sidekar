@@ -787,3 +787,142 @@ fn print_result(command: &str, result: &Value) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Native Messaging Host
+// ---------------------------------------------------------------------------
+
+const NATIVE_HOST_NAME: &str = "dev.sidekar";
+
+/// Run as a native messaging host. Reads JSON messages from stdin (length-prefixed),
+/// processes commands, and writes responses to stdout (length-prefixed).
+pub fn run_native_host() -> Result<()> {
+    use std::io::{Read, Write};
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut stdin = stdin.lock();
+    let mut stdout = stdout.lock();
+
+    loop {
+        // Read 4-byte length prefix (little-endian)
+        let mut len_buf = [0u8; 4];
+        if stdin.read_exact(&mut len_buf).is_err() {
+            break; // EOF or error, exit cleanly
+        }
+        let len = u32::from_le_bytes(len_buf) as usize;
+
+        if len == 0 || len > 1024 * 1024 {
+            break; // Invalid length
+        }
+
+        // Read the message
+        let mut msg_buf = vec![0u8; len];
+        if stdin.read_exact(&mut msg_buf).is_err() {
+            break;
+        }
+
+        // Parse and handle
+        let response = match serde_json::from_slice::<Value>(&msg_buf) {
+            Ok(msg) => handle_native_message(&msg),
+            Err(e) => json!({"error": format!("Invalid JSON: {e}")}),
+        };
+
+        // Write response with length prefix
+        let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+        let response_len = (response_bytes.len() as u32).to_le_bytes();
+        let _ = stdout.write_all(&response_len);
+        let _ = stdout.write_all(&response_bytes);
+        let _ = stdout.flush();
+    }
+
+    Ok(())
+}
+
+fn handle_native_message(msg: &Value) -> Value {
+    let cmd = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match cmd {
+        "get_config" => {
+            // Return port and server status
+            let port = std::env::var("SIDEKAR_EXT_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(DEFAULT_PORT);
+            let running = is_server_running();
+            json!({
+                "port": port,
+                "running": running
+            })
+        }
+        "ensure_server" => {
+            // Start ext-server if not running, return port
+            match auto_launch_server() {
+                Ok(()) => {
+                    let port = std::env::var("SIDEKAR_EXT_PORT")
+                        .ok()
+                        .and_then(|v| v.parse::<u16>().ok())
+                        .unwrap_or(DEFAULT_PORT);
+                    json!({"port": port, "started": true})
+                }
+                Err(e) => json!({"error": format!("{e}")}),
+            }
+        }
+        "ping" => json!({"pong": true}),
+        _ => json!({"error": format!("Unknown command: {cmd}")}),
+    }
+}
+
+/// Install the native messaging host manifest for Chrome.
+pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
+    let exe_path = std::env::current_exe()
+        .context("Cannot determine sidekar executable path")?;
+
+    // Use provided extension ID or a placeholder
+    let ext_id = extension_id.unwrap_or("EXTENSION_ID_HERE");
+
+    let manifest = json!({
+        "name": NATIVE_HOST_NAME,
+        "description": "Sidekar native messaging host",
+        "path": exe_path.to_string_lossy(),
+        "type": "stdio",
+        "allowed_origins": [format!("chrome-extension://{ext_id}/")]
+    });
+
+    // Determine manifest path based on OS
+    #[cfg(target_os = "macos")]
+    let manifest_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("Cannot find home directory"))?
+        .join("Library/Application Support/Google/Chrome/NativeMessagingHosts");
+
+    #[cfg(target_os = "linux")]
+    let manifest_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("Cannot find home directory"))?
+        .join(".config/google-chrome/NativeMessagingHosts");
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    bail!("Native messaging host installation not supported on this OS");
+
+    std::fs::create_dir_all(&manifest_dir)
+        .context("Failed to create NativeMessagingHosts directory")?;
+
+    let manifest_path = manifest_dir.join(format!("{NATIVE_HOST_NAME}.json"));
+    let manifest_json = serde_json::to_string_pretty(&manifest)?;
+
+    std::fs::write(&manifest_path, &manifest_json)
+        .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
+
+    println!("Installed native messaging host manifest:");
+    println!("  {}", manifest_path.display());
+    println!();
+    println!("Manifest contents:");
+    println!("{manifest_json}");
+
+    if extension_id.is_none() {
+        println!();
+        println!("NOTE: Replace EXTENSION_ID_HERE with your actual extension ID.");
+        println!("Find it at chrome://extensions with Developer mode enabled.");
+    }
+
+    Ok(())
+}

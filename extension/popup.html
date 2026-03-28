@@ -10,8 +10,6 @@ h3 { margin: 0 0 12px; font-size: 14px; }
 .disconnected { background: #fef2f2; color: #991b1b; }
 .pending { background: #fef9c3; color: #854d0e; }
 #detail { font-size: 11px; color: #991b1b; margin: -4px 0 10px; line-height: 1.35; min-height: 2.7em; }
-label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
-input { width: 100%; padding: 6px 8px; border: 1px solid #d4d4d8; border-radius: 4px; font-family: monospace; font-size: 11px; box-sizing: border-box; margin-bottom: 8px; }
 button { width: 100%; padding: 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; margin-bottom: 6px; }
 button:hover { background: #f4f4f5; }
 #login-btn { background: #24292f; color: #fff; border-color: #24292f; }
@@ -21,13 +19,8 @@ button:hover { background: #f4f4f5; }
 .hint { font-size: 11px; color: #999; margin-top: 8px; }
 code { background: #f4f4f5; padding: 1px 4px; border-radius: 2px; font-size: 11px; }
 .user-info { font-size: 12px; color: #166534; margin-bottom: 8px; padding: 6px 8px; background: #f0fdf4; border-radius: 4px; }
-.section { margin-bottom: 12px; }
 #auth-section { display: block; }
 #logged-in-section { display: none; }
-details { margin-top: 8px; }
-details summary { font-size: 11px; color: #999; cursor: pointer; }
-details summary:hover { color: #666; }
-details .inner { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -40,18 +33,11 @@ details .inner { margin-top: 8px; }
 </div>
 
 <div id="logged-in-section">
-  <div class="user-info" id="user-info">Signed in</div>
+  <div class="user-info">Signed in</div>
   <button id="logout-btn">Sign out</button>
 </div>
 
-<div class="section">
-  <label>Bridge port</label>
-  <input id="port" type="number" min="1" max="65535" value="9876" />
-  <button id="save-port">Update port</button>
-</div>
-
-<div class="hint">The bridge must be running on your Mac. In Terminal: <code>sidekar ext tabs</code> or <code>sidekar ext-server</code>.</div>
-<div id="endpoint" class="hint"></div>
+<div class="hint">Requires: <code>sidekar login</code> and <code>sidekar ext install-host</code></div>
 <script src="popup.js"></script>
 </body>
 </html>

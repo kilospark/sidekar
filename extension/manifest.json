@@ -9,7 +9,8 @@
     "scripting",
     "alarms",
     "storage",
-    "offscreen"
+    "offscreen",
+    "nativeMessaging"
   ],
   "background": {
     "service_worker": "background.js"
