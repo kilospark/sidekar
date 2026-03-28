@@ -9,7 +9,7 @@ sidekar is a single binary that gives AI agents real browser and desktop control
 ## Getting started (step by step)
 
 1. **Install:** `curl -fsSL https://sidekar.dev/install | sh` (installs the binary and runs `sidekar install` for agent skills).
-2. **Chrome extension (optional):** Load unpacked from the repo `extension/` directory, start the bridge (`sidekar ext-server` or `sidekar ext …`), paste the secret in the extension popup, connect. Automates your everyday Chrome profile.
+2. **Chrome extension (optional):** Load unpacked from the repo `extension/` directory, run `sidekar login`, sign in from the extension popup, then use `sidekar ext ...` commands. Automates your everyday Chrome profile through the local bridge.
 3. **`sidekar login` (optional):** Authenticate with sidekar.dev to control or attach to sessions from the web dashboard and remote workflows.
 4. **Launch an agent:** `sidekar <agent> [args…]` with any agent CLI on your PATH (e.g. `sidekar claude`, `sidekar codex`). Wraps the PTY and agent bus.
 

@@ -15,7 +15,7 @@ curl -fsSL sidekar.dev/install | sh
 ## Getting started (step by step)
 
 1. **Install:** run the curl command above (binary + `sidekar install` for skills).
-2. **Chrome extension (optional):** load unpacked from `extension/`, run `sidekar ext-server` or any `sidekar ext …` command, paste the secret in the extension popup, connect.
+2. **Chrome extension (optional):** load unpacked from `extension/`, run `sidekar login`, sign in from the extension popup, then use `sidekar ext ...` commands.
 3. **`sidekar login` (optional):** device auth against sidekar.dev for remote session access (web dashboard, tunnel workflows).
 4. **Launch an agent:** `sidekar <agent> [args…]` for any agent CLI on PATH (e.g. `sidekar claude`, `sidekar codex`).
 
