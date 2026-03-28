@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Privacy Policy — sidekar</title>
+<title>Privacy Policy - sidekar</title>
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
@@ -61,7 +61,7 @@
     <p class="updated">Last updated: March 26, 2026</p>
 
     <h2>Overview</h2>
-    <p>Sidekar is designed to be local-first. The CLI runs on your machine and does not collect telemetry. Some features — authentication, the dashboard, and session relay — require communication with our servers as described below.</p>
+    <p>Sidekar is designed to be local-first. The CLI runs on your machine and does not collect telemetry. Some features, including authentication, the dashboard, and session relay, require communication with our servers as described below.</p>
 
     <h2>CLI</h2>
     <p>The <code>sidekar</code> binary runs on your local machine. It does not phone home or collect telemetry. Browser automation, desktop automation, and inter-agent communication all happen locally.</p>
@@ -73,14 +73,15 @@
     </ul>
 
     <h2>Chrome Extension</h2>
-    <p>The Sidekar Chrome extension connects exclusively to <code>127.0.0.1</code> (localhost) via WebSocket. It does not:</p>
+    <p>The Sidekar Chrome extension connects to a local Sidekar bridge on <code>127.0.0.1</code> (localhost). It does not:</p>
     <ul>
-      <li>Send any data to remote servers</li>
+      <li>Send page data to Sidekar servers as part of the local browser bridge</li>
       <li>Collect analytics or telemetry</li>
       <li>Track browsing history or behavior</li>
     </ul>
-    <p>The extension reads page content (DOM text, accessibility tree, screenshots) only when the local <code>sidekar</code> process sends a command. A shared secret authenticates the connection between the extension and the local CLI.</p>
-    <p>The extension requests <code>&lt;all_urls&gt;</code> host permission because AI agents may need to interact with any page you direct them to. This permission is never used to access pages without an explicit command from your local agent.</p>
+    <p>The extension reads page content, including DOM text, accessibility data, and screenshots, only when the local <code>sidekar</code> process sends a command.</p>
+    <p>The extension signs in separately from the CLI. The local bridge verifies that the extension user and the CLI user belong to the same Sidekar account before it accepts commands.</p>
+    <p>The extension requests <code>&lt;all_urls&gt;</code> host permission because AI agents may need to interact with any page you explicitly direct them to. This permission is not used to access pages unless your local Sidekar process requests work.</p>
 
     <h2>Website &amp; Dashboard</h2>
     <p>The sidekar.dev website is a static site hosted on Vercel. It uses no cookies, analytics, or tracking scripts.</p>

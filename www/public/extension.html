@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sidekar Chrome Extension</title>
+<meta name="description" content="The Sidekar Chrome extension connects your local Sidekar CLI to your everyday Chrome profile. Learn how it works, why it needs native messaging and localhost, and how to install it safely.">
+<meta name="theme-color" content="#10231d">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="/favicon-16.png" sizes="16x16">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/common.css">
+<script>
+(function() {
+  var stored = localStorage.getItem('theme');
+  if (stored === 'light') document.documentElement.classList.add('light');
+  else if (stored === 'dark') document.documentElement.classList.add('dark');
+})();
+</script>
+<style>
+:root {
+  --font: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  --page-bg: #111919;
+  --page-bg-soft: #192423;
+  --page-ink: #f5f1e8;
+  --page-muted: #b6beb6;
+  --page-line: rgba(245, 241, 232, 0.12);
+  --page-panel: rgba(245, 241, 232, 0.06);
+  --page-accent: #8ee7ff;
+  --page-accent-2: #ffe0a8;
+}
+
+html.light {
+  --page-bg: #f5efe5;
+  --page-bg-soft: #ece4d6;
+  --page-ink: #1d2825;
+  --page-muted: #55625d;
+  --page-line: rgba(29, 40, 37, 0.12);
+  --page-panel: rgba(29, 40, 37, 0.05);
+  --page-accent: #005f74;
+  --page-accent-2: #aa6423;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(142, 231, 255, 0.12), transparent 32%),
+    radial-gradient(circle at top right, rgba(255, 224, 168, 0.14), transparent 26%),
+    linear-gradient(180deg, var(--page-bg-soft) 0%, var(--page-bg) 42%, var(--page-bg) 100%);
+  color: var(--page-ink);
+}
+
+nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  background: color-mix(in srgb, var(--page-bg) 84%, transparent);
+  border-bottom-color: var(--page-line);
+}
+
+.page {
+  padding: 130px 0 80px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 22px;
+  margin-bottom: 38px;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--page-line);
+  background: var(--page-panel);
+  border-radius: 999px;
+  padding: 8px 13px;
+  font: 12px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--page-muted);
+  margin-bottom: 22px;
+}
+
+.eyebrow::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--page-accent);
+}
+
+h1 {
+  font-size: clamp(3rem, 7vw, 5.8rem);
+  line-height: 0.94;
+  letter-spacing: -0.055em;
+  color: var(--page-ink);
+  max-width: 8.5ch;
+  margin-bottom: 16px;
+}
+
+.hero p {
+  color: var(--page-muted);
+  font-size: 18px;
+  line-height: 1.7;
+  max-width: 58ch;
+}
+
+.cta-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 28px;
+}
+
+.btn-primary,
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  border-radius: 16px;
+  padding: 0 18px;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid var(--page-line);
+}
+
+.btn-primary {
+  color: #13221e;
+  background: linear-gradient(135deg, var(--page-accent) 0%, #b4f1ff 100%);
+  border-color: transparent;
+}
+
+.btn-secondary {
+  color: var(--page-ink);
+  background: var(--page-panel);
+}
+
+.hero-card,
+.panel,
+.stack-card {
+  border: 1px solid var(--page-line);
+  background: var(--page-panel);
+  border-radius: 28px;
+}
+
+.hero-card {
+  padding: 24px;
+}
+
+.hero-card h2,
+.panel h2,
+.stack-card h2 {
+  color: var(--page-ink);
+}
+
+.flow-list {
+  display: grid;
+  gap: 14px;
+}
+
+.flow-step {
+  padding: 14px 0 0;
+  border-top: 1px solid var(--page-line);
+}
+
+.flow-step:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.flow-step .num {
+  display: inline-block;
+  font: 11px/1 var(--mono);
+  color: var(--page-muted);
+  margin-bottom: 8px;
+}
+
+.flow-step strong {
+  display: block;
+  color: var(--page-ink);
+  margin-bottom: 6px;
+  font-size: 15px;
+}
+
+.flow-step p,
+.panel p,
+.stack-card p,
+.stack-card li {
+  color: var(--page-muted);
+  line-height: 1.7;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+}
+
+.panel {
+  padding: 28px;
+}
+
+.panel-header {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 24px;
+}
+
+.label {
+  font: 12px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--page-muted);
+}
+
+.panel-header h2 {
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+  max-width: 11ch;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.card {
+  border: 1px solid var(--page-line);
+  border-radius: 20px;
+  padding: 18px;
+  background: color-mix(in srgb, var(--page-panel) 78%, transparent);
+}
+
+.card h3 {
+  color: var(--page-ink);
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+.card p {
+  color: var(--page-muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.stack-card {
+  padding: 24px;
+}
+
+.stack-card h2 {
+  font-size: 26px;
+  line-height: 1.05;
+  margin-bottom: 14px;
+  letter-spacing: -0.04em;
+}
+
+.stack-card ul {
+  list-style: none;
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.stack-card li {
+  padding-left: 18px;
+  position: relative;
+}
+
+.stack-card li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.8em;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--page-accent-2);
+}
+
+code {
+  font: 12px/1.6 var(--mono);
+  background: color-mix(in srgb, var(--page-bg) 28%, transparent);
+  border: 1px solid var(--page-line);
+  border-radius: 8px;
+  padding: 2px 6px;
+  color: var(--page-ink);
+}
+
+.faq {
+  display: grid;
+  gap: 12px;
+}
+
+.faq-item {
+  border: 1px solid var(--page-line);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.faq-item h3 {
+  color: var(--page-ink);
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+.faq-item p {
+  color: var(--page-muted);
+  line-height: 1.7;
+}
+
+footer {
+  border-top-color: var(--page-line);
+}
+
+.footer-links a {
+  color: var(--page-muted);
+}
+
+@media (max-width: 980px) {
+  .hero,
+  .layout,
+  .panel-header {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 110px;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+</head>
+<body>
+<nav>
+  <div class="container">
+    <a href="/" class="nav-logo">
+      <img src="/sidekar-icon-dark.svg" alt="" class="nav-logo-icon dark">
+      <img src="/sidekar-icon-light.svg" alt="" class="nav-logo-icon light">
+      sidekar
+    </a>
+    <div class="nav-right">
+      <a class="nav-auth" href="/">Home</a>
+      <a class="nav-auth" href="/privacy">Privacy</a>
+      <a class="nav-auth" href="/terms">Terms</a>
+      <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
+        <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="container">
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Chrome extension</div>
+        <h1>Bridge Sidekar into your everyday browser.</h1>
+        <p>The Sidekar Chrome extension lets your local Sidekar CLI interact with the Chrome profile you already use. It is for the cases where the agent needs your real tabs, cookies, or logged-in sessions instead of a clean automation profile.</p>
+        <div class="cta-row">
+          <a href="/install" class="btn-primary">Install the CLI first</a>
+          <a href="https://github.com/kilospark/sidekar/issues" class="btn-secondary">Support on GitHub</a>
+        </div>
+      </div>
+      <div class="hero-card">
+        <div class="flow-list">
+          <div class="flow-step">
+            <div class="num">01</div>
+            <strong>Install Sidekar</strong>
+            <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>.</p>
+          </div>
+          <div class="flow-step">
+            <div class="num">02</div>
+            <strong>Log in locally</strong>
+            <p><code>sidekar login</code> stores the CLI device token and installs the native messaging host.</p>
+          </div>
+          <div class="flow-step">
+            <div class="num">03</div>
+            <strong>Install the extension</strong>
+            <p>Add the Sidekar Chrome extension and sign in from the popup with GitHub.</p>
+          </div>
+          <div class="flow-step">
+            <div class="num">04</div>
+            <strong>Use <code>sidekar ext</code></strong>
+            <p>Your local Sidekar bridge connects the CLI and the extension, and your agent can work with your normal Chrome profile.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <section class="panel">
+        <div class="panel-header">
+          <div class="label">What it does</div>
+          <div>
+            <h2>Why the extension exists</h2>
+            <p>CDP is excellent for isolated automation. The extension exists for the cases where isolation is the wrong tool and the agent needs the browser you already use.</p>
+          </div>
+        </div>
+        <div class="cards">
+          <article class="card">
+            <h3>Use your real tabs</h3>
+            <p>Read, click, type, and inspect pages in the Chrome profile you already keep signed in.</p>
+          </article>
+          <article class="card">
+            <h3>Keep local control</h3>
+            <p>The extension talks to a local bridge on <code>127.0.0.1</code>. It is not a hosted browser service.</p>
+          </article>
+          <article class="card">
+            <h3>Support login-heavy sites</h3>
+            <p>Use the browser state you already have instead of recreating sessions in a separate automation profile.</p>
+          </article>
+          <article class="card">
+            <h3>Stay inside Sidekar</h3>
+            <p>The extension is one part of Sidekar’s browser story, alongside direct CDP automation for isolated sessions.</p>
+          </article>
+        </div>
+      </section>
+      <aside class="stack-card">
+        <h2>Security model</h2>
+        <p>The extension does not trust localhost by default. It signs in separately from the CLI so the local bridge can verify that the extension user and the CLI user belong to the same account.</p>
+        <ul>
+          <li>Extension talks to <code>127.0.0.1</code> only.</li>
+          <li>Native messaging starts or discovers the local bridge.</li>
+          <li>Extension OAuth proves who is using the browser.</li>
+          <li>CLI device login proves who is using Sidekar locally.</li>
+        </ul>
+      </aside>
+    </section>
+
+    <section class="layout" style="margin-top:18px;">
+      <section class="panel">
+        <div class="panel-header">
+          <div class="label">Permissions</div>
+          <div>
+            <h2>Why it needs native messaging and broad host access</h2>
+            <p>The extension needs native messaging to talk to the local Sidekar process and broad host access because agents may need to act on any page you explicitly direct them to.</p>
+          </div>
+        </div>
+        <div class="cards">
+          <article class="card">
+            <h3>Native messaging</h3>
+            <p>Used to start or discover the local Sidekar bridge and communicate with the Sidekar binary on your machine.</p>
+          </article>
+          <article class="card">
+            <h3>Host permissions</h3>
+            <p>Needed because the agent may need to automate any site you choose. The extension is inactive until Sidekar sends a command.</p>
+          </article>
+          <article class="card">
+            <h3>No autonomous browsing</h3>
+            <p>The extension does not crawl the web, collect analytics, or act unless a local Sidekar command tells it to.</p>
+          </article>
+          <article class="card">
+            <h3>Local-first data path</h3>
+            <p>Page reads, clicks, typing, and screenshots are driven from your local machine. The website is for auth, dashboards, and account-level services.</p>
+          </article>
+        </div>
+      </section>
+      <aside class="stack-card">
+        <h2>Support and review links</h2>
+        <p>Support, privacy, and policy links are collected here so the install flow is easy to verify.</p>
+        <ul>
+          <li><a href="/privacy">Privacy policy</a></li>
+          <li><a href="/terms">Terms of service</a></li>
+          <li><a href="mailto:hello@kilospark.com">hello@kilospark.com</a></li>
+          <li><a href="https://github.com/kilospark/sidekar/issues">GitHub issues</a></li>
+        </ul>
+      </aside>
+    </section>
+
+    <section class="panel" style="margin-top:18px;">
+      <div class="panel-header">
+        <div class="label">FAQ</div>
+        <div>
+          <h2>What people will ask first</h2>
+          <p>This page covers the first questions people ask before they trust a local browser bridge.</p>
+        </div>
+      </div>
+      <div class="faq">
+        <article class="faq-item">
+          <h3>Does the extension send my browsing data to Sidekar servers?</h3>
+          <p>No. The extension talks to a local bridge on your machine. Hosted services are used for authentication, dashboard features, and relay sessions, not for the browser bridge itself.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Why do I need both CLI login and extension sign-in?</h3>
+          <p>The CLI login identifies the local Sidekar device. The extension sign-in identifies the browser user. The local bridge verifies that they belong to the same account.</p>
+        </article>
+        <article class="faq-item">
+          <h3>What happens if I do not install the extension?</h3>
+          <p>Sidekar still supports browser automation through direct CDP. The extension is only for the cases where the agent needs your everyday Chrome profile.</p>
+        </article>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-left">&copy; 2026 Kilo Spark</div>
+    <ul class="footer-links">
+      <li><a href="/">Home</a></li>
+      <li><a href="/terms">Terms</a></li>
+      <li><a href="/privacy">Privacy</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script>
+var themeModes = ['light', 'system', 'dark'];
+
+function setTheme(mode) {
+  var html = document.documentElement;
+  html.classList.remove('light', 'dark');
+  if (mode === 'light') html.classList.add('light');
+  else if (mode === 'dark') html.classList.add('dark');
+  if (mode === 'system') localStorage.removeItem('theme');
+  else localStorage.setItem('theme', mode);
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.setAttribute('data-mode', mode);
+}
+
+function cycleTheme() {
+  var current = localStorage.getItem('theme') || 'system';
+  var idx = themeModes.indexOf(current);
+  var next = themeModes[(idx + 1) % themeModes.length];
+  setTheme(next);
+}
+
+(function() {
+  var stored = localStorage.getItem('theme') || 'system';
+  var btn = document.getElementById('theme-toggle');
+  if (btn) btn.setAttribute('data-mode', stored);
+})();
+</script>
+</body>
+</html>
