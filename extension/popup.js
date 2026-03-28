@@ -105,6 +105,9 @@ function updateAuthUI() {
 refreshStatus();
 updateAuthUI();
 
+// Show extension version
+document.getElementById("version").textContent = chrome.runtime.getManifest().version;
+
 // Auto-refresh status every 2 seconds while popup is open
 setInterval(refreshStatus, 2000);
 
