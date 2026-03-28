@@ -47,6 +47,7 @@ function refreshStatus() {
   chrome.runtime.sendMessage({ type: "status" }, (res) => {
     if (chrome.runtime.lastError) {
       detailEl.textContent = chrome.runtime.lastError.message || "";
+      updateHint({ cliLoggedIn: false, authenticated: false });
       return;
     }
     applyStatus(res);

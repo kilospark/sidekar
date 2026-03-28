@@ -599,14 +599,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === "status") {
-    sendResponse({
-      connected: ws !== null && ws.readyState === 1,
-      authenticated,
-      wsUrl: currentPort ? wsUrl(currentPort) : null,
-      lastError: lastConnectError,
-      cliLoggedIn,
+    // Query native host for fresh CLI login status
+    ensureServerViaNative().then((nativeResult) => {
+      if (!nativeResult.error) {
+        cliLoggedIn = nativeResult.cli_logged_in === true;
+      }
+      sendResponse({
+        connected: ws !== null && ws.readyState === 1,
+        authenticated,
+        wsUrl: currentPort ? wsUrl(currentPort) : null,
+        lastError: lastConnectError,
+        cliLoggedIn,
+      });
     });
-    return false;
+    return true;  // async response
   }
   if (msg.type === "reconnect") {
     if (ws) {
