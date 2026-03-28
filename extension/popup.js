@@ -17,9 +17,6 @@ function updateHint(res) {
   } else if (res && res.lastError) {
     // Error message already shown in detail area - don't duplicate
     hintEl.style.display = "none";
-  } else if (res && res.cliLoggedIn) {
-    hintEl.innerHTML = "CLI ready. Log in above to connect.";
-    hintEl.style.display = "block";
   } else {
     hintEl.innerHTML = "Run <code>sidekar login</code>";
     hintEl.style.display = "block";
