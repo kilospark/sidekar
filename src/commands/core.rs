@@ -99,6 +99,7 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-blink-features=AutomationControlled".to_string(),
+        "--test-type".to_string(), // suppresses "unsupported flag" infobar
     ];
     if headless {
         chrome_args.push("--headless=new".to_string());
