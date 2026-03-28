@@ -1141,7 +1141,7 @@ fn encrypt_plaintext_rows() -> Result<()> {
     )?;
     conn.execute(
         "DELETE FROM totp_secrets WHERE user_id IS NULL AND id NOT IN (
-            SELECT MAX(id) FROM totp_secrets WHERE user_id IS NULL GROUP BY name
+            SELECT MAX(id) FROM totp_secrets WHERE user_id IS NULL GROUP BY service, account
         )",
         [],
     )?;
