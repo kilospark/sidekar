@@ -770,7 +770,7 @@ fn send_directed_envelope(
 ) -> Result<()> {
     let channel = match state.channel() {
         Some(c) => c.to_string(),
-        None => bail!("Not registered on the bus."),
+        None => bail!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"),
     };
 
     if envelope.to == "@all" {
