@@ -717,6 +717,69 @@ pub(crate) fn effective_channel() -> String {
         .unwrap_or_else(detect_channel)
 }
 
+/// Filter out OSC color query/response sequences (OSC 10-19) from input data.
+/// These are terminal color queries (ESC ] 10 ; ? BEL) and responses (ESC ] 10 ; rgb:... BEL)
+/// that can leak through when the browser's xterm.js queries colors or when the host
+/// terminal responds to queries. Filtering prevents them from appearing as literal text.
+fn filter_osc_color_sequences(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    // Fast path: no ESC in data
+    if !data.contains(&0x1b) {
+        return std::borrow::Cow::Borrowed(data);
+    }
+
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+
+    while i < data.len() {
+        // Look for ESC ] (0x1b 0x5d) - start of OSC sequence
+        if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == 0x5d {
+            // Check for OSC 10-19 (color-related sequences)
+            if i + 2 < data.len() && data[i + 2] == b'1' {
+                // OSC 10-19: look for the next digit
+                let is_color_osc = if i + 3 < data.len() {
+                    let d = data[i + 3];
+                    // OSC 10, 11, 12, ... 19 followed by ; or terminator
+                    d == b';' || d == b'0' || d == b'1' || d == b'2' || d == b'3'
+                        || d == b'4' || d == b'5' || d == b'6' || d == b'7' || d == b'8' || d == b'9'
+                        || d == 0x07
+                } else {
+                    false
+                };
+
+                if is_color_osc {
+                    // Skip the entire OSC sequence until BEL or ST
+                    let mut j = i + 2;
+                    while j < data.len() {
+                        if data[j] == 0x07 {
+                            i = j + 1;
+                            break;
+                        }
+                        if data[j] == 0x1b && j + 1 < data.len() && data[j + 1] == b'\\' {
+                            i = j + 2;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j >= data.len() {
+                        // Unterminated sequence, skip rest
+                        i = data.len();
+                    }
+                    continue;
+                }
+            }
+        }
+
+        out.push(data[i]);
+        i += 1;
+    }
+
+    if out.len() == data.len() {
+        std::borrow::Cow::Borrowed(data)
+    } else {
+        std::borrow::Cow::Owned(out)
+    }
+}
+
 /// Rewrite OSC 0/2 title sequences (ESC ] 0; ... BEL / ESC ] 2; ... BEL)
 /// to prepend the nick prefix, so the terminal title always shows the agent nickname.
 fn rewrite_osc_titles<'a>(data: &'a [u8], prefix: &str) -> std::borrow::Cow<'a, [u8]> {
@@ -878,7 +941,9 @@ async fn event_loop(
             } => {
                 match event {
                     Some(crate::tunnel::TunnelEvent::Data(data)) => {
-                        let _ = write_all_fd(master_fd, &data);
+                        // Filter out OSC color queries from browser's xterm.js
+                        let filtered = filter_osc_color_sequences(&data);
+                        let _ = write_all_fd(master_fd, &filtered);
                     }
                     Some(crate::tunnel::TunnelEvent::BusRelay {
                         recipient,
@@ -906,7 +971,9 @@ async fn event_loop(
                 match result {
                     Ok(0) | Err(_) => break, // stdin closed
                     Ok(n) => {
-                        for &byte in &buf_in[..n] {
+                        // Filter out OSC color responses from the terminal
+                        let filtered = filter_osc_color_sequences(&buf_in[..n]);
+                        for &byte in filtered.as_ref() {
                             if byte == b'\r' || byte == b'\n' {
                                 if intercepting {
                                     // Handle the @sidekar command locally
@@ -991,17 +1058,18 @@ async fn event_loop(
                         }) {
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
-                                // Rewrite OSC title sequences to prepend nick
-                                let data = rewrite_osc_titles(raw, &nick_prefix);
+                                // Filter OSC color sequences and rewrite title sequences
+                                let filtered = filter_osc_color_sequences(raw);
+                                let data = rewrite_osc_titles(&filtered, &nick_prefix);
                                 // Write to local stdout
                                 if stdout.write_all(&data).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
 
-                                // Fan-out to tunnel (non-blocking, best-effort) with raw bytes
+                                // Fan-out to tunnel (non-blocking, best-effort) with filtered bytes
                                 if let Some(ref tx) = tunnel_tx {
-                                    tx.send_data(raw.to_vec());
+                                    tx.send_data(filtered.into_owned());
                                 }
                             }
                             Ok(Err(_)) => break,
