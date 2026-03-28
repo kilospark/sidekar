@@ -244,7 +244,11 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState) {
                                         let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
                                             json!({"type": "auth_fail", "reason": reason}).to_string().into()
                                         )).await;
+                                        let _ = ext_tx.flush().await;
                                     }
+                                    drop(s);
+                                    // Give the client time to receive the message before closing
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                     break;
                                 }
                             }
@@ -256,7 +260,10 @@ async fn handle_extension_connection(stream: TcpStream, state: SharedState) {
                                 let _ = ext_tx.send(tokio_tungstenite::tungstenite::Message::Text(
                                     json!({"type": "auth_fail", "reason": reason}).to_string().into()
                                 )).await;
+                                let _ = ext_tx.flush().await;
                             }
+                            drop(s);
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             break;
                         }
                         continue;
