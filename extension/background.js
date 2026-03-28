@@ -615,8 +615,93 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+  if (msg.type === "startOAuth") {
+    startOAuthFlow();
+    sendResponse({ ok: true });
+    return false;
+  }
   return false;
 });
+
+// ---------------------------------------------------------------------------
+// OAuth flow (runs in background so it survives popup closing)
+// ---------------------------------------------------------------------------
+
+const CALLBACK_URL = "https://sidekar.dev/ext-callback";
+
+function startOAuthFlow() {
+  const authUrl = "https://sidekar.dev/api/auth/github?redirect=/ext-callback";
+
+  chrome.tabs.create({ url: authUrl, active: true }, (tab) => {
+    const authTabId = tab.id;
+
+    function onUpdated(tabId, changeInfo, updatedTab) {
+      if (tabId !== authTabId) return;
+      if (changeInfo.status !== "complete") return;
+      if (!updatedTab.url || !updatedTab.url.startsWith(CALLBACK_URL)) return;
+
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+
+      // Poll for the token (page fetches it async)
+      let attempts = 0;
+      const maxAttempts = 20;
+
+      function tryReadToken() {
+        chrome.scripting.executeScript(
+          {
+            target: { tabId: authTabId },
+            func: () => {
+              const el = document.getElementById("ext-token");
+              return el ? el.getAttribute("data-token") : null;
+            },
+          },
+          (results) => {
+            if (chrome.runtime.lastError) {
+              console.error("[sidekar] Could not read token:", chrome.runtime.lastError);
+              return;
+            }
+
+            const token =
+              results && results[0] && results[0].result
+                ? results[0].result
+                : null;
+
+            if (token && token.length > 0) {
+              console.log("[sidekar] Got token from callback page");
+              chrome.storage.local.set({ extToken: token }, () => {
+                if (ws) {
+                  try { ws.close(); } catch {}
+                }
+                ws = null;
+                authenticated = false;
+                connect();
+              });
+
+              // Close the callback tab
+              chrome.tabs.remove(authTabId).catch(() => {});
+            } else if (++attempts < maxAttempts) {
+              setTimeout(tryReadToken, 250);
+            } else {
+              console.error("[sidekar] Token not found after polling");
+            }
+          }
+        );
+      }
+
+      setTimeout(tryReadToken, 300);
+    }
+
+    function onRemoved(tabId) {
+      if (tabId !== authTabId) return;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Theme-adaptive icon (Chrome has no manifest-level theme_icons)
