@@ -72,7 +72,7 @@ fn ext_api_base() -> String {
 /// Calls the sidekar.dev API and returns the user_id on success.
 async fn verify_ext_token(ext_token: &str) -> Result<String> {
     let device_token = auth::auth_token()
-        .ok_or_else(|| anyhow!("No CLI device token found. Run `sidekar login` first."))?;
+        .ok_or_else(|| anyhow!("Run `sidekar login`"))?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
