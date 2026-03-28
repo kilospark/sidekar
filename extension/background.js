@@ -148,13 +148,19 @@ async function connect() {
   };
 
   ws.onclose = (ev) => {
-    console.log("[sidekar] disconnected", ev.code, ev.reason);
+    console.log("[sidekar] disconnected", ev.code, ev.reason, "sawAuthFail:", sawAuthFail);
     authenticated = false;
     stopKeepalive();
     if (!sawAuthFail && !lastConnectError) {
-      if (ev.code === 1006) {
-        lastConnectError = "Bridge disconnected unexpectedly";
-      } else if (ev.code !== 1000) {
+      if (ev.code === 1006 || ev.code === 1000) {
+        // Connection closed right after hello - likely auth failed
+        // Check if reason contains useful info
+        if (ev.reason && ev.reason.length > 0) {
+          lastConnectError = ev.reason;
+        } else {
+          lastConnectError = "Auth failed. Run 'sidekar login' in terminal first.";
+        }
+      } else {
         lastConnectError = `Disconnected (code ${ev.code})`;
       }
     }
