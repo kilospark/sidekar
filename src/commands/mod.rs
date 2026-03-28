@@ -561,6 +561,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "bus_send" | "bus-send" => {
+            if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
+                eprintln!("Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>");
+            }
             let kind = args.iter()
                 .find_map(|a| a.strip_prefix("--kind="))
                 .unwrap_or("request");
@@ -578,6 +581,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "bus_done" | "bus-done" => {
+            if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
+                eprintln!("Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>");
+            }
             if args.len() < 3 {
                 bail!("Usage: sidekar bus_done <next> <summary> <request>");
             }
