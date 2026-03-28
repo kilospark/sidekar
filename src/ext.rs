@@ -938,9 +938,11 @@ fn handle_native_message(msg: &Value) -> Value {
                 .and_then(|v| v.parse::<u16>().ok())
                 .unwrap_or(DEFAULT_PORT);
             let running = crate::daemon::is_running();
+            let cli_logged_in = crate::auth::auth_token().is_some();
             json!({
                 "port": port,
-                "running": running
+                "running": running,
+                "cli_logged_in": cli_logged_in
             })
         }
         "ensure_server" => {
@@ -951,7 +953,8 @@ fn handle_native_message(msg: &Value) -> Value {
                         .ok()
                         .and_then(|v| v.parse::<u16>().ok())
                         .unwrap_or(DEFAULT_PORT);
-                    json!({"port": port, "started": true})
+                    let cli_logged_in = crate::auth::auth_token().is_some();
+                    json!({"port": port, "started": true, "cli_logged_in": cli_logged_in})
                 }
                 Err(e) => json!({"error": format!("{e}")}),
             }

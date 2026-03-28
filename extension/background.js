@@ -11,6 +11,7 @@ let authenticated = false;
 let lastConnectError = null;
 let sawAuthFail = false;
 let currentPort = null;
+let cliLoggedIn = false;
 
 function wsUrl(port) {
   return `ws://127.0.0.1:${port}`;
@@ -92,6 +93,9 @@ async function connect() {
     scheduleReconnect();
     return;
   }
+
+  // Track CLI login status from native host
+  cliLoggedIn = nativeResult.cli_logged_in === true;
 
   currentPort = port;
   const url = wsUrl(port);
@@ -600,6 +604,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       authenticated,
       wsUrl: currentPort ? wsUrl(currentPort) : null,
       lastError: lastConnectError,
+      cliLoggedIn,
     });
     return false;
   }
