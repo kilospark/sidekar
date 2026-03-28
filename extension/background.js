@@ -23,13 +23,11 @@ function wsUrl(port) {
 }
 
 // Auth credentials and extPort live in chrome.storage.local
-// Supports both token-based auth (OAuth) and legacy secret-based auth
 function getBridgeConfig() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["extToken", "secret", "extPort"], (data) => {
+    chrome.storage.local.get(["extToken", "extPort"], (data) => {
       resolve({
         extToken: String(data.extToken || "").trim(),
-        secret: String(data.secret || "").trim(),
         extPort: normalizePort(data.extPort),
       });
     });
@@ -39,9 +37,9 @@ function getBridgeConfig() {
 async function connect() {
   if (ws && ws.readyState <= 1) return;
 
-  const { extToken, secret, extPort } = await getBridgeConfig();
-  if (!extToken && !secret) {
-    console.log("[sidekar] no credentials configured — click extension icon to log in");
+  const { extToken, extPort } = await getBridgeConfig();
+  if (!extToken) {
+    console.log("[sidekar] no token configured — click extension icon to log in");
     lastConnectError = "Click the Sidekar icon to log in with GitHub";
     return;
   }
@@ -61,14 +59,11 @@ async function connect() {
 
   ws.onopen = () => {
     console.log("[sidekar] connected to", url);
-    // Prefer token-based auth (OAuth), fall back to legacy secret
-    const hello = { type: "hello", version: chrome.runtime.getManifest().version };
-    if (extToken) {
-      hello.token = extToken;
-    } else {
-      hello.secret = secret;
-    }
-    send(hello);
+    send({
+      type: "hello",
+      version: chrome.runtime.getManifest().version,
+      token: extToken,
+    });
     startKeepalive();
   };
 
@@ -565,24 +560,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "setToken") {
     const extPort = normalizePort(msg.extPort);
     const extToken = String(msg.extToken || "").trim();
-    // Clear legacy secret when using token auth
     chrome.storage.local.set({ extToken, extPort }, () => {
-      chrome.storage.local.remove(["secret"], () => {
-        if (ws) {
-          try { ws.close(); } catch {}
-        }
-        ws = null;
-        authenticated = false;
-        connect();
-        sendResponse({ ok: true });
-      });
-    });
-    return true;
-  }
-  if (msg.type === "setSecret") {
-    const extPort = normalizePort(msg.extPort);
-    const secret = String(msg.secret || "").trim();
-    chrome.storage.local.set({ secret, extPort }, () => {
       if (ws) {
         try { ws.close(); } catch {}
       }
