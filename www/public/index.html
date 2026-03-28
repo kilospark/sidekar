@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>sidekar: the sidecar for AI agents</title>
-<meta name="description" content="Sidekar is a coordination and automation substrate for AI CLI agents. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.">
+<meta name="description" content="Sidekar is a coordination and automation substrate for agent CLIs. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -75,14 +75,8 @@ nav {
   background: var(--page-bg);
 }
 
-.nav-links {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-}
-
-.nav-links a,
-.nav-cta {
+.nav-cta,
+.nav-auth {
   color: var(--page-muted);
   text-decoration: none;
   font-size: 13px;
@@ -92,8 +86,8 @@ nav {
   border: 1px solid transparent;
 }
 
-.nav-links a:hover,
-.nav-cta:hover {
+.nav-cta:hover,
+.nav-auth:hover {
   color: var(--page-ink);
   border-color: var(--page-line);
   background: var(--page-panel);
@@ -116,29 +110,6 @@ nav {
 
 .hero-copy {
   padding: 22px 0;
-}
-
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--page-line);
-  background: var(--page-panel);
-  padding: 8px 14px;
-  border-radius: 0;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--page-muted);
-  margin-bottom: 24px;
-}
-
-.eyebrow::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 0;
-  background: var(--page-accent);
 }
 
 h1 {
@@ -396,6 +367,10 @@ html.light .primary-cta {
   gap: 12px;
 }
 
+.setup-flow {
+  grid-template-columns: repeat(4, 1fr);
+}
+
 .mini-step {
   border: 1px solid var(--page-line);
   border-radius: 0;
@@ -560,6 +535,10 @@ html.light .primary-cta {
   .workflows {
     grid-template-columns: 1fr 1fr;
   }
+
+  .setup-flow {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -567,14 +546,11 @@ html.light .primary-cta {
     padding-top: 110px;
   }
 
-  .nav-links {
-    display: none;
-  }
-
   .pillars,
   .workflows,
   .extension-points,
-  .surface-grid {
+  .surface-grid,
+  .setup-flow {
     grid-template-columns: 1fr;
   }
 
@@ -593,12 +569,6 @@ html.light .primary-cta {
       sidekar
     </a>
     <div class="nav-right">
-      <div class="nav-links">
-        <a href="#workflows">Workflows</a>
-        <a href="/extension">Chrome extension</a>
-        <a href="#trust">Security</a>
-      </div>
-      <a class="nav-cta" href="/extension">Extension page</a>
       <div class="nav-auth-wrap" id="nav-auth-wrap">
         <a class="nav-auth" href="/api/auth/github?redirect=/dashboard">Sign in</a>
       </div>
@@ -614,10 +584,9 @@ html.light .primary-cta {
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <div class="eyebrow">The sidecar for AI agents</div>
-      <h1>Coordination and automation for AI CLI agents.</h1>
+      <h1>Coordination and automation for agent CLIs.</h1>
       <p class="hero-sub">
-        Sidekar runs alongside Claude Code, Codex, Cursor, Copilot, Gemini CLI, and other agent CLIs. It is not an orchestrator, harness, or agent OS. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.
+        Sidekar runs alongside Claude Code, Codex, Cursor, Copilot, Gemini CLI, and other agent CLIs. It is not an orchestrator, harness, or agent OS. Sidekar is a power packed binary and a skill. That's it. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.
       </p>
       <div class="hero-actions">
         <a href="/install" class="primary-cta">Install the CLI</a>
@@ -639,7 +608,7 @@ html.light .primary-cta {
         <div class="surface-card">
           <div class="surface-badge">Browser</div>
           <h3>Your everyday Chrome</h3>
-          <p>Use Sidekar to drive Chrome directly when the agent needs real tabs, real cookies, and real logged-in state. No fake browser sandbox required.</p>
+          <p>Drive Chrome directly from the CLI. Read pages, click through flows, and inspect the browser without bolting on another protocol layer.</p>
         </div>
         <div class="surface-card">
           <div class="surface-badge">Desktop</div>
@@ -651,6 +620,33 @@ html.light .primary-cta {
           <h3>Keep watch</h3>
           <p>Give agents work that keeps running after the prompt ends. Schedule recurring jobs, watch for changes, and send the result back when it is ready.</p>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container section-shell">
+    <div class="mini-flow setup-flow">
+      <div class="mini-step">
+        <div class="num">Step 1</div>
+        <strong>Install Sidekar</strong>
+        <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>.</p>
+      </div>
+      <div class="mini-step">
+        <div class="num">Step 2</div>
+        <strong>Log in locally (optional)</strong>
+        <p><code>sidekar login</code> stores the CLI device token and installs the native messaging host.</p>
+      </div>
+      <div class="mini-step">
+        <div class="num">Step 3</div>
+        <strong>Install the extension (optional)</strong>
+        <p>Add the Chrome extension for the advanced use-cases. See <a href="/extension">the extension page</a> for setup and details.</p>
+      </div>
+      <div class="mini-step">
+        <div class="num">Step 4</div>
+        <strong>Launch your agent</strong>
+        <p>Launch your agent CLI as usual by just prefixing sidekar: <code>sidekar &lt;agent&gt; [args]</code>.</p>
       </div>
     </div>
   </div>
@@ -723,28 +719,6 @@ html.light .primary-cta {
       </div>
     </div>
     <div class="cta-band">
-      <div class="mini-flow">
-        <div class="mini-step">
-          <div class="num">Step 1</div>
-          <strong>Install Sidekar</strong>
-          <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>.</p>
-        </div>
-        <div class="mini-step">
-          <div class="num">Step 2</div>
-          <strong>Log in locally</strong>
-          <p><code>sidekar login</code> stores the CLI device token and installs the native messaging host.</p>
-        </div>
-        <div class="mini-step">
-          <div class="num">Step 3</div>
-          <strong>Open the extension page</strong>
-          <p>Use <a href="/extension">sidekar.dev/extension</a> for the browser-specific install flow and permission details.</p>
-        </div>
-        <div class="mini-step">
-          <div class="num">Step 4</div>
-          <strong>Add the browser bridge if needed</strong>
-          <p>Follow the extension setup only when the agent needs your everyday Chrome profile.</p>
-        </div>
-      </div>
       <div class="hero-actions">
         <a href="/install" class="primary-cta">Install sidekar</a>
         <a href="/extension" class="secondary-cta">Open extension page</a>
