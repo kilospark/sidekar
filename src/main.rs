@@ -88,6 +88,11 @@ async fn run() -> Result<()> {
     if command == "login" {
         return sidekar::auth::device_auth_flow().await;
     }
+    if command == "logout" {
+        sidekar::auth::logout()?;
+        println!("Logged out. Device token removed.");
+        return Ok(());
+    }
 
     // Extension bridge
     if command == "ext-server" {
