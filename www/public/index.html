@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>sidekar: browser, desktop, and coordination for AI agents</title>
-<meta name="description" content="Sidekar gives AI CLI agents a real browser, desktop controls, a shared bus, and background automation. Install the CLI, add the Chrome extension, and let agents work across real surfaces without losing control.">
+<title>sidekar: the sidecar for AI agents</title>
+<meta name="description" content="Sidekar is a coordination and automation substrate for AI CLI agents. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -15,7 +15,7 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/common.css">
 <script>
 (function() {
@@ -26,38 +26,31 @@
 </script>
 <style>
 :root {
-  --font: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
-  --page-bg: #0d1715;
-  --page-bg-soft: #14211d;
-  --page-ink: #f3f2ea;
-  --page-muted: #b9c0b8;
-  --page-line: rgba(243, 242, 234, 0.12);
-  --page-panel: rgba(243, 242, 234, 0.06);
-  --page-panel-strong: rgba(243, 242, 234, 0.1);
-  --page-accent: #b4ff8a;
-  --page-accent-deep: #183f27;
-  --page-warm: #ffd5a6;
+  --page-bg: #0a0a0a;
+  --page-ink: #f5f5f5;
+  --page-muted: #a3a3a3;
+  --page-line: #262626;
+  --page-panel: #111111;
+  --page-panel-strong: #171717;
+  --page-accent: #f5f5f5;
+  --page-warm: #d4d4d4;
 }
 
 html.light {
-  --page-bg: #f5efe3;
-  --page-bg-soft: #efe6d6;
-  --page-ink: #18231e;
-  --page-muted: #536057;
-  --page-line: rgba(24, 35, 30, 0.12);
-  --page-panel: rgba(24, 35, 30, 0.045);
-  --page-panel-strong: rgba(24, 35, 30, 0.085);
-  --page-accent: #295b36;
-  --page-accent-deep: #d8efc9;
-  --page-warm: #c66c28;
+  --page-bg: #ffffff;
+  --page-ink: #111111;
+  --page-muted: #525252;
+  --page-line: #d4d4d4;
+  --page-panel: #f5f5f5;
+  --page-panel-strong: #ebebeb;
+  --page-accent: #111111;
+  --page-warm: #737373;
 }
 
 body {
-  background:
-    radial-gradient(circle at top left, rgba(180, 255, 138, 0.14), transparent 30%),
-    radial-gradient(circle at top right, rgba(255, 213, 166, 0.14), transparent 28%),
-    linear-gradient(180deg, var(--page-bg-soft) 0%, var(--page-bg) 40%, var(--page-bg) 100%);
+  background: var(--page-bg);
   color: var(--page-ink);
 }
 
@@ -66,7 +59,7 @@ nav {
   left: 0;
   right: 0;
   border-bottom-color: var(--page-line);
-  background: color-mix(in srgb, var(--page-bg) 82%, transparent);
+  background: var(--page-bg);
 }
 
 .nav-links {
@@ -82,9 +75,8 @@ nav {
   font-size: 13px;
   font-weight: 500;
   padding: 7px 12px;
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid transparent;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 
 .nav-links a:hover,
@@ -120,7 +112,7 @@ nav {
   border: 1px solid var(--page-line);
   background: var(--page-panel);
   padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -132,9 +124,8 @@ nav {
   content: "";
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--page-accent);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--page-accent) 18%, transparent);
 }
 
 h1 {
@@ -167,28 +158,26 @@ h1 {
   justify-content: center;
   min-height: 48px;
   padding: 0 18px;
-  border-radius: 16px;
+  border-radius: 0;
   text-decoration: none;
   font-size: 14px;
   font-weight: 600;
   border: 1px solid var(--page-line);
-  transition: transform 0.15s, border-color 0.15s, background 0.15s;
 }
 
 .primary-cta {
   color: #18231e;
-  background: linear-gradient(135deg, var(--page-accent) 0%, #d6ff9d 100%);
-  border-color: transparent;
+  background: var(--page-accent);
+  border-color: var(--page-accent);
+}
+
+html.light .primary-cta {
+  color: #ffffff;
 }
 
 .secondary-cta {
   color: var(--page-ink);
   background: var(--page-panel);
-}
-
-.primary-cta:hover,
-.secondary-cta:hover {
-  transform: translateY(-1px);
 }
 
 .hero-notes {
@@ -210,84 +199,27 @@ h1 {
   content: "";
   width: 5px;
   height: 5px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--page-warm);
 }
 
 .hero-panel {
   position: relative;
   overflow: hidden;
-  border-radius: 28px;
+  border-radius: 0;
   border: 1px solid var(--page-line);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--page-panel-strong) 90%, transparent), var(--page-panel)),
-    linear-gradient(135deg, rgba(180, 255, 138, 0.1), transparent 45%);
+  background: var(--page-panel);
   padding: 22px;
   min-height: 520px;
 }
 
-.hero-panel::after {
-  content: "";
-  position: absolute;
-  inset: auto -80px -120px auto;
-  width: 220px;
-  height: 220px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--page-accent) 16%, transparent);
-  filter: blur(18px);
-}
-
-.terminal-card,
 .surface-card {
   position: relative;
   z-index: 1;
   border: 1px solid var(--page-line);
-  background: rgba(10, 14, 13, 0.36);
-  border-radius: 20px;
+  background: var(--page-panel);
+  border-radius: 0;
   padding: 18px;
-}
-
-html.light .terminal-card,
-html.light .surface-card {
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.terminal-card {
-  margin-bottom: 16px;
-}
-
-.terminal-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-  color: var(--page-muted);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.terminal-dots {
-  display: flex;
-  gap: 6px;
-}
-
-.terminal-dots span {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--page-line);
-}
-
-.terminal-card pre {
-  margin: 0;
-  white-space: pre-wrap;
-  font: 13px/1.7 var(--mono);
-  color: var(--page-ink);
-}
-
-.terminal-card .prompt {
-  color: var(--page-accent);
 }
 
 .surface-grid {
@@ -313,7 +245,7 @@ html.light .surface-card {
   font: 11px/1 var(--mono);
   color: var(--page-muted);
   border: 1px solid var(--page-line);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 7px 9px;
   margin-bottom: 12px;
 }
@@ -366,7 +298,7 @@ html.light .surface-card {
 
 .pillar {
   border: 1px solid var(--page-line);
-  border-radius: 24px;
+  border-radius: 0;
   background: var(--page-panel);
   padding: 22px;
   min-height: 250px;
@@ -400,7 +332,7 @@ html.light .surface-card {
 .extension-copy,
 .extension-stack {
   border: 1px solid var(--page-line);
-  border-radius: 28px;
+  border-radius: 0;
   background: var(--page-panel);
   padding: 28px;
 }
@@ -428,9 +360,9 @@ html.light .surface-card {
 
 .extension-point {
   border: 1px solid var(--page-line);
-  border-radius: 18px;
+  border-radius: 0;
   padding: 14px;
-  background: color-mix(in srgb, var(--page-panel) 78%, transparent);
+  background: var(--page-panel);
 }
 
 .extension-point strong {
@@ -453,9 +385,9 @@ html.light .surface-card {
 
 .mini-step {
   border: 1px solid var(--page-line);
-  border-radius: 18px;
+  border-radius: 0;
   padding: 14px;
-  background: color-mix(in srgb, var(--page-panel-strong) 70%, transparent);
+  background: var(--page-panel-strong);
 }
 
 .mini-step .num {
@@ -475,9 +407,9 @@ html.light .surface-card {
 .mini-step code,
 .workflow-card code {
   font: 12px/1.6 var(--mono);
-  background: color-mix(in srgb, var(--page-bg) 30%, transparent);
+  background: var(--page-bg);
   border: 1px solid var(--page-line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 2px 6px;
   color: var(--page-ink);
 }
@@ -490,7 +422,7 @@ html.light .surface-card {
 
 .workflow-card {
   border: 1px solid var(--page-line);
-  border-radius: 24px;
+  border-radius: 0;
   padding: 22px;
   background: var(--page-panel);
 }
@@ -518,7 +450,7 @@ html.light .surface-card {
 
 .workflow-card li::before {
   content: "→";
-  color: var(--page-accent);
+  color: var(--page-ink);
   margin-right: 8px;
 }
 
@@ -531,7 +463,7 @@ html.light .surface-card {
 .trust-panel,
 .trust-list {
   border: 1px solid var(--page-line);
-  border-radius: 28px;
+  border-radius: 0;
   background: var(--page-panel);
   padding: 28px;
 }
@@ -570,22 +502,20 @@ html.light .surface-card {
   top: 0.8em;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--page-warm);
 }
 
 .cta-band {
   margin-top: 18px;
   border: 1px solid var(--page-line);
-  border-radius: 28px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--page-accent) 14%, transparent), transparent 55%),
-    var(--page-panel);
+  border-radius: 0;
+  background: var(--page-panel);
   padding: 28px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
-  align-items: center;
+  align-items: start;
 }
 
 .cta-band h3 {
@@ -651,8 +581,8 @@ html.light .surface-card {
     </a>
     <div class="nav-right">
       <div class="nav-links">
-        <a href="#pillars">Pillars</a>
-        <a href="#extension">Chrome extension</a>
+        <a href="#workflows">Workflows</a>
+        <a href="/extension">Chrome extension</a>
         <a href="#trust">Security</a>
       </div>
       <a class="nav-cta" href="/extension">Extension page</a>
@@ -671,161 +601,49 @@ html.light .surface-card {
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <div class="eyebrow">For agent CLIs that need real surfaces</div>
-      <h1>Give agents a real browser, desktop, and bus.</h1>
+      <div class="eyebrow">The sidecar for AI agents</div>
+      <h1>Coordination and automation for AI CLI agents.</h1>
       <p class="hero-sub">
-        sidekar sits next to Claude Code, Codex, Cursor, Copilot, Gemini CLI, and other terminal agents. It gives them a controlled way to coordinate with each other, drive Chrome, use macOS desktop UI, and keep background workflows alive after the prompt ends.
+        Sidekar runs alongside Claude Code, Codex, Cursor, Copilot, Gemini CLI, and other agent CLIs. It is not an orchestrator, harness, or agent OS. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.
       </p>
       <div class="hero-actions">
         <a href="/install" class="primary-cta">Install the CLI</a>
         <a href="/extension" class="secondary-cta">See the Chrome extension</a>
       </div>
       <div class="hero-notes">
-        <span>Local-first browser bridge</span>
-        <span>Shared bus for multi-agent handoffs</span>
-        <span>Optional relay for remote sessions</span>
+        <span>No MCP</span>
+        <span>No context bloat</span>
+        <span>Simple, clean CLI</span>
       </div>
     </div>
     <div class="hero-panel">
-      <div class="terminal-card">
-        <div class="terminal-top">
-          <span>Agent Session</span>
-          <div class="terminal-dots"><span></span><span></span><span></span></div>
-        </div>
-        <pre><span class="prompt">$</span> sidekar codex
-[request from planner]: open the real browser and finish the Stripe login flow
-[fyi from qa]: staging is live at app.example.com
-
-<span class="prompt">$</span> sidekar login
-device authorized
-
-<span class="prompt">$</span> sidekar ext tabs
-[42] Dashboard
-[57] Stripe Billing
-
-<span class="prompt">$</span> sidekar bus_send qa "billing flow passes now"</pre>
-      </div>
       <div class="surface-grid">
+        <div class="surface-card">
+          <div class="surface-badge">Messaging bus</div>
+          <h3>Multi-agent chat</h3>
+          <p>Your agents can collaborate with other agents on the same machine or across machines securely. Agents are smart. Let them cook!</p>
+        </div>
         <div class="surface-card">
           <div class="surface-badge">Browser</div>
           <h3>Your everyday Chrome</h3>
-          <p>Use CDP for isolated sessions, or the extension bridge when the agent needs the tabs, cookies, and logins you already use.</p>
-        </div>
-        <div class="surface-card">
-          <div class="surface-badge">Bus</div>
-          <h3>Multi-agent handoffs</h3>
-          <p>Request, response, and handoff messages move through a durable local broker, with relay support when sessions live on different machines.</p>
+          <p>Use Sidekar to drive Chrome directly when the agent needs real tabs, real cookies, and real logged-in state. No fake browser sandbox required.</p>
         </div>
         <div class="surface-card">
           <div class="surface-badge">Desktop</div>
           <h3>macOS UI access</h3>
-          <p>Inspect native windows, click controls, and automate flows that never touch the browser at all.</p>
+          <p>Some work happens outside the browser. Sidekar can inspect native windows, click controls, and finish the parts of the job that live in desktop apps and system dialogs.</p>
         </div>
         <div class="surface-card">
           <div class="surface-badge">Background</div>
           <h3>Keep watch</h3>
-          <p>Monitor tabs, schedule jobs, and route results back into the bus instead of losing context when the terminal closes.</p>
+          <p>Give agents work that keeps running after the prompt ends. Schedule recurring jobs, watch for changes, and send the result back when it is ready.</p>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="section" id="pillars">
-  <div class="container section-shell">
-    <div class="section-header">
-      <div class="label">Four pillars</div>
-      <div>
-        <h2>One sidecar. Four surfaces agents can actually use.</h2>
-        <p>Sidekar gives agent CLIs four concrete capabilities: browser automation, desktop automation, a shared bus for coordination, and background jobs that keep running after the prompt ends.</p>
-      </div>
-    </div>
-    <div class="pillars">
-      <article class="pillar">
-        <div class="pillar-index">01</div>
-        <h3>Browser automation</h3>
-        <p>Raw Chrome DevTools Protocol plus an optional Chrome extension for your everyday profile. Read, click, type, screenshot, capture network, and keep real logged-in context when the job needs it.</p>
-      </article>
-      <article class="pillar">
-        <div class="pillar-index">02</div>
-        <h3>Desktop automation</h3>
-        <p>macOS Accessibility API support for windows, menus, dialogs, and native app controls that live outside the browser.</p>
-      </article>
-      <article class="pillar">
-        <div class="pillar-index">03</div>
-        <h3>Inter-agent bus</h3>
-        <p>Find peers, hand off work, send results, and coordinate over a local SQLite broker, with remote delivery available through the relay when sessions span machines.</p>
-      </article>
-      <article class="pillar">
-        <div class="pillar-index">04</div>
-        <h3>Background automation</h3>
-        <p>Monitors and scheduled jobs keep operating after the agent returns control, then feed the result back through the same bus.</p>
-      </article>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="extension">
-  <div class="container section-shell">
-    <div class="section-header">
-      <div class="label">Chrome extension</div>
-      <div>
-        <h2>Use your normal Chrome profile when isolated CDP is not enough.</h2>
-        <p>The extension is the local bridge into your everyday browser. It is for flows where the agent needs the tabs, cookies, and logins you already use instead of a separate automation profile.</p>
-      </div>
-    </div>
-    <div class="extension-band">
-      <div class="extension-copy">
-        <h3>Use the Chrome you already work in, with a trust model you can actually explain.</h3>
-        <p>Sidekar’s extension connects to a local bridge on <code>127.0.0.1</code>. It signs in separately from the CLI so the bridge can verify the browser user and the CLI user belong to the same account.</p>
-        <div class="extension-points">
-          <div class="extension-point">
-            <strong>Local by default</strong>
-            <span>The extension only talks to the local machine. It exists to let Sidekar interact with tabs in your real Chrome profile.</span>
-          </div>
-          <div class="extension-point">
-            <strong>Why native messaging exists</strong>
-            <span>It starts or discovers the local Sidekar bridge and proves the extension is the official one, not an arbitrary page probing localhost.</span>
-          </div>
-          <div class="extension-point">
-            <strong>Why host access is broad</strong>
-            <span>Agents need to automate whatever site you explicitly direct them to. The extension is inactive until your local Sidekar command asks it to do work.</span>
-          </div>
-          <div class="extension-point">
-            <strong>What the extension page covers</strong>
-            <span>Install steps, permission rationale, privacy boundaries, support contact, and the exact flow from CLI login to extension sign-in.</span>
-          </div>
-        </div>
-      </div>
-      <div class="extension-stack">
-        <div class="mini-flow">
-          <div class="mini-step">
-            <div class="num">Step 1</div>
-            <strong>Install Sidekar</strong>
-            <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>.</p>
-          </div>
-          <div class="mini-step">
-            <div class="num">Step 2</div>
-            <strong>Log in locally</strong>
-            <p><code>sidekar login</code> stores the CLI device token and installs the native messaging host.</p>
-          </div>
-          <div class="mini-step">
-            <div class="num">Step 3</div>
-            <strong>Install the extension</strong>
-            <p>Add the Chrome extension, then sign in from the popup with GitHub.</p>
-          </div>
-          <div class="mini-step">
-            <div class="num">Step 4</div>
-            <strong>Connect the bridge</strong>
-            <p>The extension discovers the local bridge, authenticates, and your agent can use <code>sidekar ext</code> commands against everyday Chrome.</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="section">
+<section class="section" id="workflows">
   <div class="container section-shell">
     <div class="section-header">
       <div class="label">Workflows</div>
@@ -872,13 +690,13 @@ device authorized
       <div class="label">Security and trust</div>
       <div>
         <h2>Make the trust model obvious.</h2>
-        <p>Browser automation, desktop automation, local bus delivery, secrets, and TOTP all stay on your machine. sidekar.dev handles authentication, dashboards, device management, and relay sessions.</p>
+        <p>Browser automation, desktop automation, local bus delivery, encrypted secrets, and TOTP all stay on your machine. sidekar.dev handles authentication, dashboards, device management, and relay sessions.</p>
       </div>
     </div>
     <div class="trust-grid">
       <div class="trust-panel">
         <h3>What stays local</h3>
-        <p>Browser automation, desktop automation, local bus delivery, stored secrets, and TOTP generation happen on your machine. The extension talks to a local bridge on <code>127.0.0.1</code>. It does not browse on its own and it does not act until your local Sidekar process tells it to.</p>
+        <p>Browser automation, desktop automation, local bus delivery, encrypted secret storage, and TOTP generation happen on your machine. The extension talks to a local bridge on <code>127.0.0.1</code>. It does not browse on its own and it does not act until your local Sidekar process tells it to.</p>
         <p>Remote features exist for authentication, dashboards, and relay sessions. They are a separate layer, and this site spells out that boundary instead of hiding it in docs.</p>
       </div>
       <div class="trust-list">
@@ -892,9 +710,27 @@ device authorized
       </div>
     </div>
     <div class="cta-band">
-      <div>
-        <h3>Start with the CLI. Add the extension when the job needs your real browser.</h3>
-        <p>Install Sidekar, log in locally, then add the extension when the agent needs the Chrome profile you already use.</p>
+      <div class="mini-flow">
+        <div class="mini-step">
+          <div class="num">Step 1</div>
+          <strong>Install Sidekar</strong>
+          <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>.</p>
+        </div>
+        <div class="mini-step">
+          <div class="num">Step 2</div>
+          <strong>Log in locally</strong>
+          <p><code>sidekar login</code> stores the CLI device token and installs the native messaging host.</p>
+        </div>
+        <div class="mini-step">
+          <div class="num">Step 3</div>
+          <strong>Open the extension page</strong>
+          <p>Use <a href="/extension">sidekar.dev/extension</a> for the browser-specific install flow and permission details.</p>
+        </div>
+        <div class="mini-step">
+          <div class="num">Step 4</div>
+          <strong>Add the browser bridge if needed</strong>
+          <p>Follow the extension setup only when the agent needs your everyday Chrome profile.</p>
+        </div>
       </div>
       <div class="hero-actions">
         <a href="/install" class="primary-cta">Install sidekar</a>

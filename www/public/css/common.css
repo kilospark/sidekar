@@ -218,8 +218,15 @@ html.dark .nav-logo-icon.light { display: none; }
 .theme-toggle .icon-dark { display: none; }
 
 .theme-toggle[data-mode="light"] .icon-light { display: block; }
-.theme-toggle[data-mode="system"] .icon-system { display: block; }
 .theme-toggle[data-mode="dark"] .icon-dark { display: block; }
+
+@media (prefers-color-scheme: light) {
+  .theme-toggle[data-mode="system"] .icon-light { display: block; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .theme-toggle[data-mode="system"] .icon-dark { display: block; }
+}
 
 /* Footer */
 footer {
