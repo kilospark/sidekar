@@ -1132,15 +1132,33 @@ fn encrypt_plaintext_rows() -> Result<()> {
     let conn = open()?;
     let uid = current_user_id();
 
+    // Delete duplicate NULL rows first (keep only the one with highest id per key)
+    conn.execute(
+        "DELETE FROM kv_store WHERE user_id IS NULL AND id NOT IN (
+            SELECT MAX(id) FROM kv_store WHERE user_id IS NULL GROUP BY key
+        )",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM totp_secrets WHERE user_id IS NULL AND id NOT IN (
+            SELECT MAX(id) FROM totp_secrets WHERE user_id IS NULL GROUP BY name
+        )",
+        [],
+    )?;
+
     // Claim unowned rows for this user (pre-user_id data from before this migration)
+    // Use OR IGNORE to skip any remaining conflicts
     conn.execute(
-        "UPDATE kv_store SET user_id = ?1 WHERE user_id IS NULL",
+        "UPDATE OR IGNORE kv_store SET user_id = ?1 WHERE user_id IS NULL",
         params![uid],
     )?;
     conn.execute(
-        "UPDATE totp_secrets SET user_id = ?1 WHERE user_id IS NULL",
+        "UPDATE OR IGNORE totp_secrets SET user_id = ?1 WHERE user_id IS NULL",
         params![uid],
     )?;
+    // Clean up any rows that couldn't be claimed (conflicts with existing user rows)
+    conn.execute("DELETE FROM kv_store WHERE user_id IS NULL", [])?;
+    conn.execute("DELETE FROM totp_secrets WHERE user_id IS NULL", [])?;
 
     // Collect plaintext KV rows for this user
     let kv_rows: Vec<(i64, String)> = {
