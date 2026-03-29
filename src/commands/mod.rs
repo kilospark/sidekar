@@ -534,6 +534,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     out!(ctx, "Update available: v{latest}");
                     out!(ctx, "Downloading...");
                     crate::api_client::self_update(&latest).await?;
+                    match crate::daemon::restart_if_running() {
+                        Ok(true) => out!(ctx, "Daemon restarted."),
+                        Ok(false) => {}
+                        Err(e) => out!(ctx, "Updated, but failed to restart daemon: {e}"),
+                    }
                     out!(
                         ctx,
                         "Updated to v{latest}. Restart sidekar to use the new version."
