@@ -185,6 +185,7 @@ fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
     Ok(vec![
         home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts"),
+        home.join("Library/Application Support/Google/ChromeForTesting/NativeMessagingHosts"),
         home.join("Library/Application Support/Google/Chrome Canary/NativeMessagingHosts"),
         home.join("Library/Application Support/Chromium/NativeMessagingHosts"),
         home.join("Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
@@ -198,6 +199,7 @@ fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
     Ok(vec![
         home.join(".config/google-chrome/NativeMessagingHosts"),
         home.join(".config/google-chrome-beta/NativeMessagingHosts"),
+        home.join(".config/google-chrome-for-testing/NativeMessagingHosts"),
         home.join(".config/chromium/NativeMessagingHosts"),
         home.join(".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
         home.join(".config/microsoft-edge/NativeMessagingHosts"),
