@@ -35,6 +35,18 @@ fn pid_path() -> PathBuf {
     data_dir().join("ext-server.pid")
 }
 
+fn sidekar_profile_roots() -> Vec<PathBuf> {
+    let profiles_root = data_dir().join("profiles");
+    let entries = match std::fs::read_dir(&profiles_root) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Shared state between server and extension connection
 // ---------------------------------------------------------------------------
@@ -183,27 +195,39 @@ fn read_existing_allowed_origins(manifest_path: &std::path::Path) -> BTreeSet<St
 #[cfg(target_os = "macos")]
 fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
-    Ok(vec![
+    let mut dirs = vec![
         home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts"),
         home.join("Library/Application Support/Google/ChromeForTesting/NativeMessagingHosts"),
         home.join("Library/Application Support/Google/Chrome Canary/NativeMessagingHosts"),
         home.join("Library/Application Support/Chromium/NativeMessagingHosts"),
         home.join("Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
         home.join("Library/Application Support/Microsoft Edge/NativeMessagingHosts"),
-    ])
+    ];
+    dirs.extend(
+        sidekar_profile_roots()
+            .into_iter()
+            .map(|root| root.join("NativeMessagingHosts")),
+    );
+    Ok(dirs)
 }
 
 #[cfg(target_os = "linux")]
 fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
-    Ok(vec![
+    let mut dirs = vec![
         home.join(".config/google-chrome/NativeMessagingHosts"),
         home.join(".config/google-chrome-beta/NativeMessagingHosts"),
         home.join(".config/google-chrome-for-testing/NativeMessagingHosts"),
         home.join(".config/chromium/NativeMessagingHosts"),
         home.join(".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
         home.join(".config/microsoft-edge/NativeMessagingHosts"),
-    ])
+    ];
+    dirs.extend(
+        sidekar_profile_roots()
+            .into_iter()
+            .map(|root| root.join("NativeMessagingHosts")),
+    );
+    Ok(dirs)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -211,10 +235,7 @@ fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
     bail!("Native messaging host installation not supported on this OS")
 }
 
-fn native_host_allowed_origins(
-    manifest_paths: &[PathBuf],
-    extension_id: Option<&str>,
-) -> Result<Vec<String>> {
+fn native_host_allowed_origins(manifest_paths: &[PathBuf], extension_id: Option<&str>) -> Result<Vec<String>> {
     let mut ids = BTreeSet::new();
     for manifest_path in manifest_paths {
         for origin in read_existing_allowed_origins(manifest_path) {
@@ -1345,8 +1366,11 @@ fn handle_native_message(msg: &Value) -> Value {
     }
 }
 
-/// Install the native messaging host manifest for Chrome.
-fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result<()> {
+fn write_native_host_manifests(
+    manifest_dirs: &[PathBuf],
+    extension_id: Option<&str>,
+    verbose: bool,
+) -> Result<()> {
     let exe_path = std::env::current_exe().context("Cannot determine sidekar executable path")?;
 
     // Create a wrapper script that calls sidekar with the native-messaging-host command
@@ -1372,7 +1396,6 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    let manifest_dirs = native_host_manifest_dirs()?;
     let manifest_paths: Vec<PathBuf> = manifest_dirs
         .iter()
         .map(|dir| dir.join(format!("{NATIVE_HOST_NAME}.json")))
@@ -1387,7 +1410,7 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
     });
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
 
-    for manifest_dir in &manifest_dirs {
+    for manifest_dir in manifest_dirs {
         std::fs::create_dir_all(manifest_dir).with_context(|| {
             format!(
                 "Failed to create NativeMessagingHosts directory {}",
@@ -1413,10 +1436,21 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
     Ok(())
 }
 
+/// Install the native messaging host manifest for Chrome.
+fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result<()> {
+    let manifest_dirs = native_host_manifest_dirs()?;
+    write_native_host_manifests(&manifest_dirs, extension_id, verbose)
+}
+
 pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
     install_native_host_impl(extension_id, true)
 }
 
 pub(crate) fn install_native_host_quiet(extension_id: Option<&str>) -> Result<()> {
     install_native_host_impl(extension_id, false)
+}
+
+pub(crate) fn install_native_host_for_profile_dir(profile_dir: &std::path::Path) -> Result<()> {
+    let manifest_dir = profile_dir.join("NativeMessagingHosts");
+    write_native_host_manifests(&[manifest_dir], None, false)
 }
