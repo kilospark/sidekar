@@ -37,6 +37,7 @@ pub struct OutboundRequestRecord {
     pub transport_target: String,
     pub created_at: u64,
     pub nudge_count: u32,
+    pub last_nudged_at: Option<u64>,
 }
 
 fn data_dir() -> PathBuf {
@@ -117,7 +118,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             transport_name TEXT NOT NULL,
             transport_target TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            nudge_count INTEGER NOT NULL DEFAULT 0
+            nudge_count INTEGER NOT NULL DEFAULT 0,
+            last_nudged_at INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_outbound_sender
             ON outbound_requests(sender_name, created_at);
@@ -125,6 +127,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     // Migration: add cwd column if missing (existing databases)
     let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN cwd TEXT");
+    let _ = conn.execute_batch("ALTER TABLE outbound_requests ADD COLUMN last_nudged_at INTEGER");
 
     // Migration: rename pending_messages -> pending_requests (clarity)
     // Must copy data since CREATE TABLE IF NOT EXISTS runs first
@@ -492,8 +495,8 @@ pub fn set_outbound_request(
     let conn = open()?;
     conn.execute(
         "INSERT OR REPLACE INTO outbound_requests (
-            msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL)",
         params![
             msg_id,
             sender_name,
@@ -543,7 +546,7 @@ pub fn resolve_reply(msg_id: &str) -> Result<()> {
 pub fn outbound_request(msg_id: &str) -> Result<Option<OutboundRequestRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
          FROM outbound_requests
          WHERE msg_id = ?1
          LIMIT 1",
@@ -556,7 +559,7 @@ pub fn outbound_request(msg_id: &str) -> Result<Option<OutboundRequestRecord>> {
 pub fn outbound_for_sender(name: &str) -> Result<Vec<OutboundRequestRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
          FROM outbound_requests
          WHERE sender_name = ?1
          ORDER BY created_at ASC",
@@ -575,7 +578,7 @@ pub fn expired_outbound_for_sender(
 ) -> Result<Vec<OutboundRequestRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
          FROM outbound_requests
          WHERE sender_name = ?1 AND created_at <= ?2
          ORDER BY created_at ASC",
@@ -588,13 +591,14 @@ pub fn expired_outbound_for_sender(
     Ok(requests)
 }
 
-pub fn increment_nudge_count(msg_id: &str) -> Result<u32> {
+pub fn increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<u32> {
     let conn = open()?;
     conn.execute(
         "UPDATE outbound_requests
-         SET nudge_count = nudge_count + 1
+         SET nudge_count = nudge_count + 1,
+             last_nudged_at = ?2
          WHERE msg_id = ?1",
-        params![msg_id],
+        params![msg_id, nudged_at as i64],
     )?;
     let count = conn.query_row(
         "SELECT nudge_count FROM outbound_requests WHERE msg_id = ?1",
@@ -602,6 +606,43 @@ pub fn increment_nudge_count(msg_id: &str) -> Result<u32> {
         |row| row.get::<_, i64>(0),
     )?;
     Ok(count as u32)
+}
+
+pub fn clear_pending_between_agents(recipient_name: &str, sender_name: &str) -> Result<usize> {
+    let conn = open()?;
+    let pending = pending_for_agent(recipient_name)?;
+    let mut deleted = 0usize;
+    for env in pending {
+        if env.from.name == sender_name {
+            deleted += conn.execute(
+                "DELETE FROM pending_requests WHERE id = ?1",
+                params![env.id],
+            )?;
+        }
+    }
+    Ok(deleted)
+}
+
+pub fn clear_outbound_between_agents(
+    sender_name: &str,
+    recipient_name: &str,
+    keep_msg_id: Option<&str>,
+) -> Result<usize> {
+    let conn = open()?;
+    let deleted = if let Some(keep_msg_id) = keep_msg_id {
+        conn.execute(
+            "DELETE FROM outbound_requests
+             WHERE sender_name = ?1 AND recipient_name = ?2 AND msg_id != ?3",
+            params![sender_name, recipient_name, keep_msg_id],
+        )?
+    } else {
+        conn.execute(
+            "DELETE FROM outbound_requests
+             WHERE sender_name = ?1 AND recipient_name = ?2",
+            params![sender_name, recipient_name],
+        )?
+    };
+    Ok(deleted)
 }
 
 fn row_to_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrokerAgent> {
@@ -631,6 +672,9 @@ fn row_to_outbound(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboundRequestR
         transport_target: row.get(5)?,
         created_at: row.get::<_, i64>(6)? as u64,
         nudge_count: row.get::<_, i64>(7)? as u32,
+        last_nudged_at: row
+            .get::<_, Option<i64>>(8)?
+            .map(|v| v as u64),
     })
 }
 

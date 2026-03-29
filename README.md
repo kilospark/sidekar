@@ -321,7 +321,7 @@ Jobs execute sidekar tools on a cron schedule and deliver results via the agent 
 ```bash
 sidekar totp add <service> <account> <secret>  # Store a TOTP secret (base32)
 sidekar totp list                               # List stored TOTP entries
-sidekar totp get <service> <account>            # Generate current 6-digit code
+sidekar totp get <service> <account>            # Print current 6-digit code only
 sidekar totp remove <id>                        # Delete a stored secret
 ```
 

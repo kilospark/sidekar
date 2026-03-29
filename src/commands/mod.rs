@@ -569,31 +569,39 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
                 eprintln!("Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>");
             }
+            let reply_to = args.iter()
+                .find_map(|a| a.strip_prefix("--reply-to="));
             let kind = args.iter()
                 .find_map(|a| a.strip_prefix("--kind="))
-                .unwrap_or("request");
+                .unwrap_or_else(|| if reply_to.is_some() { "response" } else { "request" });
             let filtered: Vec<&str> = args.iter()
-                .filter(|a| !a.starts_with("--kind="))
+                .filter(|a| !a.starts_with("--kind=") && !a.starts_with("--reply-to="))
                 .map(String::as_str)
                 .collect();
             let to = filtered.first().copied().unwrap_or_default();
             let message = if filtered.len() > 1 { filtered[1..].join(" ") } else { String::new() };
             if to.is_empty() || message.is_empty() {
-                bail!("Usage: sidekar bus_send <to> <message> [--kind=request|fyi|response]");
+                bail!("Usage: sidekar bus_send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]");
             }
             let mut bus_state = recovered_bus_state();
-            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, None)?;
+            crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, reply_to)?;
             Ok(())
         }
         "bus_done" | "bus-done" => {
             if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
                 eprintln!("Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>");
             }
-            if args.len() < 3 {
-                bail!("Usage: sidekar bus_done <next> <summary> <request>");
+            let reply_to = args.iter()
+                .find_map(|a| a.strip_prefix("--reply-to="));
+            let filtered: Vec<&str> = args.iter()
+                .filter(|a| !a.starts_with("--reply-to="))
+                .map(String::as_str)
+                .collect();
+            if filtered.len() < 3 {
+                bail!("Usage: sidekar bus_done <next> <summary> <request> [--reply-to=<msg_id>]");
             }
             let mut bus_state = recovered_bus_state();
-            crate::bus::cmd_signal_done(&mut bus_state, ctx, &args[0], &args[1], &args[2], None)?;
+            crate::bus::cmd_signal_done(&mut bus_state, ctx, filtered[0], filtered[1], filtered[2], reply_to)?;
             Ok(())
         }
         // Cron commands — CRUD operates on broker SQLite, execution runs in PTY wrapper

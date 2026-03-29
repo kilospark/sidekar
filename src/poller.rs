@@ -4,6 +4,7 @@
 use crate::broker;
 use crate::transport::{Broker as BrokerTransport, RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,9 +15,63 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLEANUP_INTERVAL_POLLS: u32 = 120; // clean old messages every 60s (120 * 500ms)
 const NUDGE_INTERVAL_POLLS: u32 = 120;   // check nudges every 60s
 const MAX_MESSAGE_AGE_SECS: u64 = 3600;
-const NUDGE_INTERVAL_SECS: u64 = 60;
-const NUDGE_BACKOFF_SECS: u64 = 120;
+const NUDGE_SCHEDULE_SECS: [u64; 5] = [60, 120, 300, 600, 900];
 const NUDGE_MAX: u32 = 5;
+const USER_IDLE_BEFORE_INJECT: Duration = Duration::from_millis(1000);
+const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
+pub struct UserInputState {
+    last_user_input_at_ms: std::sync::atomic::AtomicU64,
+    pending_line: Mutex<Vec<u8>>,
+}
+
+impl UserInputState {
+    pub fn new() -> Self {
+        Self {
+            last_user_input_at_ms: std::sync::atomic::AtomicU64::new(0),
+            pending_line: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn mark_activity(&self) {
+        self.last_user_input_at_ms
+            .store(epoch_millis(), Ordering::Relaxed);
+    }
+
+    pub fn set_pending_line(&self, line: &[u8]) {
+        if let Ok(mut pending) = self.pending_line.lock() {
+            pending.clear();
+            pending.extend_from_slice(line);
+        }
+    }
+
+    pub fn clear_pending_line(&self) {
+        if let Ok(mut pending) = self.pending_line.lock() {
+            pending.clear();
+        }
+    }
+
+    fn has_pending_line(&self) -> bool {
+        self.pending_line
+            .lock()
+            .map(|pending| !pending.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn is_idle(&self) -> bool {
+        let last = self.last_user_input_at_ms.load(Ordering::Relaxed);
+        if last == 0 {
+            return true;
+        }
+        epoch_millis().saturating_sub(last) >= USER_IDLE_BEFORE_INJECT.as_millis() as u64
+    }
+}
+
+impl Default for UserInputState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Signal the poller to stop.
 pub fn shutdown_poller() {
@@ -24,7 +79,7 @@ pub fn shutdown_poller() {
 }
 
 /// Start the background poller thread. Returns immediately.
-pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>) {
+pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>, input_state: Arc<UserInputState>) {
     POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
 
     std::thread::spawn(move || {
@@ -42,7 +97,7 @@ pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>) {
             match broker::poll_messages(&agent_name) {
                 Ok(messages) => {
                     for msg in messages {
-                        deliver_to_pty(&pty_fd, &msg.body);
+                        deliver_to_pty(&pty_fd, &input_state, &msg.body);
                     }
                 }
                 Err(_) => {} // SQLite busy or locked, retry next poll
@@ -78,25 +133,14 @@ fn send_nudges(agent_name: &str) {
         .unwrap_or(0);
 
     for request in requests {
-        // Calculate required wait time based on nudge count
-        let wait_secs = if request.nudge_count == 0 {
-            NUDGE_INTERVAL_SECS
-        } else {
-            NUDGE_BACKOFF_SECS
-        };
+        let wait_secs = NUDGE_SCHEDULE_SECS
+            .get(request.nudge_count as usize)
+            .copied()
+            .unwrap_or(*NUDGE_SCHEDULE_SECS.last().unwrap_or(&900));
+        let last_event_at = request.last_nudged_at.unwrap_or(request.created_at);
+        let elapsed_since_last_event = now.saturating_sub(last_event_at);
 
-        // Skip if not enough time has passed
-        let elapsed = now.saturating_sub(request.created_at as u64);
-        let last_nudge_elapsed = if request.nudge_count == 0 {
-            elapsed
-        } else {
-            // Approximate: assume nudges were sent at regular intervals
-            elapsed.saturating_sub(
-                NUDGE_INTERVAL_SECS + (request.nudge_count.saturating_sub(1) as u64 * NUDGE_BACKOFF_SECS)
-            )
-        };
-
-        if last_nudge_elapsed < wait_secs {
+        if elapsed_since_last_event < wait_secs {
             continue;
         }
 
@@ -120,7 +164,7 @@ fn send_nudges(agent_name: &str) {
 
         // Send the nudge
         let nudge_msg = format!(
-            "[sidekar] You have an unanswered request from {}. Reply using bus_send or bus_done with reply_to: \"{}\"",
+            "[sidekar] You have an unanswered request from {}. Reply using bus_send or bus_done with --reply-to={}",
             request.sender_label, request.msg_id
         );
 
@@ -131,7 +175,7 @@ fn send_nudges(agent_name: &str) {
         };
 
         if delivery_result.is_ok() {
-            let _ = broker::increment_nudge_count(&request.msg_id);
+            let _ = broker::increment_nudge_count(&request.msg_id, now);
         }
     }
 }
@@ -155,65 +199,22 @@ fn is_recipient_alive(recipient_name: &str) -> bool {
     true
 }
 
-fn deliver_to_pty(fd: &OwnedFd, message: &str) {
+fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str) {
     let raw_fd = fd.as_raw_fd();
 
-    // Wait for user to stop typing (1 second of inactivity)
-    // Check multiple times - if there's input, wait more
-    let mut quiet_count = 0;
-    while quiet_count < 10 {
-        if is_data_available(raw_fd) {
-            quiet_count = 0; // user typed something, reset counter
-        } else {
-            quiet_count += 1;
+    // Do not inject while the user is actively typing or has a pending line.
+    while !input_state.is_idle() || input_state.has_pending_line() {
+        if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
+            return;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(INJECT_CHECK_INTERVAL);
     }
-
-    // Save any user input that was being typed
-    let saved_input = read_pending_input(raw_fd);
 
     // Write message text
     let _ = write_all_raw(raw_fd, message.as_bytes());
     // Brief pause then send Enter (CR)
     std::thread::sleep(Duration::from_millis(150));
     let _ = write_all_raw(raw_fd, b"\r");
-
-    // Restore user's saved input
-    if !saved_input.is_empty() {
-        std::thread::sleep(Duration::from_millis(100));
-        let _ = write_all_raw(raw_fd, saved_input.as_bytes());
-    }
-}
-
-/// Check if there's data available to read from the PTY
-fn is_data_available(fd: i32) -> bool {
-    use std::mem::MaybeUninit;
-
-    let mut pollfd = MaybeUninit::<libc::pollfd>::zeroed();
-    unsafe {
-        let pfd = pollfd.as_mut_ptr();
-        (*pfd).fd = fd;
-        (*pfd).events = libc::POLLIN;
-        (*pfd).revents = 0;
-
-        if libc::poll(pfd, 1, 0) > 0 {
-            ((*pfd).revents & libc::POLLIN) != 0
-        } else {
-            false
-        }
-    }
-}
-
-/// Read any pending input from the PTY (user's typing)
-fn read_pending_input(fd: i32) -> String {
-    let mut buf = [0u8; 1024];
-    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-    if n > 0 {
-        String::from_utf8_lossy(&buf[..n as usize]).to_string()
-    } else {
-        String::new()
-    }
 }
 
 fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
@@ -236,4 +237,11 @@ fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
