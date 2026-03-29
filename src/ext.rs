@@ -180,18 +180,49 @@ fn read_existing_allowed_origins(manifest_path: &std::path::Path) -> BTreeSet<St
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
+    Ok(vec![
+        home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts"),
+        home.join("Library/Application Support/Google/Chrome Canary/NativeMessagingHosts"),
+        home.join("Library/Application Support/Chromium/NativeMessagingHosts"),
+        home.join("Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
+        home.join("Library/Application Support/Microsoft Edge/NativeMessagingHosts"),
+    ])
+}
+
+#[cfg(target_os = "linux")]
+fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
+    Ok(vec![
+        home.join(".config/google-chrome/NativeMessagingHosts"),
+        home.join(".config/google-chrome-beta/NativeMessagingHosts"),
+        home.join(".config/chromium/NativeMessagingHosts"),
+        home.join(".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
+        home.join(".config/microsoft-edge/NativeMessagingHosts"),
+    ])
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
+    bail!("Native messaging host installation not supported on this OS")
+}
+
 fn native_host_allowed_origins(
-    manifest_path: &std::path::Path,
+    manifest_paths: &[PathBuf],
     extension_id: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut ids = BTreeSet::new();
-    for origin in read_existing_allowed_origins(manifest_path) {
-        if let Some(id) = origin
-            .strip_prefix("chrome-extension://")
-            .and_then(|s| s.strip_suffix('/'))
-        {
-            if !id.trim().is_empty() {
-                ids.insert(id.to_string());
+    for manifest_path in manifest_paths {
+        for origin in read_existing_allowed_origins(manifest_path) {
+            if let Some(id) = origin
+                .strip_prefix("chrome-extension://")
+                .and_then(|s| s.strip_suffix('/'))
+            {
+                if !id.trim().is_empty() {
+                    ids.insert(id.to_string());
+                }
             }
         }
     }
@@ -1339,25 +1370,12 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    // Determine manifest path based on OS
-    #[cfg(target_os = "macos")]
-    let manifest_dir = dirs::home_dir()
-        .ok_or_else(|| anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Google/Chrome/NativeMessagingHosts");
-
-    #[cfg(target_os = "linux")]
-    let manifest_dir = dirs::home_dir()
-        .ok_or_else(|| anyhow!("Cannot find home directory"))?
-        .join(".config/google-chrome/NativeMessagingHosts");
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    bail!("Native messaging host installation not supported on this OS");
-
-    std::fs::create_dir_all(&manifest_dir)
-        .context("Failed to create NativeMessagingHosts directory")?;
-
-    let manifest_path = manifest_dir.join(format!("{NATIVE_HOST_NAME}.json"));
-    let allowed_origins = native_host_allowed_origins(&manifest_path, extension_id)?;
+    let manifest_dirs = native_host_manifest_dirs()?;
+    let manifest_paths: Vec<PathBuf> = manifest_dirs
+        .iter()
+        .map(|dir| dir.join(format!("{NATIVE_HOST_NAME}.json")))
+        .collect();
+    let allowed_origins = native_host_allowed_origins(&manifest_paths, extension_id)?;
     let manifest = json!({
         "name": NATIVE_HOST_NAME,
         "description": "Sidekar native messaging host",
@@ -1367,12 +1385,24 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
     });
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
 
-    std::fs::write(&manifest_path, &manifest_json)
-        .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
+    for manifest_dir in &manifest_dirs {
+        std::fs::create_dir_all(manifest_dir).with_context(|| {
+            format!(
+                "Failed to create NativeMessagingHosts directory {}",
+                manifest_dir.display()
+            )
+        })?;
+    }
+    for manifest_path in &manifest_paths {
+        std::fs::write(manifest_path, &manifest_json)
+            .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
+    }
 
     if verbose {
-        println!("Installed native messaging host manifest:");
-        println!("  {}", manifest_path.display());
+        println!("Installed native messaging host manifests:");
+        for manifest_path in &manifest_paths {
+            println!("  {}", manifest_path.display());
+        }
         println!();
         println!("Manifest contents:");
         println!("{manifest_json}");
