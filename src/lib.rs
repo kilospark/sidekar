@@ -2464,7 +2464,7 @@ sidekar ext <subcommand> [args...]
   Subcommands: tabs, read [tab_id], screenshot [tab_id], click <target>, type <sel> <text>,
   paste [--html <html>] [--text <text>] [--selector <sel>], setvalue <sel> <text>,
   axtree [tab_id], eval <js>, evalpage <js>, navigate <url> [tab_id], newtab [url],
-  close [tab_id], scroll [direction], status, stop, secret
+  close [tab_id], scroll [direction], status, stop, secret, install-host [extension_id]
 
   Examples:
     sidekar ext tabs
@@ -2472,7 +2472,8 @@ sidekar ext <subcommand> [args...]
     sidekar --tab 3 ext screenshot
     sidekar ext click \"#search-btn\"
     sidekar ext paste --html \"<h1>Title</h1>\" --text \"Title\"
-    sidekar ext evalpage \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\"",
+    sidekar ext evalpage \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\"
+    sidekar ext install-host",
 
         _ => {
             println!("Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands.");
