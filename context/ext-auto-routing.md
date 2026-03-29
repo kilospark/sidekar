@@ -27,7 +27,7 @@ CLI auto-detects if the Chrome extension is connected and routes through it by d
 
 ### Implementation notes
 
-- Add `pub fn is_ext_available() -> bool` to `ext.rs` — checks server running + extension connected (quick IPC ping)
+- Add `pub fn is_ext_available() -> bool` to `ext.rs` — checks daemon running + authenticated extension bridge (`ext_status`)
 - In main dispatch: before auto-launching CDP, check `is_ext_available()`. If true, route the command through the extension bridge instead
 - `sidekar ext` prefix still works as explicit override
 - `sidekar launch` still spins up CDP when called directly
@@ -38,8 +38,8 @@ Replace shared secret with OAuth:
 1. User installs extension, clicks icon → popup shows "Login with GitHub"
 2. Extension opens `sidekar.dev/api/auth/github?redirect=ext-callback`
 3. OAuth completes, server returns token, extension stores in `chrome.storage.local`
-4. On WebSocket connect, extension sends token
-5. ext-server verifies both tokens (extension + CLI from `sidekar login`) belong to same user
-6. Match → connected. Mismatch → rejected.
+4. On native bridge registration, extension sends token to the native host
+5. Native host verifies both tokens (extension + CLI from `sidekar login`) belong to same user
+6. Match → daemon bridge registered. Mismatch → rejected.
 
 This requires `sidekar login` for extension use, which is fine — extension is a power-user feature. Eliminates the manual secret copy-paste step entirely.

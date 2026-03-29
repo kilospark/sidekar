@@ -56,15 +56,14 @@ function applyStatus(res) {
     return;
   }
   if (res && res.connected) {
-    status.textContent = "Connected, waiting for auth...";
+    status.textContent = "Bridge connected, waiting for extension auth...";
     status.className = "pending";
     detailEl.textContent = "";
     retryBtn.style.display = "none";
     return;
   }
-  // Show CLI status based on actual CLI login state
   if (res && res.cliLoggedIn) {
-    status.textContent = "Ready";
+    status.textContent = "CLI authenticated";
     status.className = "connected";
   } else {
     renderCliLoginAction();

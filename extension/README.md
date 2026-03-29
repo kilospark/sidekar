@@ -34,7 +34,7 @@ The bridge starts automatically when needed.
 | File | Purpose |
 |------|---------|
 | `manifest.json` | MV3 manifest, permissions |
-| `background.js` | WebSocket client, command handlers |
+| `background.js` | Native messaging bridge, command handlers |
 | `popup.html` / `popup.js` | OAuth login and connection status |
 | `icons/icon-{16,48,128}.png` | Toolbar icons |
 | `generate_icons.py` | Regenerate PNGs (`pip install pillow`, `python3 generate_icons.py`) |
