@@ -763,11 +763,13 @@ fn filter_osc_color_sequences(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     }
 }
 
-/// Filter terminal focus reporting sequences from stdin.
-/// xterm-compatible terminals can emit CSI I / CSI O on focus changes when
-/// focus reporting is enabled. These are terminal UI events, not user input.
-/// Swallow them at the wrapper boundary so they cannot perturb the child CLI.
-fn filter_focus_reporting_sequences(data: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
+/// Filter terminal UI/query response sequences from stdin.
+/// These are terminal-generated control responses, not user keystrokes:
+/// - focus reporting: CSI I / CSI O
+/// - cursor/status responses: CSI <row>;<col> R
+/// - window reports: CSI ... t
+/// - device attribute responses: CSI ? ... c
+fn filter_terminal_ui_sequences(data: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
     let mut combined = Vec::with_capacity(carry.len() + data.len());
     if !carry.is_empty() {
         combined.extend_from_slice(carry);
@@ -779,17 +781,56 @@ fn filter_focus_reporting_sequences(data: &[u8], carry: &mut Vec<u8>) -> Vec<u8>
     let mut i = 0;
     while i < combined.len() {
         if combined[i] == 0x1b {
-            if i + 2 < combined.len() && combined[i + 1] == b'[' && (combined[i + 2] == b'I' || combined[i + 2] == b'O') {
-                i += 3;
-                continue;
-            }
-            if i + 1 == combined.len() {
+            if i + 1 >= combined.len() {
                 carry.extend_from_slice(&combined[i..]);
                 break;
             }
-            if i + 2 == combined.len() && combined[i + 1] == b'[' {
-                carry.extend_from_slice(&combined[i..]);
-                break;
+            if combined[i + 1] == b'[' {
+                if i + 2 >= combined.len() {
+                    carry.extend_from_slice(&combined[i..]);
+                    break;
+                }
+
+                if combined[i + 2] == b'I' || combined[i + 2] == b'O' {
+                    i += 3;
+                    continue;
+                }
+
+                let mut j = i + 2;
+                let mut question = false;
+                if combined[j] == b'?' {
+                    question = true;
+                    j += 1;
+                }
+
+                let mut saw_digit_or_sep = false;
+                while j < combined.len() {
+                    let b = combined[j];
+                    if b.is_ascii_digit() || b == b';' {
+                        saw_digit_or_sep = true;
+                        j += 1;
+                        continue;
+                    }
+                    break;
+                }
+
+                if j >= combined.len() {
+                    carry.extend_from_slice(&combined[i..]);
+                    break;
+                }
+
+                let final_byte = combined[j];
+                let is_filtered = saw_digit_or_sep
+                    && match final_byte {
+                        b'R' | b't' => true,
+                        b'c' => question,
+                        _ => false,
+                    };
+
+                if is_filtered {
+                    i = j + 1;
+                    continue;
+                }
             }
         }
 
@@ -921,7 +962,7 @@ async fn event_loop(
     // Accumulates stdin bytes; when CR/LF is seen, checks for @sidekar prefix.
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut intercepting = false; // true when line_buf starts with "@sidekar"
-    let mut focus_seq_carry: Vec<u8> = Vec::with_capacity(2);
+    let mut terminal_ui_seq_carry: Vec<u8> = Vec::with_capacity(32);
 
     // Split tunnel into sender + receiver (if connected)
     let (tunnel_tx, mut tunnel_rx) = match tunnel {
@@ -996,7 +1037,7 @@ async fn event_loop(
                         input_state.mark_activity();
                         // Filter out OSC color responses from the terminal
                         let filtered = filter_osc_color_sequences(&buf_in[..n]);
-                        let filtered = filter_focus_reporting_sequences(filtered.as_ref(), &mut focus_seq_carry);
+                        let filtered = filter_terminal_ui_sequences(filtered.as_ref(), &mut terminal_ui_seq_carry);
                         for &byte in &filtered {
                             if byte == b'\r' || byte == b'\n' {
                                 if intercepting {
