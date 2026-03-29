@@ -14,7 +14,7 @@
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/common.css">
 <script>
 (function() {
@@ -45,7 +45,7 @@ main.container {
 .device-card {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 0;
   padding: 20px;
   color: inherit;
 }
@@ -71,28 +71,22 @@ main.container {
   padding: 6px 12px;
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   color: var(--text-muted);
   font-family: var(--font);
   font-size: 13px;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
 .btn-revoke:hover:not(:disabled) {
-  border-color: #b91c1c;
-  color: #fca5a5;
-  background: rgba(185, 28, 28, 0.12);
+  border-color: var(--text);
+  color: var(--text);
+  background: var(--bg-muted);
 }
 
 .btn-revoke:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-html.light .btn-revoke:hover:not(:disabled) {
-  color: #b91c1c;
-  background: rgba(185, 28, 28, 0.08);
 }
 
 .device-meta {
@@ -156,7 +150,7 @@ html.light .btn-revoke:hover:not(:disabled) {
   </nav>
 
   <main class="container">
-    <p class="page-intro">CLI machines you have approved with <code style="font-family:var(--mono);font-size:13px;background:var(--bg-subtle);padding:2px 6px;border-radius:4px;border:1px solid var(--border);">sidekar login</code>. Revoking removes the device token; that machine must log in again.</p>
+    <p class="page-intro">CLI machines you have approved with <code style="font-family:var(--mono);font-size:13px;background:var(--bg-subtle);padding:2px 6px;border-radius:0;border:1px solid var(--border);">sidekar login</code>. Revoking removes the device token; that machine must log in again.</p>
     <div id="content">
       <div class="loading">Loading devices...</div>
     </div>

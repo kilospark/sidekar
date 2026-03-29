@@ -22,33 +22,33 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --bar-bg: rgba(9, 9, 11, 0.9);
-  --bar-border: #27272a;
-  --bar-text: #71717a;
-  --bar-text-hover: #a1a1aa;
+  --bar-bg: #0a0a0a;
+  --bar-border: #262626;
+  --bar-text: #a3a3a3;
+  --bar-text-hover: #f5f5f5;
 }
 
 @media (prefers-color-scheme: light) {
   :root:not(.dark) {
-    --bar-bg: rgba(255, 255, 255, 0.9);
-    --bar-border: #e4e4e7;
-    --bar-text: #71717a;
-    --bar-text-hover: #52525b;
+    --bar-bg: #ffffff;
+    --bar-border: #d4d4d4;
+    --bar-text: #737373;
+    --bar-text-hover: #111111;
   }
 }
 
 html.light {
-  --bar-bg: rgba(255, 255, 255, 0.9);
-  --bar-border: #e4e4e7;
-  --bar-text: #71717a;
-  --bar-text-hover: #52525b;
+  --bar-bg: #ffffff;
+  --bar-border: #d4d4d4;
+  --bar-text: #737373;
+  --bar-text-hover: #111111;
 }
 
 html.dark {
-  --bar-bg: rgba(9, 9, 11, 0.9);
-  --bar-border: #27272a;
-  --bar-text: #71717a;
-  --bar-text-hover: #a1a1aa;
+  --bar-bg: #0a0a0a;
+  --bar-border: #262626;
+  --bar-text: #a3a3a3;
+  --bar-text-hover: #f5f5f5;
 }
 
 body {
@@ -72,18 +72,15 @@ body.terminal-layout-fixed {
   justify-content: space-between;
   padding: 0 12px;
   background: var(--bar-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--bar-border);
   z-index: 10;
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
 }
 
 #back-link {
   color: var(--bar-text);
   text-decoration: none;
-  transition: color 0.15s;
 }
 
 #back-link:hover {
@@ -100,17 +97,17 @@ body.terminal-layout-fixed {
 #status-dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--bar-text);
   display: inline-block;
 }
 
 #status-dot.connected {
-  background: #22c55e;
+  background: var(--bar-text-hover);
 }
 
 #status-dot.error {
-  background: #ef4444;
+  background: var(--bar-text-hover);
 }
 
 #layout-toggle {
