@@ -5,17 +5,22 @@
 - [ ] Terminal adapters for unmanaged sessions (Terminal.app, iTerm2, Warp, kitty, Ghostty)
 - [ ] Editor adapters (VS Code, Cursor, Zed)
 - [ ] Desktop app adapters (Codex app, Claude desktop)
+- [ ] Publish Chrome extension to Web Store
+- [ ] Update website copy
 
 ## Medium Priority
 
+- [ ] Google login (in addition to GitHub)
 - [ ] Attention/notification system (desktop notifications, terminal badges)
 - [ ] Task queue visibility and claiming UX
 - [ ] Session inspection tools (`sidekar sessions`, `sidekar attach`)
+- [ ] Refactor/security review
+- [ ] Add nairo/memory integration
 
 ## Low Priority / Future
 
 - [ ] A2A gateway for external agent interop
-- [ ] Linux support testing and polish
+- [ ] Linux support
 - [ ] Windows support
 
 ## Recently Completed
