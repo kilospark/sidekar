@@ -14,6 +14,8 @@
 - [ ] Attention/notification system (desktop notifications, terminal badges)
 - [ ] Task queue visibility and claiming UX
 - [ ] Session inspection tools (`sidekar sessions`, `sidekar attach`)
+- [ ] Test multiple relay machines in Fly.io
+- [ ] Test GCP for relay
 - [ ] Refactor/security review
 - [ ] Add nairo/memory integration
 

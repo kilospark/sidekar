@@ -12,12 +12,6 @@ use std::io::Write as _;
 
 const PENDING_GRACE_SECS: u64 = 30;
 const TIMEOUT_SECS: u64 = 300;
-const NUDGE_INTERVAL_SECS: u64 = 45;
-const NUDGE_BACKOFF_SECS: u64 = 90;
-const NUDGE_MAX: u32 = 3;
-const NUDGE_POLL_SECS: u64 = 5;
-#[allow(dead_code)]
-const NUDGE_BUSY_CHECK_SECS: u64 = 3;
 const BROKER_TRANSPORT: &str = "broker";
 const RELAY_HTTP_TRANSPORT: &str = "relay_http";
 
@@ -364,7 +358,6 @@ pub struct SidekarBusState {
     /// True when identity was borrowed from another process (CLI recovering PTY state).
     /// Drop will NOT unregister — the owning process manages the registration.
     pub borrowed: bool,
-    active_nudges: HashSet<String>,
 }
 
 impl SidekarBusState {
@@ -375,7 +368,6 @@ impl SidekarBusState {
             socket_path: None,
             inherited_pty: false,
             borrowed: false,
-            active_nudges: HashSet::new(),
         }
     }
 
@@ -414,26 +406,6 @@ impl SidekarBusState {
         }
     }
 
-    fn ensure_nudge_timer(&mut self, msg_id: &str) {
-        if self.active_nudges.insert(msg_id.to_string()) {
-            spawn_nudge_timer(msg_id.to_string());
-        }
-    }
-
-    fn resume_nudges(&mut self) {
-        let Some(name) = self.name().map(String::from) else {
-            return;
-        };
-        match broker::outbound_for_sender(&name) {
-            Ok(requests) => {
-                for request in requests {
-                    self.ensure_nudge_timer(&request.msg_id);
-                }
-            }
-            Err(_) => {}
-        }
-    }
-
     pub fn unregister(&mut self) {
         if let Some(name) = self.name().map(String::from) {
             let _ = broker::unregister_agent(&name);
@@ -441,7 +413,6 @@ impl SidekarBusState {
 
         self.identity = None;
         self.pane_unique_id = None;
-        self.active_nudges.clear();
     }
 
     pub fn do_register(&mut self, custom_name: Option<&str>) {
@@ -459,7 +430,6 @@ impl SidekarBusState {
             self.pane_unique_id = inherited.pane.clone();
             self.inherited_pty = true;
             self.identity = Some(inherited);
-            self.resume_nudges();
             return;
         }
 
@@ -503,16 +473,12 @@ impl SidekarBusState {
 
         self.identity = Some(identity);
         self.pane_unique_id = Some(pane_unique);
-        self.active_nudges.clear();
 
         if let (Some(name), Some(nick), Some(_channel)) = (self.name(), self.nick(), self.channel())
         {
             let agent_type = detect_agent_type();
             set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
-            // registered on bus
         }
-
-        self.resume_nudges();
     }
 }
 
@@ -568,54 +534,6 @@ fn deliver_via(transport_name: &str, target: &str, message: &str, from: &str) ->
         }
         crate::message::DeliveryResult::Failed(reason) => bail!("delivery failed: {reason}"),
     }
-}
-
-fn spawn_nudge_timer(msg_id: String) {
-    std::thread::spawn(move || {
-        let mut wait_secs = NUDGE_INTERVAL_SECS;
-
-        loop {
-            let mut elapsed = 0u64;
-            while elapsed < wait_secs {
-                std::thread::sleep(Duration::from_secs(NUDGE_POLL_SECS));
-                elapsed += NUDGE_POLL_SECS;
-                if broker::outbound_request(&msg_id).ok().flatten().is_none() {
-                    return;
-                }
-            }
-
-            let Some(request) = broker::outbound_request(&msg_id).ok().flatten() else {
-                return;
-            };
-
-            if !pending_message_exists(&msg_id) {
-                let _ = broker::delete_outbound_request(&msg_id);
-                return;
-            }
-
-            let nudge_count = match broker::increment_nudge_count(&msg_id) {
-                Ok(count) => count,
-                Err(_) => return,
-            };
-
-            let nudge_msg = format!(
-                "[sidekar] You have an unanswered request from {}. Reply using bus_send or bus_done with reply_to: \"{msg_id}\"",
-                request.sender_label
-            );
-            let _ = deliver_via(
-                &request.transport_name,
-                &request.transport_target,
-                &nudge_msg,
-                "sidekar",
-            );
-
-            if nudge_count >= NUDGE_MAX {
-                return;
-            }
-
-            wait_secs = NUDGE_BACKOFF_SECS;
-        }
-    });
 }
 
 /// Build a warning string for unanswered pending messages and queued bus messages.
@@ -684,11 +602,7 @@ pub fn check_outbound_timeouts(state: &SidekarBusState) -> Option<String> {
     }
 }
 
-fn maybe_track_request(
-    state: &mut SidekarBusState,
-    envelope: &Envelope,
-    delivery: &DeliveryTarget,
-) {
+fn maybe_track_request(envelope: &Envelope, delivery: &DeliveryTarget) {
     if !matches!(envelope.kind, MessageKind::Request | MessageKind::Handoff) {
         return;
     }
@@ -706,9 +620,7 @@ fn maybe_track_request(
         envelope.created_at,
     ) {
         let _ = e;
-        return;
     }
-    state.ensure_nudge_timer(&envelope.id);
 }
 
 fn cleanup_tracking(msg_id: &str) {
@@ -790,7 +702,7 @@ fn send_directed_envelope(
         anyhow!("Unknown agent \"{}\". Available on this channel: {available}. Use `who` to see all agents.", envelope.to)
     })?;
 
-    maybe_track_request(state, &envelope, &delivery);
+    maybe_track_request(&envelope, &delivery);
 
     if let Err(e) = deliver_via(
         delivery.transport_name,

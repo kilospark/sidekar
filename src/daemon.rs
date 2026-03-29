@@ -226,7 +226,9 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    // TODO: Start bus-housekeeping subsystem
+    // Start housekeeping subsystem (dead agent sweeper, auto-update)
+    tokio::spawn(housekeeping_loop());
+
     // TODO: Start cron subsystem
     // TODO: Start monitor subsystem
 
@@ -269,6 +271,84 @@ async fn handle_connection(
         }
         let _ = writer.flush().await;
         line.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Housekeeping subsystem (dead agent sweeper, auto-update)
+// ---------------------------------------------------------------------------
+
+const SWEEP_INTERVAL_SECS: u64 = 60;
+const UPDATE_CHECK_INTERVAL_SECS: u64 = 3600; // 1 hour
+const STALE_MESSAGE_AGE_SECS: u64 = 3600; // 1 hour
+
+async fn housekeeping_loop() {
+    let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS));
+    let mut update_interval = tokio::time::interval(std::time::Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
+
+    // Skip first tick (fires immediately)
+    sweep_interval.tick().await;
+    update_interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = sweep_interval.tick() => {
+                sweep_dead_agents();
+                cleanup_stale_messages();
+            }
+            _ = update_interval.tick() => {
+                check_for_update().await;
+            }
+        }
+    }
+}
+
+/// Sweep dead agents from the broker. Checks each agent's PTY PID and
+/// unregisters any whose process is no longer alive.
+fn sweep_dead_agents() {
+    let agents = match crate::broker::list_agents(None) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    for agent in agents {
+        if let Some(ref pane) = agent.id.pane {
+            if let Some(pid_str) = pane.strip_prefix("pty-") {
+                if let Ok(pid) = pid_str.parse::<i32>() {
+                    if unsafe { libc::kill(pid, 0) } != 0 {
+                        let _ = crate::broker::unregister_agent(&agent.id.name);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Clean up stale messages older than STALE_MESSAGE_AGE_SECS.
+fn cleanup_stale_messages() {
+    let _ = crate::broker::cleanup_old_messages(STALE_MESSAGE_AGE_SECS);
+    let _ = crate::broker::cleanup_old_pending_requests(STALE_MESSAGE_AGE_SECS);
+    let _ = crate::broker::cleanup_old_outbound_requests(STALE_MESSAGE_AGE_SECS);
+}
+
+/// Check for updates and install in background.
+async fn check_for_update() {
+    if !crate::config::load_config().auto_update {
+        return;
+    }
+    if !crate::api_client::should_check_for_update() {
+        return;
+    }
+    match crate::api_client::check_for_update().await {
+        Ok(Some(latest)) => {
+            eprintln!("sidekar: update v{latest} available, installing in background...");
+            if let Err(e) = crate::api_client::self_update(&latest).await {
+                eprintln!("sidekar: background update failed: {e:#}");
+            } else {
+                eprintln!("sidekar: updated to v{latest} (takes effect on next launch)");
+            }
+        }
+        Ok(None) => {}
+        Err(_) => {}
     }
 }
 

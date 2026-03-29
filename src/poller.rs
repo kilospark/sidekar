@@ -2,6 +2,7 @@
 //! messages to the local agent via PTY write.
 
 use crate::broker;
+use crate::transport::{Broker as BrokerTransport, RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,7 +12,11 @@ static POLLER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLEANUP_INTERVAL_POLLS: u32 = 120; // clean old messages every 60s (120 * 500ms)
+const NUDGE_INTERVAL_POLLS: u32 = 120;   // check nudges every 60s
 const MAX_MESSAGE_AGE_SECS: u64 = 3600;
+const NUDGE_INTERVAL_SECS: u64 = 60;
+const NUDGE_BACKOFF_SECS: u64 = 120;
+const NUDGE_MAX: u32 = 5;
 
 /// Signal the poller to stop.
 pub fn shutdown_poller() {
@@ -24,6 +29,7 @@ pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>) {
 
     std::thread::spawn(move || {
         let mut poll_count: u32 = 0;
+        let mut nudge_poll_count: u32 = 0;
 
         loop {
             if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
@@ -47,30 +53,106 @@ pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>) {
             if poll_count >= CLEANUP_INTERVAL_POLLS {
                 poll_count = 0;
                 let _ = broker::cleanup_old_messages(MAX_MESSAGE_AGE_SECS);
-                sweep_dead_agents();
+            }
+
+            // Periodic nudge check for this agent's outbound requests
+            nudge_poll_count += 1;
+            if nudge_poll_count >= NUDGE_INTERVAL_POLLS {
+                nudge_poll_count = 0;
+                send_nudges(&agent_name);
             }
         }
     });
 }
 
-/// Sweep dead agents from the broker. Checks each agent's PTY PID and
-/// unregisters any whose process is no longer alive.
-fn sweep_dead_agents() {
-    let agents = match broker::list_agents(None) {
-        Ok(a) => a,
+/// Send nudges for this agent's unanswered outbound requests.
+fn send_nudges(agent_name: &str) {
+    let requests = match broker::outbound_for_sender(agent_name) {
+        Ok(r) => r,
         Err(_) => return,
     };
-    for agent in agents {
-        if let Some(ref pane) = agent.id.pane {
-            if let Some(pid_str) = pane.strip_prefix("pty-") {
-                if let Ok(pid) = pid_str.parse::<i32>() {
-                    if unsafe { libc::kill(pid, 0) } != 0 {
-                        let _ = broker::unregister_agent(&agent.id.name);
-                    }
-                }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for request in requests {
+        // Calculate required wait time based on nudge count
+        let wait_secs = if request.nudge_count == 0 {
+            NUDGE_INTERVAL_SECS
+        } else {
+            NUDGE_BACKOFF_SECS
+        };
+
+        // Skip if not enough time has passed
+        let elapsed = now.saturating_sub(request.created_at as u64);
+        let last_nudge_elapsed = if request.nudge_count == 0 {
+            elapsed
+        } else {
+            // Approximate: assume nudges were sent at regular intervals
+            elapsed.saturating_sub(
+                NUDGE_INTERVAL_SECS + (request.nudge_count.saturating_sub(1) as u64 * NUDGE_BACKOFF_SECS)
+            )
+        };
+
+        if last_nudge_elapsed < wait_secs {
+            continue;
+        }
+
+        // Check if we've hit max nudges
+        if request.nudge_count >= NUDGE_MAX {
+            continue;
+        }
+
+        // Check if the pending message still exists (hasn't been answered)
+        if broker::pending_message(&request.msg_id).ok().flatten().is_none() {
+            let _ = broker::delete_outbound_request(&request.msg_id);
+            continue;
+        }
+
+        // Check if recipient is still alive
+        if !is_recipient_alive(&request.recipient_name) {
+            let _ = broker::delete_outbound_request(&request.msg_id);
+            let _ = broker::clear_pending(&request.msg_id);
+            continue;
+        }
+
+        // Send the nudge
+        let nudge_msg = format!(
+            "[sidekar] You have an unanswered request from {}. Reply using bus_send or bus_done with reply_to: \"{}\"",
+            request.sender_label, request.msg_id
+        );
+
+        let delivery_result = match request.transport_name.as_str() {
+            "broker" => BrokerTransport.deliver(&request.transport_target, &nudge_msg, "sidekar"),
+            "relay_http" => RelayHttp.deliver(&request.transport_target, &nudge_msg, "sidekar"),
+            _ => continue,
+        };
+
+        if delivery_result.is_ok() {
+            let _ = broker::increment_nudge_count(&request.msg_id);
+        }
+    }
+}
+
+/// Check if the recipient agent is still registered and alive.
+fn is_recipient_alive(recipient_name: &str) -> bool {
+    let agent = match broker::find_agent(recipient_name, None) {
+        Ok(Some(a)) => a,
+        _ => return false,
+    };
+
+    if let Some(ref pane) = agent.id.pane {
+        if let Some(pid_str) = pane.strip_prefix("pty-") {
+            if let Ok(pid) = pid_str.parse::<i32>() {
+                return unsafe { libc::kill(pid, 0) } == 0;
             }
         }
     }
+
+    // If we can't determine PID, assume alive (could be a relay agent)
+    true
 }
 
 fn deliver_to_pty(fd: &OwnedFd, message: &str) {
