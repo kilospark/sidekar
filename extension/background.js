@@ -13,6 +13,12 @@ let sawAuthFail = false;
 let currentPort = null;
 let cliLoggedIn = false;
 
+function clearStoredExtToken() {
+  return new Promise((resolve) => {
+    chrome.storage.local.remove(["extToken"], () => resolve());
+  });
+}
+
 function wsUrl(port) {
   return `ws://127.0.0.1:${port}`;
 }
@@ -74,7 +80,9 @@ async function connect() {
   const extToken = await getExtToken();
   if (!extToken) {
     console.log("[sidekar] no token configured — click extension icon to log in");
-    lastConnectError = null;
+    if (!lastConnectError) {
+      lastConnectError = "Sign in from the extension popup";
+    }
     return;
   }
 
@@ -139,8 +147,13 @@ async function connect() {
     if (msg.type === "auth_fail") {
       authenticated = false;
       sawAuthFail = true;
-      lastConnectError = msg.reason ||
+      const reason = msg.reason ||
         "Authentication failed — try logging in again from the extension popup.";
+      lastConnectError = reason;
+      if (reason.includes("invalid ext token")) {
+        await clearStoredExtToken();
+        lastConnectError = "Extension session expired — sign in again from the extension popup.";
+      }
       console.log("[sidekar] auth failed:", msg.reason || "check credentials");
       // Don't call ws.close() - let the server's close frame arrive naturally
       // This avoids race conditions with onerror/onclose handlers
