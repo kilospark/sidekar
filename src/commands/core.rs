@@ -93,6 +93,13 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
     fs::create_dir_all(&user_data_dir)
         .with_context(|| format!("failed creating {}", user_data_dir.display()))?;
 
+    if let Err(e) = crate::ext::install_native_host_for_profile_dir(&user_data_dir) {
+        wlog!(
+            "failed installing native host manifest into profile {}: {e}",
+            user_data_dir.display()
+        );
+    }
+
     let mut chrome_args = vec![
         format!("--remote-debugging-port={}", ctx.cdp_port),
         format!("--user-data-dir={}", user_data_dir.to_string_lossy()),
