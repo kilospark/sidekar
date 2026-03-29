@@ -2,17 +2,17 @@
 name: sidekar
 version: 0.1.0
 description: |
-  Browser automation via Chrome DevTools Protocol. Control Chrome directly
-  from the terminal — navigate, click, type, screenshot, read page content,
-  and more. Chrome auto-launches on first command. Use for web scraping,
-  testing, form filling, and any browser task.
+  Coordination and automation for AI agents. Adds a message bus for multi-agent
+  collaboration, browser automation (CDP + extension), macOS desktop automation,
+  background monitoring and cron, encrypted secrets with TOTP, and a web terminal.
+  Works alongside Claude Code, Codex, Cursor, Copilot, Gemini CLI, and others.
 allowed-tools:
   - Bash(sidekar:*)
 ---
 
-# Sidekar — Browser Automation
+# Sidekar — Coordination and Automation for AI Agents
 
-Control Chrome from the terminal via CDP. Chrome launches automatically on first use.
+Sidekar runs alongside your agent CLI. It adds a message bus, browser automation, desktop automation, background jobs, and encrypted storage — without replacing your agent's control loop.
 
 ## Install
 
@@ -30,13 +30,31 @@ sidekar uninstall
 
 ## Quick Start
 
+**Browser automation:**
 ```bash
 sidekar navigate https://example.com   # go to URL (auto-launches Chrome)
 sidekar read                            # extract clean page text
-sidekar axtree -i                       # list interactive elements with refs
-sidekar click 3                         # click ref 3
-sidekar type 5 "hello"                  # type into ref 5
-sidekar screenshot                      # capture page image
+sidekar click --text "Sign in"          # click by text
+sidekar fill "#email" "me@x.com" "#pw" "secret"  # fill form fields
+```
+
+**Multi-agent coordination:**
+```bash
+sidekar who                             # list agents on your channel
+sidekar bus_send @reviewer "PR ready"   # message another agent
+sidekar bus_done @qa "built" "verify"   # hand off to next agent
+```
+
+**Desktop automation (macOS):**
+```bash
+sidekar desktop-apps                    # list running apps
+sidekar desktop-click --app Finder "New Folder"  # click native UI
+```
+
+**Secrets and TOTP:**
+```bash
+sidekar kv set github_token "ghp_xxx"   # store encrypted secret
+sidekar totp get github me@example.com  # generate 2FA code
 ```
 
 ## Chrome extension bridge
