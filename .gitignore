@@ -2,6 +2,7 @@
 # Darwin release tarball + minisign (built in CI; served from Vercel — not tracked)
 sidekar-darwin-arm64.tar.gz
 sidekar-darwin-arm64.tar.gz.minisig
+sidekar-extension.zip
 .vercel
 .DS_Store
 screenshots/

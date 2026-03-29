@@ -45,7 +45,13 @@ Automate **your normal Chrome profile** (not the CDP-launched browser): install 
 
 **Setup:** Run `sidekar login`, then load the extension and click **Login with GitHub** in the popup. **List tabs:** `sidekar ext tabs`. **Target a tab:** `sidekar ext read 123` or `sidekar --tab 123 ext read`.
 
-**Subcommands:** `tabs`, `read`, `screenshot`, `click`, `type`, `axtree`, `eval`, `navigate`, `newtab`, `close`, `scroll`, plus `status`, `stop`. See `sidekar ext` with no args for a short list.
+**Subcommands:** `tabs`, `read`, `screenshot`, `click`, `type`, `paste`, `setvalue`, `axtree`, `eval`, `evalpage`, `navigate`, `newtab`, `close`, `scroll`, plus `status`, `stop`. See `sidekar ext` with no args for a short list.
+
+**Extension-only editor tools:** use these when CDP/DOM commands are not enough.
+
+- `sidekar ext paste "plain text"` or `sidekar ext paste --html "<h1>Title</h1>" --text "Title"` for rich/plain insertion into editors that ignore normal DOM typing.
+- `sidekar ext setvalue <selector> <content>` for framework-aware replacement in Monaco/CodeMirror and standard editable surfaces.
+- `sidekar ext evalpage <js>` to run JavaScript in the page's main world so you can access globals like `window.monaco`, even when isolated-world eval is insufficient.
 
 ## Commands
 
