@@ -85,6 +85,56 @@ pub fn ensure_running() -> Result<()> {
     bail!("Daemon did not create socket within 4s (child PID {})", child.id());
 }
 
+/// Restart the daemon if it is currently running.
+/// Returns true if a restart was performed.
+pub fn restart_if_running() -> Result<bool> {
+    if !is_running() {
+        return Ok(false);
+    }
+    stop()?;
+    ensure_running()?;
+    Ok(true)
+}
+
+fn process_exists(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Helper entrypoint used during daemon self-update.
+/// Waits for the old daemon PID to exit, then starts the new daemon.
+pub async fn relaunch_after_exit(old_pid: i32) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if !process_exists(old_pid) {
+            return run().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    bail!("Timed out waiting for daemon PID {old_pid} to exit before relaunch");
+}
+
+fn spawn_relauncher(old_pid: i32) -> Result<()> {
+    let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
+    std::process::Command::new(exe)
+        .arg("daemon")
+        .arg("relaunch")
+        .arg(old_pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to spawn daemon relaunch helper")?;
+    Ok(())
+}
+
+fn restart_current_process() -> Result<()> {
+    let pid = std::process::id() as i32;
+    spawn_relauncher(pid)?;
+    let _ = std::fs::remove_file(pid_path());
+    let _ = std::fs::remove_file(socket_path());
+    std::process::exit(0);
+}
+
 /// Stop the running daemon.
 pub fn stop() -> Result<()> {
     if let Some(pid) = get_pid() {
@@ -344,7 +394,10 @@ async fn check_for_update() {
             if let Err(e) = crate::api_client::self_update(&latest).await {
                 eprintln!("sidekar: background update failed: {e:#}");
             } else {
-                eprintln!("sidekar: updated to v{latest} (takes effect on next launch)");
+                eprintln!("sidekar: updated to v{latest}; restarting daemon...");
+                if let Err(e) = restart_current_process() {
+                    eprintln!("sidekar: updated, but failed to restart daemon: {e:#}");
+                }
             }
         }
         Ok(None) => {}

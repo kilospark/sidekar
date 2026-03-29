@@ -143,6 +143,16 @@ async fn run() -> Result<()> {
         let sub = args.first().map(|s| s.as_str()).unwrap_or("");
         match sub {
             "run" => return sidekar::daemon::run().await,
+            "relaunch" => {
+                let old_pid = args
+                    .get(1)
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or_else(|| {
+                        eprintln!("Usage: sidekar daemon relaunch <old_pid>");
+                        std::process::exit(1);
+                    });
+                return sidekar::daemon::relaunch_after_exit(old_pid).await;
+            }
             "stop" => return sidekar::daemon::stop(),
             "status" => return sidekar::daemon::status(),
             "" => {
