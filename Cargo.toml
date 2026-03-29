@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "0.7.16"
+version = "0.7.17"
 edition = "2024"
 build = "build.rs"
 

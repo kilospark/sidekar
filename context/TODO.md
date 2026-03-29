@@ -5,6 +5,7 @@
 - [ ] Terminal adapters for unmanaged sessions (Terminal.app, iTerm2, Warp, kitty, Ghostty)
 - [ ] Editor adapters (VS Code, Cursor, Zed)
 - [ ] Desktop app adapters (Codex app, Claude desktop)
+- [ ] Clarify and harden first-install signature verification path (`install.sh` bootstrap trust / how signatures are checked before Sidekar is already installed)
 - [ ] Publish Chrome extension to Web Store
 - [ ] Update website copy
 
@@ -18,6 +19,7 @@
 - [ ] Test GCP for relay
 - [ ] Refactor/security review
 - [ ] Add nairo/memory integration
+- [ ] Define `nairo` scope model: project-level vs user-level
 
 ## Low Priority / Future
 

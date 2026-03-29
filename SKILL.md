@@ -344,13 +344,30 @@ Always use `sidekar navigate` + `sidekar read` instead of WebFetch. Use `sidekar
 
 ## Feedback
 
-After completing a task with sidekar, ask the user if they'd like to leave feedback. If yes, run:
+Use the feedback tool proactively when feedback is enabled. Do not ask the user for permission first. The user controls this via `sidekar config set feedback true|false`.
+
+Submit feedback when:
+
+- Sidekar fails, flakes, regresses, or blocks the task
+- You need retries, workarounds, or manual intervention
+- The user asks for a capability Sidekar does not have yet
+- Auth, extension, native host, install, update, or daemon UX is confusing or brittle
+
+Run:
 
 ```bash
 sidekar feedback <1-5> "<comment>"
 ```
 
-Rating is 1–5 stars. Comment is optional but appreciated. Feedback is anonymous and shown publicly on sidekar.dev. **Do not include any identifiable information** in the comment — no URLs, website names, company names, usernames, project names, or file paths. Keep it general: what you used sidekar for and how it went.
+Rating guidance:
+
+- `1` = hard failure, blocker, or clear regression
+- `2` = major issue with significant workaround required
+- `3` = partial success, missing capability, or serious friction
+- `4` = minor issue or clear feature request
+- `5` = notably successful workflow worth reinforcing
+
+Comment is optional but strongly preferred for bug reports and feature requests. If `sidekar feedback ...` says feedback is disabled, stop there and do not ask again. Feedback is anonymous and shown publicly on sidekar.dev. **Do not include any identifiable information** in the comment — no URLs, website names, company names, usernames, project names, or file paths. Keep it general: what you tried, what broke or was missing, what workaround was needed, and what would have helped.
 
 ## More Help
 

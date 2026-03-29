@@ -408,19 +408,129 @@ async function cmdType(msg) {
     }, [selector, text, refNum]);
 }
 
+async function focusTabWindow(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.windowId != null) {
+      try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+      } catch {}
+    }
+    try {
+      await chrome.tabs.update(tabId, { active: true });
+    } catch {}
+  } catch {}
+}
+
+function htmlToPlainText(html) {
+  if (!html) return "";
+  return html
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/p\s*>/gi, "\n\n")
+    .replace(/<\s*\/div\s*>/gi, "\n")
+    .replace(/<\s*\/li\s*>/gi, "\n")
+    .replace(/<li\b[^>]*>/gi, "- ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+async function trustedPasteViaDebugger(tabId) {
+  const target = { tabId };
+  const version = "1.3";
+  const isMac = /Mac/i.test(navigator.userAgent || "");
+  const modifierBit = isMac ? 4 : 2; // Meta on macOS, Control elsewhere
+
+  async function send(method, params) {
+    return await chrome.debugger.sendCommand(target, method, params);
+  }
+
+  await focusTabWindow(tabId);
+
+  try {
+    await chrome.debugger.attach(target, version);
+    await send("Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      modifiers: modifierBit,
+      windowsVirtualKeyCode: 86,
+      code: "KeyV",
+      key: "v",
+    });
+    await send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      modifiers: modifierBit,
+      windowsVirtualKeyCode: 86,
+      code: "KeyV",
+      key: "v",
+    });
+    return { ok: true, mode: isMac ? "debugger-meta-v" : "debugger-ctrl-v", verified: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    try {
+      await chrome.debugger.detach(target);
+    } catch {}
+  }
+}
+
+async function insertTextViaDebugger(tabId, text) {
+  const target = { tabId };
+  const version = "1.3";
+
+  if (!text) {
+    return { ok: false, error: "No text available for debugger insertText" };
+  }
+
+  await focusTabWindow(tabId);
+
+  try {
+    await chrome.debugger.attach(target, version);
+    await chrome.debugger.sendCommand(target, "Input.insertText", { text });
+    return { ok: true, mode: "debugger-insertText", verified: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    try {
+      await chrome.debugger.detach(target);
+    } catch {}
+  }
+}
+
+async function shouldPreferInsertText(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = String(tab?.url || "");
+    return url.startsWith("https://docs.google.com/document/");
+  } catch {
+    return false;
+  }
+}
+
 async function cmdPaste(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
   const selector = msg.selector || "";
   const html = typeof msg.html === "string" ? msg.html : "";
-  const text = typeof msg.text === "string" && msg.text.length > 0 ? msg.text : html;
+  const text = typeof msg.text === "string" && msg.text.length > 0 ? msg.text : "";
+  const plainText = text || htmlToPlainText(html);
 
-  if (!html && !text) {
+  if (!html && !plainText) {
     return { error: "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]" };
   }
 
+  await focusTabWindow(tabId);
+
   const clipboardWrite = await executeScriptResult(
     tabId,
-    async (html, text) => {
+    async (html, plainText) => {
       try {
         if (!navigator.clipboard) {
           return { ok: false, stage: "clipboard", error: "navigator.clipboard unavailable" };
@@ -431,31 +541,49 @@ async function cmdPaste(msg) {
           }
           const item = new ClipboardItem({
             "text/html": new Blob([html], { type: "text/html" }),
-            "text/plain": new Blob([text], { type: "text/plain" }),
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
           });
           await navigator.clipboard.write([item]);
         } else {
-          await navigator.clipboard.writeText(text);
+          await navigator.clipboard.writeText(plainText);
         }
         return { ok: true, stage: "clipboard" };
       } catch (e) {
         return { ok: false, stage: "clipboard", error: e?.message || String(e) };
       }
     },
-    [html, text]
+    [html, plainText]
   );
 
   const inserted = await executeScriptResult(
     tabId,
-    (selector, html, text, clipboardOk) => {
+    (selector, html, plainText, clipboardOk) => {
       function resolveTarget(selector) {
         if (!selector || selector === "active") {
-          return document.activeElement || document.body;
+          return descendIntoFrame(document.activeElement || document.body);
         }
         if (/^\d+$/.test(selector)) {
-          return document.querySelector(`[data-sidekar-ref="${selector}"]`);
+          return descendIntoFrame(document.querySelector(`[data-sidekar-ref="${selector}"]`));
         }
-        return document.querySelector(selector);
+        return descendIntoFrame(document.querySelector(selector));
+      }
+
+      function descendIntoFrame(target) {
+        if (!target || target.tagName !== "IFRAME") {
+          return target;
+        }
+        try {
+          const doc = target.contentDocument;
+          if (!doc) return target;
+          return (
+            doc.activeElement ||
+            doc.querySelector('[contenteditable="true"], textarea, input, [role="textbox"]') ||
+            doc.body ||
+            target
+          );
+        } catch {
+          return target;
+        }
       }
 
       function describeElement(el) {
@@ -489,6 +617,9 @@ async function cmdPaste(msg) {
         return { error: `Element not found: ${selector}` };
       }
 
+      const doc = target.ownerDocument || document;
+      const win = doc.defaultView || window;
+
       if (typeof target.focus === "function") {
         target.focus();
       }
@@ -499,10 +630,10 @@ async function cmdPaste(msg) {
           const range = typeof monaco.getSelection === "function" ? monaco.getSelection() : null;
           if (range && typeof monaco.executeEdits === "function") {
             monaco.executeEdits("sidekar.ext.paste", [
-              { range, text, forceMoveMarkers: true },
+              { range, text: plainText, forceMoveMarkers: true },
             ]);
           } else if (typeof monaco.setValue === "function") {
-            monaco.setValue(text);
+            monaco.setValue(plainText);
           } else {
             throw new Error("Monaco editor does not support write APIs");
           }
@@ -512,7 +643,7 @@ async function cmdPaste(msg) {
           return {
             ok: true,
             mode: "monaco",
-            length: text.length,
+            length: plainText.length,
             clipboard: clipboardOk,
             target: describeElement(target),
           };
@@ -524,11 +655,11 @@ async function cmdPaste(msg) {
       const cm5Host = target.closest ? target.closest(".CodeMirror") : null;
       if (cm5Host && cm5Host.CodeMirror && typeof cm5Host.CodeMirror.replaceSelection === "function") {
         cm5Host.CodeMirror.focus();
-        cm5Host.CodeMirror.replaceSelection(text);
+        cm5Host.CodeMirror.replaceSelection(plainText);
         return {
           ok: true,
           mode: "codemirror5",
-          length: text.length,
+          length: plainText.length,
           clipboard: clipboardOk,
           target: describeElement(target),
         };
@@ -539,16 +670,17 @@ async function cmdPaste(msg) {
         const start = typeof target.selectionStart === "number" ? target.selectionStart : target.value.length;
         const end = typeof target.selectionEnd === "number" ? target.selectionEnd : target.value.length;
         if (typeof target.setRangeText === "function") {
-          target.setRangeText(text, start, end, "end");
+          target.setRangeText(plainText, start, end, "end");
         } else {
-          target.value = text;
+          target.value = plainText;
         }
-        target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+        const InputEvt = win.InputEvent || InputEvent;
+        target.dispatchEvent(new InputEvt("input", { bubbles: true, data: plainText, inputType: "insertText" }));
         target.dispatchEvent(new Event("change", { bubbles: true }));
         return {
           ok: true,
           mode: "input",
-          length: text.length,
+          length: plainText.length,
           clipboard: clipboardOk,
           target: describeElement(target),
         };
@@ -556,37 +688,42 @@ async function cmdPaste(msg) {
 
       if (target.isContentEditable) {
         let inserted = false;
-        if (html && typeof document.execCommand === "function") {
-          inserted = document.execCommand("insertHTML", false, html);
+        if (html && typeof doc.execCommand === "function") {
+          try {
+            inserted = doc.execCommand("insertHTML", false, html);
+          } catch {}
         }
-        if (!inserted && typeof document.execCommand === "function") {
-          inserted = document.execCommand("insertText", false, text);
+        if (!inserted && typeof doc.execCommand === "function") {
+          try {
+            inserted = doc.execCommand("insertText", false, plainText);
+          } catch {}
         }
         if (!inserted) {
-          const sel = window.getSelection();
+          const sel = win.getSelection ? win.getSelection() : window.getSelection();
           if (sel && sel.rangeCount > 0) {
             const range = sel.getRangeAt(0);
             range.deleteContents();
             if (html) {
-              const tpl = document.createElement("template");
+              const tpl = doc.createElement("template");
               tpl.innerHTML = html;
               const frag = tpl.content.cloneNode(true);
               range.insertNode(frag);
             } else {
-              range.insertNode(document.createTextNode(text));
+              range.insertNode(doc.createTextNode(plainText));
             }
             sel.collapseToEnd();
             inserted = true;
           } else {
-            target.textContent = text;
+            target.textContent = plainText;
             inserted = true;
           }
         }
-        target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: html ? "insertFromPaste" : "insertText" }));
+        const InputEvt = win.InputEvent || InputEvent;
+        target.dispatchEvent(new InputEvt("input", { bubbles: true, data: plainText, inputType: html ? "insertFromPaste" : "insertText" }));
         return {
           ok: true,
           mode: html ? "contenteditable-html" : "contenteditable-text",
-          length: text.length,
+          length: plainText.length,
           clipboard: clipboardOk,
           target: describeElement(target),
         };
@@ -594,14 +731,16 @@ async function cmdPaste(msg) {
 
       let syntheticAttempted = false;
       let syntheticCanceled = false;
-      if (typeof DataTransfer !== "undefined" && typeof ClipboardEvent !== "undefined") {
+      const DataTransferCtor = win.DataTransfer || (typeof DataTransfer !== "undefined" ? DataTransfer : null);
+      const ClipboardEventCtor = win.ClipboardEvent || (typeof ClipboardEvent !== "undefined" ? ClipboardEvent : null);
+      if (DataTransferCtor && ClipboardEventCtor) {
         try {
-          const dt = new DataTransfer();
-          dt.setData("text/plain", text);
+          const dt = new DataTransferCtor();
+          dt.setData("text/plain", plainText);
           if (html) {
             dt.setData("text/html", html);
           }
-          const event = new ClipboardEvent("paste", {
+          const event = new ClipboardEventCtor("paste", {
             clipboardData: dt,
             bubbles: true,
             cancelable: true,
@@ -611,9 +750,9 @@ async function cmdPaste(msg) {
         } catch {}
       }
 
-      if (!syntheticAttempted && typeof document.execCommand === "function") {
+      if (!syntheticAttempted && typeof doc.execCommand === "function") {
         try {
-          syntheticAttempted = document.execCommand("paste");
+          syntheticAttempted = doc.execCommand("paste");
         } catch {}
       }
 
@@ -621,7 +760,7 @@ async function cmdPaste(msg) {
         return {
           ok: true,
           mode: syntheticCanceled ? "synthetic-paste-canceled" : "synthetic-paste",
-          length: text.length,
+          length: plainText.length,
           clipboard: clipboardOk,
           verified: false,
           target: describeElement(target),
@@ -634,7 +773,7 @@ async function cmdPaste(msg) {
         target: describeElement(target),
       };
     },
-    [selector, html, text, !clipboardWrite.error && clipboardWrite.ok === true],
+    [selector, html, plainText, !clipboardWrite.error && clipboardWrite.ok === true],
     "MAIN"
   );
 
@@ -643,6 +782,81 @@ async function cmdPaste(msg) {
   }
   if (inserted && inserted.error && clipboardWrite.error) {
     inserted.error = `${inserted.error} Clipboard write also failed: ${clipboardWrite.error}`;
+  }
+
+  const shouldTryTrustedPaste =
+    clipboardWrite &&
+    clipboardWrite.ok === true &&
+    (!inserted ||
+      inserted.error ||
+      inserted.verified === false ||
+      (typeof inserted.mode === "string" && inserted.mode.startsWith("synthetic")));
+
+  const preferInsertText = await shouldPreferInsertText(tabId);
+  if (preferInsertText) {
+    const insertedText = await insertTextViaDebugger(tabId, plainText);
+    if (insertedText.ok) {
+      return {
+        ok: true,
+        mode: insertedText.mode,
+        length: plainText.length,
+        clipboard: clipboardWrite.ok === true,
+        fallback_from: inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none",
+        target: inserted && inserted.target ? inserted.target : null,
+        verified: true,
+        plain_text_fallback: !!html,
+      };
+    }
+    if (inserted && !inserted.error) {
+      inserted.debugger_error = insertedText.error;
+      return inserted;
+    }
+    return {
+      error: insertedText.error,
+      clipboard: clipboardWrite.ok === true,
+      fallback_from: inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none",
+      target: inserted && inserted.target ? inserted.target : null,
+    };
+  }
+
+  if (shouldTryTrustedPaste) {
+    const trusted = await trustedPasteViaDebugger(tabId);
+    if (trusted.ok) {
+      return {
+        ok: true,
+        mode: trusted.mode,
+        length: text.length,
+        clipboard: true,
+        fallback_from: inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none",
+        target: inserted && inserted.target ? inserted.target : null,
+        verified: true,
+      };
+    }
+    const insertedText = await insertTextViaDebugger(tabId, plainText);
+    if (insertedText.ok) {
+      return {
+        ok: true,
+        mode: insertedText.mode,
+        length: plainText.length,
+        clipboard: clipboardWrite.ok === true,
+        fallback_from: trusted.mode || (inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none"),
+        target: inserted && inserted.target ? inserted.target : null,
+        verified: true,
+        plain_text_fallback: !!html,
+      };
+    }
+    if (inserted && !inserted.error) {
+      inserted.debugger_error = trusted.error;
+      inserted.insert_text_error = insertedText.error;
+      return inserted;
+    }
+    return {
+      error: trusted.error,
+      clipboard: true,
+      fallback_from: inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none",
+      target: inserted && inserted.target ? inserted.target : null,
+      insert_text_error: insertedText.error,
+    };
   }
 
   return inserted;

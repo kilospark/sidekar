@@ -133,10 +133,7 @@ async fn cmd_totp_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     let now = unix_now();
     let code = totp.generate(now);
-    let step = rec.period.max(1) as u64;
-    let remaining = step - (now % step);
-
-    out!(ctx, "{}:{} {} ({}s)", service, account, code, remaining);
+    out!(ctx, "{code}");
     Ok(())
 }
 

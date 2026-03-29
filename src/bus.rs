@@ -569,7 +569,7 @@ pub fn pending_warnings(state: &SidekarBusState) -> Option<String> {
         return None;
     }
     Some(format!(
-        "\u{26a0} You have {} unanswered message(s). Respond using bus_done or bus_send with reply_to:\n{}",
+        "\u{26a0} You have {} unanswered message(s). Respond using bus_done or bus_send with --reply-to=<msg_id>:\n{}",
         warnings.len(),
         warnings.join("\n")
     ))
@@ -614,7 +614,7 @@ fn maybe_track_request(envelope: &Envelope, delivery: &DeliveryTarget) {
         &envelope.id,
         &envelope.from.name,
         &envelope.from.display_name(),
-        &envelope.to,
+        &delivery.transport_target,
         delivery.transport_name,
         &delivery.transport_target,
         envelope.created_at,
@@ -632,6 +632,21 @@ fn resolve_reply(reply_to: Option<&str>) {
     if let Some(reply_id) = reply_to {
         let _ = broker::resolve_reply(reply_id);
     }
+}
+
+fn cleanup_completed_exchange(
+    self_name: &str,
+    other_name: &str,
+    channel: Option<&str>,
+    keep_msg_id: Option<&str>,
+) {
+    let canonical_other = broker::find_agent(other_name, channel)
+        .ok()
+        .flatten()
+        .map(|agent| agent.id.name)
+        .unwrap_or_else(|| other_name.to_string());
+    let _ = broker::clear_pending_between_agents(self_name, &canonical_other);
+    let _ = broker::clear_outbound_between_agents(self_name, &canonical_other, keep_msg_id);
 }
 
 fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionInfo> {
@@ -811,11 +826,16 @@ pub fn cmd_signal_done(
     reply_to: Option<&str>,
 ) -> Result<()> {
     let from_id = state.agent_id();
+    let self_name = from_id.name.clone();
+    let channel = state.channel().map(str::to_string);
     let mut envelope = Envelope::new_handoff(from_id, next, summary, request);
     if let Some(rt) = reply_to {
         envelope.reply_to = Some(rt.to_string());
     }
-    send_directed_envelope(state, ctx, envelope, reply_to, "Handed off")
+    let keep_msg_id = envelope.id.clone();
+    send_directed_envelope(state, ctx, envelope, reply_to, "Handed off")?;
+    cleanup_completed_exchange(&self_name, next, channel.as_deref(), Some(&keep_msg_id));
+    Ok(())
 }
 
 fn broadcast(ctx: &mut AppContext, _channel: &str, my_name: &str, message: &str) -> Result<()> {

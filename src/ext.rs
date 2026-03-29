@@ -840,50 +840,18 @@ pub async fn send_cli_command(
 ) -> Result<()> {
     // Handle meta commands
     if command == "stop" {
-        return stop_server();
+        return crate::daemon::stop();
     }
     if command == "status" {
         return show_status();
     }
 
-    // Auto-launch server
-    auto_launch_server()?;
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let port = std::env::var("SIDEKAR_EXT_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
-    let ipc_port = ipc_port_for_ws(port)?;
-
     let msg = build_command(command, args, default_tab)?;
-
-    // Retry connection a few times (server may still be starting)
-    let mut stream = None;
-    for attempt in 0..5 {
-        match TcpStream::connect(format!("127.0.0.1:{ipc_port}")).await {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(_) if attempt < 4 => {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            }
-            Err(e) => bail!("Cannot connect to ext-server: {e}"),
-        }
-    }
-    let mut stream = stream.unwrap();
-
-    stream
-        .write_all(serde_json::to_string(&msg)?.as_bytes())
-        .await?;
-    stream.shutdown().await?;
-
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await?;
-
-    let result: Value = serde_json::from_slice(&buf).context("Invalid response from ext-server")?;
+    crate::daemon::ensure_running()?;
+    let result = crate::daemon::send_command(&json!({
+        "type": "ext",
+        "command": msg,
+    }))?;
 
     if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
         bail!("{err}");
@@ -893,30 +861,30 @@ pub async fn send_cli_command(
     Ok(())
 }
 
-fn stop_server() -> Result<()> {
-    let pid_file = pid_path();
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-            let _ = std::fs::remove_file(&pid_file);
-            println!("Stopped ext-server (PID {pid})");
-            return Ok(());
-        }
-    }
-    println!("No ext-server running");
-    Ok(())
-}
-
 fn show_status() -> Result<()> {
-    if is_server_running() {
-        let pid = std::fs::read_to_string(pid_path())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        println!("ext-server running (PID {pid})");
-    } else {
-        println!("ext-server not running");
+    if !crate::daemon::is_running() {
+        println!("Extension bridge not running");
+        return Ok(());
     }
+
+    let status = crate::daemon::send_command(&json!({"type": "ext_status"}))?;
+    let connected = status
+        .get("connected")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let authenticated = status
+        .get("authenticated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    println!(
+        "Extension bridge: {}",
+        if connected { "connected" } else { "not connected" }
+    );
+    println!(
+        "Authenticated: {}",
+        if authenticated { "yes" } else { "no" }
+    );
     Ok(())
 }
 
@@ -1016,11 +984,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             if text.is_none() && !plain_parts.is_empty() {
                 text = Some(plain_parts.join(" "));
             }
-            if text.is_none() && html.is_some() {
-                text = html.clone();
-            }
-            if text.as_deref().unwrap_or("").is_empty() && html.as_deref().unwrap_or("").is_empty()
-            {
+            if text.as_deref().unwrap_or("").is_empty() && html.as_deref().unwrap_or("").is_empty() {
                 bail!(
                     "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]"
                 );
@@ -1242,6 +1206,24 @@ fn print_result(command: &str, result: &Value) {
             }
             if let Some(err) = result.get("clipboard_error").and_then(|v| v.as_str()) {
                 println!("Clipboard write warning: {err}");
+            }
+            if result
+                .get("plain_text_fallback")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                println!("Used plain-text fallback for HTML content");
+            }
+            if let Some(from) = result.get("fallback_from").and_then(|v| v.as_str()) {
+                if from != "none" {
+                    println!("Fallback source: {from}");
+                }
+            }
+            if let Some(err) = result.get("debugger_error").and_then(|v| v.as_str()) {
+                println!("Debugger warning: {err}");
+            }
+            if let Some(err) = result.get("insert_text_error").and_then(|v| v.as_str()) {
+                println!("InsertText warning: {err}");
             }
         }
         "setvalue" => {

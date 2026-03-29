@@ -346,7 +346,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // From here, any setup failure must clean up the child + broker.
     let mut registered_name: Option<String> = None;
 
-    let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId, String)> {
+    let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId, String, Arc<crate::poller::UserInputState>)> {
         // Copy parent terminal size to child PTY
         let _ = copy_terminal_size(master_raw);
 
@@ -371,12 +371,13 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
-        crate::poller::start_poller(identity.name.clone(), master_arc.clone());
+        let input_state = Arc::new(crate::poller::UserInputState::default());
+        crate::poller::start_poller(identity.name.clone(), master_arc.clone(), input_state.clone());
 
-        Ok((master_arc, identity, nick))
+        Ok((master_arc, identity, nick, input_state))
     })();
 
-    let (master_arc, identity, nick) = match setup_result {
+    let (master_arc, identity, nick, input_state) = match setup_result {
         Ok(v) => v,
         Err(e) => {
             // silent — error propagated via return
@@ -439,7 +440,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let raw_guard = RawModeGuard::enter()?;
 
     // Run the async event loop
-    let exit_code = event_loop(&master_arc, child_pid, tunnel, &nick, &identity.name).await;
+    let exit_code = event_loop(&master_arc, child_pid, tunnel, &nick, &identity.name, &input_state).await;
 
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
@@ -762,6 +763,43 @@ fn filter_osc_color_sequences(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     }
 }
 
+/// Filter terminal focus reporting sequences from stdin.
+/// xterm-compatible terminals can emit CSI I / CSI O on focus changes when
+/// focus reporting is enabled. These are terminal UI events, not user input.
+/// Swallow them at the wrapper boundary so they cannot perturb the child CLI.
+fn filter_focus_reporting_sequences(data: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
+    let mut combined = Vec::with_capacity(carry.len() + data.len());
+    if !carry.is_empty() {
+        combined.extend_from_slice(carry);
+        carry.clear();
+    }
+    combined.extend_from_slice(data);
+
+    let mut out = Vec::with_capacity(combined.len());
+    let mut i = 0;
+    while i < combined.len() {
+        if combined[i] == 0x1b {
+            if i + 2 < combined.len() && combined[i + 1] == b'[' && (combined[i + 2] == b'I' || combined[i + 2] == b'O') {
+                i += 3;
+                continue;
+            }
+            if i + 1 == combined.len() {
+                carry.extend_from_slice(&combined[i..]);
+                break;
+            }
+            if i + 2 == combined.len() && combined[i + 1] == b'[' {
+                carry.extend_from_slice(&combined[i..]);
+                break;
+            }
+        }
+
+        out.push(combined[i]);
+        i += 1;
+    }
+
+    out
+}
+
 /// Rewrite OSC 0/2 title sequences (ESC ] 0; ... BEL / ESC ] 2; ... BEL)
 /// to prepend the nick prefix, so the terminal title always shows the agent nickname.
 fn rewrite_osc_titles<'a>(data: &'a [u8], prefix: &str) -> std::borrow::Cow<'a, [u8]> {
@@ -830,6 +868,7 @@ async fn event_loop(
     tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
     nick: &str,
     agent_name: &str,
+    input_state: &Arc<crate::poller::UserInputState>,
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
@@ -882,6 +921,7 @@ async fn event_loop(
     // Accumulates stdin bytes; when CR/LF is seen, checks for @sidekar prefix.
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut intercepting = false; // true when line_buf starts with "@sidekar"
+    let mut focus_seq_carry: Vec<u8> = Vec::with_capacity(2);
 
     // Split tunnel into sender + receiver (if connected)
     let (tunnel_tx, mut tunnel_rx) = match tunnel {
@@ -953,9 +993,11 @@ async fn event_loop(
                 match result {
                     Ok(0) | Err(_) => break, // stdin closed
                     Ok(n) => {
+                        input_state.mark_activity();
                         // Filter out OSC color responses from the terminal
                         let filtered = filter_osc_color_sequences(&buf_in[..n]);
-                        for &byte in filtered.as_ref() {
+                        let filtered = filter_focus_reporting_sequences(filtered.as_ref(), &mut focus_seq_carry);
+                        for &byte in &filtered {
                             if byte == b'\r' || byte == b'\n' {
                                 if intercepting {
                                     // Handle the @sidekar command locally
@@ -967,18 +1009,21 @@ async fn event_loop(
                                     let _ = stdout.write_all(b"\r\n").await;
                                     let _ = stdout.flush().await;
                                     line_buf.clear();
+                                    input_state.clear_pending_line();
                                     intercepting = false;
                                 } else {
                                     // Bytes were already forwarded individually;
                                     // just clear the prefix-detection buffer and
                                     // forward the CR/LF itself.
                                     line_buf.clear();
+                                    input_state.clear_pending_line();
                                     let _ = write_all_fd(master_fd, &[byte]);
                                 }
                             } else if byte == 0x7f || byte == 0x08 {
                                 // Backspace — remove from buffer
                                 if intercepting {
                                     line_buf.pop();
+                                    input_state.set_pending_line(&line_buf);
                                     // Echo backspace to terminal
                                     let _ = stdout.write_all(b"\x08 \x08").await;
                                     let _ = stdout.flush().await;
@@ -989,15 +1034,18 @@ async fn event_loop(
                                         if !line_buf.is_empty() {
                                             let _ = write_all_fd(master_fd, &line_buf);
                                             line_buf.clear();
+                                            input_state.clear_pending_line();
                                         }
                                     }
                                 } else {
                                     // Forward backspace and update line buffer
                                     line_buf.pop();
+                                    input_state.set_pending_line(&line_buf);
                                     let _ = write_all_fd(master_fd, &[byte]);
                                 }
                             } else {
                                 line_buf.push(byte);
+                                input_state.set_pending_line(&line_buf);
                                 // Check if we're entering @sidekar mode
                                 if line_buf.starts_with(b"@sidekar") {
                                     if !intercepting {
@@ -1012,6 +1060,7 @@ async fn event_loop(
                                     intercepting = false;
                                     let _ = write_all_fd(master_fd, &line_buf);
                                     line_buf.clear();
+                                    input_state.clear_pending_line();
                                 } else {
                                     // Normal byte — forward immediately
                                     let _ = write_all_fd(master_fd, &[byte]);

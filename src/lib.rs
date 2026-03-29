@@ -2307,18 +2307,23 @@ sidekar desktop-screenshot [--app <name>] [--pid <pid>] [--output <path>]
 
         "who" => "sidekar who\n\n  List agents registered on the bus (same channel).",
         "bus_send" | "bus-send" => "\
-sidekar bus_send <to> <message>
+sidekar bus_send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]
 
   Send a message to another agent by name, or @all to broadcast.
+  When --reply-to is provided, the default kind becomes `response`.
 
-  Example: sidekar bus_send claude-2 \"Please review the PR\"",
+  Examples:
+    sidekar bus_send claude-2 \"Please review the PR\"
+    sidekar bus_send claude-2 \"Acknowledged\" --reply-to=3966a70e-4c5c",
 
         "bus_done" | "bus-done" => "\
-sidekar bus_done <next> <summary> <request>
+sidekar bus_done <next> <summary> <request> [--reply-to=<msg_id>]
 
   Hand off to another agent with a summary and next request.
 
-  Example: sidekar bus_done claude-2 \"Finished API tests\" \"Run integration tests\"",
+  Examples:
+    sidekar bus_done claude-2 \"Finished API tests\" \"Run integration tests\"
+    sidekar bus_done claude-2 \"Done\" \"Please take over\" --reply-to=3966a70e-4c5c",
 
         "monitor" => "\
 sidekar monitor <start|stop|status> [tab_id|all]
@@ -2417,6 +2422,7 @@ sidekar daemon [run|stop|status]
 sidekar totp <add|list|get|remove> [args...]
 
   Store and retrieve TOTP secrets for automated login flows.
+  `totp get` prints the current code only, so it is safe to pipe into other commands.
 
   Examples:
     sidekar totp add github alice BASE32SECRET

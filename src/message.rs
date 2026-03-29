@@ -166,7 +166,10 @@ impl Envelope {
     /// Format the message for display in a terminal paste.
     pub fn format_for_paste(&self) -> String {
         let from = self.from.display_name();
-        let reply_hint = format!("\n[reply with: sidekar bus_send {from} \"<your response>\"]");
+        let reply_hint = format!(
+            "\n[reply with: sidekar bus_send {from} \"<your response>\" --reply-to={}]",
+            self.id
+        );
         match self.kind {
             MessageKind::Handoff => {
                 format!(
