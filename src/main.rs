@@ -173,7 +173,7 @@ async fn run() -> Result<()> {
         if sub.is_empty() {
             eprintln!("Usage: sidekar ext <subcommand> [args...]");
             eprintln!("Subcommands: tabs, read, screenshot, click, type, paste, setvalue,");
-            eprintln!("  axtree, eval, evalpage, navigate, newtab, close, scroll, status, stop, install-host");
+            eprintln!("  axtree, eval, evalpage, navigate, newtab, close, scroll, status, stop, install-host [extension_id]");
             std::process::exit(1);
         }
         // Handle install-host subcommand

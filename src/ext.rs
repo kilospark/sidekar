@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, oneshot};
 use crate::auth;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
+const OFFICIAL_EXTENSION_ID: &str = "ieggclnoffcnljcjeadgogpfbnhogncc";
 
 const DEFAULT_PORT: u16 = 9876;
 const TIMEOUT_SECS: u64 = 30;
@@ -64,6 +65,115 @@ impl Default for ExtState {
 }
 
 pub type SharedExtState = Arc<Mutex<ExtState>>;
+
+fn is_sidekar_extension_entry(ext_id: &str, meta: &Value) -> bool {
+    if ext_id == OFFICIAL_EXTENSION_ID {
+        return true;
+    }
+
+    let manifest = meta.get("manifest").and_then(Value::as_object);
+    let name = manifest
+        .and_then(|m| m.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let description = manifest
+        .and_then(|m| m.get("description"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let path = meta
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    name == "Sidekar"
+        || description == "Bridge between AI agents and your browser"
+        || path.ends_with("/extension")
+        || path.ends_with("\\extension")
+}
+
+#[cfg(target_os = "macos")]
+fn chrome_profile_root() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .ok_or_else(|| anyhow!("Cannot find home directory"))?
+        .join("Library/Application Support/Google/Chrome"))
+}
+
+#[cfg(target_os = "linux")]
+fn chrome_profile_root() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .ok_or_else(|| anyhow!("Cannot find home directory"))?
+        .join(".config/google-chrome"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn chrome_profile_root() -> Result<PathBuf> {
+    bail!("Native messaging host installation not supported on this OS")
+}
+
+fn discover_sidekar_extension_ids() -> Result<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+    let root = chrome_profile_root()?;
+    if !root.is_dir() {
+        return Ok(ids);
+    }
+
+    for entry in std::fs::read_dir(&root)? {
+        let entry = match entry {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let profile_dir = entry.path();
+        if !profile_dir.is_dir() {
+            continue;
+        }
+
+        for prefs_name in ["Preferences", "Secure Preferences"] {
+            let prefs_path = profile_dir.join(prefs_name);
+            if !prefs_path.is_file() {
+                continue;
+            }
+            let raw = match std::fs::read_to_string(&prefs_path) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let data: Value = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let settings = match data
+                .get("extensions")
+                .and_then(|v| v.get("settings"))
+                .and_then(Value::as_object)
+            {
+                Some(v) => v,
+                None => continue,
+            };
+            for (ext_id, meta) in settings {
+                if is_sidekar_extension_entry(ext_id, meta) {
+                    ids.insert(ext_id.clone());
+                }
+            }
+        }
+    }
+
+    Ok(ids)
+}
+
+fn native_host_allowed_origins(extension_id: Option<&str>) -> Result<Vec<String>> {
+    let mut ids = BTreeSet::new();
+    ids.insert(OFFICIAL_EXTENSION_ID.to_string());
+
+    if let Some(id) = extension_id.map(str::trim).filter(|s| !s.is_empty()) {
+        ids.insert(id.to_string());
+    }
+
+    ids.extend(discover_sidekar_extension_ids()?);
+
+    Ok(ids
+        .into_iter()
+        .map(|id| format!("chrome-extension://{id}/"))
+        .collect())
+}
 
 fn ext_api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
@@ -1195,15 +1305,14 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    // Use provided extension ID or the official published ID
-    let ext_id = extension_id.unwrap_or("ieggclnoffcnljcjeadgogpfbnhogncc");
+    let allowed_origins = native_host_allowed_origins(extension_id)?;
 
     let manifest = json!({
         "name": NATIVE_HOST_NAME,
         "description": "Sidekar native messaging host",
         "path": wrapper_path.to_string_lossy(),
         "type": "stdio",
-        "allowed_origins": [format!("chrome-extension://{ext_id}/")]
+        "allowed_origins": allowed_origins
     });
 
     // Determine manifest path based on OS
