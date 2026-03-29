@@ -242,10 +242,16 @@ async function handleCommand(msg) {
         return await cmdClick(msg);
       case "type":
         return await cmdType(msg);
+      case "paste":
+        return await cmdPaste(msg);
+      case "setvalue":
+        return await cmdSetValue(msg);
       case "axtree":
         return await cmdAxtree(msg);
       case "eval":
         return await cmdEval(msg);
+      case "evalpage":
+        return await cmdEvalPage(msg);
       case "navigate":
         return await cmdNavigate(msg);
       case "newtab":
@@ -260,6 +266,21 @@ async function handleCommand(msg) {
   } catch (e) {
     return { error: e.message };
   }
+}
+
+async function executeScriptResult(tabId, func, args = [], world = "ISOLATED") {
+  let exec;
+  try {
+    exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      world,
+      func,
+      args,
+    });
+  } catch (e) {
+    return { error: e.message || String(e) };
+  }
+  return firstInjectionResult(exec);
 }
 
 async function cmdTabs() {
@@ -277,26 +298,17 @@ async function cmdTabs() {
 
 async function cmdRead(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  let exec;
-  try {
-    exec = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const sel =
-          document.querySelector("article") ||
-          document.querySelector("main") ||
-          document.body;
-        return {
-          url: location.href,
-          title: document.title,
-          text: sel.innerText.substring(0, 50000),
-        };
-      },
-    });
-  } catch (e) {
-    return { error: e.message || String(e) };
-  }
-  return firstInjectionResult(exec);
+  return await executeScriptResult(tabId, () => {
+    const sel =
+      document.querySelector("article") ||
+      document.querySelector("main") ||
+      document.body;
+    return {
+      url: location.href,
+      title: document.title,
+      text: sel.innerText.substring(0, 50000),
+    };
+  });
 }
 
 async function cmdScreenshot(msg) {
@@ -322,11 +334,7 @@ async function cmdClick(msg) {
   // Resolve ref number to data-sidekar-ref attribute
   const refNum = typeof target === "string" && /^\d+$/.test(target) ? parseInt(target) : null;
 
-  let exec;
-  try {
-    exec = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (target, refNum) => {
+  return await executeScriptResult(tabId, (target, refNum) => {
       let el;
       if (refNum !== null) {
         el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
@@ -353,13 +361,7 @@ async function cmdClick(msg) {
       el.scrollIntoView({ block: "center" });
       el.click();
       return { clicked: true, tag: el.tagName, text: el.innerText?.substring(0, 100) };
-    },
-    args: [target, refNum],
-    });
-  } catch (e) {
-    return { error: e.message || String(e) };
-  }
-  return firstInjectionResult(exec);
+    }, [target, refNum]);
 }
 
 async function cmdType(msg) {
@@ -370,11 +372,7 @@ async function cmdType(msg) {
   // Resolve ref number
   const refNum = /^\d+$/.test(selector) ? parseInt(selector) : null;
 
-  let exec;
-  try {
-    exec = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (selector, text, refNum) => {
+  return await executeScriptResult(tabId, (selector, text, refNum) => {
       let el;
       if (refNum !== null) {
         el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
@@ -394,22 +392,365 @@ async function cmdType(msg) {
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { typed: true, selector, length: text.length };
-    },
-    args: [selector, text, refNum],
-    });
-  } catch (e) {
-    return { error: e.message || String(e) };
+    }, [selector, text, refNum]);
+}
+
+async function cmdPaste(msg) {
+  const tabId = msg.tabId || (await getActiveTabId());
+  const selector = msg.selector || "";
+  const html = typeof msg.html === "string" ? msg.html : "";
+  const text = typeof msg.text === "string" && msg.text.length > 0 ? msg.text : html;
+
+  if (!html && !text) {
+    return { error: "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]" };
   }
-  return firstInjectionResult(exec);
+
+  const clipboardWrite = await executeScriptResult(
+    tabId,
+    async (html, text) => {
+      try {
+        if (!navigator.clipboard) {
+          return { ok: false, stage: "clipboard", error: "navigator.clipboard unavailable" };
+        }
+        if (html) {
+          if (typeof ClipboardItem === "undefined") {
+            return { ok: false, stage: "clipboard", error: "ClipboardItem unavailable" };
+          }
+          const item = new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([text], { type: "text/plain" }),
+          });
+          await navigator.clipboard.write([item]);
+        } else {
+          await navigator.clipboard.writeText(text);
+        }
+        return { ok: true, stage: "clipboard" };
+      } catch (e) {
+        return { ok: false, stage: "clipboard", error: e?.message || String(e) };
+      }
+    },
+    [html, text]
+  );
+
+  const inserted = await executeScriptResult(
+    tabId,
+    (selector, html, text, clipboardOk) => {
+      function resolveTarget(selector) {
+        if (!selector || selector === "active") {
+          return document.activeElement || document.body;
+        }
+        if (/^\d+$/.test(selector)) {
+          return document.querySelector(`[data-sidekar-ref="${selector}"]`);
+        }
+        return document.querySelector(selector);
+      }
+
+      function describeElement(el) {
+        if (!el) return null;
+        return {
+          tag: el.tagName || "",
+          id: el.id || "",
+          className: typeof el.className === "string" ? el.className : "",
+        };
+      }
+
+      function findMonacoEditor(target) {
+        const monaco = window.monaco;
+        if (!monaco || !monaco.editor || typeof monaco.editor.getEditors !== "function") {
+          return null;
+        }
+        const editors = monaco.editor.getEditors();
+        if (!Array.isArray(editors) || editors.length === 0) return null;
+        if (!target) return editors[0] || null;
+        for (const editor of editors) {
+          const node = typeof editor.getDomNode === "function" ? editor.getDomNode() : null;
+          if (node && (node === target || node.contains(target) || target.contains(node))) {
+            return editor;
+          }
+        }
+        return editors[0] || null;
+      }
+
+      const target = resolveTarget(selector);
+      if (!target) {
+        return { error: `Element not found: ${selector}` };
+      }
+
+      if (typeof target.focus === "function") {
+        target.focus();
+      }
+
+      const monaco = findMonacoEditor(target);
+      if (monaco) {
+        try {
+          const range = typeof monaco.getSelection === "function" ? monaco.getSelection() : null;
+          if (range && typeof monaco.executeEdits === "function") {
+            monaco.executeEdits("sidekar.ext.paste", [
+              { range, text, forceMoveMarkers: true },
+            ]);
+          } else if (typeof monaco.setValue === "function") {
+            monaco.setValue(text);
+          } else {
+            throw new Error("Monaco editor does not support write APIs");
+          }
+          if (typeof monaco.focus === "function") {
+            monaco.focus();
+          }
+          return {
+            ok: true,
+            mode: "monaco",
+            length: text.length,
+            clipboard: clipboardOk,
+            target: describeElement(target),
+          };
+        } catch (e) {
+          return { error: e?.message || String(e) };
+        }
+      }
+
+      const cm5Host = target.closest ? target.closest(".CodeMirror") : null;
+      if (cm5Host && cm5Host.CodeMirror && typeof cm5Host.CodeMirror.replaceSelection === "function") {
+        cm5Host.CodeMirror.focus();
+        cm5Host.CodeMirror.replaceSelection(text);
+        return {
+          ok: true,
+          mode: "codemirror5",
+          length: text.length,
+          clipboard: clipboardOk,
+          target: describeElement(target),
+        };
+      }
+
+      const tag = (target.tagName || "").toUpperCase();
+      if (tag === "TEXTAREA" || tag === "INPUT") {
+        const start = typeof target.selectionStart === "number" ? target.selectionStart : target.value.length;
+        const end = typeof target.selectionEnd === "number" ? target.selectionEnd : target.value.length;
+        if (typeof target.setRangeText === "function") {
+          target.setRangeText(text, start, end, "end");
+        } else {
+          target.value = text;
+        }
+        target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+        return {
+          ok: true,
+          mode: "input",
+          length: text.length,
+          clipboard: clipboardOk,
+          target: describeElement(target),
+        };
+      }
+
+      if (target.isContentEditable) {
+        let inserted = false;
+        if (html && typeof document.execCommand === "function") {
+          inserted = document.execCommand("insertHTML", false, html);
+        }
+        if (!inserted && typeof document.execCommand === "function") {
+          inserted = document.execCommand("insertText", false, text);
+        }
+        if (!inserted) {
+          const sel = window.getSelection();
+          if (sel && sel.rangeCount > 0) {
+            const range = sel.getRangeAt(0);
+            range.deleteContents();
+            if (html) {
+              const tpl = document.createElement("template");
+              tpl.innerHTML = html;
+              const frag = tpl.content.cloneNode(true);
+              range.insertNode(frag);
+            } else {
+              range.insertNode(document.createTextNode(text));
+            }
+            sel.collapseToEnd();
+            inserted = true;
+          } else {
+            target.textContent = text;
+            inserted = true;
+          }
+        }
+        target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: html ? "insertFromPaste" : "insertText" }));
+        return {
+          ok: true,
+          mode: html ? "contenteditable-html" : "contenteditable-text",
+          length: text.length,
+          clipboard: clipboardOk,
+          target: describeElement(target),
+        };
+      }
+
+      let syntheticAttempted = false;
+      let syntheticCanceled = false;
+      if (typeof DataTransfer !== "undefined" && typeof ClipboardEvent !== "undefined") {
+        try {
+          const dt = new DataTransfer();
+          dt.setData("text/plain", text);
+          if (html) {
+            dt.setData("text/html", html);
+          }
+          const event = new ClipboardEvent("paste", {
+            clipboardData: dt,
+            bubbles: true,
+            cancelable: true,
+          });
+          syntheticAttempted = true;
+          syntheticCanceled = target.dispatchEvent(event) === false;
+        } catch {}
+      }
+
+      if (!syntheticAttempted && typeof document.execCommand === "function") {
+        try {
+          syntheticAttempted = document.execCommand("paste");
+        } catch {}
+      }
+
+      if (syntheticAttempted) {
+        return {
+          ok: true,
+          mode: syntheticCanceled ? "synthetic-paste-canceled" : "synthetic-paste",
+          length: text.length,
+          clipboard: clipboardOk,
+          verified: false,
+          target: describeElement(target),
+        };
+      }
+
+      return {
+        error: "Could not paste into target. Try `sidekar ext evalpage` for a framework-specific write path.",
+        clipboard: clipboardOk,
+        target: describeElement(target),
+      };
+    },
+    [selector, html, text, !clipboardWrite.error && clipboardWrite.ok === true],
+    "MAIN"
+  );
+
+  if (inserted && !inserted.error && clipboardWrite.error) {
+    inserted.clipboard_error = clipboardWrite.error;
+  }
+  if (inserted && inserted.error && clipboardWrite.error) {
+    inserted.error = `${inserted.error} Clipboard write also failed: ${clipboardWrite.error}`;
+  }
+
+  return inserted;
+}
+
+async function cmdSetValue(msg) {
+  const tabId = msg.tabId || (await getActiveTabId());
+  const selector = msg.selector || "";
+  const text = typeof msg.text === "string" ? msg.text : "";
+
+  return await executeScriptResult(
+    tabId,
+    (selector, text) => {
+      function resolveTarget(selector) {
+        if (!selector || selector === "active") {
+          return document.activeElement || document.body;
+        }
+        if (/^\d+$/.test(selector)) {
+          return document.querySelector(`[data-sidekar-ref="${selector}"]`);
+        }
+        return document.querySelector(selector);
+      }
+
+      function describeElement(el) {
+        if (!el) return null;
+        return {
+          tag: el.tagName || "",
+          id: el.id || "",
+          className: typeof el.className === "string" ? el.className : "",
+        };
+      }
+
+      function findMonacoEditor(target) {
+        const monaco = window.monaco;
+        if (!monaco || !monaco.editor || typeof monaco.editor.getEditors !== "function") {
+          return null;
+        }
+        const editors = monaco.editor.getEditors();
+        if (!Array.isArray(editors) || editors.length === 0) return null;
+        if (!target) return editors[0] || null;
+        for (const editor of editors) {
+          const node = typeof editor.getDomNode === "function" ? editor.getDomNode() : null;
+          if (node && (node === target || node.contains(target) || target.contains(node))) {
+            return editor;
+          }
+        }
+        return editors[0] || null;
+      }
+
+      const target = resolveTarget(selector);
+      if (!target) {
+        return { error: `Element not found: ${selector}` };
+      }
+
+      if (typeof target.focus === "function") {
+        target.focus();
+      }
+
+      const monaco = findMonacoEditor(target);
+      if (monaco && typeof monaco.setValue === "function") {
+        monaco.setValue(text);
+        if (typeof monaco.focus === "function") {
+          monaco.focus();
+        }
+        return {
+          ok: true,
+          mode: "monaco",
+          length: text.length,
+          target: describeElement(target),
+        };
+      }
+
+      const cm5Host = target.closest ? target.closest(".CodeMirror") : null;
+      if (cm5Host && cm5Host.CodeMirror && typeof cm5Host.CodeMirror.setValue === "function") {
+        cm5Host.CodeMirror.setValue(text);
+        cm5Host.CodeMirror.focus();
+        return {
+          ok: true,
+          mode: "codemirror5",
+          length: text.length,
+          target: describeElement(target),
+        };
+      }
+
+      const tag = (target.tagName || "").toUpperCase();
+      if (tag === "TEXTAREA" || tag === "INPUT") {
+        target.value = text;
+        target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertReplacementText" }));
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+        return {
+          ok: true,
+          mode: "input",
+          length: text.length,
+          target: describeElement(target),
+        };
+      }
+
+      if (target.isContentEditable) {
+        target.textContent = text;
+        target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertReplacementText" }));
+        return {
+          ok: true,
+          mode: "contenteditable",
+          length: text.length,
+          target: describeElement(target),
+        };
+      }
+
+      return {
+        error: "No supported editor API found for target. Try `sidekar ext evalpage` for direct page-world access.",
+        target: describeElement(target),
+      };
+    },
+    [selector, text],
+    "MAIN"
+  );
 }
 
 async function cmdAxtree(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  let exec;
-  try {
-    exec = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
+  const out = await executeScriptResult(tabId, () => {
       // Clean up old refs
       document.querySelectorAll("[data-sidekar-ref]").forEach((el) => {
         el.removeAttribute("data-sidekar-ref");
@@ -460,12 +801,7 @@ async function cmdAxtree(msg) {
 
       walk(document.body);
       return { url: location.href, title: document.title, elements };
-    },
-    });
-  } catch (e) {
-    return { error: e.message || String(e) };
-  }
-  const out = firstInjectionResult(exec);
+  });
   if (out && out.elements) {
     refMaps.set(tabId, out.elements.length);
   }
@@ -532,11 +868,7 @@ async function cmdClose(msg) {
 async function cmdScroll(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
   const direction = msg.direction || "down";
-  let exec;
-  try {
-    exec = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (direction) => {
+  return await executeScriptResult(tabId, (direction) => {
       const amount = Math.round(window.innerHeight * 0.8);
       switch (direction) {
         case "up": window.scrollBy(0, -amount); break;
@@ -545,34 +877,85 @@ async function cmdScroll(msg) {
         case "bottom": window.scrollTo(0, document.body.scrollHeight); break;
       }
       return { scrolled: direction, y: window.scrollY };
-    },
-    args: [direction],
-    });
-  } catch (e) {
-    return { error: e.message || String(e) };
-  }
-  return firstInjectionResult(exec);
+    }, [direction]);
 }
 
 async function cmdEval(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
-  let exec;
-  try {
-    exec = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (code) => {
-        try {
-          return { result: String(eval(code)) };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-      args: [msg.code],
-    });
-  } catch (e) {
-    return { error: e.message || String(e) };
+  return await executeScriptResult(tabId, (code) => {
+    try {
+      return { result: String(eval(code)) };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }, [msg.code]);
+}
+
+async function cmdEvalPage(msg) {
+  const tabId = msg.tabId || (await getActiveTabId());
+  const code = typeof msg.code === "string" ? msg.code : "";
+  if (!code) {
+    return { error: "Usage: sidekar ext evalpage <javascript>" };
   }
-  return firstInjectionResult(exec);
+
+  return await executeScriptResult(
+    tabId,
+    async (code) => {
+      function normalize(value, depth = 0, seen = new WeakSet()) {
+        if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          return value;
+        }
+        if (typeof value === "bigint") {
+          return value.toString();
+        }
+        if (typeof value === "function") {
+          return `[Function ${value.name || "anonymous"}]`;
+        }
+        if (value instanceof Element) {
+          return {
+            tag: value.tagName,
+            id: value.id || "",
+            className: typeof value.className === "string" ? value.className : "",
+            text: (value.innerText || value.textContent || "").substring(0, 200),
+          };
+        }
+        if (depth >= 3) {
+          return `[MaxDepth:${Object.prototype.toString.call(value)}]`;
+        }
+        if (typeof value === "object") {
+          if (seen.has(value)) {
+            return "[Circular]";
+          }
+          seen.add(value);
+          if (Array.isArray(value)) {
+            return value.slice(0, 50).map((item) => normalize(item, depth + 1, seen));
+          }
+          const out = {};
+          for (const key of Object.keys(value).slice(0, 50)) {
+            try {
+              out[key] = normalize(value[key], depth + 1, seen);
+            } catch (e) {
+              out[key] = `[Thrown: ${e?.message || String(e)}]`;
+            }
+          }
+          return out;
+        }
+        return String(value);
+      }
+
+      try {
+        let result = (0, eval)(code);
+        if (result && typeof result.then === "function") {
+          result = await result;
+        }
+        return { result: normalize(result) };
+      } catch (e) {
+        return { error: e?.stack || e?.message || String(e) };
+      }
+    },
+    [code],
+    "MAIN"
+  );
 }
 
 // ---------------------------------------------------------------------------
