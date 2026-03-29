@@ -1,38 +1,27 @@
-//! Extension bridge — WebSocket server for Chrome extension communication.
+//! Extension bridge for Chrome extension communication.
 //!
-//! `sidekar ext-server` runs a WS server on 127.0.0.1:9876.
-//! `sidekar ext <command>` auto-launches the server if needed, then sends a command.
+//! The Chrome extension connects through native messaging, and the daemon
+//! routes `sidekar ext <command>` requests to the connected extension bridge.
 
 use anyhow::{Context, Result, anyhow, bail};
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, oneshot};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::auth;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
 const OFFICIAL_EXTENSION_ID: &str = "ieggclnoffcnljcjeadgogpfbnhogncc";
 
-const DEFAULT_PORT: u16 = 9876;
 const TIMEOUT_SECS: u64 = 30;
-
-fn ipc_port_for_ws(port: u16) -> Result<u16> {
-    port.checked_add(1)
-        .ok_or_else(|| anyhow!("SIDEKAR_EXT_PORT cannot be 65535 (IPC needs port+1)"))
-}
 
 fn data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".sidekar")
-}
-
-fn pid_path() -> PathBuf {
-    data_dir().join("ext-server.pid")
 }
 
 fn sidekar_profile_roots() -> Vec<PathBuf> {
@@ -52,26 +41,23 @@ fn sidekar_profile_roots() -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 
 pub struct ExtState {
-    pub ext_tx: Option<
-        futures_util::stream::SplitSink<
-            tokio_tungstenite::WebSocketStream<TcpStream>,
-            tokio_tungstenite::tungstenite::Message,
-        >,
-    >,
+    pub bridge_tx: Option<mpsc::UnboundedSender<String>>,
     pub pending: HashMap<String, oneshot::Sender<Value>>,
     pub connected: bool,
     pub authenticated: bool,
     pub verified_user_id: Option<String>,
+    pub connection_id: u64,
 }
 
 impl Default for ExtState {
     fn default() -> Self {
         Self {
-            ext_tx: None,
+            bridge_tx: None,
             pending: HashMap::new(),
             connected: false,
             authenticated: false,
             verified_user_id: None,
+            connection_id: 0,
         }
     }
 }
@@ -267,6 +253,40 @@ fn ext_api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
 }
 
+fn verify_ext_token_sync(ext_token: &str) -> Result<String> {
+    let device_token = auth::auth_token().ok_or_else(|| anyhow!("Run `sidekar login`"))?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
+    let url = format!("{}/api/auth/ext-token?verify=1", ext_api_base());
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", device_token))
+        .json(&json!({ "ext_token": ext_token }))
+        .send()
+        .context("Failed to contact sidekar.dev for token verification")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        bail!("Token verification failed: HTTP {status} — {body}");
+    }
+
+    let data: Value = resp.json().context("Invalid response from verify-ext")?;
+
+    let matched = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !matched {
+        bail!("Extension token and CLI token belong to different users");
+    }
+
+    data.get("user_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("No user_id in verification response"))
+}
+
 /// Verify that the extension token and CLI device token belong to the same user.
 /// Calls the sidekar.dev API and returns the user_id on success.
 async fn verify_ext_token(ext_token: &str) -> Result<String> {
@@ -313,39 +333,82 @@ type SharedState = Arc<Mutex<ExtState>>;
 // Ext bridge for daemon
 // ---------------------------------------------------------------------------
 
-/// Start the extension bridge WebSocket listener.
-/// Called by the daemon to run ext-bridge as a subsystem.
-/// Returns the port number on success.
-pub async fn start_ext_bridge(state: SharedExtState) -> Result<u16> {
-    let port = std::env::var("SIDEKAR_EXT_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
+async fn disconnect_bridge(state: &SharedState, connection_id: u64) {
+    let pending = {
+        let mut s = state.lock().await;
+        if s.connection_id != connection_id {
+            return;
+        }
+        let pending = std::mem::take(&mut s.pending);
+        s.bridge_tx = None;
+        s.connected = false;
+        s.authenticated = false;
+        s.verified_user_id = None;
+        pending
+    };
+    for (_id, tx) in pending {
+        let _ = tx.send(json!({"error": "Extension disconnected"}));
+    }
+}
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .with_context(|| {
-            format!("Failed to bind ext-bridge on port {port}. Is another instance running?")
-        })?;
+pub async fn register_bridge_connection(
+    state: SharedState,
+    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+    mut writer: tokio::net::unix::OwnedWriteHalf,
+    user_id: String,
+) -> Result<()> {
+    let (bridge_tx, mut bridge_rx) = mpsc::unbounded_channel::<String>();
+    let (connection_id, replaced_pending) = {
+        let mut s = state.lock().await;
+        let replaced_pending = std::mem::take(&mut s.pending);
+        s.connection_id = s.connection_id.wrapping_add(1);
+        s.bridge_tx = Some(bridge_tx);
+        s.connected = true;
+        s.authenticated = true;
+        s.verified_user_id = Some(user_id);
+        (s.connection_id, replaced_pending)
+    };
+    for (_id, tx) in replaced_pending {
+        let _ = tx.send(json!({"error": "Extension bridge replaced by a new connection"}));
+    }
 
-    eprintln!("ext-bridge listening on ws://127.0.0.1:{port}");
+    writer.write_all(b"{\"ok\":true}\n").await?;
+    writer.flush().await?;
 
+    let write_state = state.clone();
     tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    eprintln!("Extension connection from {addr}");
-                    let s = state.clone();
-                    tokio::spawn(handle_extension_connection(stream, s));
-                }
-                Err(e) => {
-                    eprintln!("ext-bridge accept error: {e}");
+        while let Some(msg) = bridge_rx.recv().await {
+            if writer.write_all(msg.as_bytes()).await.is_err() {
+                break;
+            }
+            if writer.write_all(b"\n").await.is_err() {
+                break;
+            }
+            if writer.flush().await.is_err() {
+                break;
+            }
+        }
+        disconnect_bridge(&write_state, connection_id).await;
+    });
+
+    let mut line = String::new();
+    while let Ok(n) = reader.read_line(&mut line).await {
+        if n == 0 {
+            break;
+        }
+        if let Ok(val) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                let mut s = state.lock().await;
+                if let Some(tx) = s.pending.remove(id) {
+                    let _ = tx.send(val);
                 }
             }
         }
-    });
+        line.clear();
+    }
 
-    Ok(port)
+    disconnect_bridge(&state, connection_id).await;
+    Ok(())
 }
 
 /// Send a command to the extension via the shared state.
@@ -363,255 +426,8 @@ pub async fn get_status(state: &SharedExtState) -> Value {
     json!({
         "connected": s.connected,
         "authenticated": s.authenticated,
+        "user_id": s.verified_user_id,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Standalone server (legacy - will be deprecated)
-// ---------------------------------------------------------------------------
-
-pub async fn run_server() -> Result<()> {
-    let port = std::env::var("SIDEKAR_EXT_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
-
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to bind to port {port}. Another ext-server is probably already running. Try: sidekar ext stop"
-            )
-        })?;
-
-    let ipc_port = ipc_port_for_ws(port)?;
-    let ipc_listener = TcpListener::bind(format!("127.0.0.1:{ipc_port}"))
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to bind IPC port {ipc_port} (WebSocket uses {port}). Try: sidekar ext stop"
-            )
-        })?;
-
-    let pid = std::process::id();
-    std::fs::create_dir_all(data_dir())?;
-    std::fs::write(pid_path(), pid.to_string())?;
-
-    eprintln!("sidekar ext-server listening on ws://127.0.0.1:{port}");
-    eprintln!("PID: {pid}");
-
-    let state: SharedState = Arc::new(Mutex::new(ExtState {
-        ext_tx: None,
-        pending: HashMap::new(),
-        connected: false,
-        authenticated: false,
-        verified_user_id: None,
-    }));
-
-    let ipc_state = state.clone();
-    tokio::spawn(async move {
-        loop {
-            if let Ok((stream, _)) = ipc_listener.accept().await {
-                let s = ipc_state.clone();
-                tokio::spawn(handle_cli_connection(stream, s));
-            }
-        }
-    });
-
-    // Handle SIGTERM/SIGINT for clean shutdown (registration can fail under FD pressure — do not panic).
-    let shutdown_pid_path = pid_path();
-    tokio::spawn(async move {
-        let st = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
-        let si = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
-        match (st, si) {
-            (Ok(mut sigterm), Ok(mut sigint)) => {
-                tokio::select! {
-                    _ = sigterm.recv() => {}
-                    _ = sigint.recv() => {}
-                }
-            }
-            (Ok(mut sigterm), Err(_)) => {
-                let _ = sigterm.recv().await;
-            }
-            (Err(_), Ok(mut sigint)) => {
-                let _ = sigint.recv().await;
-            }
-            (Err(e1), Err(e2)) => {
-                eprintln!(
-                    "sidekar: signal handlers unavailable ({e1}; {e2}); use kill to stop ext-server"
-                );
-                std::future::pending::<()>().await
-            }
-        }
-        let _ = std::fs::remove_file(&shutdown_pid_path);
-        std::process::exit(0);
-    });
-
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        eprintln!("Connection from {addr}");
-        let s = state.clone();
-        tokio::spawn(handle_extension_connection(stream, s));
-    }
-}
-
-async fn handle_extension_connection(stream: TcpStream, state: SharedState) {
-    let ws = match tokio_tungstenite::accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(e) => {
-            eprintln!("WebSocket handshake failed: {e}");
-            return;
-        }
-    };
-
-    let (tx, mut rx) = ws.split();
-
-    {
-        let mut s = state.lock().await;
-        if s.ext_tx.is_some() {
-            // Close old stale connection and accept the new one
-            eprintln!("Replacing stale extension connection with new one");
-            if let Some(mut old_tx) = s.ext_tx.take() {
-                let _ = old_tx.close().await;
-            }
-            s.pending.clear();
-        }
-        s.ext_tx = Some(tx);
-        s.connected = true;
-        s.authenticated = false;
-        s.verified_user_id = None;
-    }
-
-    eprintln!("WebSocket established, waiting for auth...");
-
-    while let Some(msg) = rx.next().await {
-        match msg {
-            Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                    let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-                    if msg_type == "ping" {
-                        // Respond to keepalive pings
-                        let mut s = state.lock().await;
-                        if let Some(ref mut ext_tx) = s.ext_tx {
-                            let _ = ext_tx
-                                .send(tokio_tungstenite::tungstenite::Message::Text(
-                                    json!({"type": "pong"}).to_string().into(),
-                                ))
-                                .await;
-                        }
-                        continue;
-                    }
-
-                    if msg_type == "hello" {
-                        let version = val.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                        let provided_token =
-                            val.get("token").and_then(|v| v.as_str()).unwrap_or("");
-
-                        if !provided_token.is_empty() {
-                            // Token-based auth (OAuth flow)
-                            match verify_ext_token(provided_token).await {
-                                Ok(user_id) => {
-                                    let mut s = state.lock().await;
-                                    s.authenticated = true;
-                                    s.verified_user_id = Some(user_id.clone());
-                                    eprintln!(
-                                        "Extension authenticated via token: v{version} (user {user_id})"
-                                    );
-                                    if let Some(ref mut ext_tx) = s.ext_tx {
-                                        let _ = ext_tx
-                                            .send(tokio_tungstenite::tungstenite::Message::Text(
-                                                json!({"type": "auth_ok"}).to_string().into(),
-                                            ))
-                                            .await;
-                                    }
-                                }
-                                Err(e) => {
-                                    let reason = format!("{e:#}");
-                                    eprintln!("Extension token auth failed: {reason}");
-                                    let mut s = state.lock().await;
-                                    if let Some(ref mut ext_tx) = s.ext_tx {
-                                        // Send auth_fail message
-                                        let _ = ext_tx
-                                            .send(tokio_tungstenite::tungstenite::Message::Text(
-                                                json!({"type": "auth_fail", "reason": reason})
-                                                    .to_string()
-                                                    .into(),
-                                            ))
-                                            .await;
-                                        // Send close frame after the message (ensures ordering)
-                                        let _ = ext_tx
-                                            .send(tokio_tungstenite::tungstenite::Message::Close(
-                                                None,
-                                            ))
-                                            .await;
-                                        let _ = ext_tx.flush().await;
-                                    }
-                                    break;
-                                }
-                            }
-                        } else {
-                            let reason = "No token provided — log in from the extension popup";
-                            eprintln!("Extension auth failed: {reason}");
-                            let mut s = state.lock().await;
-                            if let Some(ref mut ext_tx) = s.ext_tx {
-                                let _ = ext_tx
-                                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                                        json!({"type": "auth_fail", "reason": reason})
-                                            .to_string()
-                                            .into(),
-                                    ))
-                                    .await;
-                                let _ = ext_tx
-                                    .send(tokio_tungstenite::tungstenite::Message::Close(None))
-                                    .await;
-                                let _ = ext_tx.flush().await;
-                            }
-                            break;
-                        }
-                        continue;
-                    }
-
-                    // All other messages require authentication
-                    {
-                        let s = state.lock().await;
-                        if !s.authenticated {
-                            eprintln!("Ignoring unauthenticated message");
-                            continue;
-                        }
-                    }
-
-                    // Route response to pending request
-                    if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
-                        let mut s = state.lock().await;
-                        if let Some(tx) = s.pending.remove(id) {
-                            let _ = tx.send(val);
-                        }
-                    }
-                }
-            }
-            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
-            Err(e) => {
-                eprintln!("WebSocket error: {e}");
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    let pending = {
-        let mut s = state.lock().await;
-        let pending = std::mem::take(&mut s.pending);
-        s.ext_tx = None;
-        s.connected = false;
-        s.authenticated = false;
-        s.verified_user_id = None;
-        pending
-    };
-    for (_id, tx) in pending {
-        let _ = tx.send(json!({"error": "Extension disconnected"}));
-    }
-    eprintln!("Extension disconnected");
 }
 
 async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
@@ -623,21 +439,15 @@ async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
 
     {
         let mut s = state.lock().await;
-        if !s.connected || !s.authenticated || s.ext_tx.is_none() {
+        if !s.connected || !s.authenticated || s.bridge_tx.is_none() {
             bail!("Extension not connected. Is Chrome running with the Sidekar extension?");
         }
         s.pending.insert(id.clone(), tx);
         let text = serde_json::to_string(&msg)?;
-        if let Some(ref mut ext_tx) = s.ext_tx {
-            match ext_tx
-                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
-                .await
-            {
-                Ok(()) => {}
-                Err(e) => {
-                    s.pending.remove(&id);
-                    return Err(anyhow::Error::from(e)).context("Failed to send to extension");
-                }
+        if let Some(ref bridge_tx) = s.bridge_tx {
+            if bridge_tx.send(text).is_err() {
+                s.pending.remove(&id);
+                bail!("Failed to send to extension bridge");
             }
         }
     }
@@ -652,181 +462,26 @@ async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
     }
 }
 
-async fn handle_cli_connection(stream: TcpStream, state: SharedState) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    const MAX_IPC_MSG: usize = 65536;
-    let mut stream = stream;
-    let mut buf = Vec::with_capacity(4096);
-
-    // Read until EOF (CLI shuts down its write half after sending)
-    loop {
-        let mut chunk = [0u8; 4096];
-        match stream.read(&mut chunk).await {
-            Ok(0) => break,
-            Ok(n) => {
-                if buf.len() + n > MAX_IPC_MSG {
-                    let err = json!({"error": "IPC message too large"});
-                    let _ = stream
-                        .write_all(serde_json::to_string(&err).unwrap().as_bytes())
-                        .await;
-                    return;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-            }
-            Err(_) => return,
-        }
-    }
-    if buf.is_empty() {
-        return;
-    }
-
-    let command: Value = match serde_json::from_slice(&buf) {
-        Ok(v) => v,
-        Err(e) => {
-            let err = json!({"error": format!("Invalid JSON: {e}")});
-            let _ = stream
-                .write_all(serde_json::to_string(&err).unwrap().as_bytes())
-                .await;
-            return;
-        }
-    };
-
-    // Quick status query — answered by server, not forwarded to extension
-    if command.get("query").and_then(|v| v.as_str()) == Some("status") {
-        let s = state.lock().await;
-        let result = json!({
-            "connected": s.connected,
-            "authenticated": s.authenticated,
-        });
-        let _ = stream
-            .write_all(serde_json::to_string(&result).unwrap().as_bytes())
-            .await;
-        return;
-    }
-
-    let result = match send_command(&state, command).await {
-        Ok(v) => v,
-        Err(e) => json!({"error": e.to_string()}),
-    };
-
-    let _ = stream
-        .write_all(serde_json::to_string(&result).unwrap().as_bytes())
-        .await;
-}
-
-// ---------------------------------------------------------------------------
-// Auto-launch: ensure ext-server is running
-// ---------------------------------------------------------------------------
-
-pub fn is_server_running() -> bool {
-    let pid_file = pid_path();
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            // Check if process is alive
-            unsafe { libc::kill(pid, 0) == 0 }
-        } else {
-            false
-        }
-    } else {
-        false
-    }
-}
-
 /// Check if the extension is connected and authenticated (blocking, 500ms max).
 ///
 /// Used by the auto-routing logic in main.rs to decide whether browser commands
 /// should be routed through the Chrome extension instead of CDP.
 pub fn is_ext_available() -> bool {
-    use std::io::{Read, Write};
-
-    if !is_server_running() {
+    if !crate::daemon::is_running() {
         return false;
     }
-
-    let port = std::env::var("SIDEKAR_EXT_PORT")
+    crate::daemon::send_command(&json!({"type": "ext_status"}))
         .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
-    let ipc_port = match ipc_port_for_ws(port) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    let timeout = std::time::Duration::from_millis(500);
-
-    let mut stream = match std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{ipc_port}").parse().unwrap(),
-        timeout,
-    ) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let msg = r#"{"query":"status"}"#;
-    if stream.write_all(msg.as_bytes()).is_err() {
-        return false;
-    }
-    // Shut down the write half so the server sees EOF and responds
-    if stream.shutdown(std::net::Shutdown::Write).is_err() {
-        return false;
-    }
-
-    let mut buf = Vec::with_capacity(256);
-    if stream.read_to_end(&mut buf).is_err() {
-        return false;
-    }
-
-    match serde_json::from_slice::<Value>(&buf) {
-        Ok(val) => val
-            .get("authenticated")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        Err(_) => false,
-    }
-}
-
-pub fn auto_launch_server() -> Result<()> {
-    if is_server_running() {
-        return Ok(());
-    }
-
-    // Find our own binary
-    let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
-
-    // Spawn detached ext-server process (logs to stderr, errors to SQLite)
-    let child = std::process::Command::new(exe)
-        .arg("ext-server")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .context("Failed to spawn ext-server")?;
-
-    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
-        eprintln!("Started ext-server (PID {})", child.id());
-    }
-
-    let port = std::env::var("SIDEKAR_EXT_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
-    let ipc_port = ipc_port_for_ws(port)?;
-    let ipc_addr = format!("127.0.0.1:{ipc_port}");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
-    while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(&ipc_addr).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    bail!(
-        "ext-server did not open IPC on {ipc_addr} within 4s (child PID {})",
-        child.id()
-    );
+        .map(|val| {
+            val.get("connected")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                && val
+                    .get("authenticated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,83 +924,229 @@ const NATIVE_HOST_NAME: &str = "dev.sidekar";
 /// Run as a native messaging host. Reads JSON messages from stdin (length-prefixed),
 /// processes commands, and writes responses to stdout (length-prefixed).
 pub fn run_native_host() -> Result<()> {
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
+    use std::os::unix::net::UnixStream as StdUnixStream;
+    use std::sync::{Arc, Mutex as StdMutex};
 
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let mut stdin = stdin.lock();
-    let mut stdout = stdout.lock();
+    fn write_native_message(
+        stdout: &Arc<StdMutex<std::io::Stdout>>,
+        value: &Value,
+    ) -> Result<()> {
+        let bytes = serde_json::to_vec(value)?;
+        let len = (bytes.len() as u32).to_le_bytes();
+        let mut stdout = stdout.lock().map_err(|_| anyhow!("stdout lock poisoned"))?;
+        stdout.write_all(&len)?;
+        stdout.write_all(&bytes)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    let mut stdin = std::io::stdin().lock();
+    let stdout = Arc::new(StdMutex::new(std::io::stdout()));
+    let mut daemon_writer: Option<StdUnixStream> = None;
 
     loop {
-        // Read 4-byte length prefix (little-endian)
         let mut len_buf = [0u8; 4];
         if stdin.read_exact(&mut len_buf).is_err() {
-            break; // EOF or error, exit cleanly
+            break;
         }
         let len = u32::from_le_bytes(len_buf) as usize;
-
         if len == 0 || len > 1024 * 1024 {
-            break; // Invalid length
+            break;
         }
-
-        // Read the message
         let mut msg_buf = vec![0u8; len];
         if stdin.read_exact(&mut msg_buf).is_err() {
             break;
         }
 
-        // Parse and handle
-        let response = match serde_json::from_slice::<Value>(&msg_buf) {
-            Ok(msg) => handle_native_message(&msg),
-            Err(e) => json!({"error": format!("Invalid JSON: {e}")}),
+        let msg = match serde_json::from_slice::<Value>(&msg_buf) {
+            Ok(msg) => msg,
+            Err(e) => {
+                let _ = write_native_message(&stdout, &json!({"error": format!("Invalid JSON: {e}")}));
+                continue;
+            }
         };
 
-        // Write response with length prefix
-        let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
-        let response_len = (response_bytes.len() as u32).to_le_bytes();
-        let _ = stdout.write_all(&response_len);
-        let _ = stdout.write_all(&response_bytes);
-        let _ = stdout.flush();
+        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if msg_type == "bridge_register" {
+            let cli_logged_in = crate::auth::auth_token().is_some();
+            if !cli_logged_in {
+                let _ = write_native_message(
+                    &stdout,
+                    &json!({
+                        "type": "auth_fail",
+                        "reason": "Run `sidekar login`",
+                        "cli_logged_in": false
+                    }),
+                );
+                continue;
+            }
+
+            let ext_token = msg.get("token").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if ext_token.is_empty() {
+                let _ = write_native_message(
+                    &stdout,
+                    &json!({
+                        "type": "auth_fail",
+                        "reason": "No token provided — log in from the extension popup",
+                        "cli_logged_in": true
+                    }),
+                );
+                continue;
+            }
+
+            let user_id = match verify_ext_token_sync(ext_token) {
+                Ok(user_id) => user_id,
+                Err(e) => {
+                    let _ = write_native_message(
+                        &stdout,
+                        &json!({
+                            "type": "auth_fail",
+                            "reason": format!("{e:#}"),
+                            "cli_logged_in": true
+                        }),
+                    );
+                    continue;
+                }
+            };
+
+            if let Err(e) = crate::daemon::ensure_running() {
+                let _ = write_native_message(
+                    &stdout,
+                    &json!({
+                        "type": "auth_fail",
+                        "reason": format!("Failed to start daemon: {e:#}"),
+                        "cli_logged_in": true
+                    }),
+                );
+                continue;
+            }
+
+            let mut stream = match StdUnixStream::connect(crate::daemon::socket_path()) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    let _ = write_native_message(
+                        &stdout,
+                        &json!({
+                            "type": "auth_fail",
+                            "reason": format!("Cannot connect to daemon: {e}"),
+                            "cli_logged_in": true
+                        }),
+                    );
+                    continue;
+                }
+            };
+
+            let register = json!({
+                "type": "ext_bridge_register",
+                "user_id": user_id,
+                "version": msg.get("version").cloned().unwrap_or(json!("?"))
+            });
+            let mut line = serde_json::to_string(&register)?;
+            line.push('\n');
+            if stream.write_all(line.as_bytes()).is_err() || stream.flush().is_err() {
+                let _ = write_native_message(
+                    &stdout,
+                    &json!({
+                        "type": "auth_fail",
+                        "reason": "Failed to register extension bridge with daemon",
+                        "cli_logged_in": true
+                    }),
+                );
+                continue;
+            }
+
+            let reader_stream = match stream.try_clone() {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = write_native_message(
+                        &stdout,
+                        &json!({
+                            "type": "auth_fail",
+                            "reason": format!("Failed to clone daemon stream: {e}"),
+                            "cli_logged_in": true
+                        }),
+                    );
+                    continue;
+                }
+            };
+
+            let mut ack = String::new();
+            let mut ack_reader = std::io::BufReader::new(reader_stream);
+            match ack_reader.read_line(&mut ack) {
+                Ok(0) | Err(_) => {
+                    let _ = write_native_message(
+                        &stdout,
+                        &json!({
+                            "type": "auth_fail",
+                            "reason": "Daemon did not acknowledge extension bridge registration",
+                            "cli_logged_in": true
+                        }),
+                    );
+                    continue;
+                }
+                Ok(_) => {}
+            }
+            if serde_json::from_str::<Value>(ack.trim()).is_err() {
+                let _ = write_native_message(
+                    &stdout,
+                    &json!({
+                        "type": "auth_fail",
+                        "reason": "Daemon returned invalid extension bridge registration ack",
+                        "cli_logged_in": true
+                    }),
+                );
+                continue;
+            }
+
+            let bridge_reader = ack_reader.into_inner();
+            let bridge_stdout = stdout.clone();
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(bridge_reader);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
+                                let _ = write_native_message(&bridge_stdout, &value);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                std::process::exit(0);
+            });
+
+            daemon_writer = Some(stream);
+            let _ = write_native_message(
+                &stdout,
+                &json!({"type": "auth_ok", "cli_logged_in": true}),
+            );
+            continue;
+        }
+
+        if msg_type == "ping" {
+            let _ = write_native_message(&stdout, &json!({"pong": true}));
+            continue;
+        }
+
+        if let Some(stream) = daemon_writer.as_mut() {
+            let mut line = serde_json::to_string(&msg)?;
+            line.push('\n');
+            if stream.write_all(line.as_bytes()).is_err() || stream.flush().is_err() {
+                break;
+            }
+        } else {
+            let _ = write_native_message(
+                &stdout,
+                &json!({"error": "Extension bridge not registered"}),
+            );
+        }
     }
 
     Ok(())
-}
-
-fn handle_native_message(msg: &Value) -> Value {
-    let cmd = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match cmd {
-        "get_config" => {
-            // Return port and daemon status
-            let port = std::env::var("SIDEKAR_EXT_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(DEFAULT_PORT);
-            let running = crate::daemon::is_running();
-            let cli_logged_in = crate::auth::auth_token().is_some();
-            json!({
-                "port": port,
-                "running": running,
-                "cli_logged_in": cli_logged_in
-            })
-        }
-        "ensure_server" => {
-            // Start daemon if not running, return port
-            match crate::daemon::ensure_running() {
-                Ok(()) => {
-                    let port = std::env::var("SIDEKAR_EXT_PORT")
-                        .ok()
-                        .and_then(|v| v.parse::<u16>().ok())
-                        .unwrap_or(DEFAULT_PORT);
-                    let cli_logged_in = crate::auth::auth_token().is_some();
-                    json!({"port": port, "started": true, "cli_logged_in": cli_logged_in})
-                }
-                Err(e) => json!({"error": format!("{e}")}),
-            }
-        }
-        "ping" => json!({"pong": true}),
-        _ => json!({"error": format!("Unknown command: {cmd}")}),
-    }
 }
 
 fn write_native_host_manifests(

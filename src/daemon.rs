@@ -1,7 +1,7 @@
 //! Sidekar daemon — single background process owning all long-running subsystems.
 //!
 //! Subsystems:
-//! - ext-bridge: WebSocket listener for Chrome extension
+//! - ext-bridge: extension bridge state and routing
 //! - monitor: CDP tab watching (planned)
 //! - cron: scheduled actions (planned)
 //! - bus-housekeeping: cleanup old messages, orphaned agents
@@ -26,7 +26,7 @@ fn pid_path() -> PathBuf {
     data_dir().join("daemon.pid")
 }
 
-fn socket_path() -> PathBuf {
+pub fn socket_path() -> PathBuf {
     data_dir().join("daemon.sock")
 }
 
@@ -94,6 +94,16 @@ pub fn restart_if_running() -> Result<bool> {
     stop()?;
     ensure_running()?;
     Ok(true)
+}
+
+/// Restart the daemon unconditionally.
+/// If it is not running, this starts it.
+pub fn restart() -> Result<()> {
+    if is_running() {
+        stop()?;
+    }
+    ensure_running()?;
+    Ok(())
 }
 
 fn process_exists(pid: i32) -> bool {
@@ -196,14 +206,12 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
 
 struct DaemonState {
     ext_state: SharedExtState,
-    ext_port: Option<u16>,
 }
 
 impl DaemonState {
     fn new() -> Self {
         Self {
             ext_state: Arc::new(Mutex::new(ExtState::default())),
-            ext_port: None,
         }
     }
 }
@@ -263,19 +271,6 @@ pub async fn run() -> Result<()> {
         std::process::exit(0);
     });
 
-    // Start ext-bridge subsystem (WebSocket listener for extension)
-    {
-        let ext_state = state.lock().await.ext_state.clone();
-        match crate::ext::start_ext_bridge(ext_state).await {
-            Ok(port) => {
-                state.lock().await.ext_port = Some(port);
-            }
-            Err(e) => {
-                eprintln!("Failed to start ext-bridge: {e}");
-            }
-        }
-    }
-
     // Start housekeeping subsystem (dead agent sweeper, auto-update)
     tokio::spawn(housekeeping_loop());
 
@@ -304,23 +299,79 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
-    while let Ok(n) = reader.read_line(&mut line).await {
-        if n == 0 {
-            break;
-        }
+    let Ok(n) = reader.read_line(&mut line).await else {
+        return;
+    };
+    if n == 0 {
+        return;
+    }
 
-        let response = match serde_json::from_str::<Value>(line.trim()) {
-            Ok(cmd) => handle_command(&cmd, &state).await,
-            Err(e) => json!({"error": format!("Invalid JSON: {e}")}),
+    let first = match serde_json::from_str::<Value>(line.trim()) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            let response = json!({"error": format!("Invalid JSON: {e}")});
+            let mut out =
+                serde_json::to_string(&response).unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
+            out.push('\n');
+            let _ = writer.write_all(out.as_bytes()).await;
+            let _ = writer.flush().await;
+            return;
+        }
+    };
+    line.clear();
+
+    if first.get("type").and_then(|v| v.as_str()) == Some("ext_bridge_register") {
+        let user_id = first
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let ext_state = state.lock().await.ext_state.clone();
+        if let Err(e) = crate::ext::register_bridge_connection(ext_state, reader, writer, user_id).await
+        {
+            eprintln!("Extension bridge registration failed: {e:#}");
+        }
+        return;
+    }
+
+    let mut current = Some(first);
+    loop {
+        let cmd = match current.take() {
+            Some(v) => v,
+            None => {
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let parsed = serde_json::from_str::<Value>(line.trim());
+                        line.clear();
+                        match parsed {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let response = json!({"error": format!("Invalid JSON: {e}")});
+                                let mut out = serde_json::to_string(&response)
+                                    .unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
+                                out.push('\n');
+                                if writer.write_all(out.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                                let _ = writer.flush().await;
+                                continue;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
         };
 
-        let mut out = serde_json::to_string(&response).unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
+        let response = handle_command(&cmd, &state).await;
+        let mut out =
+            serde_json::to_string(&response).unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
         out.push('\n');
         if writer.write_all(out.as_bytes()).await.is_err() {
             break;
         }
         let _ = writer.flush().await;
-        line.clear();
     }
 }
 
@@ -421,7 +472,6 @@ async fn handle_command(
             json!({
                 "running": true,
                 "pid": std::process::id(),
-                "ext_port": s.ext_port,
                 "ext": ext_status,
                 "cli_logged_in": cli_logged_in,
             })

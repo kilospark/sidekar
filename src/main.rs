@@ -1,15 +1,28 @@
 use sidekar::*;
 
-#[tokio::main]
-async fn main() {
-    if let Err(err) = run().await {
+fn main() {
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+
+    if raw_args.first().map(|s| s.as_str()) == Some("native-messaging-host") {
+        if let Err(err) = sidekar::ext::run_native_host() {
+            eprintln!("Error: {err:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
+    if let Err(err) = rt.block_on(run(raw_args)) {
         eprintln!("Error: {err:#}");
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<()> {
-    let mut args: Vec<String> = env::args().skip(1).collect();
+async fn run(mut args: Vec<String>) -> Result<()> {
 
     // Parse global --verbose flag
     if let Some(pos) = args.iter().position(|a| a == "--verbose") {
@@ -154,6 +167,7 @@ async fn run() -> Result<()> {
                 return sidekar::daemon::relaunch_after_exit(old_pid).await;
             }
             "stop" => return sidekar::daemon::stop(),
+            "restart" => return sidekar::daemon::restart(),
             "status" => return sidekar::daemon::status(),
             "" => {
                 // Default: show status or start
@@ -164,19 +178,15 @@ async fn run() -> Result<()> {
                 }
             }
             _ => {
-                eprintln!("Usage: sidekar daemon [run|stop|status]");
+                eprintln!("Usage: sidekar daemon [run|stop|restart|status]");
                 std::process::exit(1);
             }
         }
     }
 
-    // Extension bridge (legacy - will be absorbed into daemon)
+    // Legacy alias kept for compatibility.
     if command == "ext-server" {
-        return sidekar::ext::run_server().await;
-    }
-    // Native messaging host (invoked by Chrome extension)
-    if command == "native-messaging-host" {
-        return sidekar::ext::run_native_host();
+        return sidekar::daemon::run().await;
     }
     if command == "ext" {
         let sub = args.first().cloned().unwrap_or_default();

@@ -484,7 +484,7 @@ src/
 ├── main.rs              # CLI entry point, arg parsing, session discovery
 ├── lib.rs               # AppContext, CdpClient, CDP helpers, session state
 ├── skill.rs             # SKILL.md install paths for agent CLIs
-├── ext.rs               # Chrome extension bridge (ext-server)
+├── ext.rs               # Chrome extension bridge and native host
 ├── commands/
 │   ├── mod.rs           # Command dispatch table (~80 commands)
 │   ├── core.rs          # launch, connect, navigate, read, text, dom, axtree,

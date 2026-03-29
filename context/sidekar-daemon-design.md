@@ -4,7 +4,7 @@
 
 sidekar has multiple background process concepts without a single owning daemon:
 
-- **ext-server**: WebSocket bridge for Chrome extension + IPC for CLI commands
+- **ext bridge**: persistent Chrome extension bridge
 - **Monitor** (planned): watch browser tabs for state changes, notify agents
 - **Cron** (planned): run scheduled actions on intervals, notify agents
 - **Bus poller**: background message delivery to agent PTYs
@@ -22,7 +22,7 @@ All CLI tools and the native messaging host talk to the daemon over a unix socke
 ```
 sidekar daemon
 ├── ext-bridge subsystem
-│   └── WebSocket listener (port 9876) → Chrome extension connection
+│   └── registered native-messaging bridge → Chrome extension connection
 ├── monitor subsystem (reactive)
 │   └── watch tabs via CDP → detect changes → bus_send to requesting agent
 ├── cron subsystem (proactive)
@@ -31,6 +31,7 @@ sidekar daemon
 │   └── cleanup old messages, orphaned agents
 └── unix socket (control interface)
     ├── ext commands (tabs, click, read, etc.)
+    ├── ext bridge registration from native host
     ├── monitor_start / monitor_stop
     ├── cron_create / cron_list / cron_delete
     └── status / stop
@@ -42,7 +43,8 @@ sidekar daemon
 |--------|-------|
 | `sidekar ext-server` (separate process) | ext-bridge subsystem in daemon |
 | IPC TCP port (9877) for CLI→ext-server | Unix socket in daemon |
-| Native host bootstraps ext-server | Native host talks to daemon |
+| Extension bootstrap over localhost WS port | Persistent native messaging bridge |
+| Native host bootstraps ext-server | Native host registers bridge with daemon |
 | Planned cron daemon | cron subsystem in daemon |
 | Planned monitor daemon | monitor subsystem in daemon |
 
@@ -60,7 +62,7 @@ sidekar daemon
 
 1. `sidekar ext-server` becomes `sidekar daemon` (or auto-launches daemon)
 2. `sidekar ext stop` becomes `sidekar daemon stop`
-3. Native host calls daemon instead of ext-server
+3. Native host registers a persistent extension bridge with the daemon
 4. IPC TCP port (9877) removed — use unix socket
 5. PID file moves from `~/.sidekar/ext-server.pid` to `~/.sidekar/daemon.pid`
 
@@ -126,7 +128,7 @@ The MCP `monitor` tool becomes a thin client:
 1. **Shared socket**: one well-known address for all background services
 2. **Shared lifecycle**: one process to manage, one PID file, one log stream
 3. **Shared bus access**: daemon has one bus connection, routes to agents
-4. **Simpler native messaging**: native host only talks to daemon, not separate ext-server
+4. **Simpler browser bridge**: extension talks through native messaging, daemon stays the source of truth
 5. **No IPC TCP port**: unix socket is cleaner, more secure (file permissions)
 6. **Extensible**: future background capabilities (file watchers, webhook listeners) slot in as subsystems
 
@@ -139,8 +141,8 @@ If/when the broker is built, the daemon's subsystems could migrate into it. For 
 ## Implementation Order
 
 1. **Daemon skeleton**: process management, unix socket, PID file
-2. **Absorb ext-server**: move WebSocket listener + extension handling into daemon
-3. **Update native host**: talk to daemon socket instead of spawning ext-server
+2. **Absorb ext-server**: move extension bridge state into daemon
+3. **Update native host**: register a persistent bridge with the daemon socket
 4. **Remove IPC TCP port**: CLI ext commands go through unix socket
 5. **Monitor subsystem**: tab watching via CDP, bus notifications
 6. **Cron subsystem**: schedule persistence, execution, bus delivery
