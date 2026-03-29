@@ -14,7 +14,7 @@
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/common.css">
 <script>
 (function() {
@@ -46,7 +46,7 @@ body {
 .card {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 0;
   padding: 40px;
   max-width: 420px;
   width: 100%;
@@ -81,7 +81,7 @@ input[type="text"] {
   padding: 12px 16px;
   background: var(--bg);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: 0;
   color: var(--text);
   font-family: var(--mono);
   font-size: 20px;
@@ -89,7 +89,6 @@ input[type="text"] {
   text-align: center;
   text-transform: uppercase;
   outline: none;
-  transition: border-color 0.15s;
 }
 
 input[type="text"]::placeholder {
@@ -113,12 +112,11 @@ input[type="text"]:focus {
   font-size: 15px;
   font-weight: 600;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
-  transition: opacity 0.15s;
 }
 
-.card button:hover { opacity: 0.9; }
+.card button:hover { opacity: 1; }
 .card button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .message {
@@ -127,8 +125,8 @@ input[type="text"]:focus {
   min-height: 20px;
 }
 
-.message.error { color: #ef4444; }
-.message.success { color: #22c55e; }
+.message.error { color: var(--text); }
+.message.success { color: var(--text); }
 
 /* Page-specific loading override */
 .loading {
