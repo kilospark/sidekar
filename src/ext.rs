@@ -159,10 +159,44 @@ fn discover_sidekar_extension_ids() -> Result<BTreeSet<String>> {
     Ok(ids)
 }
 
-fn native_host_allowed_origins(extension_id: Option<&str>) -> Result<Vec<String>> {
-    let mut ids = BTreeSet::new();
-    ids.insert(OFFICIAL_EXTENSION_ID.to_string());
+fn read_existing_allowed_origins(manifest_path: &std::path::Path) -> BTreeSet<String> {
+    let raw = match std::fs::read_to_string(manifest_path) {
+        Ok(v) => v,
+        Err(_) => return BTreeSet::new(),
+    };
+    let value: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return BTreeSet::new(),
+    };
+    value
+        .get("allowed_origins")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
+fn native_host_allowed_origins(
+    manifest_path: &std::path::Path,
+    extension_id: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut ids = BTreeSet::new();
+    for origin in read_existing_allowed_origins(manifest_path) {
+        if let Some(id) = origin
+            .strip_prefix("chrome-extension://")
+            .and_then(|s| s.strip_suffix('/'))
+        {
+            if !id.trim().is_empty() {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+
+    ids.insert(OFFICIAL_EXTENSION_ID.to_string());
     if let Some(id) = extension_id.map(str::trim).filter(|s| !s.is_empty()) {
         ids.insert(id.to_string());
     }
@@ -1305,16 +1339,6 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
         std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    let allowed_origins = native_host_allowed_origins(extension_id)?;
-
-    let manifest = json!({
-        "name": NATIVE_HOST_NAME,
-        "description": "Sidekar native messaging host",
-        "path": wrapper_path.to_string_lossy(),
-        "type": "stdio",
-        "allowed_origins": allowed_origins
-    });
-
     // Determine manifest path based on OS
     #[cfg(target_os = "macos")]
     let manifest_dir = dirs::home_dir()
@@ -1333,6 +1357,14 @@ fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result
         .context("Failed to create NativeMessagingHosts directory")?;
 
     let manifest_path = manifest_dir.join(format!("{NATIVE_HOST_NAME}.json"));
+    let allowed_origins = native_host_allowed_origins(&manifest_path, extension_id)?;
+    let manifest = json!({
+        "name": NATIVE_HOST_NAME,
+        "description": "Sidekar native messaging host",
+        "path": wrapper_path.to_string_lossy(),
+        "type": "stdio",
+        "allowed_origins": allowed_origins
+    });
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
 
     std::fs::write(&manifest_path, &manifest_json)
