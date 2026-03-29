@@ -2072,6 +2072,15 @@ sidekar launch [options]
     sidekar launch --browser=brave --profile=testing
     sidekar launch --headless",
 
+        "connect" => "\
+sidekar connect
+
+  Attach to an already-running browser debug port and create a new Sidekar session.
+  Does not launch a new browser process.
+
+  Example:
+    sidekar connect",
+
         "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
         "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
         "newtab" => "sidekar newtab [url]\n\n  Open a new tab, optionally navigating to URL.",
@@ -2311,6 +2320,18 @@ sidekar bus_done <next> <summary> <request>
 
   Example: sidekar bus_done claude-2 \"Finished API tests\" \"Run integration tests\"",
 
+        "monitor" => "\
+sidekar monitor <start|stop|status> [tab_id|all]
+
+  Watch one or more tabs for title and favicon changes, then deliver notifications
+  through Sidekar's bus transport.
+
+  Examples:
+    sidekar monitor start all
+    sidekar monitor start 12345 67890
+    sidekar monitor status
+    sidekar monitor stop",
+
         "config" => "\
 sidekar config [list|get|set|reset] [key] [value]
 
@@ -2329,6 +2350,90 @@ sidekar config [list|get|set|reset] [key] [value]
     sidekar config set telemetry false
     sidekar config set browser brave
     sidekar config reset browser",
+
+        "telemetry" => "\
+sidekar telemetry [on|off|status]
+
+  Enable, disable, or inspect anonymous telemetry collection.
+
+  Examples:
+    sidekar telemetry status
+    sidekar telemetry off
+    sidekar telemetry on",
+
+        "feedback" => "\
+sidekar feedback <rating> [comment]
+
+  Send a rating and optional comment to Sidekar.
+  Rating must be an integer from 1 to 5.
+  Disabled when `sidekar config set feedback false`.
+
+  Examples:
+    sidekar feedback 5
+    sidekar feedback 3 \"Need better help output for hidden commands\"",
+
+        "errors" => "\
+sidekar errors [N]
+
+  Show the most recent rows from the local error log stored in SQLite.
+  Defaults to 50 rows.
+
+  Examples:
+    sidekar errors
+    sidekar errors 100",
+
+        "login" => "\
+sidekar login
+
+  Authenticate with sidekar.dev using the device auth flow.
+  Enables relay-backed sessions, dashboard access, and extension auth.",
+
+        "logout" => "\
+sidekar logout
+
+  Remove the local device token and clear local encryption state.",
+
+        "devices" => "\
+sidekar devices
+
+  List registered devices for the authenticated Sidekar account.",
+
+        "sessions" => "\
+sidekar sessions
+
+  List active Sidekar sessions visible to the authenticated account.",
+
+        "daemon" => "\
+sidekar daemon [run|stop|status]
+
+  Manage the background Sidekar daemon used by long-running subsystems.
+
+  Examples:
+    sidekar daemon
+    sidekar daemon status
+    sidekar daemon stop",
+
+        "totp" => "\
+sidekar totp <add|list|get|remove> [args...]
+
+  Store and retrieve TOTP secrets for automated login flows.
+
+  Examples:
+    sidekar totp add github alice BASE32SECRET
+    sidekar totp list
+    sidekar totp get github alice
+    sidekar totp remove 12",
+
+        "kv" => "\
+sidekar kv <set|get|list|delete> [args...]
+
+  Encrypted key-value storage for secrets and other agent state.
+
+  Examples:
+    sidekar kv set github_token abc123
+    sidekar kv get github_token
+    sidekar kv list
+    sidekar kv delete github_token",
 
         "install" => "\
 sidekar install
@@ -2376,7 +2481,7 @@ sidekar ext <subcommand> [args...]
 
 pub fn print_help() {
     println!(
-        "sidekar v{}\n\nUsage: sidekar <command> [args]\n\nCommands:\n  launch [--headless]  Launch Chrome and start a session\n  connect             Attach to already-running Chrome (no launch)\n  run <sid>           Run command(s) from /tmp/sidekar-command-<sid>.json\n  navigate <url>      Navigate to URL\n  back                Go back in history\n  forward             Go forward in history\n  reload              Reload the current page\n  dom [selector]      Get compact DOM (--tokens=N to limit output)\n  axtree [selector]   Get accessibility tree\n  axtree -i           Interactive elements with ref numbers\n  axtree -i --diff    Show only changes since last snapshot\n  observe             Show interactive elements as ready-to-use commands\n  find <query>        Find element by description\n  resolve <selector>  Get link target URL without clicking\n  screenshot [--full] Capture screenshot (--full for entire page)\n  pdf [path]          Save page as PDF\n  click <sel|x,y|--text> Click element, coordinates, or text match\n  click --mode=double <sel|x,y|--text> Double-click\n  click --mode=right <sel|x,y|--text> Right-click\n  hover <sel|x,y|--text> Hover\n  focus <selector>    Focus an element without clicking\n  clear <selector>    Clear an input or contenteditable\n  type <sel> <text>   Type text into element\n  keyboard <text>     Type at current caret position\n  paste <text>        Paste text via ClipboardEvent\n  select <sel> <val>  Select option(s) from a <select>\n  upload <sel> <file> Upload file(s) to a file input\n  drag <from> <to>    Drag from one element to another\n  dialog <accept|dismiss> [text] Handle next dialog\n  waitfor <sel> [ms]  Wait for element to appear\n  waitfornav [ms]     Wait for navigation/readystate\n  press <key>         Press key or combo (Enter, Ctrl+A, Meta+C)\n  scroll <...>        Scroll page or element\n  eval <js>           Evaluate JavaScript\n  cookies ...         Manage cookies\n  console ...         Show/listen for console logs\n  network ...         Capture/show network requests\n  block ...           Configure request blocking\n  viewport ...        Set viewport preset or dimensions\n  frames              List frames/iframes\n  frame <id|sel>      Switch frame (frame main to reset)\n  download ...        Configure/list downloads\n  tabs                List tabs owned by this session\n  tab <id>            Switch to a session-owned tab\n  newtab [url]        Open a new tab in this session\n  close               Close current tab\n  activate            Bring browser window to front (macOS)\n  minimize            Minimize browser window (macOS)\n  click --mode=human <...>  Human-like click movement/timing\n  type --human <...>        Human-like typing\n  media <dark|light|...> Emulate media features (dark mode, print, etc)\n  animations <pause|resume> Pause/resume page animations\n  security <ignore-certs|strict> Control certificate validation\n  storage <get|set|remove|clear> Manage localStorage/sessionStorage\n  sw <list|unregister|update> Manage service workers\n  zoom <in|out|N>     Zoom page (25-200%%, preserves layout)\n  lock [seconds]      Lock active tab for exclusive access\n  unlock              Release tab lock\n  kill                Kill custom profile browser session\n  batch '<json>'      Execute multiple actions sequentially\n  grid [spec]         Overlay coordinate grid (8x6, 50, off)\n  desktop-screenshot [--app <name>|--pid <pid>]  Capture desktop or app window\n  desktop-apps       List running applications\n  desktop-windows --app <name>|--pid <pid>  List app windows\n  desktop-find --app <name>|--pid <pid> <q>  Find UI element by query\n  desktop-click --app <name>|--pid <pid> <q>  Click UI element by query\n  desktop-launch <app name>  Launch an application\n  desktop-activate --app <name>|--pid <pid>  Bring app to foreground\n  desktop-quit --app <name>|--pid <pid>  Quit an application\n  login               Authenticate with sidekar.dev (device auth flow)\n  logout              Remove device token and clear encryption state\n  update              Check for updates and self-update\n  config list|get|set|reset  View or change settings\n  errors [N]          Show last N local error log rows (SQLite)\n  install             Install skill file for detected agents\n  uninstall           Remove sidekar data and skill files\n  skill               Print SKILL.md to stdout\n  ext-server          Run WebSocket bridge for the Chrome extension (127.0.0.1:9876)\n  ext <sub> [args]    Control the browser via the extension (tabs, read, click, …)\n\nGlobal flags:\n  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)\n\nUse 'sidekar help <command>' for detailed help on any command.",
+        "sidekar v{}\n\nUsage: sidekar <command> [args]\n\nCommands:\n  launch [--headless]  Launch Chrome and start a session\n  connect             Attach to already-running Chrome (no launch)\n  run <sid>           Run command(s) from /tmp/sidekar-command-<sid>.json\n  navigate <url>      Navigate to URL\n  back                Go back in history\n  forward             Go forward in history\n  reload              Reload the current page\n  read [selector]     Reader-mode text extraction\n  text [selector]     Full page text with interactive refs\n  dom [selector]      Get compact DOM (--tokens=N to limit output)\n  axtree [selector]   Get accessibility tree\n  axtree -i           Interactive elements with ref numbers\n  axtree -i --diff    Show only changes since last snapshot\n  observe             Show interactive elements as ready-to-use commands\n  find <query>        Find element by description\n  resolve <selector>  Get link target URL without clicking\n  screenshot [--full] Capture screenshot (--full for entire page)\n  pdf [path]          Save page as PDF\n  click <sel|x,y|--text> Click element, coordinates, or text match\n  click --mode=double <sel|x,y|--text> Double-click\n  click --mode=right <sel|x,y|--text> Right-click\n  hover <sel|x,y|--text> Hover\n  focus <selector>    Focus an element without clicking\n  clear <selector>    Clear an input or contenteditable\n  type <sel> <text>   Type text into element\n  fill <sel1> <val1> [sel2] [val2] ...  Fill multiple fields\n  keyboard <text>     Type at current caret position\n  paste <text>        Paste text via ClipboardEvent\n  clipboard --html <html> [--text <text>]  Paste rich HTML\n  inserttext <text>   Insert text at cursor via CDP Input.insertText\n  select <sel> <val>  Select option(s) from a <select>\n  upload <sel> <file> Upload file(s) to a file input\n  drag <from> <to>    Drag from one element to another\n  dialog <accept|dismiss> [text] Handle next dialog\n  waitfor <sel> [ms]  Wait for element to appear\n  waitfornav [ms]     Wait for navigation/readystate\n  press <key>         Press key or combo (Enter, Ctrl+A, Meta+C)\n  scroll <...>        Scroll page or element\n  eval <js>           Evaluate JavaScript\n  search <query>      Search the web in-browser and extract results\n  readurls <url1> <url2> ...  Read multiple URLs in parallel\n  cookies ...         Manage cookies\n  console ...         Show/listen for console logs\n  network ...         Capture/show network requests\n  block ...           Configure request blocking\n  viewport ...        Set viewport preset or dimensions\n  frames              List frames/iframes\n  frame <id|sel>      Switch frame (frame main to reset)\n  download ...        Configure/list downloads\n  tabs                List tabs owned by this session\n  tab <id>            Switch to a session-owned tab\n  newtab [url]        Open a new tab in this session\n  close               Close current tab\n  activate            Bring browser window to front (macOS)\n  minimize            Minimize browser window (macOS)\n  click --mode=human <...>  Human-like click movement/timing\n  type --human <...>        Human-like typing\n  media <dark|light|...> Emulate media features (dark mode, print, etc)\n  animations <pause|resume> Pause/resume page animations\n  security <ignore-certs|strict> Control certificate validation\n  storage <get|set|remove|clear> Manage localStorage/sessionStorage\n  sw <list|unregister|update> Manage service workers\n  zoom <in|out|N>     Zoom page (25-200%%, preserves layout)\n  lock [seconds]      Lock active tab for exclusive access\n  unlock              Release tab lock\n  kill                Kill custom profile browser session\n  batch '<json>'      Execute multiple actions sequentially\n  grid [spec]         Overlay coordinate grid (8x6, 50, off)\n  desktop-screenshot [--app <name>|--pid <pid>]  Capture desktop or app window\n  desktop-apps       List running applications\n  desktop-windows --app <name>|--pid <pid>  List app windows\n  desktop-find --app <name>|--pid <pid> <q>  Find UI element by query\n  desktop-click --app <name>|--pid <pid> <q>  Click UI element by query\n  desktop-launch <app name>  Launch an application\n  desktop-activate --app <name>|--pid <pid>  Bring app to foreground\n  desktop-quit --app <name>|--pid <pid>  Quit an application\n  who                 List agents on the current bus channel\n  bus_send <to> <message>  Send a message to another agent\n  bus_done <next> <summary> <request>  Hand off to another agent\n  monitor <start|stop|status>  Watch tabs for background changes\n  daemon [run|stop|status]  Manage the Sidekar background daemon\n  login               Authenticate with sidekar.dev (device auth flow)\n  logout              Remove device token and clear encryption state\n  devices             List registered devices for your account\n  sessions            List active sessions for your account\n  update              Check for updates and self-update\n  feedback <rating> [comment]  Send a rating and optional comment\n  telemetry [on|off|status]  Manage anonymous telemetry\n  config list|get|set|reset  View or change settings\n  totp <subcommand>   Manage stored TOTP secrets\n  kv <subcommand>     Manage encrypted key-value storage\n  errors [N]          Show last N local error log rows (SQLite)\n  install             Install skill file for detected agents\n  uninstall           Remove sidekar data and skill files\n  skill               Print SKILL.md to stdout\n  ext-server          Run WebSocket bridge for the Chrome extension (127.0.0.1:9876)\n  ext <sub> [args]    Control the browser via the extension (tabs, read, click, …)\n\nGlobal flags:\n  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)\n\nUse 'sidekar help <command>' for detailed help on any command.",
         env!("CARGO_PKG_VERSION")
     );
 }
