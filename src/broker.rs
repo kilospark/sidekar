@@ -819,6 +819,26 @@ pub fn cleanup_old_messages(max_age_secs: u64) -> Result<usize> {
     Ok(deleted)
 }
 
+pub fn cleanup_old_pending_requests(max_age_secs: u64) -> Result<usize> {
+    let conn = open()?;
+    let cutoff = (crate::message::epoch_secs() - max_age_secs) as i64;
+    let deleted = conn.execute(
+        "DELETE FROM pending_requests WHERE created_at < ?1",
+        params![cutoff],
+    )?;
+    Ok(deleted)
+}
+
+pub fn cleanup_old_outbound_requests(max_age_secs: u64) -> Result<usize> {
+    let conn = open()?;
+    let cutoff = (crate::message::epoch_secs() - max_age_secs) as i64;
+    let deleted = conn.execute(
+        "DELETE FROM outbound_requests WHERE created_at < ?1",
+        params![cutoff],
+    )?;
+    Ok(deleted)
+}
+
 /// TOTP secret record
 #[derive(Debug, Clone)]
 pub struct TotpSecret {
