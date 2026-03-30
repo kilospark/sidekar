@@ -85,116 +85,126 @@ pub fn sanitize_for_filename(s: &str) -> String {
     result
 }
 
+static KNOWN_COMMANDS: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        let mut set = std::collections::HashSet::new();
+        set.insert("launch");
+        set.insert("connect");
+        set.insert("navigate");
+        set.insert("dom");
+        set.insert("read");
+        set.insert("text");
+        set.insert("axtree");
+        set.insert("screenshot");
+        set.insert("pdf");
+        set.insert("click");
+        set.insert("hover");
+        set.insert("focus");
+        set.insert("clear");
+        set.insert("type");
+        set.insert("fill");
+        set.insert("keyboard");
+        set.insert("paste");
+        set.insert("clipboard");
+        set.insert("inserttext");
+        set.insert("select");
+        set.insert("upload");
+        set.insert("drag");
+        set.insert("dialog");
+        set.insert("waitfor");
+        set.insert("waitfornav");
+        set.insert("press");
+        set.insert("scroll");
+        set.insert("eval");
+        set.insert("observe");
+        set.insert("find");
+        set.insert("resolve");
+        set.insert("cookies");
+        set.insert("console");
+        set.insert("network");
+        set.insert("block");
+        set.insert("viewport");
+        set.insert("zoom");
+        set.insert("frames");
+        set.insert("frame");
+        set.insert("download");
+        set.insert("tabs");
+        set.insert("tab");
+        set.insert("newtab");
+        set.insert("close");
+        set.insert("kill");
+        set.insert("batch");
+        set.insert("media");
+        set.insert("animations");
+        set.insert("security");
+        set.insert("storage");
+        set.insert("sw");
+        set.insert("activate");
+        set.insert("minimize");
+        set.insert("grid");
+        set.insert("back");
+        set.insert("forward");
+        set.insert("reload");
+        set.insert("lock");
+        set.insert("unlock");
+        set.insert("search");
+        set.insert("readurls");
+        set.insert("feedback");
+        set.insert("errors");
+        set.insert("telemetry");
+        set.insert("config");
+        set.insert("update");
+        set.insert("install");
+        set.insert("uninstall");
+        set.insert("monitor");
+        set.insert("humanclick");
+        set.insert("humantype");
+        set.insert("doubleclick");
+        set.insert("rightclick");
+        set.insert("desktop-screenshot");
+        set.insert("desktop_screenshot");
+        set.insert("desktop-apps");
+        set.insert("desktop_apps");
+        set.insert("desktop-windows");
+        set.insert("desktop_windows");
+        set.insert("desktop-find");
+        set.insert("desktop_find");
+        set.insert("desktop-click");
+        set.insert("desktop_click");
+        set.insert("desktop-press");
+        set.insert("desktop_press");
+        set.insert("desktop-type");
+        set.insert("desktop_type");
+        set.insert("desktop-paste");
+        set.insert("desktop_paste");
+        set.insert("desktop-launch");
+        set.insert("desktop_launch");
+        set.insert("desktop-activate");
+        set.insert("desktop_activate");
+        set.insert("desktop-quit");
+        set.insert("desktop_quit");
+        set.insert("run");
+        set.insert("skill");
+        set.insert("help");
+        set.insert("login");
+        set.insert("logout");
+        set.insert("who");
+        set.insert("bus_send");
+        set.insert("bus_done");
+        set.insert("cron_create");
+        set.insert("cron-create");
+        set.insert("cron_list");
+        set.insert("cron-list");
+        set.insert("cron_delete");
+        set.insert("cron-delete");
+        set.insert("totp");
+        set.insert("kv");
+        set
+    });
+
 /// Commands handled by sidekar's dispatch — must not be intercepted by PTY agent detection.
 pub fn is_known_command(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "launch"
-            | "connect"
-            | "navigate"
-            | "dom"
-            | "read"
-            | "text"
-            | "axtree"
-            | "screenshot"
-            | "pdf"
-            | "click"
-            | "hover"
-            | "focus"
-            | "clear"
-            | "type"
-            | "fill"
-            | "keyboard"
-            | "paste"
-            | "clipboard"
-            | "inserttext"
-            | "select"
-            | "upload"
-            | "drag"
-            | "dialog"
-            | "waitfor"
-            | "waitfornav"
-            | "press"
-            | "scroll"
-            | "eval"
-            | "observe"
-            | "find"
-            | "resolve"
-            | "cookies"
-            | "console"
-            | "network"
-            | "block"
-            | "viewport"
-            | "zoom"
-            | "frames"
-            | "frame"
-            | "download"
-            | "tabs"
-            | "tab"
-            | "newtab"
-            | "close"
-            | "kill"
-            | "batch"
-            | "media"
-            | "animations"
-            | "security"
-            | "storage"
-            | "sw"
-            | "activate"
-            | "minimize"
-            | "grid"
-            | "back"
-            | "forward"
-            | "reload"
-            | "lock"
-            | "unlock"
-            | "search"
-            | "readurls"
-            | "feedback"
-            | "errors"
-            | "telemetry"
-            | "config"
-            | "update"
-            | "install"
-            | "uninstall"
-            | "monitor"
-            | "humanclick"
-            | "humantype"
-            | "doubleclick"
-            | "rightclick"
-            | "desktop-screenshot"
-            | "desktop_screenshot"
-            | "desktop-apps"
-            | "desktop_apps"
-            | "desktop-windows"
-            | "desktop_windows"
-            | "desktop-find"
-            | "desktop_find"
-            | "desktop-click"
-            | "desktop_click"
-            | "desktop-launch"
-            | "desktop_launch"
-            | "desktop-activate"
-            | "desktop_activate"
-            | "desktop-quit"
-            | "desktop_quit"
-            | "run"
-            | "skill"
-            | "help"
-            | "login"
-            | "logout"
-            | "who"
-            | "bus_send"
-            | "bus_done"
-            | "cron_create"
-            | "cron-create"
-            | "cron_list"
-            | "cron-list"
-            | "cron_delete"
-            | "cron-delete"
-            | "totp"
-            | "kv"
-    )
+    KNOWN_COMMANDS.contains(cmd)
 }
 
 pub const DEFAULT_CDP_PORT: u16 = 9222;
@@ -448,29 +458,34 @@ impl CdpClient {
         })
     }
 
-    /// Send a CDP command scoped to a specific session (target).
-    pub async fn send_to_session(
+    async fn do_send(
         &mut self,
         method: &str,
         params: Value,
-        session_id: &str,
+        session_id: Option<&str>,
     ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
 
-        let payload = json!({
+        let mut payload = json!({
             "id": id,
             "method": method,
             "params": params,
-            "sessionId": session_id,
         });
+        if let Some(sid) = session_id {
+            payload["sessionId"] = json!(sid);
+        }
+
+        let context = if let Some(sid) = session_id {
+            format!("failed to send CDP method {method} to session {sid}")
+        } else {
+            format!("failed to send CDP method {method}")
+        };
 
         self.ws
             .send(Message::Text(payload.to_string().into()))
             .await
-            .with_context(|| {
-                format!("failed to send CDP method {method} to session {session_id}")
-            })?;
+            .with_context(|| context)?;
 
         let timeout_duration = cdp_send_timeout();
         match timeout(timeout_duration, self.recv_response(id)).await {
@@ -482,29 +497,18 @@ impl CdpClient {
         }
     }
 
+    /// Send a CDP command scoped to a specific session (target).
+    pub async fn send_to_session(
+        &mut self,
+        method: &str,
+        params: Value,
+        session_id: &str,
+    ) -> Result<Value> {
+        self.do_send(method, params, Some(session_id)).await
+    }
+
     pub async fn send(&mut self, method: &str, params: Value) -> Result<Value> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let payload = json!({
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-
-        self.ws
-            .send(Message::Text(payload.to_string().into()))
-            .await
-            .with_context(|| format!("failed to send CDP method {method}"))?;
-
-        let timeout_duration = cdp_send_timeout();
-        match timeout(timeout_duration, self.recv_response(id)).await {
-            Ok(result) => result,
-            Err(_) => bail!(
-                "CDP method {method} timed out after {}s",
-                timeout_duration.as_secs()
-            ),
-        }
+        self.do_send(method, params, None).await
     }
 
     async fn recv_response(&mut self, id: u64) -> Result<Value> {
@@ -899,6 +903,16 @@ pub async fn http_put_text(ctx: &AppContext, path: &str) -> Result<String> {
     resp.text()
         .await
         .context("failed reading PUT response body")
+}
+
+pub fn check_js_error(result: &Value) -> Result<()> {
+    if let Some(err) = result
+        .pointer("/result/value/error")
+        .and_then(Value::as_str)
+    {
+        bail!("{err}");
+    }
+    Ok(())
 }
 
 pub async fn runtime_evaluate(
@@ -1327,30 +1341,7 @@ pub async fn adopt_new_tabs(
     }
 }
 
-fn deep_query_expr(selector: &str) -> Result<String> {
-    Ok(format!(
-        r#"(function() {{
-          const sel = {sel};
-          function find(root) {{
-            try {{
-              const direct = root.querySelector(sel);
-              if (direct) return direct;
-            }} catch (e) {{
-              return {{ error: 'Invalid CSS selector: ' + sel + '. Use CSS selectors (#id, .class, tag).' }};
-            }}
-            for (const el of root.querySelectorAll('*')) {{
-              if (el.shadowRoot) {{
-                const found = find(el.shadowRoot);
-                if (found) return found;
-              }}
-            }}
-            return null;
-          }}
-          return find(document);
-        }})()"#,
-        sel = serde_json::to_string(selector)?
-    ))
-}
+
 
 pub async fn focus_editable_element(
     cdp: &mut CdpClient,
@@ -1376,12 +1367,7 @@ pub async fn focus_editable_element(
         select_existing = if select_existing { "true" } else { "false" }
     );
     let result = runtime_evaluate_with_context(cdp, &script, true, false, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("{err}");
-    }
+    check_js_error(&result)?;
     Ok(())
 }
 
@@ -1412,12 +1398,7 @@ pub async fn clear_editable_element(
         sel = serde_json::to_string(selector)?
     );
     let result = runtime_evaluate_with_context(cdp, &script, true, false, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("{err}");
-    }
+    check_js_error(&result)?;
     Ok(())
 }
 
@@ -1442,12 +1423,7 @@ pub async fn editable_element_value(
         sel = serde_json::to_string(selector)?
     );
     let result = runtime_evaluate_with_context(cdp, &script, true, false, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("{err}");
-    }
+    check_js_error(&result)?;
     Ok(result
         .pointer("/result/value/value")
         .and_then(Value::as_str)
@@ -1531,12 +1507,7 @@ pub async fn type_text_verified(
         text = serde_json::to_string(text)?
     );
     let result = runtime_evaluate_with_context(cdp, &set_script, true, false, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("{err}");
-    }
+    check_js_error(&result)?;
 
     if editable_element_value(cdp, context_id, selector).await? == text {
         return Ok(());
@@ -2301,6 +2272,9 @@ sidekar desktop-screenshot [--app <name>] [--pid <pid>] [--output <path>]
         "desktop-windows" | "desktop_windows" => "sidekar desktop-windows --app <name>\n\n  List windows for an app. Shows title, frame, main/focused state.",
         "desktop-find" | "desktop_find" => "sidekar desktop-find --app <name> <query>\n\n  Search app UI elements. Case-insensitive match against role, title, value.\n  Returns up to 50 matches with available actions.",
         "desktop-click" | "desktop_click" => "sidekar desktop-click --app <name> <query>\n\n  Click a UI element by query via Accessibility API.\n  Use desktop-find first to verify the element exists.",
+        "desktop-press" | "desktop_press" => "sidekar desktop-press <key|combo>\n\n  Send an OS-level key press to the focused app.\n  Supports combos like cmd+v, cmd+shift+p, enter, tab, esc.",
+        "desktop-type" | "desktop_type" => "sidekar desktop-type <text>\n\n  Type text into the focused app using desktop input.",
+        "desktop-paste" | "desktop_paste" => "sidekar desktop-paste <text>\n\n  Put text on the macOS pasteboard and send cmd+v to the focused app.",
         "desktop-launch" | "desktop_launch" => "sidekar desktop-launch <app>\n\n  Launch an application by name.\n\n  Example: sidekar desktop-launch Slack",
         "desktop-activate" | "desktop_activate" => "sidekar desktop-activate --app <name>\n\n  Bring an application to the foreground.",
         "desktop-quit" | "desktop_quit" => "sidekar desktop-quit --app <name>\n\n  Quit an application gracefully.",
@@ -2491,7 +2465,7 @@ sidekar ext <subcommand> [args...]
 
 pub fn print_help() {
     println!(
-        "sidekar v{}\n\nUsage: sidekar <command> [args]\n\nCommands:\n  launch [--headless]  Launch Chrome and start a session\n  connect             Attach to already-running Chrome (no launch)\n  run <sid>           Run command(s) from /tmp/sidekar-command-<sid>.json\n  navigate <url>      Navigate to URL\n  back                Go back in history\n  forward             Go forward in history\n  reload              Reload the current page\n  read [selector]     Reader-mode text extraction\n  text [selector]     Full page text with interactive refs\n  dom [selector]      Get compact DOM (--tokens=N to limit output)\n  axtree [selector]   Get accessibility tree\n  axtree -i           Interactive elements with ref numbers\n  axtree -i --diff    Show only changes since last snapshot\n  observe             Show interactive elements as ready-to-use commands\n  find <query>        Find element by description\n  resolve <selector>  Get link target URL without clicking\n  screenshot [--full] Capture screenshot (--full for entire page)\n  pdf [path]          Save page as PDF\n  click <sel|x,y|--text> Click element, coordinates, or text match\n  click --mode=double <sel|x,y|--text> Double-click\n  click --mode=right <sel|x,y|--text> Right-click\n  hover <sel|x,y|--text> Hover\n  focus <selector>    Focus an element without clicking\n  clear <selector>    Clear an input or contenteditable\n  type <sel> <text>   Type text into element\n  fill <sel1> <val1> [sel2] [val2] ...  Fill multiple fields\n  keyboard <text>     Type at current caret position\n  paste <text>        Paste text via ClipboardEvent\n  clipboard --html <html> [--text <text>]  Paste rich HTML\n  inserttext <text>   Insert text at cursor via CDP Input.insertText\n  select <sel> <val>  Select option(s) from a <select>\n  upload <sel> <file> Upload file(s) to a file input\n  drag <from> <to>    Drag from one element to another\n  dialog <accept|dismiss> [text] Handle next dialog\n  waitfor <sel> [ms]  Wait for element to appear\n  waitfornav [ms]     Wait for navigation/readystate\n  press <key>         Press key or combo (Enter, Ctrl+A, Meta+C)\n  scroll <...>        Scroll page or element\n  eval <js>           Evaluate JavaScript\n  search <query>      Search the web in-browser and extract results\n  readurls <url1> <url2> ...  Read multiple URLs in parallel\n  cookies ...         Manage cookies\n  console ...         Show/listen for console logs\n  network ...         Capture/show network requests\n  block ...           Configure request blocking\n  viewport ...        Set viewport preset or dimensions\n  frames              List frames/iframes\n  frame <id|sel>      Switch frame (frame main to reset)\n  download ...        Configure/list downloads\n  tabs                List tabs owned by this session\n  tab <id>            Switch to a session-owned tab\n  newtab [url]        Open a new tab in this session\n  close               Close current tab\n  activate            Bring browser window to front (macOS)\n  minimize            Minimize browser window (macOS)\n  click --mode=human <...>  Human-like click movement/timing\n  type --human <...>        Human-like typing\n  media <dark|light|...> Emulate media features (dark mode, print, etc)\n  animations <pause|resume> Pause/resume page animations\n  security <ignore-certs|strict> Control certificate validation\n  storage <get|set|remove|clear> Manage localStorage/sessionStorage\n  sw <list|unregister|update> Manage service workers\n  zoom <in|out|N>     Zoom page (25-200%%, preserves layout)\n  lock [seconds]      Lock active tab for exclusive access\n  unlock              Release tab lock\n  kill                Kill custom profile browser session\n  batch '<json>'      Execute multiple actions sequentially\n  grid [spec]         Overlay coordinate grid (8x6, 50, off)\n  desktop-screenshot [--app <name>|--pid <pid>]  Capture desktop or app window\n  desktop-apps       List running applications\n  desktop-windows --app <name>|--pid <pid>  List app windows\n  desktop-find --app <name>|--pid <pid> <q>  Find UI element by query\n  desktop-click --app <name>|--pid <pid> <q>  Click UI element by query\n  desktop-launch <app name>  Launch an application\n  desktop-activate --app <name>|--pid <pid>  Bring app to foreground\n  desktop-quit --app <name>|--pid <pid>  Quit an application\n  who                 List agents on the current bus channel\n  bus_send <to> <message>  Send a message to another agent\n  bus_done <next> <summary> <request>  Hand off to another agent\n  monitor <start|stop|status>  Watch tabs for background changes\n  daemon [run|stop|restart|status]  Manage the Sidekar background daemon\n  login               Authenticate with sidekar.dev (device auth flow)\n  logout              Remove device token and clear encryption state\n  devices             List registered devices for your account\n  sessions            List active sessions for your account\n  update              Check for updates and self-update\n  feedback <rating> [comment]  Send a rating and optional comment\n  telemetry [on|off|status]  Manage anonymous telemetry\n  config list|get|set|reset  View or change settings\n  totp <subcommand>   Manage stored TOTP secrets\n  kv <subcommand>     Manage encrypted key-value storage\n  errors [N]          Show last N local error log rows (SQLite)\n  install             Install skill file for detected agents\n  uninstall           Remove sidekar data and skill files\n  skill               Print SKILL.md to stdout\n  ext-server          Legacy alias for sidekar daemon run\n  ext <sub> [args]    Control the browser via the extension (tabs, read, click, …)\n\nGlobal flags:\n  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)\n\nUse 'sidekar help <command>' for detailed help on any command.",
+        "sidekar v{}\n\nUsage: sidekar <command> [args]\n\nCommands:\n  launch [--headless]  Launch Chrome and start a session\n  connect             Attach to already-running Chrome (no launch)\n  run <sid>           Run command(s) from /tmp/sidekar-command-<sid>.json\n  navigate <url>      Navigate to URL\n  back                Go back in history\n  forward             Go forward in history\n  reload              Reload the current page\n  read [selector]     Reader-mode text extraction\n  text [selector]     Full page text with interactive refs\n  dom [selector]      Get compact DOM (--tokens=N to limit output)\n  axtree [selector]   Get accessibility tree\n  axtree -i           Interactive elements with ref numbers\n  axtree -i --diff    Show only changes since last snapshot\n  observe             Show interactive elements as ready-to-use commands\n  find <query>        Find element by description\n  resolve <selector>  Get link target URL without clicking\n  screenshot [--full] Capture screenshot (--full for entire page)\n  pdf [path]          Save page as PDF\n  click <sel|x,y|--text> Click element, coordinates, or text match\n  click --mode=double <sel|x,y|--text> Double-click\n  click --mode=right <sel|x,y|--text> Right-click\n  hover <sel|x,y|--text> Hover\n  focus <selector>    Focus an element without clicking\n  clear <selector>    Clear an input or contenteditable\n  type <sel> <text>   Type text into element\n  fill <sel1> <val1> [sel2] [val2] ...  Fill multiple fields\n  keyboard <text>     Type at current caret position\n  paste <text>        Paste text via ClipboardEvent\n  clipboard --html <html> [--text <text>]  Paste rich HTML\n  inserttext <text>   Insert text at cursor via CDP Input.insertText\n  select <sel> <val>  Select option(s) from a <select>\n  upload <sel> <file> Upload file(s) to a file input\n  drag <from> <to>    Drag from one element to another\n  dialog <accept|dismiss> [text] Handle next dialog\n  waitfor <sel> [ms]  Wait for element to appear\n  waitfornav [ms]     Wait for navigation/readystate\n  press <key>         Press key or combo (Enter, Ctrl+A, Meta+C)\n  scroll <...>        Scroll page or element\n  eval <js>           Evaluate JavaScript\n  search <query>      Search the web in-browser and extract results\n  readurls <url1> <url2> ...  Read multiple URLs in parallel\n  cookies ...         Manage cookies\n  console ...         Show/listen for console logs\n  network ...         Capture/show network requests\n  block ...           Configure request blocking\n  viewport ...        Set viewport preset or dimensions\n  frames              List frames/iframes\n  frame <id|sel>      Switch frame (frame main to reset)\n  download ...        Configure/list downloads\n  tabs                List tabs owned by this session\n  tab <id>            Switch to a session-owned tab\n  newtab [url]        Open a new tab in this session\n  close               Close current tab\n  activate            Bring browser window to front (macOS)\n  minimize            Minimize browser window (macOS)\n  click --mode=human <...>  Human-like click movement/timing\n  type --human <...>        Human-like typing\n  media <dark|light|...> Emulate media features (dark mode, print, etc)\n  animations <pause|resume> Pause/resume page animations\n  security <ignore-certs|strict> Control certificate validation\n  storage <get|set|remove|clear> Manage localStorage/sessionStorage\n  sw <list|unregister|update> Manage service workers\n  zoom <in|out|N>     Zoom page (25-200%%, preserves layout)\n  lock [seconds]      Lock active tab for exclusive access\n  unlock              Release tab lock\n  kill                Kill custom profile browser session\n  batch '<json>'      Execute multiple actions sequentially\n  grid [spec]         Overlay coordinate grid (8x6, 50, off)\n  desktop-screenshot [--app <name>|--pid <pid>]  Capture desktop or app window\n  desktop-apps       List running applications\n  desktop-windows --app <name>|--pid <pid>  List app windows\n  desktop-find --app <name>|--pid <pid> <q>  Find UI element by query\n  desktop-click --app <name>|--pid <pid> <q>  Click UI element by query\n  desktop-press <key|combo>  Send OS-level key press to focused app\n  desktop-type <text>  Type into focused app\n  desktop-paste <text>  Paste into focused app\n  desktop-launch <app name>  Launch an application\n  desktop-activate --app <name>|--pid <pid>  Bring app to foreground\n  desktop-quit --app <name>|--pid <pid>  Quit an application\n  who                 List agents on the current bus channel\n  bus_send <to> <message>  Send a message to another agent\n  bus_done <next> <summary> <request>  Hand off to another agent\n  monitor <start|stop|status>  Watch tabs for background changes\n  daemon [run|stop|restart|status]  Manage the Sidekar background daemon\n  login               Authenticate with sidekar.dev (device auth flow)\n  logout              Remove device token and clear encryption state\n  devices             List registered devices for your account\n  sessions            List active sessions for your account\n  update              Check for updates and self-update\n  feedback <rating> [comment]  Send a rating and optional comment\n  telemetry [on|off|status]  Manage anonymous telemetry\n  config list|get|set|reset  View or change settings\n  totp <subcommand>   Manage stored TOTP secrets\n  kv <subcommand>     Manage encrypted key-value storage\n  errors [N]          Show last N local error log rows (SQLite)\n  install             Install skill file for detected agents\n  uninstall           Remove sidekar data and skill files\n  skill               Print SKILL.md to stdout\n  ext-server          Legacy alias for sidekar daemon run\n  ext <sub> [args]    Control the browser via the extension (tabs, read, click, …)\n\nGlobal flags:\n  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)\n\nUse 'sidekar help <command>' for detailed help on any command.",
         env!("CARGO_PKG_VERSION")
     );
 }

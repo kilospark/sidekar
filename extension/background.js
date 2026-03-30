@@ -9,6 +9,7 @@ let reconnectTimer = null;
 let authenticated = false;
 let lastConnectError = null;
 let cliLoggedIn = false;
+let creatingOffscreen = null;
 
 function clearStoredExtToken() {
   return new Promise((resolve) => {
@@ -33,6 +34,28 @@ function sendNative(obj) {
     console.error("[sidekar] Native postMessage failed", e);
     return false;
   }
+}
+
+function sendNativeAwait(obj, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    if (!nativePort || !authenticated) {
+      resolve({ error: "Native bridge not connected" });
+      return;
+    }
+    const id = "cli_" + Math.random().toString(36).slice(2, 10);
+    const listener = (msg) => {
+      if (msg && msg.id === id) {
+        nativePort.onMessage.removeListener(listener);
+        resolve(msg);
+      }
+    };
+    nativePort.onMessage.addListener(listener);
+    nativePort.postMessage({ ...obj, id });
+    setTimeout(() => {
+      nativePort.onMessage.removeListener(listener);
+      resolve({ error: "Native command timed out" });
+    }, timeoutMs);
+  });
 }
 
 function scheduleReconnect() {
@@ -74,6 +97,11 @@ async function connect() {
         lastConnectError = "Extension session expired — sign in again from the extension popup.";
       }
       console.log("[sidekar] auth failed:", msg.reason || "check credentials");
+      return;
+    }
+
+    // cli_exec responses handled by sendNativeAwait listener, not here
+    if (msg.type === "cli_exec" || msg.id?.startsWith("cli_")) {
       return;
     }
 
@@ -372,19 +400,133 @@ async function trustedPasteViaDebugger(tabId) {
 }
 
 async function insertTextViaDebugger(tabId, text) {
+  console.log("[sidekar] insertTextViaDebugger called", { tabId, textLength: text?.length });
+  // Use CDP via chrome.debugger - this WILL block user input but is the only way
+  // to inject text into Google Docs from the extension
   const target = { tabId };
   const version = "1.3";
 
   if (!text) {
-    return { ok: false, error: "No text available for debugger insertText" };
+    return { ok: false, error: "No text available for insertText" };
   }
+
+  try {
+    console.log("[sidekar] attaching debugger...");
+    await chrome.debugger.attach(target, version);
+    console.log("[sidekar] sending insertText command...");
+    await chrome.debugger.sendCommand(target, "Input.insertText", { text });
+    console.log("[sidekar] insertText completed successfully");
+    return { ok: true, mode: "debugger-insertText", verified: true };
+  } catch (e) {
+    console.error("[sidekar] insertTextViaDebugger error:", e);
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    try {
+      await chrome.debugger.detach(target);
+      console.log("[sidekar] debugger detached");
+    } catch (e) {
+      console.error("[sidekar] detach error:", e);
+    }
+  }
+}
+
+async function insertTextViaCliExec(tabId, text) {
+  console.log("[sidekar] insertTextViaCliExec called", { tabId, textLength: text?.length });
+  if (!text) {
+    return { ok: false, error: "No text available for insertText" };
+  }
+
+  const result = await sendNativeAwait(
+    {
+      type: "cli_exec",
+      command: "inserttext",
+      text: text,
+    },
+    120000
+  );
+  console.log("[sidekar] cli_exec result:", result);
+  if (result.ok) {
+    return { ok: true, mode: result.mode || "cli-insertText", verified: true };
+  }
+  return { ok: false, error: result.error || "cli_exec failed" };
+}
+
+async function typeViaCliExec(tabId, text) {
+  console.log("[sidekar] typeViaCliExec called", { tabId, textLength: text?.length });
+  if (!text) {
+    return { ok: false, error: "No text available" };
+  }
+
+  const result = await sendNativeAwait(
+    {
+      type: "cli_exec",
+      command: "keyboard",
+      text: text,
+    },
+    120000
+  );
+  console.log("[sidekar] cli_exec keyboard result:", result);
+  if (result.ok) {
+    return { ok: true, mode: result.mode || "cli-keyboard" };
+  }
+  return { ok: false, error: result.error || "cli_exec keyboard failed" };
+}
+
+async function clickGoogleDocsEditorViaDebugger(tabId) {
+  const rect = await executeScriptResult(tabId, () => {
+    const page =
+      document.querySelector(".kix-page") ||
+      document.querySelector(".kix-page-paginated") ||
+      document.querySelector(".kix-appview-editor");
+    if (!page) {
+      return { error: "Google Docs page surface not found" };
+    }
+    const box = page.getBoundingClientRect();
+    if (!box || box.width <= 0 || box.height <= 0) {
+      return { error: "Google Docs page surface has no visible bounds" };
+    }
+    return {
+      x: Math.round(box.left + Math.min(140, Math.max(80, box.width * 0.14))),
+      y: Math.round(box.top + Math.min(240, Math.max(180, box.height * 0.22))),
+    };
+  });
+
+  if (!rect || rect.error) {
+    return { ok: false, error: rect?.error || "Could not resolve Google Docs editor rect" };
+  }
+
+  const target = { tabId };
+  const version = "1.3";
 
   await focusTabWindow(tabId);
 
   try {
     await chrome.debugger.attach(target, version);
-    await chrome.debugger.sendCommand(target, "Input.insertText", { text });
-    return { ok: true, mode: "debugger-insertText", verified: true };
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: rect.x,
+      y: rect.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: rect.x,
+      y: rect.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: rect.x,
+      y: rect.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    return { ok: true, mode: "debugger-editor-click", x: rect.x, y: rect.y };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   } finally {
@@ -404,6 +546,460 @@ async function shouldPreferInsertText(tabId) {
   }
 }
 
+async function pingOffscreen(ms) {
+  return await Promise.race([
+    chrome.runtime.sendMessage({ target: "offscreen", type: "offscreenPing" }),
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ ok: false, error: "offscreen ping timeout" }), ms)
+    ),
+  ]);
+}
+
+async function resetOffscreenDocument() {
+  try {
+    if (chrome.offscreen?.closeDocument) {
+      await chrome.offscreen.closeDocument();
+    }
+  } catch {
+    // No offscreen document or already torn down.
+  }
+  await delay(80);
+}
+
+/** Create offscreen doc if needed and verify runtime.sendMessage reaches it (MV3 race workaround). */
+async function ensureOffscreenReady() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ensureOffscreen();
+    await delay(attempt === 0 ? 50 : 120 + attempt * 80);
+    const ping = await pingOffscreen(2000);
+    if (ping && ping.pong) return;
+    await resetOffscreenDocument();
+  }
+  throw new Error("Offscreen messaging unavailable (ping failed after recreate)");
+}
+
+async function writeClipboardContents(_tabId, html, plainText) {
+  const offscreenMessageTimeoutMs = 12000;
+  async function sendClipboardMessage() {
+    return await Promise.race([
+      chrome.runtime.sendMessage({
+        target: "offscreen",
+        type: "writeClipboard",
+        html,
+        plainText,
+      }),
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ ok: false, error: "Offscreen clipboard write timed out" }),
+          offscreenMessageTimeoutMs
+        )
+      ),
+    ]);
+  }
+
+  try {
+    await ensureOffscreenReady();
+    let response;
+    try {
+      response = await sendClipboardMessage();
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (!/Receiving end does not exist|message port closed/i.test(msg)) {
+        throw e;
+      }
+      await delay(75);
+      response = await sendClipboardMessage();
+    }
+    if (response && response.ok) {
+      return { ok: true, stage: "clipboard", mode: response.mode || "offscreen" };
+    }
+    return {
+      ok: false,
+      stage: "clipboard",
+      mode: response?.mode || "offscreen",
+      error: response?.error || "Offscreen clipboard write failed",
+      async_error: response?.async_error,
+    };
+  } catch (e) {
+    return { ok: false, stage: "clipboard", error: e?.message || String(e) };
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getDocsSnapshot(tabId) {
+  const result = await executeScriptResult(tabId, () => {
+    function clean(text) {
+      return String(text || "")
+        .replace(/[\u200B\u200C]/g, "")
+        .replace(/\u00A0/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    const text = Array.from(document.querySelectorAll(".kix-wordhtmlgenerator-word-node"))
+      .map((node) => clean(node.textContent))
+      .filter(Boolean)
+      .join(" ");
+    return { ok: true, text };
+  });
+  if (!result || result.error) {
+    return "";
+  }
+  return typeof result.text === "string" ? result.text : "";
+}
+
+async function getGoogleDocsAnnotatedState(tabId) {
+  return await executeScriptResult(
+    tabId,
+    async () => {
+      const getAnnotatedText = window._docs_annotate_getAnnotatedText;
+      if (typeof getAnnotatedText !== "function") {
+        return { ok: false, error: "Google Docs annotated text API unavailable" };
+      }
+
+      const annotated = await Promise.race([
+        getAnnotatedText(),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ __sidekar_timeout: true }), 500)
+        ),
+      ]);
+      if (annotated && annotated.__sidekar_timeout) {
+        return { ok: false, error: "Google Docs annotated text API timed out" };
+      }
+      if (!annotated || typeof annotated.setSelection !== "function") {
+        return { ok: false, error: "Google Docs annotated text object unavailable" };
+      }
+
+      const text = typeof annotated.getText === "function" ? String(annotated.getText() || "") : "";
+      const selection = typeof annotated.getSelection === "function" ? annotated.getSelection()?.[0] : null;
+
+      function asFiniteNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      }
+
+      function getSelectionEndpoints(selection) {
+        if (!selection || typeof selection !== "object") {
+          return null;
+        }
+        const candidates = [
+          ["anchor", "focus"],
+          ["base", "extent"],
+          ["start", "end"],
+        ];
+        for (const [a, b] of candidates) {
+          const start = asFiniteNumber(selection[a]);
+          const end = asFiniteNumber(selection[b]);
+          if (start != null && end != null) {
+            return { start, end };
+          }
+        }
+        return null;
+      }
+
+      return {
+        ok: true,
+        text,
+        selection: getSelectionEndpoints(selection),
+      };
+    },
+    [],
+    "MAIN"
+  );
+}
+
+async function setGoogleDocsAnnotatedSelection(tabId, start, end) {
+  return await executeScriptResult(
+    tabId,
+    async (start, end) => {
+      const getAnnotatedText = window._docs_annotate_getAnnotatedText;
+      if (typeof getAnnotatedText !== "function") {
+        return { ok: false, error: "Google Docs annotated text API unavailable" };
+      }
+
+      const annotated = await Promise.race([
+        getAnnotatedText(),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ __sidekar_timeout: true }), 500)
+        ),
+      ]);
+      if (annotated && annotated.__sidekar_timeout) {
+        return { ok: false, error: "Google Docs annotated text API timed out" };
+      }
+      if (!annotated || typeof annotated.setSelection !== "function") {
+        return { ok: false, error: "Google Docs annotated text object unavailable" };
+      }
+
+      annotated.setSelection(Number(start), Number(end));
+      return { ok: true };
+    },
+    [start, end],
+    "MAIN"
+  );
+}
+
+// Shared in-page helper for Google Docs text sink operations
+function getGoogleDocsTextSinkCode() {
+  return () => {
+    const iframe = document.querySelector("iframe.docs-texteventtarget-iframe");
+    if (!iframe) {
+      return { ok: false, error: "Google Docs text input iframe not found" };
+    }
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    const target =
+      doc?.activeElement ||
+      doc?.querySelector('[contenteditable="true"], textarea, input, [role="textbox"]') ||
+      doc?.body ||
+      doc?.documentElement;
+    if (!doc || !target) {
+      return { ok: false, error: "Google Docs text input target not found" };
+    }
+    if (typeof iframe.focus === "function") iframe.focus();
+    if (doc.defaultView && typeof doc.defaultView.focus === "function") doc.defaultView.focus();
+    if (typeof target.focus === "function") target.focus();
+    return {
+      ok: true,
+      target: {
+        tag: target.tagName || "",
+        id: target.id || "",
+        className: typeof target.className === "string" ? target.className : "",
+      },
+    };
+  };
+}
+
+async function focusGoogleDocsTextSink(tabId) {
+  return await executeScriptResult(tabId, getGoogleDocsTextSinkCode());
+}
+
+async function pasteIntoGoogleDocsTextSink(tabId, html, plainText) {
+  return await executeScriptResult(
+    tabId,
+    (html, plainText) => {
+      const iframe = document.querySelector("iframe.docs-texteventtarget-iframe");
+      if (!iframe) {
+        return { ok: false, error: "Google Docs text input iframe not found" };
+      }
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        const target =
+          doc?.activeElement ||
+          doc?.querySelector('[contenteditable="true"], textarea, input, [role="textbox"]') ||
+          doc?.body ||
+          doc?.documentElement;
+        if (!doc || !target) {
+          return { ok: false, error: "Google Docs text input target not found" };
+        }
+        if (typeof iframe.focus === "function") iframe.focus();
+        if (doc.defaultView && typeof doc.defaultView.focus === "function") doc.defaultView.focus();
+        if (typeof target.focus === "function") target.focus();
+
+        const data = new DataTransfer();
+        data.setData("text/plain", plainText);
+        if (html) {
+          data.setData("text/html", html);
+        }
+        const pasteEvent = new ClipboardEvent("paste", {
+          clipboardData: data,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        target.dispatchEvent(pasteEvent);
+
+        return {
+          ok: true,
+          mode: "google-docs-iframe-paste",
+          target: {
+            tag: target.tagName || "",
+            id: target.id || "",
+            className: typeof target.className === "string" ? target.className : "",
+          },
+        };
+      } catch (e) {
+        return { ok: false, error: e?.message || String(e) };
+      }
+    },
+    [html, plainText]
+  );
+}
+
+async function typeIntoGoogleDocsIframe(tabId, plainText) {
+  return await executeScriptResult(tabId, (text) => {
+    const iframe = document.querySelector("iframe.docs-texteventtarget-iframe");
+    if (!iframe) {
+      return { ok: false, error: "Google Docs text input iframe not found" };
+    }
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      const target =
+        doc?.activeElement ||
+        doc?.querySelector('[contenteditable="true"]') ||
+        doc?.body;
+      if (!doc || !target) {
+        return { ok: false, error: "Google Docs text input target not found" };
+      }
+      if (typeof iframe.focus === "function") iframe.focus();
+      if (doc.defaultView && typeof doc.defaultView.focus === "function") doc.defaultView.focus();
+      if (typeof target.focus === "function") target.focus();
+
+      const chars = Array.from(text);
+      for (const char of chars) {
+        const keydown = new KeyboardEvent("keydown", {
+          key: char,
+          code: `Key${char.toUpperCase()}`,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        target.dispatchEvent(keydown);
+
+        const keypress = new KeyboardEvent("keypress", {
+          key: char,
+          code: `Key${char.toUpperCase()}`,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        target.dispatchEvent(keypress);
+
+        const keyup = new KeyboardEvent("keyup", {
+          key: char,
+          code: `Key${char.toUpperCase()}`,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        target.dispatchEvent(keyup);
+      }
+
+      return {
+        ok: true,
+        mode: "google-docs-keypress-type",
+        charsTyped: chars.length,
+      };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }, [plainText]);
+}
+
+async function insertTextViaExecCommand(tabId, text) {
+  return await executeScriptResult(tabId, (txt) => {
+    try {
+      const success = document.execCommand("insertText", false, txt);
+      return {
+        ok: success,
+        mode: success ? "execCommand-insertText" : "execCommand-failed",
+        chars: txt.length,
+      };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }, [text]);
+}
+
+function buildDocsResult(mode, plainText, clipboardWrite, beforeText, afterText, opts = {}) {
+  const result = {
+    ok: true,
+    mode,
+    length: plainText.length,
+    clipboard: clipboardWrite.ok === true,
+    verified: afterText !== beforeText,
+  };
+  if (clipboardWrite.mode) result.clipboard_mode = clipboardWrite.mode;
+  if (clipboardWrite.error) result.clipboard_error = clipboardWrite.error;
+  if (opts.plain_text_fallback) result.plain_text_fallback = true;
+  if (opts.fallback_from) result.fallback_from = opts.fallback_from;
+  return result;
+}
+
+async function pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite) {
+  console.log("[sidekar] pasteIntoGoogleDocs called", { html: !!html, plainTextLength: plainText?.length });
+  await clickGoogleDocsEditorViaDebugger(tabId);
+  console.log("[sidekar] clickGoogleDocsEditorViaDebugger done");
+  await delay(120);
+  const before = await getDocsSnapshot(tabId);
+  const annotated = await getGoogleDocsAnnotatedState(tabId);
+  if (annotated?.ok) {
+    const selection = annotated.selection;
+    const anchor = selection
+      ? Math.max(0, Math.min(Number(selection.end), annotated.text.length))
+      : annotated.text.length;
+    await setGoogleDocsAnnotatedSelection(tabId, anchor, anchor);
+    await delay(40);
+  }
+
+  // HTML path: trusted paste first (preserves formatting via real clipboard)
+  if (html) {
+    if (!clipboardWrite.ok) {
+      return {
+        error: "Google Docs HTML paste requires clipboard write",
+        clipboard: false,
+        clipboard_error: clipboardWrite.error,
+        clipboard_mode: clipboardWrite.mode,
+      };
+    }
+    await focusGoogleDocsTextSink(tabId);
+    const trusted = await trustedPasteViaDebugger(tabId);
+    await delay(150);
+    const after = await getDocsSnapshot(tabId);
+    if (trusted.ok) {
+      return buildDocsResult(trusted.mode, plainText, clipboardWrite, before, after, {
+        plain_text_fallback: false,
+      });
+    }
+    return {
+      error: trusted.error || "Google Docs trusted paste failed",
+      clipboard: true,
+      clipboard_mode: clipboardWrite.mode,
+      verified: after !== before,
+    };
+  }
+
+  // Plain text: route through CLI's CDP for insertText (doesn't block user input)
+  await focusGoogleDocsTextSink(tabId);
+  const insertedText = await insertTextViaCliExec(tabId, plainText);
+  await delay(150);
+  const afterInsert = await getDocsSnapshot(tabId);
+  const insertVerified = afterInsert !== before;
+  if (insertedText.ok && insertVerified) {
+    return buildDocsResult(insertedText.mode, plainText, clipboardWrite, before, afterInsert);
+  }
+
+  // Fallback: try synthetic iframe paste
+  const docsPaste = await pasteIntoGoogleDocsTextSink(tabId, html, plainText);
+  await delay(200);
+  const afterDocsPaste = await getDocsSnapshot(tabId);
+  const docsVerified = afterDocsPaste !== before;
+  if (docsPaste.ok && docsVerified) {
+    return buildDocsResult(docsPaste.mode, plainText, clipboardWrite, before, afterDocsPaste);
+  }
+
+  // Fallback: try execCommand insertText
+  const execResult = await insertTextViaExecCommand(tabId, plainText);
+  await delay(200);
+  const afterExec = await getDocsSnapshot(tabId);
+  const execVerified = afterExec !== before;
+  if (execResult.ok && execVerified) {
+    return buildDocsResult(execResult.mode, plainText, clipboardWrite, before, afterExec);
+  }
+
+  console.log("[sidekar] Final result - insertText:", insertedText, "docsPaste:", docsPaste, "execResult:", execResult);
+  console.log("[sidekar] Verified status:", { insertVerified, docsVerified, execVerified });
+  return {
+    error: insertedText.error || docsPaste.error || execResult.error || "Google Docs insertion failed",
+    insertText_error: insertedText.error,
+    docsPaste_error: docsPaste.error,
+    execCommand_error: execResult.error,
+    clipboard: clipboardWrite.ok === true,
+    clipboard_error: clipboardWrite.error,
+    verified: insertVerified || docsVerified || execVerified,
+  };
+}
+
 async function cmdPaste(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
   const selector = msg.selector || "";
@@ -417,32 +1013,17 @@ async function cmdPaste(msg) {
 
   await focusTabWindow(tabId);
 
-  const clipboardWrite = await executeScriptResult(
-    tabId,
-    async (html, plainText) => {
-      try {
-        if (!navigator.clipboard) {
-          return { ok: false, stage: "clipboard", error: "navigator.clipboard unavailable" };
-        }
-        if (html) {
-          if (typeof ClipboardItem === "undefined") {
-            return { ok: false, stage: "clipboard", error: "ClipboardItem unavailable" };
-          }
-          const item = new ClipboardItem({
-            "text/html": new Blob([html], { type: "text/html" }),
-            "text/plain": new Blob([plainText], { type: "text/plain" }),
-          });
-          await navigator.clipboard.write([item]);
-        } else {
-          await navigator.clipboard.writeText(plainText);
-        }
-        return { ok: true, stage: "clipboard" };
-      } catch (e) {
-        return { ok: false, stage: "clipboard", error: e?.message || String(e) };
-      }
-    },
-    [html, plainText]
-  );
+  const isGoogleDocs = await shouldPreferInsertText(tabId);
+  // Google Docs plain-text path uses cli_exec inserttext, not the real clipboard — skip
+  // offscreen (avoids "Offscreen clipboard write timed out" on broken/slow clipboard APIs).
+  const clipboardWrite =
+    html || !isGoogleDocs
+      ? await writeClipboardContents(tabId, html, plainText)
+      : { ok: false, stage: "clipboard", mode: "skipped-google-docs-plain" };
+
+  if (isGoogleDocs) {
+    return await pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite);
+  }
 
   const inserted = await executeScriptResult(
     tabId,
@@ -681,33 +1262,6 @@ async function cmdPaste(msg) {
       inserted.verified === false ||
       (typeof inserted.mode === "string" && inserted.mode.startsWith("synthetic")));
 
-  const preferInsertText = await shouldPreferInsertText(tabId);
-  if (preferInsertText) {
-    const insertedText = await insertTextViaDebugger(tabId, plainText);
-    if (insertedText.ok) {
-      return {
-        ok: true,
-        mode: insertedText.mode,
-        length: plainText.length,
-        clipboard: clipboardWrite.ok === true,
-        fallback_from: inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none",
-        target: inserted && inserted.target ? inserted.target : null,
-        verified: true,
-        plain_text_fallback: !!html,
-      };
-    }
-    if (inserted && !inserted.error) {
-      inserted.debugger_error = insertedText.error;
-      return inserted;
-    }
-    return {
-      error: insertedText.error,
-      clipboard: clipboardWrite.ok === true,
-      fallback_from: inserted && inserted.mode ? inserted.mode : inserted && inserted.error ? "error" : "none",
-      target: inserted && inserted.target ? inserted.target : null,
-    };
-  }
-
   if (shouldTryTrustedPaste) {
     const trusted = await trustedPasteViaDebugger(tabId);
     if (trusted.ok) {
@@ -721,7 +1275,7 @@ async function cmdPaste(msg) {
         verified: true,
       };
     }
-    const insertedText = await insertTextViaDebugger(tabId, plainText);
+    const insertedText = await insertTextViaCliExec(tabId, plainText);
     if (insertedText.ok) {
       return {
         ok: true,
@@ -755,6 +1309,27 @@ async function cmdSetValue(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
   const selector = msg.selector || "";
   const text = typeof msg.text === "string" ? msg.text : "";
+
+  const isGoogleDocs = await shouldPreferInsertText(tabId);
+  if (isGoogleDocs) {
+    await focusTabWindow(tabId);
+    await clickGoogleDocsEditorViaDebugger(tabId);
+    await delay(120);
+    await focusGoogleDocsTextSink(tabId);
+    const before = await getDocsSnapshot(tabId);
+    const insertedText = await insertTextViaCliExec(tabId, text);
+    await delay(150);
+    const after = await getDocsSnapshot(tabId);
+    if (insertedText.ok) {
+      return {
+        ok: true,
+        mode: insertedText.mode,
+        length: text.length,
+        verified: after !== before,
+      };
+    }
+    return { error: insertedText.error };
+  }
 
   return await executeScriptResult(
     tabId,
@@ -1234,15 +1809,22 @@ function setIconForScheme(dark) {
 }
 
 async function ensureOffscreen() {
+  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
   const contexts = await chrome.runtime.getContexts({
     contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [offscreenUrl],
   });
   if (contexts.length === 0) {
-    await chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["MATCH_MEDIA"],
-      justification: "Detect light/dark color scheme for toolbar icon",
-    });
+    if (!creatingOffscreen) {
+      creatingOffscreen = chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["MATCH_MEDIA", "CLIPBOARD"],
+        justification: "Detect theme and write clipboard content for browser automation",
+      }).finally(() => {
+        creatingOffscreen = null;
+      });
+    }
+    await creatingOffscreen;
   }
 }
 

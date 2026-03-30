@@ -267,6 +267,54 @@ pub(super) async fn cmd_desktop_quit(ctx: &mut AppContext, args: &[String]) -> R
     }
 }
 
+pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    bail!("Desktop automation is only available on macOS");
+
+    #[cfg(target_os = "macos")]
+    {
+        let spec = args.join(" ");
+        if spec.is_empty() {
+            bail!("Usage: desktop-press <key|combo>");
+        }
+        crate::desktop::input::press_chord(&spec)?;
+        out!(ctx, "Pressed {}", spec);
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    bail!("Desktop automation is only available on macOS");
+
+    #[cfg(target_os = "macos")]
+    {
+        let text = args.join(" ");
+        if text.is_empty() {
+            bail!("Usage: desktop-type <text>");
+        }
+        crate::desktop::input::type_text(&text)?;
+        out!(ctx, "Typed {} chars", text.chars().count());
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_paste(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    bail!("Desktop automation is only available on macOS");
+
+    #[cfg(target_os = "macos")]
+    {
+        let text = args.join(" ");
+        if text.is_empty() {
+            bail!("Usage: desktop-paste <text>");
+        }
+        crate::desktop::input::paste_text(&text)?;
+        out!(ctx, "Pasted {} chars", text.chars().count());
+        Ok(())
+    }
+}
+
 pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     bail!("Desktop automation is only available on macOS");

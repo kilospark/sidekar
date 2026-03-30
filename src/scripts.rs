@@ -522,3 +522,28 @@ pub const DISMISS_POPUPS_SCRIPT: &str = r#"(function() {
     }
     return 'none';
 })()"#;
+
+pub fn deep_query_expr(selector: &str) -> std::result::Result<String, anyhow::Error> {
+    Ok(format!(
+        r#"(function() {{
+          const sel = {sel};
+          function find(root) {{
+            try {{
+              const direct = root.querySelector(sel);
+              if (direct) return direct;
+            }} catch (e) {{
+              return {{ error: 'Invalid CSS selector: ' + sel + '. Use CSS selectors (#id, .class, tag).' }};
+            }}
+            for (const el of root.querySelectorAll('*')) {{
+              if (el.shadowRoot) {{
+                const found = find(el.shadowRoot);
+                if (found) return found;
+              }}
+            }}
+            return null;
+          }}
+          return find(document);
+        }})()"#,
+        sel = serde_json::to_string(selector)?
+    ))
+}
