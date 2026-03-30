@@ -10,6 +10,7 @@ use crate::message::AgentId;
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Shell-safe single-quote escaping: wraps in single quotes, escaping any
@@ -23,6 +24,29 @@ fn shell_quote(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn shell_function_bootstrap(shell: &str) -> Option<(String, String)> {
+    let shell_name = Path::new(shell).file_name()?.to_str()?;
+    let home = dirs::home_dir()?;
+
+    match shell_name {
+        "zsh" => {
+            let rc = shell_quote(&home.join(".zshrc").to_string_lossy());
+            Some((
+                "-c".into(),
+                format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; "),
+            ))
+        }
+        "bash" => {
+            let rc = shell_quote(&home.join(".bashrc").to_string_lossy());
+            Some((
+                "-c".into(),
+                format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; shopt -s expand_aliases; "),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// Check if a command can be resolved as an external agent (binary, alias, or function).
@@ -305,13 +329,20 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
                 cmd_str.push(' ');
                 cmd_str.push_str(&shell_quote(arg));
             }
+            let (shell_flag, shell_prelude) =
+                shell_function_bootstrap(&shell).unwrap_or_else(|| ("-ic".into(), String::new()));
+            let full_cmd = format!("{shell_prelude}{cmd_str}");
             let shell_c = std::ffi::CString::new(shell.as_str()).context("invalid shell path")?;
             let c_args = vec![
                 shell_c.clone(),
-                std::ffi::CString::new("-ic").unwrap(),
-                std::ffi::CString::new(cmd_str.as_str()).context("invalid command string")?,
+                std::ffi::CString::new(shell_flag.clone()).unwrap(),
+                std::ffi::CString::new(full_cmd.as_str()).context("invalid command string")?,
             ];
-            (format!("{shell} -ic '{agent} ...'"), shell_c, c_args)
+            (
+                format!("{shell} {shell_flag} '{agent} ...'"),
+                shell_c,
+                c_args,
+            )
         }
     };
 
@@ -432,10 +463,6 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // last-session file is updated. We read it and update the cron context.
     let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
 
-    // Set terminal title to show agent nickname and name
-    // OSC 0 sets both window title and icon name; works in all major terminals
-    eprint!("\x1b]0;{} ({}) — {}\x07", nick, identity.name, agent);
-
     // Enter raw mode (must happen after eprintln messages)
     let raw_guard = RawModeGuard::enter()?;
 
@@ -444,9 +471,6 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
-
-    // Reset terminal title
-    eprint!("\x1b]0;\x07");
 
     session_watcher.abort();
     crate::poller::shutdown_poller();
@@ -763,84 +787,6 @@ fn filter_osc_color_sequences(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     }
 }
 
-/// Filter terminal UI/query response sequences from stdin.
-/// These are terminal-generated control responses, not user keystrokes:
-/// - focus reporting: CSI I / CSI O
-/// - cursor/status responses: CSI <row>;<col> R
-/// - window reports: CSI ... t
-/// - device attribute responses: CSI ? ... c
-fn filter_terminal_ui_sequences(data: &[u8], carry: &mut Vec<u8>) -> Vec<u8> {
-    let mut combined = Vec::with_capacity(carry.len() + data.len());
-    if !carry.is_empty() {
-        combined.extend_from_slice(carry);
-        carry.clear();
-    }
-    combined.extend_from_slice(data);
-
-    let mut out = Vec::with_capacity(combined.len());
-    let mut i = 0;
-    while i < combined.len() {
-        if combined[i] == 0x1b {
-            if i + 1 >= combined.len() {
-                carry.extend_from_slice(&combined[i..]);
-                break;
-            }
-            if combined[i + 1] == b'[' {
-                if i + 2 >= combined.len() {
-                    carry.extend_from_slice(&combined[i..]);
-                    break;
-                }
-
-                if combined[i + 2] == b'I' || combined[i + 2] == b'O' {
-                    i += 3;
-                    continue;
-                }
-
-                let mut j = i + 2;
-                let mut question = false;
-                if combined[j] == b'?' {
-                    question = true;
-                    j += 1;
-                }
-
-                let mut saw_digit_or_sep = false;
-                while j < combined.len() {
-                    let b = combined[j];
-                    if b.is_ascii_digit() || b == b';' {
-                        saw_digit_or_sep = true;
-                        j += 1;
-                        continue;
-                    }
-                    break;
-                }
-
-                if j >= combined.len() {
-                    carry.extend_from_slice(&combined[i..]);
-                    break;
-                }
-
-                let final_byte = combined[j];
-                let is_filtered = saw_digit_or_sep
-                    && match final_byte {
-                        b'R' | b't' => true,
-                        b'c' => question,
-                        _ => false,
-                    };
-
-                if is_filtered {
-                    i = j + 1;
-                    continue;
-                }
-            }
-        }
-
-        out.push(combined[i]);
-        i += 1;
-    }
-
-    out
-}
-
 /// Rewrite OSC 0/2 title sequences (ESC ] 0; ... BEL / ESC ] 2; ... BEL)
 /// to prepend the nick prefix, so the terminal title always shows the agent nickname.
 fn rewrite_osc_titles<'a>(data: &'a [u8], prefix: &str) -> std::borrow::Cow<'a, [u8]> {
@@ -914,9 +860,6 @@ async fn event_loop(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
 
-    // Prefix to prepend to any OSC title sequences from the child
-    let nick_prefix = format!("{nick} — ");
-
     let master_fd = master.as_raw_fd();
 
     // Wrap master fd for async I/O
@@ -962,8 +905,6 @@ async fn event_loop(
     // Accumulates stdin bytes; when CR/LF is seen, checks for @sidekar prefix.
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut intercepting = false; // true when line_buf starts with "@sidekar"
-    let mut terminal_ui_seq_carry: Vec<u8> = Vec::with_capacity(32);
-
     // Split tunnel into sender + receiver (if connected)
     let (tunnel_tx, mut tunnel_rx) = match tunnel {
         Some((tx, rx)) => (Some(tx), Some(rx)),
@@ -1035,10 +976,16 @@ async fn event_loop(
                     Ok(0) | Err(_) => break, // stdin closed
                     Ok(n) => {
                         input_state.mark_activity();
-                        // Filter out OSC color responses from the terminal
-                        let filtered = filter_osc_color_sequences(&buf_in[..n]);
-                        let filtered = filter_terminal_ui_sequences(filtered.as_ref(), &mut terminal_ui_seq_carry);
-                        for &byte in &filtered {
+                        let chunk = &buf_in[..n];
+
+                        // Codex probes the terminal on startup and expects the
+                        // real terminal's responses back on stdin unchanged.
+                        if chunk.contains(&0x1b) {
+                            let _ = write_all_fd(master_fd, chunk);
+                            continue;
+                        }
+
+                        for &byte in chunk {
                             if byte == b'\r' || byte == b'\n' {
                                 if intercepting {
                                     // Handle the @sidekar command locally
@@ -1130,18 +1077,19 @@ async fn event_loop(
                         }) {
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
-                                // Filter OSC color sequences and rewrite title sequences
-                                let filtered = filter_osc_color_sequences(raw);
-                                let data = rewrite_osc_titles(&filtered, &nick_prefix);
-                                // Write to local stdout
-                                if stdout.write_all(&data).await.is_err() {
+                                // For local PTY sessions, Sidekar should behave
+                                // like a transparent wrapper.
+                                if stdout.write_all(raw).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
 
-                                // Fan-out to tunnel (non-blocking, best-effort) with filtered bytes
+                                // Normalize title/color control sequences only
+                                // for the relay-backed web terminal.
                                 if let Some(ref tx) = tunnel_tx {
-                                    tx.send_data(filtered.into_owned());
+                                    let filtered = filter_osc_color_sequences(raw);
+                                    let tunnel_data = rewrite_osc_titles(&filtered, nick).into_owned();
+                                    tx.send_data(tunnel_data);
                                 }
                             }
                             Ok(Err(_)) => break,
