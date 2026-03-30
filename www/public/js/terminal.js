@@ -35,9 +35,6 @@
 
   var fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
-  // UMD build exports the class as SerializeAddon.SerializeAddon (same pattern as WebLinksAddon).
-  var serializeAddon = new SerializeAddon.SerializeAddon();
-  term.loadAddon(serializeAddon);
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
 
@@ -156,53 +153,10 @@
     statusText.textContent = text;
   }
 
-  // --- Relay replay buffer: defer initial snapshot; merge on scroll-up or on-demand ---
+  // --- Initial remote scrollback + live PTY stream ---
   var sessionProtocolReady = false;
   var legacyRelay = false;
-  var expectReplayBytes = 0;
-  var expectHistoryBytes = 0;
-  var pendingReplay = null;
-  var initialReplayMerged = false;
-  var historyFetchInFlight = false;
-  var viewportScrollAttached = false;
-
-  function injectReplayBeforeCurrentBuffer(replayBytes) {
-    if (!replayBytes || replayBytes.length === 0) return;
-    // Serialize entire buffer (active + scrollback); omit options = full buffer.
-    var live = serializeAddon.serialize();
-    term.reset();
-    term.write(replayBytes);
-    term.write(live);
-  }
-
-  function tryFetchHistoryOnScroll() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (historyFetchInFlight) return;
-
-    if (pendingReplay && pendingReplay.length > 0 && !initialReplayMerged) {
-      injectReplayBeforeCurrentBuffer(pendingReplay);
-      pendingReplay = null;
-      initialReplayMerged = true;
-      return;
-    }
-
-    historyFetchInFlight = true;
-    ws.send(JSON.stringify({ type: "history", v: 1 }));
-  }
-
-  function attachViewportScrollListener() {
-    if (viewportScrollAttached) return;
-    var vp = term.element && term.element.querySelector(".xterm-viewport");
-    if (!vp) return;
-    viewportScrollAttached = true;
-    var scrollTimer = null;
-    vp.addEventListener("scroll", function () {
-      if (scrollTimer) clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(function () {
-        if (vp.scrollTop < 48) tryFetchHistoryOnScroll();
-      }, 100);
-    });
-  }
+  var expectScrollbackBytes = 0;
 
   function connect() {
     if (reconnectTimer) {
@@ -237,12 +191,7 @@
           setStatus("connected", "connected");
           sessionProtocolReady = false;
           legacyRelay = false;
-          expectReplayBytes = 0;
-          expectHistoryBytes = 0;
-          pendingReplay = null;
-          initialReplayMerged = false;
-          historyFetchInFlight = false;
-          attachViewportScrollListener();
+          expectScrollbackBytes = 0;
         };
 
         ws.onmessage = function (event) {
@@ -251,15 +200,7 @@
               var j = JSON.parse(event.data);
               if (j.type === "session" && j.v === 1) {
                 sessionProtocolReady = true;
-                expectReplayBytes = j.replay_len | 0;
-                return;
-              }
-              if (j.type === "history" && j.v === 1) {
-                if (j.empty) {
-                  historyFetchInFlight = false;
-                  return;
-                }
-                expectHistoryBytes = j.bytes | 0;
+                expectScrollbackBytes = j.scrollback_bytes | 0;
                 return;
               }
             } catch (e) {}
@@ -278,22 +219,12 @@
             return;
           }
 
-          // Replay snapshot: show immediately. (Deferring only on scroll left a quiet PTY looking "blank".)
-          if (expectReplayBytes > 0) {
-            expectReplayBytes = 0;
-            pendingReplay = null;
-            initialReplayMerged = true;
-            var stickReplay = isViewportNearBottom();
+          if (expectScrollbackBytes > 0) {
+            expectScrollbackBytes = 0;
+            var stickScrollback = isViewportNearBottom();
             term.write(u8, function () {
-              if (stickReplay) term.scrollToBottom();
+              if (stickScrollback) term.scrollToBottom();
             });
-            return;
-          }
-
-          if (expectHistoryBytes > 0) {
-            expectHistoryBytes = 0;
-            historyFetchInFlight = false;
-            injectReplayBeforeCurrentBuffer(u8);
             return;
           }
 

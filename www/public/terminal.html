@@ -152,9 +152,9 @@ body.terminal-layout-fixed {
 <body>
   <div id="status-bar">
     <a id="back-link" href="/dashboard">&larr; dashboard</a>
-    <label id="layout-toggle" title="Adaptive: xterm fills the window. Fixed: 80×24 cells (typical terminal), centered.">
+    <label id="layout-toggle" title="Adaptive view: optimize the browser layout for the available space. Fixed view: centered 80×24 presentation. This does not resize the remote terminal.">
       <input type="checkbox" id="layout-adaptive" checked />
-      <span>Fit terminal to browser</span>
+      <span>Adaptive view</span>
     </label>
     <div id="status"><span id="status-dot"></span> <span id="status-text">connecting...</span></div>
   </div>
@@ -164,7 +164,6 @@ body.terminal-layout-fixed {
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-serialize@0/lib/addon-serialize.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.js"></script>
   <script src="/js/terminal.js"></script>
 </body>

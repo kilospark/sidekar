@@ -272,7 +272,7 @@ async fn handle_viewer_socket(
     state: AppState,
 ) {
     // Add viewer to session
-    let (replay, mut viewer_rx, tunnel_tx, viewer_id) =
+    let (scrollback, mut viewer_rx, tunnel_tx, viewer_id) =
         match state.registry.add_viewer(&session_id, &user_id).await {
             Some(v) => v,
             None => {
@@ -285,12 +285,12 @@ async fn handle_viewer_socket(
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Protocol v1: first frame is JSON so the browser can defer replay until the user scrolls up.
-    let replay_len = replay.len();
+    // Protocol v1: send a short session hello, then the current scrollback snapshot once.
+    let scrollback_len = scrollback.len();
     let session_hello = serde_json::json!({
         "type": "session",
         "v": 1,
-        "replay_len": replay_len,
+        "scrollback_bytes": scrollback_len,
     });
     if ws_tx
         .send(Message::Text(session_hello.to_string().into()))
@@ -303,9 +303,9 @@ async fn handle_viewer_socket(
             .await;
         return;
     }
-    if replay_len > 0 {
+    if scrollback_len > 0 {
         if ws_tx
-            .send(Message::Binary(Bytes::from(replay)))
+            .send(Message::Binary(Bytes::from(scrollback)))
             .await
             .is_err()
         {
@@ -332,43 +332,7 @@ async fn handle_viewer_socket(
                     Some(Ok(Message::Binary(data))) => {
                         let _ = tunnel_tx.send(crate::registry::TunnelMsg::Data(data.to_vec()));
                     }
-                    Some(Ok(Message::Text(text))) => {
-                        // Web terminal: fetch relay replay buffer (PTY scrollback is not available remotely).
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if v.get("type").and_then(|t| t.as_str()) == Some("history")
-                                && v.get("v").and_then(|x| x.as_u64()) == Some(1)
-                            {
-                                let snap = state.registry.replay_snapshot(&session_id).await;
-                                if snap.is_empty() {
-                                    let ack = serde_json::json!({
-                                        "type": "history",
-                                        "v": 1,
-                                        "empty": true,
-                                    });
-                                    let _ = ws_tx
-                                        .send(Message::Text(ack.to_string().into()))
-                                        .await;
-                                } else {
-                                    let n = snap.len();
-                                    let hdr = serde_json::json!({
-                                        "type": "history",
-                                        "v": 1,
-                                        "empty": false,
-                                        "bytes": n,
-                                    });
-                                    if ws_tx
-                                        .send(Message::Text(hdr.to_string().into()))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                    let _ = ws_tx.send(Message::Binary(Bytes::from(snap))).await;
-                                }
-                                continue;
-                            }
-                        }
-                    }
+                    Some(Ok(Message::Text(_text))) => {}
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;

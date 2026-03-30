@@ -4,6 +4,12 @@
 
 Use the **existing PTY WebSocket tunnel** (`/tunnel`) to carry a second logical channel (**bus**) between machines for the same **sidekar.dev user**, without breaking the web terminal (PTY binary path).
 
+Important framing:
+
+- The relay/viewer path should preserve the raw PTY stream as transport.
+- The browser terminal is a **best-effort renderer** of that stream, optimized for usability rather than perfect reproduction of the local terminal.
+- The local PTY session is the source of truth; viewer-side normalization is acceptable when needed for browser compatibility, but local PTY behavior should stay transparent.
+
 ## Wire format (v1)
 
 | Direction | PTY | Bus (multiplex) |
