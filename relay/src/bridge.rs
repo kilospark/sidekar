@@ -86,6 +86,8 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
             register_msg.hostname,
             register_msg.nickname,
             multiplex,
+            register_msg.cols.unwrap_or(80),
+            register_msg.rows.unwrap_or(24),
             tunnel_tx,
         )
         .await;
@@ -123,6 +125,17 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                 state
                                     .registry
                                     .forward_bus_to_peers(&session_id, &text)
+                                    .await;
+                                continue;
+                            }
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("pty")
+                                && v.get("event").and_then(|x| x.as_str()) == Some("resize")
+                            {
+                                let cols = v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16;
+                                let rows = v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16;
+                                state
+                                    .registry
+                                    .update_terminal_size(&session_id, cols, rows)
                                     .await;
                                 continue;
                             }
@@ -272,7 +285,7 @@ async fn handle_viewer_socket(
     state: AppState,
 ) {
     // Add viewer to session
-    let (scrollback, mut viewer_rx, tunnel_tx, viewer_id) =
+    let (scrollback, terminal_size, mut viewer_rx, tunnel_tx, viewer_id) =
         match state.registry.add_viewer(&session_id, &user_id).await {
             Some(v) => v,
             None => {
@@ -291,6 +304,8 @@ async fn handle_viewer_socket(
         "type": "session",
         "v": 1,
         "scrollback_bytes": scrollback_len,
+        "cols": terminal_size.cols,
+        "rows": terminal_size.rows,
     });
     if ws_tx
         .send(Message::Text(session_hello.to_string().into()))
@@ -321,9 +336,18 @@ async fn handle_viewer_socket(
     loop {
         tokio::select! {
             // Data from tunnel → viewer
-            Some(data) = viewer_rx.recv() => {
-                if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
-                    break;
+            Some(msg) = viewer_rx.recv() => {
+                match msg {
+                    crate::registry::ViewerMsg::Data(data) => {
+                        if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
+                            break;
+                        }
+                    }
+                    crate::registry::ViewerMsg::Control(text) => {
+                        if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
             // Data from viewer → tunnel

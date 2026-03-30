@@ -8,6 +8,12 @@ const SCROLLBACK_BUFFER_SIZE: usize = 512 * 1024;
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const SESSION_TTL_SECS: i64 = 90; // sessions expire if no heartbeat for 90s
 
+#[derive(Clone, Copy)]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
 /// Message sent to the tunnel WebSocket from viewers or peer bus relay.
 pub enum TunnelMsg {
     Data(Vec<u8>),
@@ -18,7 +24,12 @@ pub enum TunnelMsg {
 /// A connected viewer.
 pub struct ViewerHandle {
     pub id: String,
-    pub tx: mpsc::UnboundedSender<Vec<u8>>,
+    pub tx: mpsc::UnboundedSender<ViewerMsg>,
+}
+
+pub enum ViewerMsg {
+    Data(Vec<u8>),
+    Control(String),
 }
 
 /// Live connection state for a session (in-memory only).
@@ -30,6 +41,7 @@ pub struct LiveSession {
     pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     pub viewers: Arc<RwLock<Vec<ViewerHandle>>>,
     pub scrollback_buffer: Arc<RwLock<ScrollbackBuffer>>,
+    pub terminal_size: Arc<RwLock<TerminalSize>>,
 }
 
 /// A simple ring buffer that keeps the most recent PTY output bytes for web scrollback.
@@ -119,6 +131,8 @@ impl Registry {
         hostname: String,
         nickname: Option<String>,
         multiplex: bool,
+        cols: u16,
+        rows: u16,
         tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     ) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -150,6 +164,7 @@ impl Registry {
             tunnel_tx,
             viewers: Arc::new(RwLock::new(Vec::new())),
             scrollback_buffer: Arc::new(RwLock::new(ScrollbackBuffer::new(SCROLLBACK_BUFFER_SIZE))),
+            terminal_size: Arc::new(RwLock::new(TerminalSize { cols, rows })),
         };
         self.live
             .write()
@@ -235,7 +250,8 @@ impl Registry {
         user_id: &str,
     ) -> Option<(
         Vec<u8>,
-        mpsc::UnboundedReceiver<Vec<u8>>,
+        TerminalSize,
+        mpsc::UnboundedReceiver<ViewerMsg>,
         mpsc::UnboundedSender<TunnelMsg>,
         String,
     )> {
@@ -252,6 +268,7 @@ impl Registry {
         // Keep the scrollback snapshot and viewer registration contiguous so the
         // viewer sees a continuous tail of PTY output with no attach-time gap.
         let scrollback_guard = session.scrollback_buffer.read().await;
+        let terminal_size = *session.terminal_size.read().await;
         let mut viewers = session.viewers.write().await;
         let scrollback = scrollback_guard.snapshot();
         viewers.push(ViewerHandle {
@@ -262,7 +279,7 @@ impl Registry {
         drop(scrollback_guard);
 
         let tunnel_tx = session.tunnel_tx.clone();
-        Some((scrollback, rx, tunnel_tx, viewer_id))
+        Some((scrollback, terminal_size, rx, tunnel_tx, viewer_id))
     }
 
     /// Remove a viewer from a session.
@@ -284,7 +301,26 @@ impl Registry {
             session.scrollback_buffer.write().await.push(data);
             let viewers = session.viewers.read().await;
             for viewer in viewers.iter() {
-                let _ = viewer.tx.send(data.to_vec());
+                let _ = viewer.tx.send(ViewerMsg::Data(data.to_vec()));
+            }
+        }
+    }
+
+    pub async fn update_terminal_size(&self, session_id: &str, cols: u16, rows: u16) {
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
+            *session.terminal_size.write().await = TerminalSize { cols, rows };
+            let msg = serde_json::json!({
+                "type": "pty",
+                "v": 1,
+                "event": "resize",
+                "cols": cols,
+                "rows": rows,
+            })
+            .to_string();
+            let viewers = session.viewers.read().await;
+            for viewer in viewers.iter() {
+                let _ = viewer.tx.send(ViewerMsg::Control(msg.clone()));
             }
         }
     }

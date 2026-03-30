@@ -33,113 +33,42 @@
     },
   });
 
-  var fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
 
-  var LAYOUT_KEY = "terminalLayoutAdaptive";
-  var FIXED_COLS = 80;
-  var FIXED_ROWS = 24;
-
-  var layoutAdaptiveCheckbox = document.getElementById("layout-adaptive");
   var terminalWrap = document.getElementById("terminal-wrap");
-  /** Debounce viewport-driven fits; rapid resize + fit() caused flicker / duplicated lines. */
-  var fitDebounceTimer = null;
-  /** Skip fit when container dimensions are unchanged (resize storms). */
-  var lastAdaptiveFitKey = "";
-  /** Prevent concurrent layout operations. */
-  var layoutInProgress = false;
+  var remoteCols = 80;
+  var remoteRows = 24;
+  var layoutTimer = null;
 
-  function loadLayoutPreference() {
-    var stored = localStorage.getItem(LAYOUT_KEY);
-    if (stored === "0") {
-      layoutAdaptiveCheckbox.checked = false;
-    } else if (stored === "1") {
-      layoutAdaptiveCheckbox.checked = true;
-    }
-  }
-
-  function fitTerminalAdaptive() {
+  function syncTerminalFrame() {
     var container = document.getElementById("terminal");
-    container.style.height = "calc(100vh - 32px)";
-    container.style.width = "100%";
-    var w = container.clientWidth;
-    var h = container.clientHeight;
-    if (w <= 0 || h <= 0) return;
-    var key = w + "x" + h;
-    if (key === lastAdaptiveFitKey) return;
-    lastAdaptiveFitKey = key;
-    fitAddon.fit();
-  }
-
-  function scheduleAdaptiveFit() {
-    if (fitDebounceTimer) clearTimeout(fitDebounceTimer);
-    fitDebounceTimer = setTimeout(function () {
-      fitDebounceTimer = null;
-      if (!layoutAdaptiveCheckbox.checked) return;
-      lastAdaptiveFitKey = "";
-      fitTerminalAdaptive();
-    }, 120);
-  }
-
-  function applyFixedLayout() {
-    var container = document.getElementById("terminal");
-    terminalWrap.className = "layout-fixed";
-    container.style.width = "";
-    container.style.height = "";
-    term.resize(FIXED_COLS, FIXED_ROWS);
+    term.resize(remoteCols, remoteRows);
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         var el = term.element;
         if (!el) return;
         var w = el.offsetWidth;
         var h = el.offsetHeight;
-        if (w > 0 && h > 0) {
+        if (w > 0) {
           container.style.width = w + "px";
+          terminalWrap.style.justifyContent =
+            w <= terminalWrap.clientWidth - 24 ? "center" : "flex-start";
+        }
+        if (h > 0) {
           container.style.height = h + "px";
         }
       });
     });
   }
 
-  function applyLayout() {
-    if (layoutInProgress) return;
-    layoutInProgress = true;
-    
-    var adaptive = layoutAdaptiveCheckbox.checked;
-    localStorage.setItem(LAYOUT_KEY, adaptive ? "1" : "0");
-    var container = document.getElementById("terminal");
-    if (adaptive) {
-      document.body.classList.remove("terminal-layout-fixed");
-      terminalWrap.className = "layout-adaptive";
-      container.style.width = "";
-      container.style.height = "";
-      lastAdaptiveFitKey = "";
-      // Let CSS settle before measuring; avoids fit/resize feedback with the checkbox toggle.
-      requestAnimationFrame(function () {
-        requestAnimationFrame(function () {
-          fitTerminalAdaptive();
-          layoutInProgress = false;
-        });
-      });
-    } else {
-      document.body.classList.add("terminal-layout-fixed");
-      lastAdaptiveFitKey = "";
-      applyFixedLayout();
-      layoutInProgress = false;
-    }
+  function setRemoteGeometry(cols, rows) {
+    if (cols > 0) remoteCols = cols;
+    if (rows > 0) remoteRows = rows;
+    syncTerminalFrame();
   }
 
-  var layoutDebounceTimer = null;
-  function onLayoutCheckboxChange() {
-    if (layoutDebounceTimer) clearTimeout(layoutDebounceTimer);
-    layoutDebounceTimer = setTimeout(applyLayout, 50);
-  }
-
-  loadLayoutPreference();
-  layoutAdaptiveCheckbox.addEventListener("change", onLayoutCheckboxChange);
-  applyLayout();
+  syncTerminalFrame();
 
   function isViewportNearBottom() {
     var vp = term.element && term.element.querySelector(".xterm-viewport");
@@ -201,6 +130,11 @@
               if (j.type === "session" && j.v === 1) {
                 sessionProtocolReady = true;
                 expectScrollbackBytes = j.scrollback_bytes | 0;
+                setRemoteGeometry(j.cols | 0, j.rows | 0);
+                return;
+              }
+              if (j.type === "pty" && j.v === 1 && j.event === "resize") {
+                setRemoteGeometry(j.cols | 0, j.rows | 0);
                 return;
               }
             } catch (e) {}
@@ -263,18 +197,20 @@
   });
 
   window.addEventListener("resize", function () {
-    if (layoutInProgress) return;
-    if (layoutAdaptiveCheckbox.checked) {
-      scheduleAdaptiveFit();
-    } else {
-      applyFixedLayout();
-    }
+    if (layoutTimer) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(function () {
+      layoutTimer = null;
+      syncTerminalFrame();
+    }, 80);
   });
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
-      if (layoutInProgress) return;
-      if (layoutAdaptiveCheckbox.checked) scheduleAdaptiveFit();
+      if (layoutTimer) clearTimeout(layoutTimer);
+      layoutTimer = setTimeout(function () {
+        layoutTimer = null;
+        syncTerminalFrame();
+      }, 80);
     });
   }
 
