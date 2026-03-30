@@ -71,6 +71,7 @@ pub mod pty;
 pub mod rtk;
 pub mod scripts;
 pub mod skill;
+pub mod tasks;
 pub mod transport;
 pub mod tunnel;
 pub mod types;
@@ -2351,6 +2352,31 @@ sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|deta
     sidekar memory compact
     sidekar memory rate 12 helpful
     sidekar memory detail 12"
+        }
+
+        "tasks" => {
+            "\
+sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
+
+  Local SQLite-backed task list with dependency edges.
+
+  Subcommands:
+    add <title> [--notes=...] [--priority=N]   Create a task
+    list [--status=open|done|all] [--ready]    List tasks
+    done <id>                                  Mark task done
+    reopen <id>                                Mark task open again
+    delete <id>                                Delete a task
+    show <id>                                  Show full task details
+    depend <task_id> <depends_on_id>           Add a dependency edge
+    undepend <task_id> <depends_on_id>         Remove a dependency edge
+    deps <id>                                  Show dependency relationships
+
+  Examples:
+    sidekar tasks add \"Ship task graph\" --priority=2
+    sidekar tasks list --ready
+    sidekar tasks depend 12 8
+    sidekar tasks done 8
+    sidekar tasks show 12"
         }
 
         "cron" => {
