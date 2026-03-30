@@ -11,6 +11,9 @@ pub mod monitor;
 mod session;
 pub mod totp;
 
+use crate::memory::*;
+use crate::pakt::*;
+use crate::rtk::*;
 use batch::*;
 use core::*;
 use data::*;
@@ -593,6 +596,14 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-activate" => cmd_desktop_activate(ctx, args).await,
         "desktop-quit" => cmd_desktop_quit(ctx, args).await,
         "monitor" => cmd_monitor(ctx, args).await,
+        "memory" => {
+            cmd_memory(ctx, args)?;
+            Ok(())
+        }
+        "compact" => {
+            cmd_compact(ctx, args)?;
+            Ok(())
+        }
         // Bus tools — stateless CLI versions that recover identity from env/broker
         "bus" => {
             let sub = args.first().map(String::as_str).unwrap_or("");
@@ -712,6 +723,14 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 bail!("Usage: sidekar cron delete <job-id>");
             }
             cron::cmd_cron_delete(ctx, id).await
+        }
+        "pack" => {
+            cmd_pack(ctx, args)?;
+            Ok(())
+        }
+        "unpack" => {
+            cmd_unpack(ctx, args)?;
+            Ok(())
         }
         // TOTP commands
         "totp" => {

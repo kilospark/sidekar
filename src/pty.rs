@@ -134,12 +134,28 @@ fn fork_pty(
     Ok((master, pid))
 }
 
-/// Copy the parent terminal size to the child PTY.
-fn copy_terminal_size(master_fd: i32) -> Result<()> {
+fn current_terminal_size() -> Option<(u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 {
-        return Ok(()); // not a terminal, skip
+        return None;
     }
+    if ws.ws_col == 0 || ws.ws_row == 0 {
+        return None;
+    }
+    Some((ws.ws_col, ws.ws_row))
+}
+
+/// Copy the parent terminal size to the child PTY.
+fn copy_terminal_size(master_fd: i32) -> Result<()> {
+    let Some((cols, rows)) = current_terminal_size() else {
+        return Ok(());
+    };
+    let ws = libc::winsize {
+        ws_col: cols,
+        ws_row: rows,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     if unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) } != 0 {
         bail!("failed to set PTY window size");
     }
@@ -428,12 +444,22 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         }
     };
 
+    let _ = crate::memory::start_agent_session(&identity.name, &cwd);
+    if let Ok(brief) = crate::memory::startup_brief(3) {
+        if !brief.trim().is_empty() {
+            eprintln!("\n{brief}\n");
+        }
+    }
+
     // Optionally establish tunnel to relay for web terminal access (dashboard / web terminal).
     let tunnel = if let Some(token) = crate::auth::auth_token() {
         let cwd_str = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".into());
-        match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str, &nick).await {
+        let (cols, rows) = current_terminal_size().unwrap_or((80, 24));
+        match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str, &nick, cols, rows)
+            .await
+        {
             Ok(t) => Some(t),
             Err(e) => {
                 crate::broker::try_log_error_event("relay_tunnel", &format!("{e:#}"), None);
@@ -493,6 +519,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     // Clean up Chrome resources owned by the child's session
     cleanup_chrome_session(&pre_fork_name).await;
 
+    let _ = crate::memory::finish_agent_session(&identity.name);
     let _ = broker::unregister_agent(&identity.name);
 
     // process::exit to terminate the poller thread immediately
@@ -953,6 +980,9 @@ async fn event_loop(
                 }
             } => {
                 let _ = copy_terminal_size(master_fd);
+                if let (Some(tx), Some((cols, rows))) = (tunnel_tx.as_ref(), current_terminal_size()) {
+                    tx.send_terminal_resize(cols, rows);
+                }
             }
 
             // SIGTERM: forward to child, exit

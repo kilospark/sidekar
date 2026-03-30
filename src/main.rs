@@ -268,7 +268,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     let mut ctx = AppContext::new()?;
 
     // Fetch encryption key from server if logged in
-    if !matches!(command.as_str(), "login") {
+    if !matches!(
+        command.as_str(),
+        "login" | "memory" | "compact" | "pack" | "unpack"
+    ) {
         if crate::auth::auth_token().is_some() {
             if let Err(e) = crate::broker::fetch_encryption_key().await {
                 eprintln!("Warning: could not fetch encryption key: {}", e);
@@ -364,6 +367,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     commands::dispatch(&mut ctx, &command, &args).await?;
+    let _ = sidekar::memory::maybe_record_cli_observation(&command, &args);
     let buffered = ctx.drain_output();
     if !buffered.is_empty() {
         print!("{buffered}");

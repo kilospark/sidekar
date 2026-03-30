@@ -26,6 +26,14 @@ fn cdp_send_timeout() -> Duration {
     Duration::from_secs(CDP_SEND_TIMEOUT_SECS.load(std::sync::atomic::Ordering::SeqCst))
 }
 
+#[cfg(test)]
+pub(crate) fn test_home_lock() -> &'static std::sync::Mutex<()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 const MAX_PENDING_EVENTS: usize = 1000;
 
 #[macro_export]
@@ -55,9 +63,12 @@ pub mod daemon;
 pub mod desktop;
 pub mod ext;
 pub mod ipc;
+pub mod memory;
 pub mod message;
+pub mod pakt;
 pub mod poller;
 pub mod pty;
+pub mod rtk;
 pub mod scripts;
 pub mod skill;
 pub mod transport;
@@ -2283,6 +2294,23 @@ sidekar bus <who|send|done> [args...]
     sidekar bus done claude-2 \"Done\" \"Please take over\""
         }
 
+        "compact" => {
+            "\
+sidekar compact <classify|filter|run> ...
+
+  RTK-inspired compaction for noisy shell output in agent workflows.
+
+  Subcommands:
+    classify <command...>   Show whether Sidekar has a built-in compactor
+    filter <command...>     Read raw output from stdin and compact it
+    run <command> [args...] Run a command, then compact stdout/stderr
+
+  Examples:
+    sidekar compact classify git status
+    cargo test 2>&1 | sidekar compact filter cargo test
+    sidekar compact run cargo test"
+        }
+
         "monitor" => {
             "\
 sidekar monitor <start|stop|status> [tab_id|all]
@@ -2295,6 +2323,34 @@ sidekar monitor <start|stop|status> [tab_id|all]
     sidekar monitor start 12345 67890
     sidekar monitor status
     sidekar monitor stop"
+        }
+
+        "memory" => {
+            "\
+sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|detail|history> ...
+
+  Local SQLite-backed memory for Sidekar agent sessions.
+  Replaces hosted memory/hook flows with in-binary storage and retrieval.
+
+  Subcommands:
+    write <type> <summary>                     Store a durable memory
+    search <query>                             Search stored memories
+    context                                    Show a startup memory brief
+    observe <tool> <summary>                   Append a raw observation
+    sessions                                   List recent memory session summaries
+    compact                                    Synthesize related project memories
+    patterns                                   Promote repeated cross-project patterns
+    rate <id> <helpful|wrong|outdated>         Adjust confidence on a memory
+    detail <id>                                Show the full memory record
+    history <id>                               Show the memory change history
+
+  Examples:
+    sidekar memory write convention \"Use Readability.js before scraping article text\"
+    sidekar memory search readability
+    sidekar memory context
+    sidekar memory compact
+    sidekar memory rate 12 helpful
+    sidekar memory detail 12"
         }
 
         "cron" => {
@@ -2424,6 +2480,33 @@ sidekar totp <add|list|get|remove> [args...]
     sidekar totp list
     sidekar totp get github alice
     sidekar totp remove 12"
+        }
+
+        "pack" => {
+            "\
+sidekar pack [path|-] [--from=json|yaml|csv]
+
+  PAKT-inspired structured packing for JSON, YAML, or CSV.
+  Sidekar replaces repeated keys with a compact dictionary and emits a reversible
+  text format that is easier to pass through agent context.
+
+  Examples:
+    sidekar pack data.json
+    sidekar pack report.yaml
+    cat rows.csv | sidekar pack --from=csv"
+        }
+
+        "unpack" => {
+            "\
+sidekar unpack [path|-] [--to=json|yaml|csv]
+
+  Restore Sidekar packed text back to JSON, YAML, or CSV.
+  Defaults to the original source format recorded in the packed header.
+
+  Examples:
+    sidekar unpack packed.txt
+    sidekar unpack packed.txt --to=json
+    cat packed.txt | sidekar unpack --to=csv"
         }
 
         "kv" => {
