@@ -6,8 +6,8 @@
 //! - cron: scheduled actions (planned)
 //! - bus-housekeeping: cleanup old messages, orphaned agents
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -82,7 +82,10 @@ pub fn ensure_running() -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    bail!("Daemon did not create socket within 4s (child PID {})", child.id());
+    bail!(
+        "Daemon did not create socket within 4s (child PID {})",
+        child.id()
+    );
 }
 
 /// Restart the daemon if it is currently running.
@@ -261,9 +264,13 @@ pub async fn run() -> Result<()> {
                     _ = sigint.recv() => {}
                 }
             }
-            (Ok(mut sigterm), Err(_)) => { let _ = sigterm.recv().await; }
-            (Err(_), Ok(mut sigint)) => { let _ = sigint.recv().await; }
-            (Err(_), Err(_)) => { std::future::pending::<()>().await }
+            (Ok(mut sigterm), Err(_)) => {
+                let _ = sigterm.recv().await;
+            }
+            (Err(_), Ok(mut sigint)) => {
+                let _ = sigint.recv().await;
+            }
+            (Err(_), Err(_)) => std::future::pending::<()>().await,
         }
         eprintln!("Daemon shutting down...");
         let _ = std::fs::remove_file(&shutdown_pid);
@@ -310,8 +317,8 @@ async fn handle_connection(
         Ok(cmd) => cmd,
         Err(e) => {
             let response = json!({"error": format!("Invalid JSON: {e}")});
-            let mut out =
-                serde_json::to_string(&response).unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
+            let mut out = serde_json::to_string(&response)
+                .unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
             out.push('\n');
             let _ = writer.write_all(out.as_bytes()).await;
             let _ = writer.flush().await;
@@ -327,7 +334,8 @@ async fn handle_connection(
             .unwrap_or("")
             .to_string();
         let ext_state = state.lock().await.ext_state.clone();
-        if let Err(e) = crate::ext::register_bridge_connection(ext_state, reader, writer, user_id).await
+        if let Err(e) =
+            crate::ext::register_bridge_connection(ext_state, reader, writer, user_id).await
         {
             eprintln!("Extension bridge registration failed: {e:#}");
         }
@@ -338,30 +346,28 @@ async fn handle_connection(
     loop {
         let cmd = match current.take() {
             Some(v) => v,
-            None => {
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let parsed = serde_json::from_str::<Value>(line.trim());
-                        line.clear();
-                        match parsed {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let response = json!({"error": format!("Invalid JSON: {e}")});
-                                let mut out = serde_json::to_string(&response)
-                                    .unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
-                                out.push('\n');
-                                if writer.write_all(out.as_bytes()).await.is_err() {
-                                    break;
-                                }
-                                let _ = writer.flush().await;
-                                continue;
+            None => match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    let parsed = serde_json::from_str::<Value>(line.trim());
+                    line.clear();
+                    match parsed {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let response = json!({"error": format!("Invalid JSON: {e}")});
+                            let mut out = serde_json::to_string(&response)
+                                .unwrap_or_else(|_| r#"{"error":"serialize"}"#.into());
+                            out.push('\n');
+                            if writer.write_all(out.as_bytes()).await.is_err() {
+                                break;
                             }
+                            let _ = writer.flush().await;
+                            continue;
                         }
                     }
-                    Err(_) => break,
                 }
-            }
+                Err(_) => break,
+            },
         };
 
         let response = handle_command(&cmd, &state).await;
@@ -384,8 +390,10 @@ const UPDATE_CHECK_INTERVAL_SECS: u64 = 3600; // 1 hour
 const STALE_MESSAGE_AGE_SECS: u64 = 3600; // 1 hour
 
 async fn housekeeping_loop() {
-    let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS));
-    let mut update_interval = tokio::time::interval(std::time::Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
+    let mut sweep_interval =
+        tokio::time::interval(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS));
+    let mut update_interval =
+        tokio::time::interval(std::time::Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
 
     // Skip first tick (fires immediately)
     sweep_interval.tick().await;
@@ -456,10 +464,7 @@ async fn check_for_update() {
     }
 }
 
-async fn handle_command(
-    cmd: &Value,
-    state: &Arc<Mutex<DaemonState>>,
-) -> Value {
+async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
     let cmd_type = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
     match cmd_type {
@@ -501,7 +506,6 @@ async fn handle_command(
 
         // TODO: cron commands (create, list, delete)
         // TODO: monitor commands (start, stop)
-
         _ => json!({"error": format!("Unknown command: {cmd_type}")}),
     }
 }

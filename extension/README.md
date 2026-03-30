@@ -22,8 +22,8 @@ sidekar ext read 42              # specific tab id
 sidekar --tab 42 ext screenshot  # same, via global flag
 sidekar ext click '#submit'
 sidekar ext paste --html '<h1>Title</h1>' --text 'Title'
-sidekar ext setvalue '.monaco-editor' 'const x = 1;'
-sidekar ext evalpage 'window.monaco?.editor?.getEditors?.()[0]?.getValue()'
+sidekar ext set-value '.monaco-editor' 'const x = 1;'
+sidekar ext eval-page 'window.monaco?.editor?.getEditors?.()[0]?.getValue()'
 sidekar ext status
 ```
 

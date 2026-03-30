@@ -18,13 +18,48 @@ pub enum ConfigKind {
 }
 
 pub static CONFIG_KEYS: &[ConfigKey] = &[
-    ConfigKey { key: "telemetry", kind: ConfigKind::Bool, default: "true", description: "Send anonymous usage counts" },
-    ConfigKey { key: "feedback", kind: ConfigKind::Bool, default: "true", description: "Allow sending feedback" },
-    ConfigKey { key: "browser", kind: ConfigKind::String, default: "", description: "Preferred browser (chrome, edge, brave, arc, vivaldi, chromium, canary)" },
-    ConfigKey { key: "auto_update", kind: ConfigKind::Bool, default: "true", description: "Auto-update on PTY launch" },
-    ConfigKey { key: "max_tabs", kind: ConfigKind::Int, default: "20", description: "Maximum open tabs per session" },
-    ConfigKey { key: "cdp_timeout_secs", kind: ConfigKind::Int, default: "60", description: "CDP command timeout in seconds" },
-    ConfigKey { key: "max_cron_jobs", kind: ConfigKind::Int, default: "10", description: "Maximum cron jobs" },
+    ConfigKey {
+        key: "telemetry",
+        kind: ConfigKind::Bool,
+        default: "true",
+        description: "Send anonymous usage counts",
+    },
+    ConfigKey {
+        key: "feedback",
+        kind: ConfigKind::Bool,
+        default: "true",
+        description: "Allow sending feedback",
+    },
+    ConfigKey {
+        key: "browser",
+        kind: ConfigKind::String,
+        default: "",
+        description: "Preferred browser (chrome, edge, brave, arc, vivaldi, chromium, canary)",
+    },
+    ConfigKey {
+        key: "auto_update",
+        kind: ConfigKind::Bool,
+        default: "true",
+        description: "Auto-update on PTY launch",
+    },
+    ConfigKey {
+        key: "max_tabs",
+        kind: ConfigKind::Int,
+        default: "20",
+        description: "Maximum open tabs per session",
+    },
+    ConfigKey {
+        key: "cdp_timeout_secs",
+        kind: ConfigKind::Int,
+        default: "60",
+        description: "CDP command timeout in seconds",
+    },
+    ConfigKey {
+        key: "max_cron_jobs",
+        kind: ConfigKind::Int,
+        default: "10",
+        description: "Maximum cron jobs",
+    },
 ];
 
 pub fn find_key(key: &str) -> Option<&'static ConfigKey> {
@@ -50,10 +85,18 @@ pub struct SidekarConfig {
     pub max_cron_jobs: usize,
 }
 
-fn default_true() -> bool { true }
-fn default_max_tabs() -> usize { 20 }
-fn default_cdp_timeout() -> u64 { 60 }
-fn default_max_cron_jobs() -> usize { 10 }
+fn default_true() -> bool {
+    true
+}
+fn default_max_tabs() -> usize {
+    20
+}
+fn default_cdp_timeout() -> u64 {
+    60
+}
+fn default_max_cron_jobs() -> usize {
+    10
+}
 
 impl Default for SidekarConfig {
     fn default() -> Self {
@@ -84,16 +127,16 @@ pub fn is_first_run() -> bool {
 /// Get a single config value, returning the default if not set.
 pub fn config_get(key: &str) -> String {
     if let Ok(conn) = crate::broker::open_db() {
-        if let Ok(val) = conn.query_row(
-            "SELECT value FROM config WHERE key = ?1",
-            [key],
-            |r| r.get::<_, String>(0),
-        ) {
+        if let Ok(val) = conn.query_row("SELECT value FROM config WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        }) {
             return val;
         }
     }
     // Return default
-    find_key(key).map(|k| k.default.to_string()).unwrap_or_default()
+    find_key(key)
+        .map(|k| k.default.to_string())
+        .unwrap_or_default()
 }
 
 /// Set a config value. Returns error if key is unknown.
@@ -118,9 +161,9 @@ pub fn config_list() -> Vec<(String, String, bool)> {
     let mut set_values = std::collections::HashMap::new();
     if let Ok(conn) = crate::broker::open_db() {
         if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM config") {
-            if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            }) {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            {
                 for row in rows.flatten() {
                     set_values.insert(row.0, row.1);
                 }
@@ -169,7 +212,11 @@ pub fn load_config() -> SidekarConfig {
     SidekarConfig {
         telemetry: get_bool("telemetry"),
         feedback: get_bool("feedback"),
-        browser: if browser_val.is_empty() { None } else { Some(browser_val) },
+        browser: if browser_val.is_empty() {
+            None
+        } else {
+            Some(browser_val)
+        },
         auto_update: get_bool("auto_update"),
         max_tabs: get_usize("max_tabs"),
         cdp_timeout_secs: get_u64("cdp_timeout_secs"),

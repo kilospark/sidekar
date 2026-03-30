@@ -29,19 +29,17 @@ impl CronSchedule {
     fn parse(expr: &str) -> Result<Self> {
         let fields: Vec<&str> = expr.split_whitespace().collect();
         if fields.len() != 5 {
-            bail!("Cron expression must have exactly 5 fields (minute hour dom month dow), got {}", fields.len());
+            bail!(
+                "Cron expression must have exactly 5 fields (minute hour dom month dow), got {}",
+                fields.len()
+            );
         }
         Ok(Self {
-            minutes: parse_field(fields[0], 0, 59)
-                .context("Invalid minute field")?,
-            hours: parse_field(fields[1], 0, 23)
-                .context("Invalid hour field")?,
-            days_of_month: parse_field(fields[2], 1, 31)
-                .context("Invalid day-of-month field")?,
-            months: parse_field(fields[3], 1, 12)
-                .context("Invalid month field")?,
-            days_of_week: parse_field(fields[4], 0, 6)
-                .context("Invalid day-of-week field")?,
+            minutes: parse_field(fields[0], 0, 59).context("Invalid minute field")?,
+            hours: parse_field(fields[1], 0, 23).context("Invalid hour field")?,
+            days_of_month: parse_field(fields[2], 1, 31).context("Invalid day-of-month field")?,
+            months: parse_field(fields[3], 1, 12).context("Invalid month field")?,
+            days_of_week: parse_field(fields[4], 0, 6).context("Invalid day-of-week field")?,
         })
     }
 
@@ -53,8 +51,6 @@ impl CronSchedule {
             && self.months.contains(&month)
             && self.days_of_week.contains(&dow)
     }
-
-
 }
 
 /// Parse a single cron field (e.g. "*/5", "1,15", "1-5", "*").
@@ -85,7 +81,10 @@ fn parse_field(field: &str, min: u32, max: u32) -> Result<Vec<u32>> {
         if part.contains('-') {
             let (range_part, step) = if part.contains('/') {
                 let sp: Vec<&str> = part.splitn(2, '/').collect();
-                (sp[0], sp[1].parse::<u32>().context("Invalid step in range")?)
+                (
+                    sp[0],
+                    sp[1].parse::<u32>().context("Invalid step in range")?,
+                )
             } else {
                 (part, 1u32)
             };
@@ -168,8 +167,7 @@ impl Drop for CronState {
     }
 }
 
-static CRON: tokio::sync::OnceCell<Mutex<Option<CronState>>> =
-    tokio::sync::OnceCell::const_new();
+static CRON: tokio::sync::OnceCell<Mutex<Option<CronState>>> = tokio::sync::OnceCell::const_new();
 
 async fn cron_cell() -> &'static Mutex<Option<CronState>> {
     CRON.get_or_init(|| async { Mutex::new(None) }).await
@@ -224,7 +222,10 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
     let mut guard = cell.lock().await;
 
     // Already running? Skip.
-    if guard.as_ref().is_some_and(|s| s.running.load(Ordering::Relaxed)) {
+    if guard
+        .as_ref()
+        .is_some_and(|s| s.running.load(Ordering::Relaxed))
+    {
         return;
     }
 
@@ -294,7 +295,10 @@ pub(crate) async fn cmd_cron_create(
     // Validate tool name if single tool
     if let CronAction::Tool { ref tool, .. } = action_parsed {
         // Block dangerous tools
-        if matches!(tool.as_str(), "cron_create" | "cron_delete" | "kill" | "uninstall") {
+        if matches!(
+            tool.as_str(),
+            "cron-create" | "cron-delete" | "kill" | "uninstall"
+        ) {
             bail!("Tool '{tool}' cannot be used in cron actions");
         }
     }
@@ -305,7 +309,9 @@ pub(crate) async fn cmd_cron_create(
         .map(|jobs| jobs.len())
         .unwrap_or(0);
     if current_count >= max_jobs {
-        bail!("Cron job limit reached ({max_jobs}). Delete a job first, or increase max_cron_jobs in config.");
+        bail!(
+            "Cron job limit reached ({max_jobs}). Delete a job first, or increase max_cron_jobs in config."
+        );
     }
 
     // Generate ID
@@ -355,13 +361,26 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
             }
             for job in jobs.iter() {
                 let name_str = job.name.as_deref().unwrap_or("(unnamed)");
-                let last_run = job.last_run_at
+                let last_run = job
+                    .last_run_at
                     .map(|ts| format!("last run: {}s ago", epoch_now().saturating_sub(ts)))
                     .unwrap_or_else(|| "never run".to_string());
-                let running_str = if job.running.load(Ordering::Relaxed) { " [running]" } else { "" };
+                let running_str = if job.running.load(Ordering::Relaxed) {
+                    " [running]"
+                } else {
+                    ""
+                };
 
-                out!(ctx, "[{}] {} — schedule: {} — target: {} — {}{}", 
-                    job.id, name_str, job.schedule_expr, job.target, last_run, running_str);
+                out!(
+                    ctx,
+                    "[{}] {} — schedule: {} — target: {} — {}{}",
+                    job.id,
+                    name_str,
+                    job.schedule_expr,
+                    job.target,
+                    last_run,
+                    running_str
+                );
 
                 // Also show action summary
                 match &job.action {
@@ -370,7 +389,11 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
                             String::new()
                         } else {
                             let s = serde_json::to_string(args).unwrap_or_default();
-                            if s.len() > 80 { format!(" {}", &s[..80]) } else { format!(" {s}") }
+                            if s.len() > 80 {
+                                format!(" {}", &s[..80])
+                            } else {
+                                format!(" {s}")
+                            }
                         };
                         out!(ctx, "  action: {tool}{args_brief}");
                     }
@@ -388,7 +411,13 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
                         } else {
                             String::new()
                         };
-                        out!(ctx, "  [{}] stats: {} runs{}", rec.id, rec.run_count, err_str);
+                        out!(
+                            ctx,
+                            "  [{}] stats: {} runs{}",
+                            rec.id,
+                            rec.run_count,
+                            err_str
+                        );
                         if let Some(ref e) = rec.last_error {
                             out!(ctx, "  [{}] last error: {}", rec.id, e);
                         }
@@ -402,11 +431,22 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
                 if records.is_empty() {
                     out!(ctx, "No active cron jobs.");
                 } else {
-                    out!(ctx, "{} persisted cron job(s) (cron loop not yet started):", records.len());
+                    out!(
+                        ctx,
+                        "{} persisted cron job(s) (cron loop not yet started):",
+                        records.len()
+                    );
                     for rec in &records {
                         let name_str = rec.name.as_deref().unwrap_or("(unnamed)");
-                        out!(ctx, "[{}] {} — schedule: {} — target: {} — {} runs",
-                            rec.id, name_str, rec.schedule, rec.target, rec.run_count);
+                        out!(
+                            ctx,
+                            "[{}] {} — schedule: {} — target: {} — {} runs",
+                            rec.id,
+                            name_str,
+                            rec.schedule,
+                            rec.target,
+                            rec.run_count
+                        );
                     }
                 }
             } else {
@@ -454,7 +494,11 @@ async fn cron_loop(
     // Align to the next minute boundary so we check exactly on the minute
     let now_secs = epoch_now();
     let secs_into_minute = now_secs % 60;
-    let wait_until_next_min = if secs_into_minute == 0 { 60 } else { 60 - secs_into_minute };
+    let wait_until_next_min = if secs_into_minute == 0 {
+        60
+    } else {
+        60 - secs_into_minute
+    };
     tokio::time::sleep(Duration::from_secs(wait_until_next_min)).await;
 
     let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -495,10 +539,9 @@ async fn cron_loop(
                 }
             }
             // Remove jobs that were deleted from broker
-            let broker_ids: std::collections::HashSet<String> =
-                broker::list_cron_jobs(true)
-                    .map(|recs| recs.into_iter().map(|r| r.id).collect())
-                    .unwrap_or_default();
+            let broker_ids: std::collections::HashSet<String> = broker::list_cron_jobs(true)
+                .map(|recs| recs.into_iter().map(|r| r.id).collect())
+                .unwrap_or_default();
             mem_jobs.retain(|j| broker_ids.contains(&j.id));
         }
 
@@ -511,7 +554,14 @@ async fn cron_loop(
             .iter()
             .filter(|j| j.schedule.matches(min, hour, dom, month, dow))
             .filter(|j| !j.running.load(Ordering::Relaxed)) // skip if still running
-            .map(|j| (j.id.clone(), j.action.clone(), j.target.clone(), j.running.clone()))
+            .map(|j| {
+                (
+                    j.id.clone(),
+                    j.action.clone(),
+                    j.target.clone(),
+                    j.running.clone(),
+                )
+            })
             .collect();
         drop(jobs_guard);
 
@@ -559,7 +609,11 @@ async fn execute_cron_job(
     target: &str,
 ) -> Result<()> {
     // Use the latest shared context (updated after browser auto-launch), fall back to initial
-    let cron_ctx = SHARED_CRON_CTX.lock().await.clone().unwrap_or_else(|| fallback_ctx.clone());
+    let cron_ctx = SHARED_CRON_CTX
+        .lock()
+        .await
+        .clone()
+        .unwrap_or_else(|| fallback_ctx.clone());
 
     // Set agent name so dispatched commands recover the PTY wrapper's bus identity
     // instead of registering a new throwaway agent.
@@ -721,7 +775,7 @@ fn local_time_components() -> (u32, u32, u32, u32, u32) {
         tm.tm_hour as u32,
         tm.tm_mday as u32,
         (tm.tm_mon + 1) as u32, // tm_mon is 0-based
-        tm.tm_wday as u32,       // 0=Sunday
+        tm.tm_wday as u32,      // 0=Sunday
     )
 }
 

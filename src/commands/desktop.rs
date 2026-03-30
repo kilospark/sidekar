@@ -61,7 +61,7 @@ fn resolve_pid_by_app_name(name: &str) -> Result<i32> {
         .map(|a| a.pid)
         .ok_or_else(|| {
             anyhow!(
-                "App '{}' not found. Run desktop-apps to see running apps.",
+                "App '{}' not found. Run `sidekar desktop apps` to see running apps.",
                 name
             )
         })
@@ -166,7 +166,7 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
         let (pid, remaining) = parse_desktop_pid_and_rest(args)?;
         let query = remaining.join(" ");
         if query.is_empty() {
-            bail!("Usage: desktop-find --app <name>|--pid <pid> <query>");
+            bail!("Usage: sidekar desktop find --app <name>|--pid <pid> <query>");
         }
         let matches = crate::desktop::native::find_elements(pid, &query)?;
         if matches.is_empty() {
@@ -233,7 +233,7 @@ pub(super) async fn cmd_desktop_launch(ctx: &mut AppContext, args: &[String]) ->
     {
         let name = args.join(" ");
         if name.is_empty() {
-            bail!("Usage: desktop-launch <app name>");
+            bail!("Usage: sidekar desktop launch <app name>");
         }
         crate::desktop::native::launch_app(&name)?;
         out!(ctx, "Launched {}", name);
@@ -275,7 +275,7 @@ pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> 
     {
         let spec = args.join(" ");
         if spec.is_empty() {
-            bail!("Usage: desktop-press <key|combo>");
+            bail!("Usage: sidekar desktop press <key|combo>");
         }
         crate::desktop::input::press_chord(&spec)?;
         out!(ctx, "Pressed {}", spec);
@@ -291,7 +291,7 @@ pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> R
     {
         let text = args.join(" ");
         if text.is_empty() {
-            bail!("Usage: desktop-type <text>");
+            bail!("Usage: sidekar desktop type <text>");
         }
         crate::desktop::input::type_text(&text)?;
         out!(ctx, "Typed {} chars", text.chars().count());
@@ -307,7 +307,7 @@ pub(super) async fn cmd_desktop_paste(ctx: &mut AppContext, args: &[String]) -> 
     {
         let text = args.join(" ");
         if text.is_empty() {
-            bail!("Usage: desktop-paste <text>");
+            bail!("Usage: sidekar desktop paste <text>");
         }
         crate::desktop::input::paste_text(&text)?;
         out!(ctx, "Pasted {} chars", text.chars().count());
@@ -324,7 +324,7 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
         let (pid, remaining) = parse_desktop_pid_and_rest(args)?;
         let query = remaining.join(" ");
         if query.is_empty() {
-            bail!("Usage: desktop-click --app <name>|--pid <pid> <query>");
+            bail!("Usage: sidekar desktop click --app <name>|--pid <pid> <query>");
         }
 
         let result = crate::desktop::native::click_element(pid, &query)?;

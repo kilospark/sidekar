@@ -7,12 +7,12 @@
 use crate::message::{AgentId, Envelope};
 use crate::*;
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
 use base64::Engine;
 use rand::Rng;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 const DB_FILE: &str = "sidekar.sqlite3";
 const LEGACY_DB_FILE: &str = "broker.sqlite3";
@@ -61,14 +61,14 @@ pub fn open_db() -> Result<Connection> {
 
 fn open() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
-    
+
     // Migrate: rename broker.sqlite3 → sidekar.sqlite3
     let legacy = legacy_db_path();
     let current = db_path();
     if legacy.exists() && !current.exists() {
         let _ = fs::rename(&legacy, &current);
     }
-    
+
     let conn = Connection::open(&current)
         .with_context(|| format!("failed to open database at {}", current.display()))?;
     conn.busy_timeout(Duration::from_secs(5))?;
@@ -672,9 +672,7 @@ fn row_to_outbound(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboundRequestR
         transport_target: row.get(5)?,
         created_at: row.get::<_, i64>(6)? as u64,
         nudge_count: row.get::<_, i64>(7)? as u32,
-        last_nudged_at: row
-            .get::<_, Option<i64>>(8)?
-            .map(|v| v as u64),
+        last_nudged_at: row.get::<_, Option<i64>>(8)?.map(|v| v as u64),
     })
 }
 
@@ -913,7 +911,10 @@ pub fn totp_add(
         match encrypt(secret) {
             Ok(enc) => enc,
             Err(e) => {
-                eprintln!("Warning: encryption key available but encrypt failed: {}. Storing plaintext.", e);
+                eprintln!(
+                    "Warning: encryption key available but encrypt failed: {}. Storing plaintext.",
+                    e
+                );
                 secret.to_string()
             }
         }
@@ -1022,7 +1023,10 @@ pub fn kv_set(key: &str, value: &str) -> Result<()> {
         match encrypt(value) {
             Ok(enc) => enc,
             Err(e) => {
-                eprintln!("Warning: encryption key available but encrypt failed: {}. Storing plaintext.", e);
+                eprintln!(
+                    "Warning: encryption key available but encrypt failed: {}. Storing plaintext.",
+                    e
+                );
                 value.to_string()
             }
         }
@@ -1129,7 +1133,10 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
         key: String,
         user_id: Option<String>,
     }
-    let body: KeyResp = resp.json().await.context("Failed to parse encryption key response")?;
+    let body: KeyResp = resp
+        .json()
+        .await
+        .context("Failed to parse encryption key response")?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(body.key.trim())
         .context("Invalid encryption key format")?;
@@ -1226,9 +1233,7 @@ fn encrypt_plaintext_rows() -> Result<()> {
 
     // Collect plaintext KV rows for this user
     let kv_rows: Vec<(i64, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, value FROM kv_store WHERE user_id IS ?1",
-        )?;
+        let mut stmt = conn.prepare("SELECT id, value FROM kv_store WHERE user_id IS ?1")?;
         let mut out = Vec::new();
         let mut rows = stmt.query(params![uid])?;
         while let Some(row) = rows.next()? {
@@ -1243,9 +1248,7 @@ fn encrypt_plaintext_rows() -> Result<()> {
 
     // Collect plaintext TOTP rows for this user
     let totp_rows: Vec<(i64, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, secret FROM totp_secrets WHERE user_id IS ?1",
-        )?;
+        let mut stmt = conn.prepare("SELECT id, secret FROM totp_secrets WHERE user_id IS ?1")?;
         let mut out = Vec::new();
         let mut rows = stmt.query(params![uid])?;
         while let Some(row) = rows.next()? {
@@ -1426,7 +1429,8 @@ pub fn error_events_recent(limit: usize) -> Result<Vec<ErrorEventRow>> {
             details: row.get(4)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 // ---------------------------------------------------------------------------

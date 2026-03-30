@@ -56,7 +56,10 @@ pub async fn device_auth_flow() -> Result<()> {
         bail!("Device auth request failed: HTTP {status} — {body}");
     }
 
-    let data: Value = resp.json().await.context("Invalid response from /api/auth/device")?;
+    let data: Value = resp
+        .json()
+        .await
+        .context("Invalid response from /api/auth/device")?;
     let device_code = data["device_code"]
         .as_str()
         .context("Missing device_code in response")?
@@ -65,9 +68,7 @@ pub async fn device_auth_flow() -> Result<()> {
         .as_str()
         .context("Missing user_code in response")?;
     let default_uri = format!("{base}/auth/device");
-    let verification_uri = data["verification_uri"]
-        .as_str()
-        .unwrap_or(&default_uri);
+    let verification_uri = data["verification_uri"].as_str().unwrap_or(&default_uri);
 
     // Step 2: Show the code and open browser
     println!();

@@ -40,12 +40,13 @@ pub(crate) async fn cmd_batch(ctx: &mut AppContext, args: &[String]) -> Result<(
             .get("tool")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("Action {} missing 'tool' field", i))?;
+        let handler = crate::command_handler(tool).unwrap_or(tool);
         let options = parse_action_options(action);
 
         // Build args from the action object. Batch-control keys are consumed here
         // and are not forwarded into the underlying command dispatcher.
-        let action_args = build_action_args(tool, action);
-        let outcome = execute_action_with_retries(ctx, tool, &action_args, options).await;
+        let action_args = build_action_args(handler, action);
+        let outcome = execute_action_with_retries(ctx, handler, &action_args, options).await;
 
         results.push(build_action_result(tool, &outcome, options));
 
@@ -56,7 +57,7 @@ pub(crate) async fn cmd_batch(ctx: &mut AppContext, args: &[String]) -> Result<(
 
         apply_inter_action_wait(
             ctx,
-            tool,
+            handler,
             &outcome,
             options.wait,
             global_delay,

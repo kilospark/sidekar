@@ -143,7 +143,9 @@ pub fn set_clipboard_text(text: &str) -> Result<()> {
             .write_all(text.as_bytes())
             .context("failed writing clipboard contents")?;
     }
-    let output = child.wait_with_output().context("failed waiting for pbcopy")?;
+    let output = child
+        .wait_with_output()
+        .context("failed waiting for pbcopy")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("pbcopy failed: {}", stderr.trim());

@@ -13,7 +13,7 @@ User-facing capabilities are grouped into **four pillars**. Other docs sometimes
 
 ## 3. Inter-agent communication and orchestration
 
-- **Bus:** Local registry and messaging (SQLite broker, Unix sockets): discovery, `bus_send`, `bus_done`, handoffs, durable queues.
+- **Bus:** Local registry and messaging (SQLite broker, Unix sockets): discovery, `bus send`, `bus done`, handoffs, durable queues.
 - **Orchestration** is the user outcome; PTY helpers (`sidekar claude`, etc.) are one way to run multi-agent workflows, not a separate pillar.
 
 ## 4. Background automation

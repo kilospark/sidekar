@@ -98,10 +98,7 @@ pub(crate) fn resolve_delivery() -> Result<Delivery> {
 }
 
 /// Start the monitor background task.
-async fn start_monitor(
-    ctx: &mut AppContext,
-    tab_ids: Vec<String>,
-) -> Result<()> {
+async fn start_monitor(ctx: &mut AppContext, tab_ids: Vec<String>) -> Result<()> {
     let cell = monitor_cell().await;
     let mut guard = cell.lock().await;
 

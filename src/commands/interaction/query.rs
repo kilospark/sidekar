@@ -157,7 +157,7 @@ pub(crate) async fn cmd_find(ctx: &mut AppContext, query: &str) -> Result<()> {
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let top = scored.into_iter().take(5).collect::<Vec<_>>();
     if top.is_empty() {
-        bail!("No elements match \"{query}\". Try: axtree -i");
+        bail!("No elements match \"{query}\". Try: ax-tree -i");
     }
 
     let (best_ref, best_score, best_el) = &top[0];

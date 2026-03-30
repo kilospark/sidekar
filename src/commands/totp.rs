@@ -17,13 +17,18 @@ pub async fn cmd_totp(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "list" => cmd_totp_list(ctx).await,
         "get" => cmd_totp_get(ctx, &args[1..]).await,
         "remove" | "delete" | "rm" => cmd_totp_remove(ctx, &args[1..]).await,
-        _ => bail!("Unknown subcommand: {}. Use: add, list, get, remove", args[0]),
+        _ => bail!(
+            "Unknown subcommand: {}. Use: add, list, get, remove",
+            args[0]
+        ),
     }
 }
 
 async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if args.len() < 3 {
-        bail!("Usage: sidekar totp add <service> <account> <secret> [--algorithm=SHA1] [--digits=6] [--period=30]");
+        bail!(
+            "Usage: sidekar totp add <service> <account> <secret> [--algorithm=SHA1] [--digits=6] [--period=30]"
+        );
     }
     let service = &args[0];
     let account = &args[1];
@@ -47,7 +52,10 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "SHA1" => Algorithm::SHA1,
         "SHA256" => Algorithm::SHA256,
         "SHA512" => Algorithm::SHA512,
-        _ => bail!("Invalid algorithm: {}. Use SHA1, SHA256, or SHA512", algorithm),
+        _ => bail!(
+            "Invalid algorithm: {}. Use SHA1, SHA256, or SHA512",
+            algorithm
+        ),
     };
 
     let secret_bytes = Secret::Encoded(secret.to_string())

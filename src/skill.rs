@@ -3,10 +3,10 @@
 //! Installs SKILL.md to the skills directory for each detected agent
 //! (Claude Code, Codex, Gemini CLI, OpenCode, Pi).
 
+use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use serde_json;
 
 const SKILL_MD: &str = include_str!("../SKILL.md");
 
@@ -141,17 +141,18 @@ pub fn remove_skill() {
             "Claude Desktop",
             xdg_config_dir().join("Claude/claude_desktop_config.json"),
         ));
-        config_files.push((
-            "ChatGPT Desktop",
-            xdg_config_dir().join("chatgpt/mcp.json"),
-        ));
+        config_files.push(("ChatGPT Desktop", xdg_config_dir().join("chatgpt/mcp.json")));
         config_files.push((
             "Cline (VSCode)",
-            xdg_config_dir().join("Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"),
+            xdg_config_dir().join(
+                "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+            ),
         ));
         config_files.push((
             "Cline (Cursor)",
-            xdg_config_dir().join("Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"),
+            xdg_config_dir().join(
+                "Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+            ),
         ));
     }
     config_files.push(("Cursor", home.join(".cursor/mcp.json")));
@@ -284,4 +285,3 @@ fn xdg_config_dir() -> PathBuf {
     }
     home_dir().join(".config")
 }
-

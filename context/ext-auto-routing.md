@@ -20,7 +20,7 @@ CLI auto-detects if the Chrome extension is connected and routes through it by d
 
 ### Why this is safe
 
-- Tab isolation already enforced: agent only reads/touches tabs it opened via `newtab`/`navigate`
+- Tab isolation already enforced: agent only reads/touches tabs it opened via `new-tab`/`navigate`
 - `close` only closes agent-owned tabs, never pre-existing ones
 - Users who install the extension are knowingly opting into real-browser control
 - Explicit `--profile` flag still gives full isolation when needed

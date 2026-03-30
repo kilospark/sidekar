@@ -9,7 +9,10 @@ pub async fn cmd_kv(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "get" => cmd_kv_get(ctx, &args[1..]).await,
         "list" | "ls" => cmd_kv_list(ctx).await,
         "delete" | "del" | "rm" => cmd_kv_delete(ctx, &args[1..]).await,
-        _ => bail!("Unknown subcommand: {}. Use: set, get, list, delete", args[0]),
+        _ => bail!(
+            "Unknown subcommand: {}. Use: set, get, list, delete",
+            args[0]
+        ),
     }
 }
 
@@ -31,8 +34,8 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let key = &args[0];
 
-    let entry = crate::broker::kv_get(key)?
-        .ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
+    let entry =
+        crate::broker::kv_get(key)?.ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
 
     out!(ctx, "{}", entry.value);
     Ok(())
