@@ -54,6 +54,8 @@ enum TunnelCommand {
     Data(Vec<u8>),
     /// Multiplex bus JSON (WebSocket text frame).
     BusText(String),
+    /// PTY control JSON (for example terminal resize updates).
+    PtyText(String),
     /// Graceful shutdown.
     Shutdown,
 }
@@ -90,6 +92,17 @@ impl TunnelSender {
         let _ = self.tx.try_send(TunnelCommand::BusText(json.to_string()));
     }
 
+    pub fn send_terminal_resize(&self, cols: u16, rows: u16) {
+        let json = serde_json::json!({
+            "ch": "pty",
+            "v": 1,
+            "event": "resize",
+            "cols": cols,
+            "rows": rows,
+        });
+        let _ = self.tx.try_send(TunnelCommand::PtyText(json.to_string()));
+    }
+
     /// Request graceful shutdown of the tunnel background task.
     pub fn shutdown(&self) {
         let _ = self.tx.try_send(TunnelCommand::Shutdown);
@@ -113,6 +126,8 @@ struct RegisterMsg<'a> {
     nickname: &'a str,
     /// 2 = multiplex (bus on text frames).
     proto: u8,
+    cols: u16,
+    rows: u16,
 }
 
 /// Relay sends JSON text frames during registration handshake only.
@@ -137,6 +152,8 @@ struct ConnectParams {
     cwd: String,
     hostname: String,
     nickname: String,
+    cols: u16,
+    rows: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +170,8 @@ pub async fn connect(
     agent_type: &str,
     cwd: &str,
     nickname: &str,
+    cols: u16,
+    rows: u16,
 ) -> Result<(TunnelSender, TunnelReceiver)> {
     let hostname = gethostname();
 
@@ -163,6 +182,8 @@ pub async fn connect(
         cwd: cwd.to_string(),
         hostname,
         nickname: nickname.to_string(),
+        cols,
+        rows,
     };
 
     // Perform the initial connection synchronously so callers get an immediate error
@@ -226,6 +247,8 @@ async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, St
         hostname: &params.hostname,
         nickname: &params.nickname,
         proto: 2,
+        cols: params.cols,
+        rows: params.rows,
     };
     let register_json = serde_json::to_string(&register).context("serialize register")?;
     ws.send(Message::Text(register_json.into()))
@@ -340,6 +363,11 @@ async fn io_loop(
                         }
                     }
                     Some(TunnelCommand::BusText(json)) => {
+                        if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                            return false;
+                        }
+                    }
+                    Some(TunnelCommand::PtyText(json)) => {
                         if ws_sink.send(Message::Text(json.into())).await.is_err() {
                             return false;
                         }

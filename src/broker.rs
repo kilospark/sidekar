@@ -269,6 +269,147 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // Local memory layer
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS memory_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_name TEXT NOT NULL,
+            project TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_observations_session
+            ON memory_observations(session_name, created_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_observations_project
+            ON memory_observations(project, created_at);
+
+        CREATE TABLE IF NOT EXISTS memory_sessions (
+            session_name TEXT PRIMARY KEY,
+            project TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            summary_json TEXT,
+            observation_count INTEGER NOT NULL DEFAULT 0,
+            last_event_at INTEGER,
+            compact_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_sessions_project
+            ON memory_sessions(project, started_at);
+
+        CREATE TABLE IF NOT EXISTS memory_session_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_name TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            category TEXT,
+            priority INTEGER NOT NULL DEFAULT 3,
+            data TEXT,
+            data_hash TEXT,
+            source_kind TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_session_events_session
+            ON memory_session_events(session_name, created_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_session_events_priority
+            ON memory_session_events(session_name, priority);
+
+        CREATE TABLE IF NOT EXISTS memory_session_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_name TEXT NOT NULL,
+            snapshot TEXT,
+            event_count INTEGER NOT NULL DEFAULT 0,
+            consumed INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_session_snapshots_session
+            ON memory_session_snapshots(session_name, created_at);
+
+        CREATE TABLE IF NOT EXISTS memory_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'project',
+            summary TEXT NOT NULL,
+            summary_norm TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.8,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            supersedes_json TEXT NOT NULL DEFAULT '[]',
+            superseded_by INTEGER,
+            trigger_kind TEXT NOT NULL DEFAULT 'explicit',
+            source_kind TEXT NOT NULL DEFAULT 'user',
+            last_reinforced_at INTEGER,
+            reinforcement_count INTEGER NOT NULL DEFAULT 0,
+            summary_hash TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_events_project
+            ON memory_events(project, created_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_events_type
+            ON memory_events(event_type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_events_norm
+            ON memory_events(project, event_type, scope, summary_norm);
+        CREATE INDEX IF NOT EXISTS idx_memory_events_hash
+            ON memory_events(summary_hash);
+        CREATE INDEX IF NOT EXISTS idx_memory_events_superseded_by
+            ON memory_events(superseded_by);
+
+        CREATE TABLE IF NOT EXISTS memory_event_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            old_summary TEXT,
+            new_summary TEXT,
+            old_confidence REAL,
+            new_confidence REAL,
+            metadata_json TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_event_history_event
+            ON memory_event_history(event_id, created_at);
+        ",
+    )?;
+
+    let _ = conn.execute_batch(
+        "
+        ALTER TABLE memory_sessions ADD COLUMN last_event_at INTEGER;
+        ALTER TABLE memory_sessions ADD COLUMN compact_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE memory_events ADD COLUMN superseded_by INTEGER;
+        ALTER TABLE memory_events ADD COLUMN summary_hash TEXT;
+        ",
+    );
+
+    conn.execute_batch(
+        "
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_events_fts USING fts5(
+            summary,
+            content='memory_events',
+            content_rowid='id',
+            tokenize='porter'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS memory_events_ai AFTER INSERT ON memory_events BEGIN
+            INSERT INTO memory_events_fts(rowid, summary) VALUES (new.id, new.summary);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_events_ad AFTER DELETE ON memory_events BEGIN
+            INSERT INTO memory_events_fts(memory_events_fts, rowid, summary)
+            VALUES ('delete', old.id, old.summary);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_events_au AFTER UPDATE ON memory_events BEGIN
+            INSERT INTO memory_events_fts(memory_events_fts, rowid, summary)
+            VALUES ('delete', old.id, old.summary);
+            INSERT INTO memory_events_fts(rowid, summary) VALUES (new.id, new.summary);
+        END;
+        ",
+    )?;
+    let _ = conn.execute(
+        "INSERT INTO memory_events_fts(memory_events_fts) VALUES ('rebuild')",
+        [],
+    );
+
     Ok(())
 }
 
@@ -1473,6 +1614,9 @@ mod tests {
     }
 
     fn with_test_db<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _guard = crate::test_home_lock()
+            .lock()
+            .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
         let old_home = env::var_os("HOME");
         let temp_home = env::temp_dir().join(format!(
             "sidekar-broker-home-{}",
