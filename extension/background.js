@@ -268,7 +268,7 @@ async function cmdClick(msg) {
       let el;
       if (refNum !== null) {
         el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
-        if (!el) return { error: `Ref ${refNum} not found. Run axtree first.` };
+        if (!el) return { error: `Ref ${refNum} not found. Run ax-tree first.` };
       } else if (typeof target === "string") {
         if (target.startsWith("text:")) {
           const text = target.slice(5);
@@ -306,7 +306,7 @@ async function cmdType(msg) {
       let el;
       if (refNum !== null) {
         el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
-        if (!el) return { error: `Ref ${refNum} not found. Run axtree first.` };
+        if (!el) return { error: `Ref ${refNum} not found. Run ax-tree first.` };
       } else {
         el = document.querySelector(selector);
         if (!el) return { error: `Element not found: ${selector}` };
@@ -1238,7 +1238,7 @@ async function cmdPaste(msg) {
       }
 
       return {
-        error: "Could not paste into target. Try `sidekar ext evalpage` for a framework-specific write path.",
+        error: "Could not paste into target. Try `sidekar ext eval-page` for a framework-specific write path.",
         clipboard: clipboardOk,
         target: describeElement(target),
       };
@@ -1430,7 +1430,7 @@ async function cmdSetValue(msg) {
       }
 
       return {
-        error: "No supported editor API found for target. Try `sidekar ext evalpage` for direct page-world access.",
+        error: "No supported editor API found for target. Try `sidekar ext eval-page` for direct page-world access.",
         target: describeElement(target),
       };
     },
@@ -1586,7 +1586,7 @@ async function cmdEvalPage(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
   const code = typeof msg.code === "string" ? msg.code : "";
   if (!code) {
-    return { error: "Usage: sidekar ext evalpage <javascript>" };
+    return { error: "Usage: sidekar ext eval-page <javascript>" };
   }
 
   return await executeScriptResult(

@@ -1017,7 +1017,7 @@ pub(super) async fn cmd_sw(ctx: &mut AppContext, args: &[String]) -> Result<()> 
                 .unwrap_or(0);
             out!(ctx, "Triggered update for {count} service worker(s).");
         }
-        _ => bail!("Usage: sw <list|unregister|update>"),
+        _ => bail!("Usage: sidekar service-workers <list|unregister|update>"),
     }
 
     cdp.send("ServiceWorker.disable", json!({})).await?;

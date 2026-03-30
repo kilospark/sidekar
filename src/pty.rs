@@ -20,7 +20,9 @@ fn shell_quote(s: &str) -> String {
         return "''".into();
     }
     // If it's simple (no special chars), return as-is
-    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/') {
+    if s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/')
+    {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -95,7 +97,10 @@ impl Drop for RawModeGuard {
 /// The child side is async-signal-safe: CString args are prepared before
 /// fork, and the child only calls execvp (or _exit on failure). No Rust
 /// allocations, logging, or non-trivial work happens post-fork in the child.
-fn fork_pty(cmd: &std::ffi::CString, c_args: &[std::ffi::CString]) -> Result<(OwnedFd, libc::pid_t)> {
+fn fork_pty(
+    cmd: &std::ffi::CString,
+    c_args: &[std::ffi::CString],
+) -> Result<(OwnedFd, libc::pid_t)> {
     // Build the argv pointer array before forking (allocation is safe here)
     let c_ptrs: Vec<*const libc::c_char> = c_args
         .iter()
@@ -245,7 +250,12 @@ pub(crate) fn detect_channel() -> String {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .and_then(|p| p.rsplit('/').next().filter(|n| !n.is_empty()).map(|n| n.to_lowercase()))
+        .and_then(|p| {
+            p.rsplit('/')
+                .next()
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_lowercase())
+        })
     {
         return name;
     }
@@ -329,6 +339,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
                 cmd_str.push(' ');
                 cmd_str.push_str(&shell_quote(arg));
             }
+
             let (shell_flag, shell_prelude) =
                 shell_function_bootstrap(&shell).unwrap_or_else(|| ("-ic".into(), String::new()));
             let full_cmd = format!("{shell_prelude}{cmd_str}");
@@ -412,11 +423,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             // silent — error propagated via return
-            cleanup_child_and_state(
-                child_pid,
-                registered_name.as_deref(),
-                None,
-            );
+            cleanup_child_and_state(child_pid, registered_name.as_deref(), None);
             return Err(e);
         }
     };
@@ -467,7 +474,15 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
     let raw_guard = RawModeGuard::enter()?;
 
     // Run the async event loop
-    let exit_code = event_loop(&master_arc, child_pid, tunnel, &nick, &identity.name, &input_state).await;
+    let exit_code = event_loop(
+        &master_arc,
+        child_pid,
+        tunnel,
+        &nick,
+        &identity.name,
+        &input_state,
+    )
+    .await;
 
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
@@ -630,7 +645,10 @@ fn handle_sidekar_command(line: &str) -> String {
                 if let Ok(agents) = broker::list_agents(None) {
                     let my_pid = std::process::id().to_string();
                     let my_pane = format!("pty-{my_pid}");
-                    if let Some(agent) = agents.iter().find(|a| a.pane_unique_id.as_deref() == Some(&my_pane)) {
+                    if let Some(agent) = agents
+                        .iter()
+                        .find(|a| a.pane_unique_id.as_deref() == Some(&my_pane))
+                    {
                         let updated = crate::message::AgentId {
                             name: agent.id.name.clone(),
                             nick: agent.id.nick.clone(),
@@ -644,18 +662,25 @@ fn handle_sidekar_command(line: &str) -> String {
                 format!("Channel set to: {arg}")
             }
         }
-        "who" => {
-            match broker::list_agents(None) {
-                Ok(agents) if !agents.is_empty() => {
-                    let mut lines = Vec::new();
-                    for a in &agents {
-                        let nick = a.id.nick.as_deref().unwrap_or("");
-                        let chan = a.id.session.as_deref().unwrap_or("?");
-                        lines.push(format!("  {} \"{}\" (channel: {})", a.id.name, nick, chan));
+        "bus" => {
+            let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
+            let sub = sub_parts.first().copied().unwrap_or("who");
+            match sub {
+                "who" | "" => match broker::list_agents(None) {
+                    Ok(agents) if !agents.is_empty() => {
+                        let mut lines = Vec::new();
+                        for a in &agents {
+                            let nick = a.id.nick.as_deref().unwrap_or("");
+                            let chan = a.id.session.as_deref().unwrap_or("?");
+                            lines.push(format!("  {} \"{}\" (channel: {})", a.id.name, nick, chan));
+                        }
+                        format!("Agents:\n{}", lines.join("\n"))
                     }
-                    format!("Agents:\n{}", lines.join("\n"))
-                }
-                _ => "No agents registered.".to_string(),
+                    _ => "No agents registered.".to_string(),
+                },
+                _ => "@sidekar bus commands:\n  \
+                      @sidekar bus who          — list registered agents"
+                    .to_string(),
             }
         }
         "cron" => {
@@ -663,23 +688,21 @@ fn handle_sidekar_command(line: &str) -> String {
             let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
             let sub = sub_parts.first().copied().unwrap_or("list");
             match sub {
-                "list" | "" => {
-                    match crate::broker::list_cron_jobs(true) {
-                        Ok(jobs) if jobs.is_empty() => "No active cron jobs.".to_string(),
-                        Ok(jobs) => {
-                            let mut lines = Vec::new();
-                            for j in &jobs {
-                                let name = j.name.as_deref().unwrap_or("(unnamed)");
-                                lines.push(format!(
-                                    "  [{}] {} — schedule: {} — target: {} — {} runs",
-                                    j.id, name, j.schedule, j.target, j.run_count
-                                ));
-                            }
-                            format!("Cron jobs:\n{}", lines.join("\n"))
+                "list" | "" => match crate::broker::list_cron_jobs(true) {
+                    Ok(jobs) if jobs.is_empty() => "No active cron jobs.".to_string(),
+                    Ok(jobs) => {
+                        let mut lines = Vec::new();
+                        for j in &jobs {
+                            let name = j.name.as_deref().unwrap_or("(unnamed)");
+                            lines.push(format!(
+                                "  [{}] {} — schedule: {} — target: {} — {} runs",
+                                j.id, name, j.schedule, j.target, j.run_count
+                            ));
                         }
-                        Err(e) => format!("Error: {e}"),
+                        format!("Cron jobs:\n{}", lines.join("\n"))
                     }
-                }
+                    Err(e) => format!("Error: {e}"),
+                },
                 "delete" => {
                     let job_id = sub_parts.get(1).copied().unwrap_or("").trim();
                     if job_id.is_empty() {
@@ -698,16 +721,14 @@ fn handle_sidekar_command(line: &str) -> String {
                     .to_string(),
             }
         }
-        "help" | _ => {
-            "@sidekar commands:\n  \
+        "help" | _ => "@sidekar commands:\n  \
              @sidekar channel          — show current channel\n  \
              @sidekar channel <name>   — set channel\n  \
-             @sidekar who              — list registered agents\n  \
+             @sidekar bus who          — list registered agents\n  \
              @sidekar cron list        — list cron jobs\n  \
              @sidekar cron delete <id> — delete a cron job\n  \
              @sidekar help             — show this help"
-                .to_string()
-        }
+            .to_string(),
     }
 }
 
@@ -746,8 +767,17 @@ fn filter_osc_color_sequences(data: &[u8]) -> std::borrow::Cow<'_, [u8]> {
                 let is_color_osc = if i + 3 < data.len() {
                     let d = data[i + 3];
                     // OSC 10, 11, 12, ... 19 followed by ; or terminator
-                    d == b';' || d == b'0' || d == b'1' || d == b'2' || d == b'3'
-                        || d == b'4' || d == b'5' || d == b'6' || d == b'7' || d == b'8' || d == b'9'
+                    d == b';'
+                        || d == b'0'
+                        || d == b'1'
+                        || d == b'2'
+                        || d == b'3'
+                        || d == b'4'
+                        || d == b'5'
+                        || d == b'6'
+                        || d == b'7'
+                        || d == b'8'
+                        || d == b'9'
                         || d == 0x07
                 } else {
                     false
@@ -978,8 +1008,9 @@ async fn event_loop(
                         input_state.mark_activity();
                         let chunk = &buf_in[..n];
 
-                        // Codex probes the terminal on startup and expects the
-                        // real terminal's responses back on stdin unchanged.
+                        // For local PTY sessions, pass terminal control replies through unchanged.
+                        // Codex probes the terminal on startup and expects the real terminal's
+                        // responses back on stdin. Swallowing those breaks its renderer.
                         if chunk.contains(&0x1b) {
                             let _ = write_all_fd(master_fd, chunk);
                             continue;
@@ -1077,15 +1108,14 @@ async fn event_loop(
                         }) {
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
-                                // For local PTY sessions, Sidekar should behave
-                                // like a transparent wrapper.
+                                // Write the child output to the local terminal unchanged.
+                                // For local PTY sessions, Sidekar should behave like a transparent wrapper.
                                 if stdout.write_all(raw).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
 
-                                // Normalize title/color control sequences only
-                                // for the relay-backed web terminal.
+                                // Fan-out to tunnel with normalized control sequences for the web terminal.
                                 if let Some(ref tx) = tunnel_tx {
                                     let filtered = filter_osc_color_sequences(raw);
                                     let tunnel_data = rewrite_osc_titles(&filtered, nick).into_owned();

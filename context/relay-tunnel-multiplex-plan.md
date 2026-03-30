@@ -47,7 +47,7 @@ Use the **existing PTY WebSocket tunnel** (`/tunnel`) to carry a second logical 
 
 ## Follow-ups
 
-- [x] **`bus_send` → remote peers:** `find_delivery_target` falls back to **`relay_http`** when `GET /sessions` (Bearer device token) lists a live session whose `name` or `nickname` matches; delivery is **`POST /relay/bus`**; recipients handle **`TunnelEvent::BusRelay`** by **`broker::enqueue_message`** (canonical agent `name` in `recipient`).
+- [x] **`bus send` → remote peers:** `find_delivery_target` falls back to **`relay_http`** when `GET /sessions` (Bearer device token) lists a live session whose `name` or `nickname` matches; delivery is **`POST /relay/bus`**; recipients handle **`TunnelEvent::BusRelay`** by **`broker::enqueue_message`** (canonical agent `name` in `recipient`).
 - [ ] **Rate limits** / max body size on bus JSON (relay `POST /relay/bus`).
 - [ ] **Optional:** bus to web UI (separate viewer channel).
 

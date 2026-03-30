@@ -4,7 +4,7 @@ Sidekar overloads the word **session**. Keeping these separate avoids confusion 
 
 ## 1. Agent bus (PTY + broker)
 
-**What it is:** Local coordination between agent processes: registration, nicknames, typed messages (`bus_send`, `bus_done`), and `who` listings. State lives in the SQLite broker (for example under `~/.sidekar/`). Delivery uses Unix domain sockets and the broker’s queue.
+**What it is:** Local coordination between agent processes: registration, nicknames, typed messages (`bus send`, `bus done`), and `bus who` listings. State lives in the SQLite broker (for example under `~/.sidekar/`). Delivery uses Unix domain sockets and the broker’s queue.
 
 **How you get on the bus:** Run an agent through the PTY wrapper (`sidekar claude`, `sidekar codex`, etc.). The wrapper registers the child with a **channel** and identity; the child process can participate in bus messaging. Environment such as `SIDEKAR_PTY` indicates the PTY-owned path.
 
@@ -22,7 +22,7 @@ Sidekar overloads the word **session**. Keeping these separate avoids confusion 
 
 Many commands run through **`auto_discover_last_session()`**, which reads the **last Chrome session** pointer from disk. So errors like **“No active session. Run: sidekar launch”** refer to **missing Chrome/CDP session** in that code path, not to “nobody registered on the agent bus.”
 
-Bus-related commands (`who`, `bus_send`, `bus_done`) are conceptually about the **broker**, but they may still require that session discovery step depending on how the binary dispatches commands, so a failure can look like a bus problem when it is actually **no discovered browser session**.
+Bus-related commands (`bus who`, `bus send`, `bus done`) are conceptually about the **broker**, but they may still require that session discovery step depending on how the binary dispatches commands, so a failure can look like a bus problem when it is actually **no discovered browser session**.
 
 ## Mental model
 

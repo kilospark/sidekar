@@ -5,7 +5,7 @@
 //! SQLite database, delivery via the broker message queue.
 
 use crate::broker::{self, BrokerAgent};
-use crate::message::{epoch_secs, AgentId, Envelope, MessageKind};
+use crate::message::{AgentId, Envelope, MessageKind, epoch_secs};
 use crate::transport::Transport;
 use crate::*;
 use std::io::Write as _;
@@ -294,10 +294,7 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
     // Try to reuse stored nickname for this project (only if not already taken)
     let chosen = if let Some(proj) = project {
         let nick_key = format!("_nick:{}", proj);
-        let stored = broker::kv_get(&nick_key)
-            .ok()
-            .flatten()
-            .map(|e| e.value);
+        let stored = broker::kv_get(&nick_key).ok().flatten().map(|e| e.value);
 
         if let Some(nick) = stored {
             if !used.contains(&nick) {
@@ -569,7 +566,7 @@ pub fn pending_warnings(state: &SidekarBusState) -> Option<String> {
         return None;
     }
     Some(format!(
-        "\u{26a0} You have {} unanswered message(s). Respond using bus_done or bus_send with --reply-to=<msg_id>:\n{}",
+        "\u{26a0} You have {} unanswered message(s). Respond using bus done or bus send with --reply-to=<msg_id>:\n{}",
         warnings.len(),
         warnings.join("\n")
     ))
@@ -654,7 +651,9 @@ fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionIn
         return None;
     }
     let sessions = crate::transport::fetch_relay_sessions().ok()?;
-    sessions.into_iter().find(|s| s.name == to || s.nickname.as_deref() == Some(to))
+    sessions
+        .into_iter()
+        .find(|s| s.name == to || s.nickname.as_deref() == Some(to))
 }
 
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
@@ -714,7 +713,10 @@ fn send_directed_envelope(
     let full_message = envelope.format_for_paste();
     let delivery = find_delivery_target(&envelope.to, &channel).ok_or_else(|| {
         let available = available_agents_str(&channel, &envelope.from.name);
-        anyhow!("Unknown agent \"{}\". Available on this channel: {available}. Use `who` to see all agents.", envelope.to)
+        anyhow!(
+            "Unknown agent \"{}\". Available on this channel: {available}. Use `sidekar bus who` to see all agents.",
+            envelope.to
+        )
     })?;
 
     maybe_track_request(&envelope, &delivery);

@@ -378,7 +378,10 @@ pub(super) async fn cmd_navigate(ctx: &mut AppContext, url: &str, dismiss: bool)
     // bringing its window to the foreground on navigation.
     runtime_evaluate(
         &mut cdp,
-        &format!("window.location.href = {}", serde_json::to_string(&target_url)?),
+        &format!(
+            "window.location.href = {}",
+            serde_json::to_string(&target_url)?
+        ),
         false,
         false,
     )
@@ -602,7 +605,7 @@ pub(super) async fn cmd_axtree_full(
         if output.len() > char_budget {
             let boundary = output.floor_char_boundary(char_budget);
             output = format!(
-                "{}\n... (truncated to ~{} tokens — use axtree -i for interactive elements or axtree with selector to scope)",
+                "{}\n... (truncated to ~{} tokens — use ax-tree -i for interactive elements or ax-tree with selector to scope)",
                 &output[..boundary],
                 max_tokens
             );

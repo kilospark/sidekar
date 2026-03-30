@@ -124,7 +124,7 @@ pub const PAGE_BRIEF_SCRIPT: &str = r#"(function() {
   if (totalInputs > inputs.length) counts.push(totalInputs + ' inputs');
   if (totalButtons > buttons.length) counts.push(totalButtons + ' buttons');
   if (totalLinks > links.length) counts.push(totalLinks + ' links');
-  if (counts.length) r += '\n(' + counts.join(', ') + ' total — use dom or axtree for full list)';
+  if (counts.length) r += '\n(' + counts.join(', ') + ' total — use dom or ax-tree for full list)';
   return r;
 })()"#;
 

@@ -23,12 +23,13 @@ fn main() {
 }
 
 async fn run(mut args: Vec<String>) -> Result<()> {
-
     // Parse global --verbose flag
     if let Some(pos) = args.iter().position(|a| a == "--verbose") {
         args.remove(pos);
         // SAFETY: We're single-threaded at this point during startup
-        unsafe { std::env::set_var("SIDEKAR_VERBOSE", "1"); }
+        unsafe {
+            std::env::set_var("SIDEKAR_VERBOSE", "1");
+        }
     }
 
     // Parse global --tab <id> flag before extracting the command
@@ -51,7 +52,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    let command = args.remove(0);
+    let raw_command = args.remove(0);
+    let command = sidekar::canonical_command_name(&raw_command)
+        .unwrap_or(raw_command.as_str())
+        .to_string();
     if matches!(command.as_str(), "-v" | "-V" | "--version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -119,14 +123,26 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             if devices.is_empty() {
                 println!("No devices registered.");
             } else {
-                println!("{:<20} {:<10} {:<8} {:<12} {}", "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN");
+                println!(
+                    "{:<20} {:<10} {:<8} {:<12} {}",
+                    "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN"
+                );
                 for d in devices {
                     let hostname = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
                     let os = d.get("os").and_then(|v| v.as_str()).unwrap_or("-");
                     let arch = d.get("arch").and_then(|v| v.as_str()).unwrap_or("-");
-                    let version = d.get("sidekar_version").and_then(|v| v.as_str()).unwrap_or("-");
-                    let last_seen = d.get("last_seen_at").and_then(|v| v.as_str()).unwrap_or("-");
-                    println!("{:<20} {:<10} {:<8} {:<12} {}", hostname, os, arch, version, last_seen);
+                    let version = d
+                        .get("sidekar_version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let last_seen = d
+                        .get("last_seen_at")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    println!(
+                        "{:<20} {:<10} {:<8} {:<12} {}",
+                        hostname, os, arch, version, last_seen
+                    );
                 }
             }
         }
@@ -138,7 +154,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             if sessions.is_empty() {
                 println!("No active sessions.");
             } else {
-                println!("{:<20} {:<15} {:<12} {}", "NAME", "AGENT", "HOSTNAME", "CWD");
+                println!(
+                    "{:<20} {:<15} {:<12} {}",
+                    "NAME", "AGENT", "HOSTNAME", "CWD"
+                );
                 for s in sessions {
                     let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("-");
                     let agent = s.get("agent_type").and_then(|v| v.as_str()).unwrap_or("-");
@@ -184,16 +203,14 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         }
     }
 
-    // Legacy alias kept for compatibility.
-    if command == "ext-server" {
-        return sidekar::daemon::run().await;
-    }
     if command == "ext" {
         let sub = args.first().cloned().unwrap_or_default();
         if sub.is_empty() {
             eprintln!("Usage: sidekar ext <subcommand> [args...]");
-            eprintln!("Subcommands: tabs, read, screenshot, click, type, paste, setvalue,");
-            eprintln!("  axtree, eval, evalpage, navigate, newtab, close, scroll, status, stop, install-host [extension_id]");
+            eprintln!("Subcommands: tabs, read, screenshot, click, type, paste, set-value,");
+            eprintln!(
+                "  ax-tree, eval, eval-page, navigate, new-tab, close, scroll, status, stop, install-host [extension_id]"
+            );
             std::process::exit(1);
         }
         // Handle install-host subcommand
@@ -201,7 +218,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             let ext_id = args.get(1).map(|s| s.as_str());
             return sidekar::ext::install_native_host(ext_id);
         }
-        let sub_args = if args.len() > 1 { args[1..].to_vec() } else { vec![] };
+        let sub_args = if args.len() > 1 {
+            args[1..].to_vec()
+        } else {
+            vec![]
+        };
         let default_tab = match override_tab_id.as_deref() {
             None => None,
             Some(s) => match s.parse::<u64>() {
@@ -215,19 +236,22 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return sidekar::ext::send_cli_command(&sub, &sub_args, default_tab).await;
     }
 
+    if let Some(replacement) = sidekar::removed_command_replacement(&raw_command) {
+        bail!("Command '{raw_command}' was removed. Use: sidekar {replacement}");
+    }
+
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
         return sidekar::pty::run_agent(&command, &args).await;
     }
+    if !sidekar::is_known_command(&command) {
+        bail!("Unknown command: {command}");
+    }
 
-    // Auto-route browser commands through the Chrome extension if it is connected
-    // and authenticated, unless an explicit --profile was used (which implies CDP).
-    const EXT_ROUTABLE: &[&str] = &[
-        "tabs", "read", "screenshot", "click", "type", "axtree",
-        "eval", "navigate", "newtab", "close", "scroll",
-    ];
-    if EXT_ROUTABLE.contains(&command.as_str()) && sidekar::ext::is_ext_available() {
+    // Auto-route eligible browser commands through the Chrome extension when it
+    // is connected and authenticated.
+    if sidekar::is_ext_routable_command(&command) && sidekar::ext::is_ext_available() {
         let default_tab = match override_tab_id.as_deref() {
             None => None,
             Some(s) => match s.parse::<u64>() {
@@ -326,62 +350,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let tab_id = ctx.override_tab_id.as_ref().unwrap();
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
-    } else if !matches!(command.as_str(),
-        "launch" | "connect" | "config" | "update"
-        | "who" | "bus_send" | "bus-send" | "bus_done" | "bus-done"
-        | "feedback" | "errors" | "telemetry"
-        | "cron_create" | "cron-create" | "cron_list" | "cron-list" | "cron_delete" | "cron-delete"
-        | "desktop-screenshot" | "desktop_screenshot"
-        | "desktop-apps" | "desktop_apps"
-        | "desktop-windows" | "desktop_windows"
-        | "desktop-find" | "desktop_find"
-        | "desktop-click" | "desktop_click"
-        | "desktop-press" | "desktop_press"
-        | "desktop-type" | "desktop_type"
-        | "desktop-paste" | "desktop_paste"
-        | "desktop-launch" | "desktop_launch"
-        | "desktop-activate" | "desktop_activate"
-        | "desktop-quit" | "desktop_quit"
-        | "totp"
-        | "kv"
-    ) {
+    } else if sidekar::command_requires_session(&command) {
         if ctx.auto_discover_last_session().is_err() {
-            // No session — auto-launch Chrome if inside a PTY wrapper or
-            // if the command clearly needs a browser.
             let in_pty = env::var("SIDEKAR_PTY").is_ok();
-            let needs_browser = !matches!(
-                command.as_str(),
-                "feedback"
-                    | "telemetry"
-                    | "who"
-                    | "bus_send"
-                    | "bus_done"
-                    | "desktop-screenshot"
-                    | "desktop_screenshot"
-                    | "desktop-apps"
-                    | "desktop_apps"
-                    | "desktop-windows"
-                    | "desktop_windows"
-                    | "desktop-find"
-                    | "desktop_find"
-                    | "desktop-click"
-                    | "desktop_click"
-                    | "desktop-press"
-                    | "desktop_press"
-                    | "desktop-type"
-                    | "desktop_type"
-                    | "desktop-paste"
-                    | "desktop_paste"
-                    | "desktop-launch"
-                    | "desktop_launch"
-                    | "desktop-activate"
-                    | "desktop_activate"
-                    | "desktop-quit"
-                    | "desktop_quit"
-                    | "totp"
-                    | "kv"
-            );
-            if in_pty && needs_browser {
+            if in_pty && sidekar::command_should_auto_launch_browser(&command) {
                 eprintln!("sidekar: no active session, auto-launching Chrome...");
                 commands::dispatch(&mut ctx, "launch", &[]).await?;
                 ctx.output.clear();

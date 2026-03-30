@@ -79,10 +79,7 @@ fn is_sidekar_extension_entry(ext_id: &str, meta: &Value) -> bool {
         .and_then(|m| m.get("description"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let path = meta
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let path = meta.get("path").and_then(Value::as_str).unwrap_or_default();
 
     name == "Sidekar"
         || description == "Bridge between AI agents and your browser"
@@ -222,7 +219,10 @@ fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
     bail!("Native messaging host installation not supported on this OS")
 }
 
-fn native_host_allowed_origins(manifest_paths: &[PathBuf], extension_id: Option<&str>) -> Result<Vec<String>> {
+fn native_host_allowed_origins(
+    manifest_paths: &[PathBuf],
+    extension_id: Option<&str>,
+) -> Result<Vec<String>> {
     let mut ids = BTreeSet::new();
     for manifest_path in manifest_paths {
         for origin in read_existing_allowed_origins(manifest_path) {
@@ -276,46 +276,6 @@ fn verify_ext_token_sync(ext_token: &str) -> Result<String> {
     }
 
     let data: Value = resp.json().context("Invalid response from verify-ext")?;
-
-    let matched = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !matched {
-        bail!("Extension token and CLI token belong to different users");
-    }
-
-    data.get("user_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("No user_id in verification response"))
-}
-
-/// Verify that the extension token and CLI device token belong to the same user.
-/// Calls the sidekar.dev API and returns the user_id on success.
-async fn verify_ext_token(ext_token: &str) -> Result<String> {
-    let device_token = auth::auth_token().ok_or_else(|| anyhow!("Run `sidekar login`"))?;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-
-    let url = format!("{}/api/auth/ext-token?verify=1", ext_api_base());
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", device_token))
-        .json(&json!({ "ext_token": ext_token }))
-        .send()
-        .await
-        .context("Failed to contact sidekar.dev for token verification")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        bail!("Token verification failed: HTTP {status} — {body}");
-    }
-
-    let data: Value = resp
-        .json()
-        .await
-        .context("Invalid response from verify-ext")?;
 
     let matched = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
     if !matched {
@@ -535,7 +495,11 @@ fn show_status() -> Result<()> {
 
     println!(
         "Extension bridge: {}",
-        if connected { "connected" } else { "not connected" }
+        if connected {
+            "connected"
+        } else {
+            "not connected"
+        }
     );
     println!(
         "Authenticated: {}",
@@ -640,7 +604,8 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             if text.is_none() && !plain_parts.is_empty() {
                 text = Some(plain_parts.join(" "));
             }
-            if text.as_deref().unwrap_or("").is_empty() && html.as_deref().unwrap_or("").is_empty() {
+            if text.as_deref().unwrap_or("").is_empty() && html.as_deref().unwrap_or("").is_empty()
+            {
                 bail!(
                     "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]"
                 );
@@ -663,9 +628,9 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             }
             Ok(cmd)
         }
-        "setvalue" => {
+        "set-value" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar ext setvalue <selector> <text>");
+                bail!("Usage: sidekar ext set-value <selector> <text>");
             }
             let mut cmd =
                 json!({"command": "setvalue", "selector": args[0], "text": args[1..].join(" ")});
@@ -676,7 +641,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             }
             Ok(cmd)
         }
-        "axtree" => {
+        "ax-tree" => {
             let tab_id = tab_from_arg_or_default(
                 args.first().and_then(|s| s.parse::<u64>().ok()),
                 default_tab,
@@ -702,10 +667,10 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             }
             Ok(cmd)
         }
-        "evalpage" => {
+        "eval-page" => {
             let code = args.join(" ");
             if code.is_empty() {
-                bail!("Usage: sidekar ext evalpage <javascript>");
+                bail!("Usage: sidekar ext eval-page <javascript>");
             }
             let mut cmd = json!({"command": "evalpage", "code": code});
             if let Some(id) = default_tab {
@@ -732,7 +697,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             }
             Ok(cmd)
         }
-        "newtab" => {
+        "new-tab" => {
             let url = args
                 .first()
                 .cloned()
@@ -763,7 +728,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             Ok(cmd)
         }
         _ => bail!(
-            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, setvalue, axtree, eval, evalpage, navigate, newtab, close, scroll, status, stop"
+            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, status, stop"
         ),
     }
 }
@@ -812,7 +777,7 @@ fn print_result(command: &str, result: &Value) {
                 println!("Screenshot captured ({} bytes)", data_url.len());
             }
         }
-        "axtree" => {
+        "ax-tree" => {
             if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
                 println!("--- {} ---", title);
             }
@@ -834,7 +799,7 @@ fn print_result(command: &str, result: &Value) {
                 println!("{url}");
             }
         }
-        "newtab" => {
+        "new-tab" => {
             let id = result.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
             let title = result.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -882,7 +847,7 @@ fn print_result(command: &str, result: &Value) {
                 println!("InsertText warning: {err}");
             }
         }
-        "setvalue" => {
+        "set-value" => {
             let mode = result
                 .get("mode")
                 .and_then(|v| v.as_str())
@@ -890,7 +855,7 @@ fn print_result(command: &str, result: &Value) {
             let len = result.get("length").and_then(|v| v.as_u64()).unwrap_or(0);
             println!("Set value via {mode} ({len} chars)");
         }
-        "evalpage" => {
+        "eval-page" => {
             if let Some(value) = result.get("result") {
                 if value.is_string() {
                     println!("{}", value.as_str().unwrap_or_default());
@@ -929,10 +894,7 @@ pub fn run_native_host() -> Result<()> {
     use std::os::unix::net::UnixStream as StdUnixStream;
     use std::sync::{Arc, Mutex as StdMutex};
 
-    fn write_native_message(
-        stdout: &Arc<StdMutex<std::io::Stdout>>,
-        value: &Value,
-    ) -> Result<()> {
+    fn write_native_message(stdout: &Arc<StdMutex<std::io::Stdout>>, value: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(value)?;
         let len = (bytes.len() as u32).to_le_bytes();
         let mut stdout = stdout.lock().map_err(|_| anyhow!("stdout lock poisoned"))?;
@@ -963,7 +925,8 @@ pub fn run_native_host() -> Result<()> {
         let msg = match serde_json::from_slice::<Value>(&msg_buf) {
             Ok(msg) => msg,
             Err(e) => {
-                let _ = write_native_message(&stdout, &json!({"error": format!("Invalid JSON: {e}")}));
+                let _ =
+                    write_native_message(&stdout, &json!({"error": format!("Invalid JSON: {e}")}));
                 continue;
             }
         };
@@ -983,7 +946,11 @@ pub fn run_native_host() -> Result<()> {
                 continue;
             }
 
-            let ext_token = msg.get("token").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let ext_token = msg
+                .get("token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if ext_token.is_empty() {
                 let _ = write_native_message(
                     &stdout,
@@ -1121,10 +1088,8 @@ pub fn run_native_host() -> Result<()> {
             });
 
             daemon_writer = Some(stream);
-            let _ = write_native_message(
-                &stdout,
-                &json!({"type": "auth_ok", "cli_logged_in": true}),
-            );
+            let _ =
+                write_native_message(&stdout, &json!({"type": "auth_ok", "cli_logged_in": true}));
             continue;
         }
 
@@ -1133,7 +1098,7 @@ pub fn run_native_host() -> Result<()> {
             continue;
         }
 
-        // cli_exec: spawn CLI for inserttext/keyboard (one hop, like ping)
+        // cli_exec: spawn CLI for insert-text/keyboard (one hop, like ping)
         if msg_type == "cli_exec" {
             let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("");
             let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -1143,12 +1108,16 @@ pub fn run_native_host() -> Result<()> {
                 "inserttext" => {
                     let exe = std::env::current_exe().unwrap_or_default();
                     let output = std::process::Command::new(exe)
-                        .arg("inserttext")
+                        .arg("insert-text")
                         .arg(text)
                         .output();
                     match output {
-                        Ok(o) if o.status.success() => json!({ "ok": true, "mode": "cli-insertText" }),
-                        Ok(o) => json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) }),
+                        Ok(o) if o.status.success() => {
+                            json!({ "ok": true, "mode": "cli-insertText" })
+                        }
+                        Ok(o) => {
+                            json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) })
+                        }
                         Err(e) => json!({ "ok": false, "error": e.to_string() }),
                     }
                 }
@@ -1159,8 +1128,12 @@ pub fn run_native_host() -> Result<()> {
                         .arg(text)
                         .output();
                     match output {
-                        Ok(o) if o.status.success() => json!({ "ok": true, "mode": "cli-keyboard" }),
-                        Ok(o) => json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) }),
+                        Ok(o) if o.status.success() => {
+                            json!({ "ok": true, "mode": "cli-keyboard" })
+                        }
+                        Ok(o) => {
+                            json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) })
+                        }
                         Err(e) => json!({ "ok": false, "error": e.to_string() }),
                     }
                 }
@@ -1169,7 +1142,9 @@ pub fn run_native_host() -> Result<()> {
 
             let mut response = result;
             if let Some(msg_id) = id {
-                response.as_object_mut().map(|m| m.insert("id".to_string(), msg_id));
+                response
+                    .as_object_mut()
+                    .map(|m| m.insert("id".to_string(), msg_id));
             }
             let _ = write_native_message(&stdout, &response);
             continue;

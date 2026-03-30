@@ -270,13 +270,13 @@ pub(crate) async fn cmd_clipboard(
 
 pub(crate) async fn cmd_inserttext(ctx: &mut AppContext, text: &str) -> Result<()> {
     if text.is_empty() {
-        bail!("Usage: sidekar inserttext <text>");
+        bail!("Usage: sidekar insert-text <text>");
     }
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
     cdp.send("Input.insertText", json!({ "text": text }))
         .await?;
-    out!(ctx, "OK inserttext \"{}\"", truncate(text, 50));
+    out!(ctx, "OK insert-text \"{}\"", truncate(text, 50));
     cdp.close().await;
     Ok(())
 }

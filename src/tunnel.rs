@@ -73,7 +73,12 @@ impl TunnelSender {
 
     /// Send a routed bus message to other multiplex tunnels for this user (non-blocking).
     pub fn send_bus_routed(&self, recipient: &str, sender: &str, body: &str) {
-        let sid = self.session_id.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        let sid = self
+            .session_id
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let json = serde_json::json!({
             "ch": "bus",
             "v": 1,
@@ -82,9 +87,7 @@ impl TunnelSender {
             "sender": sender,
             "body": body,
         });
-        let _ = self
-            .tx
-            .try_send(TunnelCommand::BusText(json.to_string()));
+        let _ = self.tx.try_send(TunnelCommand::BusText(json.to_string()));
     }
 
     /// Request graceful shutdown of the tunnel background task.
@@ -192,9 +195,8 @@ pub async fn connect(
 // WebSocket connect + register handshake
 // ---------------------------------------------------------------------------
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, String)> {
     let url = relay_url();
@@ -238,9 +240,9 @@ async fn ws_connect_and_register(params: &ConnectParams) -> Result<(WsStream, St
                     let resp: RegisterResponse =
                         serde_json::from_str(&text).context("parse register response")?;
                     if resp.r#type == "registered" {
-                        return resp
-                            .session_id
-                            .ok_or_else(|| anyhow::anyhow!("registered response missing session_id"));
+                        return resp.session_id.ok_or_else(|| {
+                            anyhow::anyhow!("registered response missing session_id")
+                        });
                     }
                     if resp.r#type == "error" {
                         bail!(

@@ -73,9 +73,9 @@ Six capability pillars. Everything else (web search, multi-page reads, batch run
 
 ### 1. Agent communication bus
 
-Agents find each other and coordinate through a shared message bus. On a single machine, messages flow through a SQLite broker. Across machines, a persistent WSS tunnel to `relay.sidekar.dev` carries bus traffic alongside PTY data on the same connection. From the agent's perspective there's no difference -- `bus_send` delivers locally or remotely depending on where the recipient is, and `who` lists everyone reachable.
+Agents find each other and coordinate through a shared message bus. On a single machine, messages flow through a SQLite broker. Across machines, a persistent WSS tunnel to `relay.sidekar.dev` carries bus traffic alongside PTY data on the same connection. From the agent's perspective there's no difference -- `bus send` delivers locally or remotely depending on where the recipient is, and `bus who` lists everyone reachable.
 
-Messages use a typed envelope protocol with four kinds: **request**, **response**, **fyi**, and **handoff**. Each carries a message ID, timestamp, and threading info. Unanswered requests trigger automatic nudge reminders. Agents get auto-assigned nicknames that persist per project across restarts, and `bus_send @all` broadcasts to every agent on the channel.
+Messages use a typed envelope protocol with four kinds: **request**, **response**, **fyi**, and **handoff**. Each carries a message ID, timestamp, and threading info. Unanswered requests trigger automatic nudge reminders. Agents get auto-assigned nicknames that persist per project across restarts, and `bus send @all` broadcasts to every agent on the channel.
 
 ### 2. Web terminal
 
@@ -115,7 +115,7 @@ sidekar provides multiple ways to read page content, each optimized for differen
 |------|------|--------|
 | Page content (articles, docs) | `read` | Clean text, no UI chrome |
 | Full page + interaction targets | `text` | Text + numbered refs |
-| Interactive elements only | `axtree -i` | Flat list of clickable/typeable elements |
+| Interactive elements only | `ax-tree -i` | Flat list of clickable/typeable elements |
 | Interactive elements as commands | `observe` | Ready-to-use action commands |
 | HTML structure/selectors | `dom` | Compact HTML |
 | Visual layout | `screenshot` | PNG/JPEG image |
@@ -151,11 +151,9 @@ Each profile runs its own browser process. The default profile is persistent and
 ### Agent bus
 
 ```bash
-sidekar who                     # List agents on your channel (local + relay)
-sidekar bus_send <to> <message> # Send a message to another agent (or @all)
-sidekar bus_done <next>         # Hand off to another agent with summary
-sidekar register [name]         # Register on the bus
-sidekar unregister              # Leave the bus
+sidekar bus who                       # List agents on your channel (local + relay)
+sidekar bus send <to> <message>       # Send a message to another agent (or @all)
+sidekar bus done <next> <summary> <request> # Hand off to another agent
 ```
 
 ### PTY wrapper (recommended for multi-agent)
@@ -187,9 +185,9 @@ sidekar read [selector]         # Reader-mode text extraction (strips nav/sideba
 sidekar text [selector]         # Full page in reading order with interactive refs
 sidekar dom [selector]          # Get compact DOM HTML
 sidekar dom --tokens=N          # Truncate DOM to ~N tokens
-sidekar axtree                  # Full accessibility tree (auto-capped at ~4k tokens)
-sidekar axtree -i               # Interactive elements with ref numbers
-sidekar axtree -i --diff        # Show only changes since last snapshot
+sidekar ax-tree                 # Full accessibility tree (auto-capped at ~4k tokens)
+sidekar ax-tree -i              # Interactive elements with ref numbers
+sidekar ax-tree -i --diff       # Show only changes since last snapshot
 sidekar observe                 # Interactive elements as ready-to-use commands
 sidekar find <query>            # Find element by description
 sidekar screenshot              # Capture screenshot (default JPEG, 800px wide)
@@ -211,7 +209,7 @@ sidekar clear <selector>        # Clear an input field
 sidekar type <selector> <text>  # Type into an input (focuses first, verifies)
 sidekar type --human <sel> <text> # Type with variable delays
 sidekar keyboard <text>         # Type at current caret position (no selector)
-sidekar inserttext <text>       # Insert text via CDP Input.insertText (fast)
+sidekar insert-text <text>      # Insert text via CDP Input.insertText (fast)
 sidekar paste <text>            # Paste via clipboard event
 sidekar clipboard --html <html> # Paste rich HTML via real clipboard (Google Docs, Notion)
 sidekar fill <fields_json>      # Fill multiple form fields at once
@@ -226,8 +224,8 @@ sidekar scroll <target> [px]    # Scroll: up, down, top, bottom, or selector
 ### Waiting
 
 ```bash
-sidekar waitfor <sel> [ms]      # Wait for element to appear (default 5s)
-sidekar waitfornav [ms]         # Wait for navigation to complete (default 10s)
+sidekar wait-for <sel> [ms]     # Wait for element to appear (default 5s)
+sidekar wait-for-nav [ms]       # Wait for navigation to complete (default 10s)
 ```
 
 ### Web research
@@ -235,7 +233,7 @@ sidekar waitfornav [ms]         # Wait for navigation to complete (default 10s)
 ```bash
 sidekar search <query>          # Search the web (Google by default)
 sidekar search --engine=bing <q> # Search via Bing, DuckDuckGo, or custom URL
-sidekar readurls <url1> <url2>  # Read multiple URLs in parallel
+sidekar read-urls <url1> <url2> # Read multiple URLs in parallel
 sidekar resolve <sel>           # Get link/form target URL without clicking
 ```
 
@@ -244,7 +242,7 @@ sidekar resolve <sel>           # Get link/form target URL without clicking
 ```bash
 sidekar tabs                    # List this session's tabs
 sidekar tab <id>                # Switch to a session-owned tab
-sidekar newtab [url]            # Open a new tab in this session
+sidekar new-tab [url]           # Open a new tab in this session
 sidekar close                   # Close current tab
 sidekar frames                  # List all frames/iframes
 sidekar frame <id|sel>          # Switch to a frame
@@ -266,8 +264,8 @@ sidekar storage set <key> <val> # Set a storage item
 sidekar storage clear [target]  # Clear storage (local, session, all, everything)
 sidekar network capture [secs]  # Capture XHR/fetch requests
 sidekar network show [filter]   # Re-display last capture
-sidekar sw list                 # List service workers
-sidekar sw unregister           # Unregister all service workers
+sidekar service-workers list        # List service workers
+sidekar service-workers unregister  # Unregister all service workers
 ```
 
 ### Page environment
@@ -288,14 +286,14 @@ sidekar download path [dir]     # Set download directory
 ### Desktop automation (macOS)
 
 ```bash
-sidekar desktop-apps            # List running applications
-sidekar desktop-windows --app X # List windows for an app
-sidekar desktop-find --app X <q> # Search UI elements by text
-sidekar desktop-click --app X <q> # Click a UI element by text match
-sidekar desktop-screenshot      # Capture full desktop or specific app
-sidekar desktop-launch <app>    # Launch an application
-sidekar desktop-activate --app X # Bring app to foreground
-sidekar desktop-quit --app X    # Quit an app gracefully
+sidekar desktop apps             # List running applications
+sidekar desktop windows --app X  # List windows for an app
+sidekar desktop find --app X <q> # Search UI elements by text
+sidekar desktop click --app X <q> # Click a UI element by text match
+sidekar desktop screenshot       # Capture full desktop or specific app
+sidekar desktop launch <app>     # Launch an application
+sidekar desktop activate --app X # Bring app to foreground
+sidekar desktop quit --app X     # Quit an app gracefully
 ```
 
 ### Monitoring
@@ -309,9 +307,9 @@ sidekar monitor status          # Show watcher state
 ### Scheduling
 
 ```bash
-sidekar cron_create             # Create a recurring scheduled job
-sidekar cron_list               # List active cron jobs
-sidekar cron_delete <id>        # Delete a cron job
+sidekar cron create             # Create a recurring scheduled job
+sidekar cron list               # List active cron jobs
+sidekar cron delete <id>        # Delete a cron job
 ```
 
 Jobs execute sidekar tools on a cron schedule and deliver results via the agent bus. Persisted in SQLite across session restarts.
@@ -372,7 +370,7 @@ sidekar update                  # Check for and apply updates
 sidekar feedback <rating> [txt] # Send feedback (1-5)
 ```
 
-**Ref-based targeting:** After `axtree -i`, `observe`, or `text`, use the ref numbers directly as selectors (`click 1`, `type 3 hello`). Cached per URL with 48-hour TTL.
+**Ref-based targeting:** After `ax-tree -i`, `observe`, or `text`, use the ref numbers directly as selectors (`click 1`, `type 3 hello`). Cached per URL with 48-hour TTL.
 
 ## Architecture
 
@@ -487,10 +485,10 @@ src/
 ├── ext.rs               # Chrome extension bridge and native host
 ├── commands/
 │   ├── mod.rs           # Command dispatch table (~80 commands)
-│   ├── core.rs          # launch, connect, navigate, read, text, dom, axtree,
-│   │                    #   screenshot, click, type, press, tabs, search, readurls
+│   ├── core.rs          # launch, connect, navigate, read, text, dom, ax-tree,
+│   │                    #   screenshot, click, type, press, tabs, search, read-urls
 │   ├── data.rs          # cookies, console, network, block, viewport, zoom,
-│   │                    #   frames, media, animations, security, storage, sw
+│   │                    #   frames, media, animations, security, storage, service-workers
 │   ├── session.rs       # download, activate, minimize, lock/unlock, human-click/type
 │   ├── desktop.rs       # macOS desktop automation commands
 │   ├── batch.rs         # Multi-action batch execution
@@ -510,7 +508,7 @@ src/
 │   ├── screen.rs        # Screen capture via ScreenCaptureKit
 │   ├── input.rs         # Input simulation via enigo
 │   └── types.rs         # AppInfo, WindowInfo, UIElement types
-├── scripts.rs           # Embedded JS scripts (page brief, DOM extract, axtree, etc.)
+├── scripts.rs           # Embedded JS scripts (page brief, DOM extract, ax-tree, etc.)
 ├── types.rs             # SessionState, DebugTab, InteractiveElement, etc.
 ├── utils.rs             # Browser detection, key mapping, file helpers
 ├── config.rs            # SidekarConfig (JSON in ~/.config/sidekar/)

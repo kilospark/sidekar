@@ -6,20 +6,20 @@ pub mod cron;
 mod data;
 mod desktop;
 mod interaction;
+pub mod kv;
 pub mod monitor;
 mod session;
 pub mod totp;
-pub mod kv;
 
 use batch::*;
 use core::*;
 use data::*;
 use desktop::*;
 use interaction::*;
+use kv::*;
 use monitor::*;
 use session::*;
 use totp::*;
-use kv::*;
 
 // ---------------------------------------------------------------------------
 // Argument Parsing Helpers
@@ -55,10 +55,12 @@ fn extract_flag(args: &[String], flag: &str) -> bool {
 }
 
 fn extract_optional_value(args: &[String], prefix: &str) -> Option<String> {
-    args.iter().find_map(|a| a.strip_prefix(prefix).map(|v| v.to_string()))
+    args.iter()
+        .find_map(|a| a.strip_prefix(prefix).map(|v| v.to_string()))
 }
 
 pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> Result<()> {
+    let command = crate::command_handler(command).unwrap_or(command);
     match command {
         "launch" => cmd_launch(ctx, args).await,
         "connect" => cmd_connect(ctx).await.map(|_| ()),
@@ -237,7 +239,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let selector = args
                 .first()
                 .cloned()
-                .context("Usage: sidekar waitfor <selector> [timeout_ms]")?;
+                .context("Usage: sidekar wait-for <selector> [timeout_ms]")?;
             let selector = resolve_selector(ctx, &selector)?;
             cmd_wait_for(ctx, &selector, args.get(1).map(String::as_str)).await
         }
@@ -293,29 +295,6 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "activate" => cmd_activate(ctx).await,
         "minimize" => cmd_minimize(ctx).await,
         "grid" => cmd_grid(ctx, args).await,
-        // Legacy aliases for backwards compatibility with CLI usage
-        "humanclick" => cmd_human_click_dispatch(ctx, args).await,
-        "humantype" => {
-            if args.len() < 2 {
-                bail!("Usage: sidekar humantype <selector> <text>");
-            }
-            let selector = resolve_selector(ctx, &args[0])?;
-            let text = args[1..].join(" ");
-            cmd_human_type(ctx, &selector, &text).await
-        }
-        // Legacy aliases for doubleclick/rightclick CLI usage
-        "doubleclick" => {
-            if args.is_empty() {
-                bail!("Usage: sidekar click --mode=double <sel|x,y|--text>");
-            }
-            cmd_double_click_dispatch(ctx, args).await
-        }
-        "rightclick" => {
-            if args.is_empty() {
-                bail!("Usage: sidekar click --mode=right <sel|x,y|--text>");
-            }
-            cmd_right_click_dispatch(ctx, args).await
-        }
         "lock" => cmd_lock(ctx, args.first().map(String::as_str)).await,
         "unlock" => cmd_unlock(ctx).await,
         "search" => {
@@ -343,7 +322,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .cloned()
                 .collect();
             if urls.is_empty() {
-                bail!("Usage: sidekar readurls <url1> <url2> ...");
+                bail!("Usage: sidekar read-urls <url1> <url2> ...");
             }
             cmd_readurls(ctx, &urls, max_tokens).await
         }
@@ -395,14 +374,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 } else {
                     format!("{} | {}", r.message, details)
                 };
-                out!(
-                    ctx,
-                    "{}\t{}\t{}\t{}",
-                    r.id,
-                    r.created_at,
-                    r.source,
-                    msg
-                );
+                out!(ctx, "{}\t{}\t{}\t{}", r.id, r.created_at, r.source, msg);
             }
             Ok(())
         }
@@ -421,7 +393,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     out!(ctx, "Telemetry disabled.");
                 }
                 "status" | "" => {
-                    out!(ctx, "Telemetry: {}", if config.telemetry { "on" } else { "off" });
+                    out!(
+                        ctx,
+                        "Telemetry: {}",
+                        if config.telemetry { "on" } else { "off" }
+                    );
                 }
                 _ => bail!("Usage: sidekar telemetry [on|off|status]"),
             }
@@ -436,12 +412,23 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     let items = crate::config::config_list();
                     let max_key = items.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
                     for (key, val, is_default) in &items {
-                        let display_val = if val.is_empty() { "(not set)" } else { val.as_str() };
+                        let display_val = if val.is_empty() {
+                            "(not set)"
+                        } else {
+                            val.as_str()
+                        };
                         let marker = if *is_default { " (default)" } else { "" };
                         let desc = crate::config::find_key(key)
                             .map(|k| k.description)
                             .unwrap_or("");
-                        out!(ctx, "{:<width$}  {}{}", key, display_val, marker, width = max_key);
+                        out!(
+                            ctx,
+                            "{:<width$}  {}{}",
+                            key,
+                            display_val,
+                            marker,
+                            width = max_key
+                        );
                         if !desc.is_empty() {
                             out!(ctx, "{:<width$}  # {}", "", desc, width = max_key);
                         }
@@ -455,18 +442,41 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                         let items = crate::config::config_list();
                         let max_key = items.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
                         for (key, val, is_default) in &items {
-                            let display_val = if val.is_empty() { "(not set)" } else { val.as_str() };
+                            let display_val = if val.is_empty() {
+                                "(not set)"
+                            } else {
+                                val.as_str()
+                            };
                             let marker = if *is_default { " (default)" } else { "" };
-                            out!(ctx, "{:<width$}  {}{}", key, display_val, marker, width = max_key);
+                            out!(
+                                ctx,
+                                "{:<width$}  {}{}",
+                                key,
+                                display_val,
+                                marker,
+                                width = max_key
+                            );
                         }
                         return Ok(());
                     }
                     if crate::config::find_key(key).is_none() {
-                        let valid: Vec<&str> = crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
-                        bail!("Unknown config key: {key}. Valid keys: {}", valid.join(", "));
+                        let valid: Vec<&str> =
+                            crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
+                        bail!(
+                            "Unknown config key: {key}. Valid keys: {}",
+                            valid.join(", ")
+                        );
                     }
                     let val = crate::config::config_get(key);
-                    out!(ctx, "{}", if val.is_empty() { "(not set)".to_string() } else { val });
+                    out!(
+                        ctx,
+                        "{}",
+                        if val.is_empty() {
+                            "(not set)".to_string()
+                        } else {
+                            val
+                        }
+                    );
                     Ok(())
                 }
                 "set" => {
@@ -476,8 +486,12 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     }
                     let ck = crate::config::find_key(key);
                     if ck.is_none() {
-                        let valid: Vec<&str> = crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
-                        bail!("Unknown config key: {key}. Valid keys: {}", valid.join(", "));
+                        let valid: Vec<&str> =
+                            crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
+                        bail!(
+                            "Unknown config key: {key}. Valid keys: {}",
+                            valid.join(", ")
+                        );
                     }
                     let raw_value = args.get(2).map(String::as_str).unwrap_or("true");
                     // Browser validation
@@ -503,12 +517,20 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                         bail!("Usage: sidekar config reset <key>");
                     }
                     if crate::config::find_key(key).is_none() {
-                        let valid: Vec<&str> = crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
-                        bail!("Unknown config key: {key}. Valid keys: {}", valid.join(", "));
+                        let valid: Vec<&str> =
+                            crate::config::CONFIG_KEYS.iter().map(|k| k.key).collect();
+                        bail!(
+                            "Unknown config key: {key}. Valid keys: {}",
+                            valid.join(", ")
+                        );
                     }
                     crate::config::config_delete(key)?;
                     let default = crate::config::find_key(key).unwrap().default;
-                    let display = if default.is_empty() { "(not set)" } else { default };
+                    let display = if default.is_empty() {
+                        "(not set)"
+                    } else {
+                        default
+                    };
                     out!(ctx, "Reset {key} to default: {display}");
                     Ok(())
                 }
@@ -539,89 +561,155 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             Ok(())
         }
-        "desktop-screenshot" | "desktop_screenshot" => cmd_desktop_screenshot(ctx, args).await,
-        "desktop-apps" | "desktop_apps" => cmd_desktop_apps(ctx).await,
-        "desktop-windows" | "desktop_windows" => cmd_desktop_windows(ctx, args).await,
-        "desktop-find" | "desktop_find" => cmd_desktop_find(ctx, args).await,
-        "desktop-click" | "desktop_click" => cmd_desktop_click(ctx, args).await,
-        "desktop-press" | "desktop_press" => cmd_desktop_press(ctx, args).await,
-        "desktop-type" | "desktop_type" => cmd_desktop_type(ctx, args).await,
-        "desktop-paste" | "desktop_paste" => cmd_desktop_paste(ctx, args).await,
-        "desktop-launch" | "desktop_launch" => cmd_desktop_launch(ctx, args).await,
-        "desktop-activate" | "desktop_activate" => cmd_desktop_activate(ctx, args).await,
-        "desktop-quit" | "desktop_quit" => cmd_desktop_quit(ctx, args).await,
+        "desktop" => {
+            let sub = args.first().map(String::as_str).unwrap_or("");
+            let subcommand = match sub {
+                "screenshot" => "desktop-screenshot",
+                "apps" => "desktop-apps",
+                "windows" => "desktop-windows",
+                "find" => "desktop-find",
+                "click" => "desktop-click",
+                "press" => "desktop-press",
+                "type" => "desktop-type",
+                "paste" => "desktop-paste",
+                "launch" => "desktop-launch",
+                "activate" => "desktop-activate",
+                "quit" => "desktop-quit",
+                _ => bail!(
+                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|launch|activate|quit> [args...]"
+                ),
+            };
+            Box::pin(dispatch(ctx, subcommand, &args[1..])).await
+        }
+        "desktop-screenshot" => cmd_desktop_screenshot(ctx, args).await,
+        "desktop-apps" => cmd_desktop_apps(ctx).await,
+        "desktop-windows" => cmd_desktop_windows(ctx, args).await,
+        "desktop-find" => cmd_desktop_find(ctx, args).await,
+        "desktop-click" => cmd_desktop_click(ctx, args).await,
+        "desktop-press" => cmd_desktop_press(ctx, args).await,
+        "desktop-type" => cmd_desktop_type(ctx, args).await,
+        "desktop-paste" => cmd_desktop_paste(ctx, args).await,
+        "desktop-launch" => cmd_desktop_launch(ctx, args).await,
+        "desktop-activate" => cmd_desktop_activate(ctx, args).await,
+        "desktop-quit" => cmd_desktop_quit(ctx, args).await,
         "monitor" => cmd_monitor(ctx, args).await,
         // Bus tools — stateless CLI versions that recover identity from env/broker
-        "who" => {
+        "bus" => {
+            let sub = args.first().map(String::as_str).unwrap_or("");
+            let subcommand = match sub {
+                "who" => "bus-who",
+                "send" => "bus-send",
+                "done" => "bus-done",
+                _ => bail!("Usage: sidekar bus <who|send|done> [args...]"),
+            };
+            Box::pin(dispatch(ctx, subcommand, &args[1..])).await
+        }
+        "bus-who" => {
             let show_all = args.iter().any(|a| a == "--all" || a == "-a");
             let bus_state = recovered_bus_state();
             crate::bus::cmd_who(&bus_state, ctx, show_all)?;
             Ok(())
         }
-        "bus_send" | "bus-send" => {
+        "bus-send" => {
             if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
-                eprintln!("Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>");
+                eprintln!(
+                    "Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>"
+                );
             }
-            let reply_to = args.iter()
-                .find_map(|a| a.strip_prefix("--reply-to="));
-            let kind = args.iter()
+            let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
+            let kind = args
+                .iter()
                 .find_map(|a| a.strip_prefix("--kind="))
-                .unwrap_or_else(|| if reply_to.is_some() { "response" } else { "request" });
-            let filtered: Vec<&str> = args.iter()
+                .unwrap_or_else(|| {
+                    if reply_to.is_some() {
+                        "response"
+                    } else {
+                        "request"
+                    }
+                });
+            let filtered: Vec<&str> = args
+                .iter()
                 .filter(|a| !a.starts_with("--kind=") && !a.starts_with("--reply-to="))
                 .map(String::as_str)
                 .collect();
             let to = filtered.first().copied().unwrap_or_default();
-            let message = if filtered.len() > 1 { filtered[1..].join(" ") } else { String::new() };
+            let message = if filtered.len() > 1 {
+                filtered[1..].join(" ")
+            } else {
+                String::new()
+            };
             if to.is_empty() || message.is_empty() {
-                bail!("Usage: sidekar bus_send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]");
+                bail!(
+                    "Usage: sidekar bus send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]"
+                );
             }
             let mut bus_state = recovered_bus_state();
             crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, reply_to)?;
             Ok(())
         }
-        "bus_done" | "bus-done" => {
+        "bus-done" => {
             if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
-                eprintln!("Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>");
+                eprintln!(
+                    "Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>"
+                );
             }
-            let reply_to = args.iter()
-                .find_map(|a| a.strip_prefix("--reply-to="));
-            let filtered: Vec<&str> = args.iter()
+            let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
+            let filtered: Vec<&str> = args
+                .iter()
                 .filter(|a| !a.starts_with("--reply-to="))
                 .map(String::as_str)
                 .collect();
             if filtered.len() < 3 {
-                bail!("Usage: sidekar bus_done <next> <summary> <request> [--reply-to=<msg_id>]");
+                bail!("Usage: sidekar bus done <next> <summary> <request> [--reply-to=<msg_id>]");
             }
             let mut bus_state = recovered_bus_state();
-            crate::bus::cmd_signal_done(&mut bus_state, ctx, filtered[0], filtered[1], filtered[2], reply_to)?;
+            crate::bus::cmd_signal_done(
+                &mut bus_state,
+                ctx,
+                filtered[0],
+                filtered[1],
+                filtered[2],
+                reply_to,
+            )?;
             Ok(())
         }
         // Cron commands — CRUD operates on broker SQLite, execution runs in PTY wrapper
-        "cron_create" | "cron-create" => {
+        "cron" => {
+            let sub = args.first().map(String::as_str).unwrap_or("");
+            let subcommand = match sub {
+                "create" => "cron-create",
+                "list" => "cron-list",
+                "delete" => "cron-delete",
+                _ => bail!("Usage: sidekar cron <create|list|delete> [args...]"),
+            };
+            Box::pin(dispatch(ctx, subcommand, &args[1..])).await
+        }
+        "cron-create" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar cron_create <schedule> <action_json> [--target=T] [--name=N]");
+                bail!(
+                    "Usage: sidekar cron create <schedule> <action_json> [--target=T] [--name=N]"
+                );
             }
             let schedule = &args[0];
-            let action: serde_json::Value = serde_json::from_str(&args[1])
-                .context("Invalid action JSON. Use: {\"tool\":\"screenshot\"} or {\"batch\":[...]}")?;
-            let target = args.iter()
+            let action: serde_json::Value = serde_json::from_str(&args[1]).context(
+                "Invalid action JSON. Use: {\"tool\":\"screenshot\"} or {\"batch\":[...]}",
+            )?;
+            let target = args
+                .iter()
                 .find_map(|a| a.strip_prefix("--target="))
                 .unwrap_or("self");
-            let name = args.iter()
-                .find_map(|a| a.strip_prefix("--name="));
+            let name = args.iter().find_map(|a| a.strip_prefix("--name="));
             let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
-            let id = cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by).await?;
+            let id =
+                cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by).await?;
             let _ = id; // printed by cmd_cron_create
             Ok(())
         }
-        "cron_list" | "cron-list" => {
-            cron::cmd_cron_list(ctx).await
-        }
-        "cron_delete" | "cron-delete" => {
+        "cron-list" => cron::cmd_cron_list(ctx).await,
+        "cron-delete" => {
             let id = args.first().map(String::as_str).unwrap_or_default();
             if id.is_empty() {
-                bail!("Usage: sidekar cron_delete <job-id>");
+                bail!("Usage: sidekar cron delete <job-id>");
             }
             cron::cmd_cron_delete(ctx, id).await
         }

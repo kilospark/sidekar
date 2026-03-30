@@ -4,16 +4,16 @@
 use crate::broker;
 use crate::transport::{Broker as BrokerTransport, RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 static POLLER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLEANUP_INTERVAL_POLLS: u32 = 120; // clean old messages every 60s (120 * 500ms)
-const NUDGE_INTERVAL_POLLS: u32 = 120;   // check nudges every 60s
+const NUDGE_INTERVAL_POLLS: u32 = 120; // check nudges every 60s
 const MAX_MESSAGE_AGE_SECS: u64 = 3600;
 const NUDGE_SCHEDULE_SECS: [u64; 5] = [60, 120, 300, 600, 900];
 const NUDGE_MAX: u32 = 5;
@@ -150,7 +150,11 @@ fn send_nudges(agent_name: &str) {
         }
 
         // Check if the pending message still exists (hasn't been answered)
-        if broker::pending_message(&request.msg_id).ok().flatten().is_none() {
+        if broker::pending_message(&request.msg_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
             let _ = broker::delete_outbound_request(&request.msg_id);
             continue;
         }
@@ -164,7 +168,7 @@ fn send_nudges(agent_name: &str) {
 
         // Send the nudge
         let nudge_msg = format!(
-            "[sidekar] You have an unanswered request from {}. Reply using bus_send or bus_done with --reply-to={}",
+            "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
             request.sender_label, request.msg_id
         );
 

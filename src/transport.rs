@@ -131,7 +131,9 @@ impl Transport for RelayHttp {
             } else {
                 let status = resp.status();
                 let body = resp.text().unwrap_or_default();
-                Ok(DeliveryResult::Failed(format!("relay HTTP {status}: {body}")))
+                Ok(DeliveryResult::Failed(format!(
+                    "relay HTTP {status}: {body}"
+                )))
             }
         })
         .join()

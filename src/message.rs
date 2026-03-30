@@ -167,15 +167,14 @@ impl Envelope {
     pub fn format_for_paste(&self) -> String {
         let from = self.from.display_name();
         let reply_hint = format!(
-            "\n[reply with: sidekar bus_send {from} \"<your response>\" --reply-to={}]",
+            "\n[reply with: sidekar bus send {from} \"<your response>\" --reply-to={}]",
             self.id
         );
         match self.kind {
             MessageKind::Handoff => {
                 format!(
                     "[from {from}]: {} [msg_id: {}]{reply_hint}",
-                    self.message,
-                    self.id
+                    self.message, self.id
                 )
             }
             MessageKind::Request => {

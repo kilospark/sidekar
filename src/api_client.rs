@@ -20,19 +20,21 @@ static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::
         .expect("failed to build HTTP client")
 });
 
-static HTTP_CLIENT_SHORT_TIMEOUT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .expect("failed to build HTTP client")
-});
+static HTTP_CLIENT_SHORT_TIMEOUT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(TIMEOUT)
+            .build()
+            .expect("failed to build HTTP client")
+    });
 
-static HTTP_CLIENT_DOWNLOAD: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(DOWNLOAD_TIMEOUT)
-        .build()
-        .expect("failed to build HTTP client")
-});
+static HTTP_CLIENT_DOWNLOAD: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .timeout(DOWNLOAD_TIMEOUT)
+            .build()
+            .expect("failed to build HTTP client")
+    });
 
 fn api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
@@ -56,7 +58,11 @@ pub async fn check_version(current: &str) -> Result<Value> {
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
         }
     }
-    Err(anyhow::anyhow!("check_version failed after {} attempts: {:?}", MAX_RETRIES, last_err))
+    Err(anyhow::anyhow!(
+        "check_version failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_err
+    ))
 }
 
 pub async fn send_telemetry(
@@ -84,7 +90,11 @@ pub async fn send_telemetry(
                 }
                 // Don't retry on 4xx client errors
                 if status.is_client_error() {
-                    return Err(anyhow::anyhow!("send_telemetry failed with {}: {}", status, resp.text().await.unwrap_or_default()));
+                    return Err(anyhow::anyhow!(
+                        "send_telemetry failed with {}: {}",
+                        status,
+                        resp.text().await.unwrap_or_default()
+                    ));
                 }
                 last_err = Some(anyhow::anyhow!("server error: {}", status));
             }
@@ -94,7 +104,11 @@ pub async fn send_telemetry(
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
         }
     }
-    Err(anyhow::anyhow!("send_telemetry failed after {} attempts: {:?}", MAX_RETRIES, last_err))
+    Err(anyhow::anyhow!(
+        "send_telemetry failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_err
+    ))
 }
 
 pub async fn send_feedback(
@@ -120,7 +134,11 @@ pub async fn send_feedback(
                 }
                 // Don't retry on 4xx client errors
                 if status.is_client_error() {
-                    return Err(anyhow::anyhow!("send_feedback failed with {}: {}", status, resp.text().await.unwrap_or_default()));
+                    return Err(anyhow::anyhow!(
+                        "send_feedback failed with {}: {}",
+                        status,
+                        resp.text().await.unwrap_or_default()
+                    ));
                 }
                 last_err = Some(anyhow::anyhow!("server error: {}", status));
             }
@@ -130,7 +148,11 @@ pub async fn send_feedback(
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
         }
     }
-    Err(anyhow::anyhow!("send_feedback failed after {} attempts: {:?}", MAX_RETRIES, last_err))
+    Err(anyhow::anyhow!(
+        "send_feedback failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_err
+    ))
 }
 
 /// Returns (platform, arch) for the current system, matching install.sh naming.
@@ -308,8 +330,8 @@ async fn do_self_update(version: &str) -> Result<()> {
 
 /// List devices registered to the current user.
 pub async fn list_devices() -> Result<Value> {
-    let token = crate::auth::auth_token()
-        .ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
+    let token =
+        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
 
     let url = format!("{}/api/auth/devices", api_base());
     let resp = HTTP_CLIENT
@@ -332,8 +354,8 @@ pub async fn list_devices() -> Result<Value> {
 
 /// List active sessions for the current user.
 pub async fn list_sessions() -> Result<Value> {
-    let token = crate::auth::auth_token()
-        .ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
+    let token =
+        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
 
     let url = format!("{}/api/sessions", api_base());
     let resp = HTTP_CLIENT
@@ -357,14 +379,11 @@ pub async fn list_sessions() -> Result<Value> {
 fn verify_signature(binary: &[u8], signature: &[u8]) -> Result<()> {
     use minisign_verify::{PublicKey, Signature};
 
-    let sig_str = std::str::from_utf8(signature)
-        .context("Signature is not valid UTF-8")?;
+    let sig_str = std::str::from_utf8(signature).context("Signature is not valid UTF-8")?;
 
-    let pk = PublicKey::from_base64(MINISIGN_PUBKEY)
-        .context("Invalid embedded public key")?;
+    let pk = PublicKey::from_base64(MINISIGN_PUBKEY).context("Invalid embedded public key")?;
 
-    let sig = Signature::decode(sig_str)
-        .context("Invalid signature format")?;
+    let sig = Signature::decode(sig_str).context("Invalid signature format")?;
 
     pk.verify(binary, &sig, /*allow_legacy=*/ false)
         .map_err(|e| anyhow!("Signature verification failed: {e}"))?;

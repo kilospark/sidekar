@@ -24,9 +24,9 @@ sidekar daemon
 ├── ext-bridge subsystem
 │   └── registered native-messaging bridge → Chrome extension connection
 ├── monitor subsystem (reactive)
-│   └── watch tabs via CDP → detect changes → bus_send to requesting agent
+│   └── watch tabs via CDP → detect changes → bus send to requesting agent
 ├── cron subsystem (proactive)
-│   └── schedule fires → execute tool/batch → bus_send result to target agent
+│   └── schedule fires → execute tool/batch → bus send result to target agent
 ├── bus-housekeeping subsystem
 │   └── cleanup old messages, orphaned agents
 └── unix socket (control interface)
@@ -90,7 +90,7 @@ cron_create:
     args: { "url": "..." }     # tool arguments
     # OR
     batch: [...]               # batch sequence
-  target: "agent-name"         # who gets the result via bus_send
+  target: "agent-name"         # who gets the result via bus send
   name: "dashboard-check"     # human-readable label (optional)
 
 cron_list:
@@ -108,7 +108,7 @@ Cron jobs stored in SQLite (`cron_jobs` table). Survives daemon restarts.
 
 When a cron job fires:
 1. Daemon executes the action (tool call or batch)
-2. Result is delivered via `bus_send` to the target agent
+2. Result is delivered via `bus send` to the target agent
 3. If no agent is listening — **table this for now** (options: queue, drop, log)
 
 ## Monitor Subsystem
@@ -117,7 +117,7 @@ Existing design from `project_monitor_design.md` moves into the daemon:
 
 - Watches browser tabs via CDP for title/favicon changes
 - Detects state changes (new Slack message, new email, build status change)
-- Delivers notifications via `bus_send` to the requesting agent
+- Delivers notifications via `bus send` to the requesting agent
 
 The MCP `monitor` tool becomes a thin client:
 - `monitor` with `action: "start"` → sends `monitor_start` to daemon socket

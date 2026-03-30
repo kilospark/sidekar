@@ -45,25 +45,31 @@ macro_rules! wlog {
 }
 
 pub mod api_client;
-pub mod daemon;
-pub mod ext;
 pub mod auth;
 pub mod broker;
 pub mod bus;
+pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod daemon;
 pub mod desktop;
+pub mod ext;
 pub mod ipc;
-pub mod skill;
 pub mod message;
 pub mod poller;
 pub mod pty;
 pub mod scripts;
+pub mod skill;
 pub mod transport;
 pub mod tunnel;
 pub mod types;
 pub mod utils;
 
+pub use cli::{
+    canonical_command_name, command_handler, command_requires_session,
+    command_should_auto_launch_browser, is_ext_routable_command, is_known_command,
+    removed_command_replacement,
+};
 pub use scripts::*;
 pub use types::*;
 pub use utils::*;
@@ -72,7 +78,13 @@ pub use utils::*;
 pub fn sanitize_for_filename(s: &str) -> String {
     let replaced: String = s
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == ':' { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     // Collapse consecutive hyphens
     let mut result = String::with_capacity(replaced.len());
@@ -83,128 +95,6 @@ pub fn sanitize_for_filename(s: &str) -> String {
         result.push(c);
     }
     result
-}
-
-static KNOWN_COMMANDS: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
-    std::sync::LazyLock::new(|| {
-        let mut set = std::collections::HashSet::new();
-        set.insert("launch");
-        set.insert("connect");
-        set.insert("navigate");
-        set.insert("dom");
-        set.insert("read");
-        set.insert("text");
-        set.insert("axtree");
-        set.insert("screenshot");
-        set.insert("pdf");
-        set.insert("click");
-        set.insert("hover");
-        set.insert("focus");
-        set.insert("clear");
-        set.insert("type");
-        set.insert("fill");
-        set.insert("keyboard");
-        set.insert("paste");
-        set.insert("clipboard");
-        set.insert("inserttext");
-        set.insert("select");
-        set.insert("upload");
-        set.insert("drag");
-        set.insert("dialog");
-        set.insert("waitfor");
-        set.insert("waitfornav");
-        set.insert("press");
-        set.insert("scroll");
-        set.insert("eval");
-        set.insert("observe");
-        set.insert("find");
-        set.insert("resolve");
-        set.insert("cookies");
-        set.insert("console");
-        set.insert("network");
-        set.insert("block");
-        set.insert("viewport");
-        set.insert("zoom");
-        set.insert("frames");
-        set.insert("frame");
-        set.insert("download");
-        set.insert("tabs");
-        set.insert("tab");
-        set.insert("newtab");
-        set.insert("close");
-        set.insert("kill");
-        set.insert("batch");
-        set.insert("media");
-        set.insert("animations");
-        set.insert("security");
-        set.insert("storage");
-        set.insert("sw");
-        set.insert("activate");
-        set.insert("minimize");
-        set.insert("grid");
-        set.insert("back");
-        set.insert("forward");
-        set.insert("reload");
-        set.insert("lock");
-        set.insert("unlock");
-        set.insert("search");
-        set.insert("readurls");
-        set.insert("feedback");
-        set.insert("errors");
-        set.insert("telemetry");
-        set.insert("config");
-        set.insert("update");
-        set.insert("install");
-        set.insert("uninstall");
-        set.insert("monitor");
-        set.insert("humanclick");
-        set.insert("humantype");
-        set.insert("doubleclick");
-        set.insert("rightclick");
-        set.insert("desktop-screenshot");
-        set.insert("desktop_screenshot");
-        set.insert("desktop-apps");
-        set.insert("desktop_apps");
-        set.insert("desktop-windows");
-        set.insert("desktop_windows");
-        set.insert("desktop-find");
-        set.insert("desktop_find");
-        set.insert("desktop-click");
-        set.insert("desktop_click");
-        set.insert("desktop-press");
-        set.insert("desktop_press");
-        set.insert("desktop-type");
-        set.insert("desktop_type");
-        set.insert("desktop-paste");
-        set.insert("desktop_paste");
-        set.insert("desktop-launch");
-        set.insert("desktop_launch");
-        set.insert("desktop-activate");
-        set.insert("desktop_activate");
-        set.insert("desktop-quit");
-        set.insert("desktop_quit");
-        set.insert("run");
-        set.insert("skill");
-        set.insert("help");
-        set.insert("login");
-        set.insert("logout");
-        set.insert("who");
-        set.insert("bus_send");
-        set.insert("bus_done");
-        set.insert("cron_create");
-        set.insert("cron-create");
-        set.insert("cron_list");
-        set.insert("cron-list");
-        set.insert("cron_delete");
-        set.insert("cron-delete");
-        set.insert("totp");
-        set.insert("kv");
-        set
-    });
-
-/// Commands handled by sidekar's dispatch — must not be intercepted by PTY agent detection.
-pub fn is_known_command(cmd: &str) -> bool {
-    KNOWN_COMMANDS.contains(cmd)
 }
 
 pub const DEFAULT_CDP_PORT: u16 = 9222;
@@ -1341,8 +1231,6 @@ pub async fn adopt_new_tabs(
     }
 }
 
-
-
 pub async fn focus_editable_element(
     cdp: &mut CdpClient,
     context_id: Option<i64>,
@@ -1521,11 +1409,11 @@ pub fn resolve_selector(ctx: &AppContext, input: &str) -> Result<String> {
         let state = ctx.load_session_state()?;
         let map = state
             .ref_map
-            .ok_or_else(|| anyhow!("No ref map. Run: axtree -i"))?;
+            .ok_or_else(|| anyhow!("No ref map. Run: ax-tree -i"))?;
         let selector = map
             .get(input)
             .cloned()
-            .ok_or_else(|| anyhow!("Ref {input} not found. Run: axtree -i to refresh."))?;
+            .ok_or_else(|| anyhow!("Ref {input} not found. Run: ax-tree -i to refresh."))?;
         return Ok(selector);
     }
     Ok(input.to_string())
@@ -1803,8 +1691,15 @@ pub fn check_tab_lock(ctx: &AppContext, tab_id: &str) -> Result<Option<TabLock>>
 }
 
 pub fn print_command_help(command: &str) {
+    if let Some(replacement) = removed_command_replacement(command) {
+        println!("Command '{command}' was removed.\n\nUse: sidekar {replacement}");
+        return;
+    }
+
+    let command = canonical_command_name(command).unwrap_or(command);
     let help = match command {
-        "navigate" => "\
+        "navigate" => {
+            "\
 sidekar navigate <url> [--no-dismiss]
 
   Navigate the active tab to <url>. Automatically adds https:// if no scheme.
@@ -1816,15 +1711,17 @@ sidekar navigate <url> [--no-dismiss]
 
   Examples:
     sidekar navigate example.com
-    sidekar navigate https://github.com/search?q=rust --no-dismiss",
+    sidekar navigate https://github.com/search?q=rust --no-dismiss"
+        }
 
-        "click" => "\
+        "click" => {
+            "\
 sidekar click <target> [--mode=double|right|human]
 
   Click an element. Waits up to 5s for it to appear, scrolls into view.
 
   Target types (in priority order):
-    <ref>          Ref number from axtree -i, observe, or text (e.g. 3)
+    <ref>          Ref number from ax-tree -i, observe, or text (e.g. 3)
     --text <text>  Find by visible text, prefer interactive ancestors
     <selector>     CSS selector (#id, .class, [data-testid=...])
     <x>,<y>        Coordinates from screenshot (last resort)
@@ -1842,9 +1739,11 @@ sidekar click <target> [--mode=double|right|human]
     sidekar click --text \"Sign in\"
     sidekar click \"#submit-btn\"
     sidekar click --mode=double 5
-    sidekar click 450,300",
+    sidekar click 450,300"
+        }
 
-        "type" => "\
+        "type" => {
+            "\
 sidekar type <selector> <text> [--human]
 
   Focus the element matching <selector> and type <text> into it.
@@ -1858,9 +1757,11 @@ sidekar type <selector> <text> [--human]
   Examples:
     sidekar type \"#search\" \"rust async\"
     sidekar type 5 \"hello world\"
-    sidekar type --human \"#email\" \"user@example.com\"",
+    sidekar type --human \"#email\" \"user@example.com\""
+        }
 
-        "keyboard" => "\
+        "keyboard" => {
+            "\
 sidekar keyboard <text>
 
   Type text at the current caret position without focusing a new element.
@@ -1869,9 +1770,11 @@ sidekar keyboard <text>
 
   Example:
     sidekar click \".editor\"
-    sidekar keyboard \"Hello world\"",
+    sidekar keyboard \"Hello world\""
+        }
 
-        "fill" => "\
+        "fill" => {
+            "\
 sidekar fill <selector1> <value1> [selector2] [value2] ...
 
   Fill multiple form fields in one call. Alternating selector/value pairs.
@@ -1879,9 +1782,11 @@ sidekar fill <selector1> <value1> [selector2] [value2] ...
 
   Examples:
     sidekar fill \"#email\" \"user@example.com\" \"#password\" \"secret\"
-    sidekar fill 3 \"Alice\" 5 \"alice@example.com\"",
+    sidekar fill 3 \"Alice\" 5 \"alice@example.com\""
+        }
 
-        "read" => "\
+        "read" => {
+            "\
 sidekar read [selector] [--tokens=N]
 
   Reader-mode text extraction. Strips navigation, sidebars, ads.
@@ -1895,9 +1800,11 @@ sidekar read [selector] [--tokens=N]
   Examples:
     sidekar read
     sidekar read article --tokens=2000
-    sidekar read \".main-content\"",
+    sidekar read \".main-content\""
+        }
 
-        "text" => "\
+        "text" => {
+            "\
 sidekar text [selector] [--tokens=N]
 
   Full page text in reading order, interleaving static text with
@@ -1908,10 +1815,12 @@ sidekar text [selector] [--tokens=N]
 
   Examples:
     sidekar text
-    sidekar text --tokens=3000",
+    sidekar text --tokens=3000"
+        }
 
-        "axtree" => "\
-sidekar axtree [options] [selector]
+        "ax-tree" => {
+            "\
+sidekar ax-tree [options] [selector]
 
   Accessibility tree — semantic roles and accessible names.
 
@@ -1923,11 +1832,13 @@ sidekar axtree [options] [selector]
   After -i, use ref numbers everywhere: click 3, type 5 \"hello\", screenshot --ref=7
 
   Examples:
-    sidekar axtree -i
-    sidekar axtree -i --diff
-    sidekar axtree --tokens=2000",
+    sidekar ax-tree -i
+    sidekar ax-tree -i --diff
+    sidekar ax-tree --tokens=2000"
+        }
 
-        "dom" => "\
+        "dom" => {
+            "\
 sidekar dom [selector] [--tokens=N]
 
   Compact DOM tree with scripts, styles, SVGs stripped.
@@ -1936,15 +1847,17 @@ sidekar dom [selector] [--tokens=N]
   Examples:
     sidekar dom
     sidekar dom \"main\" --tokens=3000
-    sidekar dom \"#app\"",
+    sidekar dom \"#app\""
+        }
 
-        "screenshot" => "\
+        "screenshot" => {
+            "\
 sidekar screenshot [options]
 
   Capture a screenshot of the page or a specific element.
 
   Options:
-    --ref=N            Crop to ref number (from axtree -i, observe, text)
+    --ref=N            Crop to ref number (from ax-tree -i, observe, text)
     --selector=SEL     Crop to CSS selector
     --full             Capture entire scrollable page
     --output=PATH      Save to specific file path
@@ -1957,9 +1870,11 @@ sidekar screenshot [options]
     sidekar screenshot
     sidekar screenshot --ref=3
     sidekar screenshot --selector=\".modal\" --format=png
-    sidekar screenshot --full --output=/tmp/page.png",
+    sidekar screenshot --full --output=/tmp/page.png"
+        }
 
-        "press" => "\
+        "press" => {
+            "\
 sidekar press <key>
 
   Press a key or key combination.
@@ -1972,9 +1887,11 @@ sidekar press <key>
     sidekar press Enter
     sidekar press Ctrl+A
     sidekar press Meta+V
-    sidekar press Shift+Enter",
+    sidekar press Shift+Enter"
+        }
 
-        "scroll" => "\
+        "scroll" => {
+            "\
 sidekar scroll <target> [pixels]
 
   Scroll the page or a specific container.
@@ -1989,9 +1906,11 @@ sidekar scroll <target> [pixels]
     sidekar scroll down
     sidekar scroll down 800
     sidekar scroll top
-    sidekar scroll \".chat-messages\" down",
+    sidekar scroll \".chat-messages\" down"
+        }
 
-        "search" => "\
+        "search" => {
+            "\
 sidekar search <query> [--engine=E] [--tokens=N]
 
   Web search via real browser. Navigates to search engine, submits query,
@@ -2001,18 +1920,22 @@ sidekar search <query> [--engine=E] [--tokens=N]
 
   Examples:
     sidekar search \"rust async programming\"
-    sidekar search --engine=bing \"weather forecast\"",
+    sidekar search --engine=bing \"weather forecast\""
+        }
 
-        "readurls" => "\
-sidekar readurls <url1> <url2> ... [--tokens=N]
+        "read-urls" => {
+            "\
+sidekar read-urls <url1> <url2> ... [--tokens=N]
 
   Read multiple URLs in parallel. Opens each in a new tab,
   extracts content, returns combined results, closes tabs.
 
   Examples:
-    sidekar readurls https://example.com https://example.org",
+    sidekar read-urls https://example.com https://example.org"
+        }
 
-        "batch" => "\
+        "batch" => {
+            "\
 sidekar batch '<json>'
 
   Execute multiple actions sequentially in one call.
@@ -2024,11 +1947,13 @@ sidekar batch '<json>'
   Example:
     sidekar batch '{\"actions\":[
       {\"tool\":\"click\",\"target\":\"--text Continue\",\"retries\":2},
-      {\"tool\":\"waitfornav\"},
+      {\"tool\":\"wait-for-nav\"},
       {\"tool\":\"screenshot\",\"output\":\"/tmp/result.png\"}
-    ]}'",
+    ]}'"
+        }
 
-        "launch" => "\
+        "launch" => {
+            "\
 sidekar launch [options]
 
   Launch a Chromium browser and create a session.
@@ -2041,29 +1966,64 @@ sidekar launch [options]
   Examples:
     sidekar launch
     sidekar launch --browser=brave --profile=testing
-    sidekar launch --headless",
+    sidekar launch --headless"
+        }
 
-        "connect" => "\
+        "connect" => {
+            "\
 sidekar connect
 
   Attach to an already-running browser debug port and create a new Sidekar session.
   Does not launch a new browser process.
 
   Example:
-    sidekar connect",
+    sidekar connect"
+        }
+
+        "desktop" => {
+            "\
+sidekar desktop <subcommand> [args...]
+
+  Desktop automation via the macOS Accessibility API.
+
+  Subcommands:
+    screenshot [--app <name>|--pid <pid>] [--output <path>]
+    apps
+    windows --app <name>|--pid <pid>
+    find --app <name>|--pid <pid> <query>
+    click --app <name>|--pid <pid> <query>
+    press <key|combo>
+    type <text>
+    paste <text>
+    launch <app>
+    activate --app <name>|--pid <pid>
+    quit --app <name>|--pid <pid>
+
+  Examples:
+    sidekar desktop apps
+    sidekar desktop screenshot --app Safari
+    sidekar desktop click --app Finder \"New Folder\""
+        }
 
         "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
         "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
-        "newtab" => "sidekar newtab [url]\n\n  Open a new tab, optionally navigating to URL.",
+        "new-tab" => "sidekar new-tab [url]\n\n  Open a new tab, optionally navigating to URL.",
         "close" => "sidekar close\n\n  Close the current tab and switch to the next.",
         "back" => "sidekar back\n\n  Go back in browser history.",
         "forward" => "sidekar forward\n\n  Go forward in browser history.",
         "reload" => "sidekar reload\n\n  Reload the current page.",
-        "observe" => "sidekar observe\n\n  Show interactive elements formatted as ready-to-use commands.\n  Generates ref map. Like 'axtree -i' but with command suggestions.",
-        "find" => "sidekar find <query>\n\n  Find an element by natural language description.\n\n  Example: sidekar find \"the login button\"",
-        "resolve" => "sidekar resolve <selector>\n\n  Get link/form target URL without clicking.\n  Returns href, action, formAction, src, onclick, target attributes.\n\n  Example: sidekar resolve 3",
+        "observe" => {
+            "sidekar observe\n\n  Show interactive elements formatted as ready-to-use commands.\n  Generates ref map. Like 'ax-tree -i' but with command suggestions."
+        }
+        "find" => {
+            "sidekar find <query>\n\n  Find an element by natural language description.\n\n  Example: sidekar find \"the login button\""
+        }
+        "resolve" => {
+            "sidekar resolve <selector>\n\n  Get link/form target URL without clicking.\n  Returns href, action, formAction, src, onclick, target attributes.\n\n  Example: sidekar resolve 3"
+        }
 
-        "eval" => "\
+        "eval" => {
+            "\
 sidekar eval <javascript>
 
   Evaluate a JavaScript expression in the page context.
@@ -2072,9 +2032,11 @@ sidekar eval <javascript>
   Examples:
     sidekar eval \"document.title\"
     sidekar eval \"document.querySelectorAll('a').length\"
-    sidekar eval \"document.querySelector('#btn').click()\"",
+    sidekar eval \"document.querySelector('#btn').click()\""
+        }
 
-        "cookies" => "\
+        "cookies" => {
+            "\
 sidekar cookies [action] [name] [value] [domain]
 
   Actions: get (default), set, delete, clear
@@ -2083,9 +2045,11 @@ sidekar cookies [action] [name] [value] [domain]
     sidekar cookies
     sidekar cookies set session abc123
     sidekar cookies delete tracking
-    sidekar cookies clear",
+    sidekar cookies clear"
+        }
 
-        "console" => "\
+        "console" => {
+            "\
 sidekar console [action]
 
   Actions:
@@ -2095,9 +2059,11 @@ sidekar console [action]
   Examples:
     sidekar console
     sidekar console show
-    sidekar console listen",
+    sidekar console listen"
+        }
 
-        "network" => "\
+        "network" => {
+            "\
 sidekar network [action] [duration] [filter]
 
   Actions:
@@ -2107,9 +2073,11 @@ sidekar network [action] [duration] [filter]
   Examples:
     sidekar network capture 15
     sidekar network capture 10 api/users
-    sidekar network show",
+    sidekar network show"
+        }
 
-        "block" => "\
+        "block" => {
+            "\
 sidekar block <patterns...>
 
   Block resource types or URL patterns. Use 'off' to disable all.
@@ -2118,9 +2086,11 @@ sidekar block <patterns...>
   Examples:
     sidekar block images fonts
     sidekar block analytics.js
-    sidekar block off",
+    sidekar block off"
+        }
 
-        "viewport" => "\
+        "viewport" => {
+            "\
 sidekar viewport <preset|width> [height]
 
   Presets: mobile (375x667), iphone (390x844), ipad (820x1180),
@@ -2129,9 +2099,11 @@ sidekar viewport <preset|width> [height]
 
   Examples:
     sidekar viewport mobile
-    sidekar viewport 1440 900",
+    sidekar viewport 1440 900"
+        }
 
-        "zoom" => "\
+        "zoom" => {
+            "\
 sidekar zoom <level>
 
   Zoom: in (+25%), out (-25%), reset (100%), or exact number (25-200).
@@ -2140,9 +2112,11 @@ sidekar zoom <level>
   Examples:
     sidekar zoom out
     sidekar zoom 50
-    sidekar zoom reset",
+    sidekar zoom reset"
+        }
 
-        "dialog" => "\
+        "dialog" => {
+            "\
 sidekar dialog <accept|dismiss> [prompt_text]
 
   Set a one-shot handler for the next JavaScript dialog (alert/confirm/prompt).
@@ -2151,32 +2125,46 @@ sidekar dialog <accept|dismiss> [prompt_text]
   Examples:
     sidekar dialog accept
     sidekar dialog dismiss
-    sidekar dialog accept \"my input text\"",
+    sidekar dialog accept \"my input text\""
+        }
 
-        "waitfor" => "\
-sidekar waitfor <selector> [timeout_ms]
+        "wait-for" => {
+            "\
+sidekar wait-for <selector> [timeout_ms]
 
   Wait for an element to appear in the DOM (default timeout: 30s).
 
   Examples:
-    sidekar waitfor \".results\"
-    sidekar waitfor \"#modal\" 5000",
+    sidekar wait-for \".results\"
+    sidekar wait-for \"#modal\" 5000"
+        }
 
-        "waitfornav" => "\
-sidekar waitfornav [timeout_ms]
+        "wait-for-nav" => {
+            "\
+sidekar wait-for-nav [timeout_ms]
 
   Wait for navigation to complete (document.readyState === 'complete').
   Default timeout: 10s.
 
   Example:
-    sidekar waitfornav
-    sidekar waitfornav 15000",
+    sidekar wait-for-nav
+    sidekar wait-for-nav 15000"
+        }
 
-        "select" => "sidekar select <selector> <value> [value2...]\n\n  Select option(s) from a <select> element by value or label.\n\n  Example: sidekar select \"#country\" \"US\"",
-        "upload" => "sidekar upload <selector> <file> [file2...]\n\n  Upload file(s) to a file input element.\n\n  Example: sidekar upload \"input[type=file]\" /tmp/photo.jpg",
-        "drag" => "sidekar drag <from> <to>\n\n  Drag from one element to another.\n\n  Example: sidekar drag \"#item-1\" \"#drop-zone\"",
-        "paste" => "sidekar paste <text>\n\n  Paste text via ClipboardEvent. Works with apps that intercept paste.",
-        "clipboard" => "\
+        "select" => {
+            "sidekar select <selector> <value> [value2...]\n\n  Select option(s) from a <select> element by value or label.\n\n  Example: sidekar select \"#country\" \"US\""
+        }
+        "upload" => {
+            "sidekar upload <selector> <file> [file2...]\n\n  Upload file(s) to a file input element.\n\n  Example: sidekar upload \"input[type=file]\" /tmp/photo.jpg"
+        }
+        "drag" => {
+            "sidekar drag <from> <to>\n\n  Drag from one element to another.\n\n  Example: sidekar drag \"#item-1\" \"#drop-zone\""
+        }
+        "paste" => {
+            "sidekar paste <text>\n\n  Paste text via ClipboardEvent. Works with apps that intercept paste."
+        }
+        "clipboard" => {
+            "\
 sidekar clipboard --html <html> [--text <text>]
 
   Write HTML to clipboard and paste via Cmd+V.
@@ -2184,14 +2172,20 @@ sidekar clipboard --html <html> [--text <text>]
 
   Examples:
     sidekar clipboard --html \"<b>bold</b> text\"
-    sidekar clipboard --html \"<h1>Title</h1>\" --text \"Title\"",
+    sidekar clipboard --html \"<h1>Title</h1>\" --text \"Title\""
+        }
 
-        "inserttext" => "sidekar inserttext <text>\n\n  Insert text at cursor via CDP Input.insertText.\n  Faster than keyboard for large text. No formatting — use clipboard for rich text.",
-        "hover" => "sidekar hover <target>\n\n  Hover over an element (same targeting as click: ref, --text, selector, x,y).",
+        "insert-text" => {
+            "sidekar insert-text <text>\n\n  Insert text at cursor via CDP Input.insertText.\n  Faster than keyboard for large text. No formatting — use clipboard for rich text."
+        }
+        "hover" => {
+            "sidekar hover <target>\n\n  Hover over an element (same targeting as click: ref, --text, selector, x,y)."
+        }
         "focus" => "sidekar focus <selector>\n\n  Focus an element without clicking it.",
         "clear" => "sidekar clear <selector>\n\n  Clear an input or contenteditable element.",
 
-        "storage" => "\
+        "storage" => {
+            "\
 sidekar storage <action> [key] [value] [--session]
 
   Actions: get, set, remove, clear
@@ -2203,28 +2197,34 @@ sidekar storage <action> [key] [value] [--session]
   Examples:
     sidekar storage get
     sidekar storage set mykey myvalue
-    sidekar storage clear everything",
+    sidekar storage clear everything"
+        }
 
-        "sw" => "\
-sidekar sw <action>
+        "service-workers" => {
+            "\
+sidekar service-workers <action>
 
   Actions: list, unregister, update
   Manage service workers for the current page origin.
 
   Examples:
-    sidekar sw list
-    sidekar sw unregister",
+    sidekar service-workers list
+    sidekar service-workers unregister"
+        }
 
-        "security" => "\
+        "security" => {
+            "\
 sidekar security <action>
 
   Actions:
     ignore-certs   Accept self-signed/invalid certificates
     strict         Restore normal certificate validation
 
-  Example: sidekar security ignore-certs",
+  Example: sidekar security ignore-certs"
+        }
 
-        "media" => "\
+        "media" => {
+            "\
 sidekar media <features...>
 
   Emulate media features. Use 'reset' to restore defaults.
@@ -2234,10 +2234,14 @@ sidekar media <features...>
   Examples:
     sidekar media dark
     sidekar media print
-    sidekar media reset",
+    sidekar media reset"
+        }
 
-        "animations" => "sidekar animations <pause|resume|slow>\n\n  pause: freeze all animations\n  resume: restore normal playback\n  slow: 10% speed",
-        "grid" => "\
+        "animations" => {
+            "sidekar animations <pause|resume|slow>\n\n  pause: freeze all animations\n  resume: restore normal playback\n  slow: 10% speed"
+        }
+        "grid" => {
+            "\
 sidekar grid [spec]
 
   Overlay a coordinate grid for canvas/image targeting.
@@ -2245,61 +2249,42 @@ sidekar grid [spec]
   Specs: 8x6 (cols x rows), 50 (pixel cell size), off (remove)
   Default: 10x10 grid. Take a screenshot after to see coordinates.
 
-  Example: sidekar grid 8x6",
+  Example: sidekar grid 8x6"
+        }
 
         "pdf" => "sidekar pdf [path]\n\n  Save current page as PDF. Default: temp directory.",
-        "download" => "sidekar download [action] [path]\n\n  Actions: path (set download dir), list (show downloads)\n\n  Example: sidekar download path /tmp/downloads",
+        "download" => {
+            "sidekar download [action] [path]\n\n  Actions: path (set download dir), list (show downloads)\n\n  Example: sidekar download path /tmp/downloads"
+        }
         "frames" => "sidekar frames\n\n  List all frames/iframes in the page.",
-        "frame" => "sidekar frame <target>\n\n  Switch to a frame by ID, name, or CSS selector.\n  Use 'main' to switch back to the top frame.\n\n  Example: sidekar frame \"iframe.content\"",
-        "lock" => "sidekar lock [seconds]\n\n  Lock the active tab for exclusive access (default: 300s).",
+        "frame" => {
+            "sidekar frame <target>\n\n  Switch to a frame by ID, name, or CSS selector.\n  Use 'main' to switch back to the top frame.\n\n  Example: sidekar frame \"iframe.content\""
+        }
+        "lock" => {
+            "sidekar lock [seconds]\n\n  Lock the active tab for exclusive access (default: 300s)."
+        }
         "unlock" => "sidekar unlock\n\n  Release the tab lock.",
         "activate" => "sidekar activate\n\n  Bring the browser window to the front (macOS).",
         "minimize" => "sidekar minimize\n\n  Minimize the browser window (macOS).",
         "kill" => "sidekar kill\n\n  Kill the custom profile browser session.",
 
-        "desktop-screenshot" | "desktop_screenshot" => "\
-sidekar desktop-screenshot [--app <name>] [--pid <pid>] [--output <path>]
+        "bus" => {
+            "\
+sidekar bus <who|send|done> [args...]
 
-  Capture the full desktop or a specific app window.
-  Requires Screen Recording permission on macOS.
-
-  Examples:
-    sidekar desktop-screenshot
-    sidekar desktop-screenshot --app Safari
-    sidekar desktop-screenshot --app Finder --output /tmp/finder.png",
-
-        "desktop-apps" | "desktop_apps" => "sidekar desktop-apps\n\n  List running applications with PID and bundle ID.",
-        "desktop-windows" | "desktop_windows" => "sidekar desktop-windows --app <name>\n\n  List windows for an app. Shows title, frame, main/focused state.",
-        "desktop-find" | "desktop_find" => "sidekar desktop-find --app <name> <query>\n\n  Search app UI elements. Case-insensitive match against role, title, value.\n  Returns up to 50 matches with available actions.",
-        "desktop-click" | "desktop_click" => "sidekar desktop-click --app <name> <query>\n\n  Click a UI element by query via Accessibility API.\n  Use desktop-find first to verify the element exists.",
-        "desktop-press" | "desktop_press" => "sidekar desktop-press <key|combo>\n\n  Send an OS-level key press to the focused app.\n  Supports combos like cmd+v, cmd+shift+p, enter, tab, esc.",
-        "desktop-type" | "desktop_type" => "sidekar desktop-type <text>\n\n  Type text into the focused app using desktop input.",
-        "desktop-paste" | "desktop_paste" => "sidekar desktop-paste <text>\n\n  Put text on the macOS pasteboard and send cmd+v to the focused app.",
-        "desktop-launch" | "desktop_launch" => "sidekar desktop-launch <app>\n\n  Launch an application by name.\n\n  Example: sidekar desktop-launch Slack",
-        "desktop-activate" | "desktop_activate" => "sidekar desktop-activate --app <name>\n\n  Bring an application to the foreground.",
-        "desktop-quit" | "desktop_quit" => "sidekar desktop-quit --app <name>\n\n  Quit an application gracefully.",
-
-        "who" => "sidekar who\n\n  List agents registered on the bus (same channel).",
-        "bus_send" | "bus-send" => "\
-sidekar bus_send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]
-
-  Send a message to another agent by name, or @all to broadcast.
-  When --reply-to is provided, the default kind becomes `response`.
+  Agent bus subcommands:
+    who
+    send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]
+    done <next> <summary> <request> [--reply-to=<msg_id>]
 
   Examples:
-    sidekar bus_send claude-2 \"Please review the PR\"
-    sidekar bus_send claude-2 \"Acknowledged\" --reply-to=3966a70e-4c5c",
+    sidekar bus who
+    sidekar bus send claude-2 \"Please review the PR\"
+    sidekar bus done claude-2 \"Done\" \"Please take over\""
+        }
 
-        "bus_done" | "bus-done" => "\
-sidekar bus_done <next> <summary> <request> [--reply-to=<msg_id>]
-
-  Hand off to another agent with a summary and next request.
-
-  Examples:
-    sidekar bus_done claude-2 \"Finished API tests\" \"Run integration tests\"
-    sidekar bus_done claude-2 \"Done\" \"Please take over\" --reply-to=3966a70e-4c5c",
-
-        "monitor" => "\
+        "monitor" => {
+            "\
 sidekar monitor <start|stop|status> [tab_id|all]
 
   Watch one or more tabs for title and favicon changes, then deliver notifications
@@ -2309,9 +2294,26 @@ sidekar monitor <start|stop|status> [tab_id|all]
     sidekar monitor start all
     sidekar monitor start 12345 67890
     sidekar monitor status
-    sidekar monitor stop",
+    sidekar monitor stop"
+        }
 
-        "config" => "\
+        "cron" => {
+            "\
+sidekar cron <create|list|delete> [args...]
+
+  Scheduled job subcommands:
+    create <schedule> <action_json> [--target=T] [--name=N]
+    list
+    delete <job-id>
+
+  Examples:
+    sidekar cron list
+    sidekar cron create \"*/5 * * * *\" '{\"tool\":\"screenshot\"}'
+    sidekar cron delete 123abc"
+        }
+
+        "config" => {
+            "\
 sidekar config [list|get|set|reset] [key] [value]
 
   Manage configuration (stored in ~/.sidekar/sidekar.sqlite3).
@@ -2328,9 +2330,11 @@ sidekar config [list|get|set|reset] [key] [value]
     sidekar config list
     sidekar config set telemetry false
     sidekar config set browser brave
-    sidekar config reset browser",
+    sidekar config reset browser"
+        }
 
-        "telemetry" => "\
+        "telemetry" => {
+            "\
 sidekar telemetry [on|off|status]
 
   Enable, disable, or inspect anonymous telemetry collection.
@@ -2338,9 +2342,11 @@ sidekar telemetry [on|off|status]
   Examples:
     sidekar telemetry status
     sidekar telemetry off
-    sidekar telemetry on",
+    sidekar telemetry on"
+        }
 
-        "feedback" => "\
+        "feedback" => {
+            "\
 sidekar feedback <rating> [comment]
 
   Send a rating and optional comment to Sidekar.
@@ -2349,9 +2355,11 @@ sidekar feedback <rating> [comment]
 
   Examples:
     sidekar feedback 5
-    sidekar feedback 3 \"Need better help output for hidden commands\"",
+    sidekar feedback 3 \"Need better help output for hidden commands\""
+        }
 
-        "errors" => "\
+        "errors" => {
+            "\
 sidekar errors [N]
 
   Show the most recent rows from the local error log stored in SQLite.
@@ -2359,30 +2367,40 @@ sidekar errors [N]
 
   Examples:
     sidekar errors
-    sidekar errors 100",
+    sidekar errors 100"
+        }
 
-        "login" => "\
+        "login" => {
+            "\
 sidekar login
 
   Authenticate with sidekar.dev using the device auth flow.
-  Enables relay-backed sessions, dashboard access, and extension auth.",
+  Enables relay-backed sessions, dashboard access, and extension auth."
+        }
 
-        "logout" => "\
+        "logout" => {
+            "\
 sidekar logout
 
-  Remove the local device token and clear local encryption state.",
+  Remove the local device token and clear local encryption state."
+        }
 
-        "devices" => "\
+        "devices" => {
+            "\
 sidekar devices
 
-  List registered devices for the authenticated Sidekar account.",
+  List registered devices for the authenticated Sidekar account."
+        }
 
-        "sessions" => "\
+        "sessions" => {
+            "\
 sidekar sessions
 
-  List active Sidekar sessions visible to the authenticated account.",
+  List active Sidekar sessions visible to the authenticated account."
+        }
 
-        "daemon" => "\
+        "daemon" => {
+            "\
 sidekar daemon [run|stop|restart|status]
 
   Manage the background Sidekar daemon used by long-running subsystems.
@@ -2391,9 +2409,11 @@ sidekar daemon [run|stop|restart|status]
     sidekar daemon
     sidekar daemon status
     sidekar daemon restart
-    sidekar daemon stop",
+    sidekar daemon stop"
+        }
 
-        "totp" => "\
+        "totp" => {
+            "\
 sidekar totp <add|list|get|remove> [args...]
 
   Store and retrieve TOTP secrets for automated login flows.
@@ -2403,9 +2423,11 @@ sidekar totp <add|list|get|remove> [args...]
     sidekar totp add github alice BASE32SECRET
     sidekar totp list
     sidekar totp get github alice
-    sidekar totp remove 12",
+    sidekar totp remove 12"
+        }
 
-        "kv" => "\
+        "kv" => {
+            "\
 sidekar kv <set|get|list|delete> [args...]
 
   Encrypted key-value storage for secrets and other agent state.
@@ -2414,25 +2436,21 @@ sidekar kv <set|get|list|delete> [args...]
     sidekar kv set github_token abc123
     sidekar kv get github_token
     sidekar kv list
-    sidekar kv delete github_token",
+    sidekar kv delete github_token"
+        }
 
-        "install" => "\
+        "install" => {
+            "\
 sidekar install
 
   Install sidekar skill file for detected agents.
-  Detects: Claude Code, Codex, Gemini CLI, OpenCode, Pi.",
+  Detects: Claude Code, Codex, Gemini CLI, OpenCode, Pi."
+        }
 
         "skill" => "sidekar skill\n\n  Print the embedded SKILL.md to stdout (for agents to read).",
 
-        "ext-server" => "\
-sidekar ext-server
-
-  Legacy alias for `sidekar daemon run`.
-
-  The Chrome extension now talks to Sidekar through native messaging and the
-  daemon unix socket. You usually do not need this command.",
-
-        "ext" => "\
+        "ext" => {
+            "\
 sidekar ext <subcommand> [args...]
 
   Drive your normal Chrome profile via the Sidekar extension. Load unpacked `extension/`
@@ -2442,8 +2460,8 @@ sidekar ext <subcommand> [args...]
   tab id in the subcommand args wins.
 
   Subcommands: tabs, read [tab_id], screenshot [tab_id], click <target>, type <sel> <text>,
-  paste [--html <html>] [--text <text>] [--selector <sel>], setvalue <sel> <text>,
-  axtree [tab_id], eval <js>, evalpage <js>, navigate <url> [tab_id], newtab [url],
+  paste [--html <html>] [--text <text>] [--selector <sel>], set-value <sel> <text>,
+  ax-tree [tab_id], eval <js>, eval-page <js>, navigate <url> [tab_id], new-tab [url],
   close [tab_id], scroll [direction], status, stop, install-host [extension_id]
 
   Examples:
@@ -2452,11 +2470,14 @@ sidekar ext <subcommand> [args...]
     sidekar --tab 3 ext screenshot
     sidekar ext click \"#search-btn\"
     sidekar ext paste --html \"<h1>Title</h1>\" --text \"Title\"
-    sidekar ext evalpage \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\"
-    sidekar ext install-host",
+    sidekar ext eval-page \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\"
+    sidekar ext install-host"
+        }
 
         _ => {
-            println!("Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands.");
+            println!(
+                "Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands."
+            );
             return;
         }
     };
@@ -2464,8 +2485,5 @@ sidekar ext <subcommand> [args...]
 }
 
 pub fn print_help() {
-    println!(
-        "sidekar v{}\n\nUsage: sidekar <command> [args]\n\nCommands:\n  launch [--headless]  Launch Chrome and start a session\n  connect             Attach to already-running Chrome (no launch)\n  run <sid>           Run command(s) from /tmp/sidekar-command-<sid>.json\n  navigate <url>      Navigate to URL\n  back                Go back in history\n  forward             Go forward in history\n  reload              Reload the current page\n  read [selector]     Reader-mode text extraction\n  text [selector]     Full page text with interactive refs\n  dom [selector]      Get compact DOM (--tokens=N to limit output)\n  axtree [selector]   Get accessibility tree\n  axtree -i           Interactive elements with ref numbers\n  axtree -i --diff    Show only changes since last snapshot\n  observe             Show interactive elements as ready-to-use commands\n  find <query>        Find element by description\n  resolve <selector>  Get link target URL without clicking\n  screenshot [--full] Capture screenshot (--full for entire page)\n  pdf [path]          Save page as PDF\n  click <sel|x,y|--text> Click element, coordinates, or text match\n  click --mode=double <sel|x,y|--text> Double-click\n  click --mode=right <sel|x,y|--text> Right-click\n  hover <sel|x,y|--text> Hover\n  focus <selector>    Focus an element without clicking\n  clear <selector>    Clear an input or contenteditable\n  type <sel> <text>   Type text into element\n  fill <sel1> <val1> [sel2] [val2] ...  Fill multiple fields\n  keyboard <text>     Type at current caret position\n  paste <text>        Paste text via ClipboardEvent\n  clipboard --html <html> [--text <text>]  Paste rich HTML\n  inserttext <text>   Insert text at cursor via CDP Input.insertText\n  select <sel> <val>  Select option(s) from a <select>\n  upload <sel> <file> Upload file(s) to a file input\n  drag <from> <to>    Drag from one element to another\n  dialog <accept|dismiss> [text] Handle next dialog\n  waitfor <sel> [ms]  Wait for element to appear\n  waitfornav [ms]     Wait for navigation/readystate\n  press <key>         Press key or combo (Enter, Ctrl+A, Meta+C)\n  scroll <...>        Scroll page or element\n  eval <js>           Evaluate JavaScript\n  search <query>      Search the web in-browser and extract results\n  readurls <url1> <url2> ...  Read multiple URLs in parallel\n  cookies ...         Manage cookies\n  console ...         Show/listen for console logs\n  network ...         Capture/show network requests\n  block ...           Configure request blocking\n  viewport ...        Set viewport preset or dimensions\n  frames              List frames/iframes\n  frame <id|sel>      Switch frame (frame main to reset)\n  download ...        Configure/list downloads\n  tabs                List tabs owned by this session\n  tab <id>            Switch to a session-owned tab\n  newtab [url]        Open a new tab in this session\n  close               Close current tab\n  activate            Bring browser window to front (macOS)\n  minimize            Minimize browser window (macOS)\n  click --mode=human <...>  Human-like click movement/timing\n  type --human <...>        Human-like typing\n  media <dark|light|...> Emulate media features (dark mode, print, etc)\n  animations <pause|resume> Pause/resume page animations\n  security <ignore-certs|strict> Control certificate validation\n  storage <get|set|remove|clear> Manage localStorage/sessionStorage\n  sw <list|unregister|update> Manage service workers\n  zoom <in|out|N>     Zoom page (25-200%%, preserves layout)\n  lock [seconds]      Lock active tab for exclusive access\n  unlock              Release tab lock\n  kill                Kill custom profile browser session\n  batch '<json>'      Execute multiple actions sequentially\n  grid [spec]         Overlay coordinate grid (8x6, 50, off)\n  desktop-screenshot [--app <name>|--pid <pid>]  Capture desktop or app window\n  desktop-apps       List running applications\n  desktop-windows --app <name>|--pid <pid>  List app windows\n  desktop-find --app <name>|--pid <pid> <q>  Find UI element by query\n  desktop-click --app <name>|--pid <pid> <q>  Click UI element by query\n  desktop-press <key|combo>  Send OS-level key press to focused app\n  desktop-type <text>  Type into focused app\n  desktop-paste <text>  Paste into focused app\n  desktop-launch <app name>  Launch an application\n  desktop-activate --app <name>|--pid <pid>  Bring app to foreground\n  desktop-quit --app <name>|--pid <pid>  Quit an application\n  who                 List agents on the current bus channel\n  bus_send <to> <message>  Send a message to another agent\n  bus_done <next> <summary> <request>  Hand off to another agent\n  monitor <start|stop|status>  Watch tabs for background changes\n  daemon [run|stop|restart|status]  Manage the Sidekar background daemon\n  login               Authenticate with sidekar.dev (device auth flow)\n  logout              Remove device token and clear encryption state\n  devices             List registered devices for your account\n  sessions            List active sessions for your account\n  update              Check for updates and self-update\n  feedback <rating> [comment]  Send a rating and optional comment\n  telemetry [on|off|status]  Manage anonymous telemetry\n  config list|get|set|reset  View or change settings\n  totp <subcommand>   Manage stored TOTP secrets\n  kv <subcommand>     Manage encrypted key-value storage\n  errors [N]          Show last N local error log rows (SQLite)\n  install             Install skill file for detected agents\n  uninstall           Remove sidekar data and skill files\n  skill               Print SKILL.md to stdout\n  ext-server          Legacy alias for sidekar daemon run\n  ext <sub> [args]    Control the browser via the extension (tabs, read, click, …)\n\nGlobal flags:\n  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)\n\nUse 'sidekar help <command>' for detailed help on any command.",
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("{}", crate::cli::render_help(env!("CARGO_PKG_VERSION")));
 }
