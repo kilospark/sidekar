@@ -136,12 +136,7 @@ pub(crate) async fn cmd_paste(ctx: &mut AppContext, text: &str) -> Result<()> {
         text = serde_json::to_string(text)?
     );
     let result = runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("{err}");
-    }
+    crate::check_js_error(&result)?;
     out!(ctx, "OK pasted \"{}\"", truncate(text, 50));
     cdp.close().await;
     Ok(())
@@ -203,12 +198,7 @@ pub(crate) async fn cmd_clipboard(
         text = serde_json::to_string(text_content)?
     );
     let result = runtime_evaluate_with_context(&mut cdp, &script, true, true, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("Clipboard write failed: {err}");
-    }
+    crate::check_js_error(&result)?;
 
     // Dispatch paste shortcut: Cmd+V on macOS, Ctrl+V on Linux
     let (mod_key, mod_code, mod_vk, mod_flag) = if cfg!(target_os = "macos") {
@@ -329,12 +319,7 @@ pub(crate) async fn cmd_select(
         vals = serde_json::to_string(values)?
     );
     let result = runtime_evaluate_with_context(&mut cdp, &script, true, true, context_id).await?;
-    if let Some(err) = result
-        .pointer("/result/value/error")
-        .and_then(Value::as_str)
-    {
-        bail!("{err}");
-    }
+    crate::check_js_error(&result)?;
     let selected = result
         .pointer("/result/value/selected")
         .and_then(Value::as_array)

@@ -258,9 +258,7 @@ pub(super) async fn cmd_human_type(ctx: &mut AppContext, selector: &str, text: &
         sel = serde_json::to_string(selector)?
     );
     let r = runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
-    if let Some(err) = r.pointer("/result/value/error").and_then(Value::as_str) {
-        bail!("{err}");
-    }
+    crate::check_js_error(&r)?;
     human_type_text(&mut cdp, text, false).await?;
     out!(
         ctx,

@@ -16,7 +16,8 @@ use crate::auth;
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
 const OFFICIAL_EXTENSION_ID: &str = "ieggclnoffcnljcjeadgogpfbnhogncc";
 
-const TIMEOUT_SECS: u64 = 30;
+/// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
+const TIMEOUT_SECS: u64 = 180;
 
 fn data_dir() -> PathBuf {
     dirs::home_dir()
@@ -1129,6 +1130,48 @@ pub fn run_native_host() -> Result<()> {
 
         if msg_type == "ping" {
             let _ = write_native_message(&stdout, &json!({"pong": true}));
+            continue;
+        }
+
+        // cli_exec: spawn CLI for inserttext/keyboard (one hop, like ping)
+        if msg_type == "cli_exec" {
+            let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let id = msg.get("id").cloned();
+
+            let result = match command {
+                "inserttext" => {
+                    let exe = std::env::current_exe().unwrap_or_default();
+                    let output = std::process::Command::new(exe)
+                        .arg("inserttext")
+                        .arg(text)
+                        .output();
+                    match output {
+                        Ok(o) if o.status.success() => json!({ "ok": true, "mode": "cli-insertText" }),
+                        Ok(o) => json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) }),
+                        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+                    }
+                }
+                "keyboard" => {
+                    let exe = std::env::current_exe().unwrap_or_default();
+                    let output = std::process::Command::new(exe)
+                        .arg("keyboard")
+                        .arg(text)
+                        .output();
+                    match output {
+                        Ok(o) if o.status.success() => json!({ "ok": true, "mode": "cli-keyboard" }),
+                        Ok(o) => json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) }),
+                        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+                    }
+                }
+                _ => json!({ "ok": false, "error": format!("Unknown cli_exec: {}", command) }),
+            };
+
+            let mut response = result;
+            if let Some(msg_id) = id {
+                response.as_object_mut().map(|m| m.insert("id".to_string(), msg_id));
+            }
+            let _ = write_native_message(&stdout, &response);
             continue;
         }
 

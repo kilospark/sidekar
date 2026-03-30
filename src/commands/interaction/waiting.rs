@@ -360,12 +360,7 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
         );
         let result =
             runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
-        if let Some(err) = result
-            .pointer("/result/value/error")
-            .and_then(Value::as_str)
-        {
-            bail!("{err}");
-        }
+        crate::check_js_error(&result)?;
         out!(
             ctx,
             "Scrolled {} within {} {}",
@@ -391,12 +386,7 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
         );
         let result =
             runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
-        if let Some(err) = result
-            .pointer("/result/value/error")
-            .and_then(Value::as_str)
-        {
-            bail!("{err}");
-        }
+        crate::check_js_error(&result)?;
         out!(
             ctx,
             "Scrolled to {} {}",

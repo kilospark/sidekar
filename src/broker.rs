@@ -1435,33 +1435,17 @@ pub fn error_events_recent(limit: usize) -> Result<Vec<ErrorEventRow>> {
 
 /// Get a stored auth value (e.g., "token", "created_at").
 pub fn auth_get(key: &str) -> Option<String> {
-    let conn = open().ok()?;
-    let prefixed_key = format!("auth:{key}");
-    conn.query_row(
-        "SELECT value FROM config WHERE key = ?1",
-        params![prefixed_key],
-        |r| r.get(0),
-    )
-    .ok()
+    crate::config::config_get(&format!("auth:{key}")).into()
 }
 
 /// Set an auth value.
 pub fn auth_set(key: &str, value: &str) -> Result<()> {
-    let conn = open()?;
-    let prefixed_key = format!("auth:{key}");
-    conn.execute(
-        "INSERT INTO config (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-        params![prefixed_key, value],
-    )?;
-    Ok(())
+    crate::config::config_set(&format!("auth:{key}"), value)
 }
 
 /// Delete an auth value.
 pub fn auth_delete(key: &str) -> Result<()> {
-    let conn = open()?;
-    let prefixed_key = format!("auth:{key}");
-    conn.execute("DELETE FROM config WHERE key = ?1", params![prefixed_key])?;
-    Ok(())
+    crate::config::config_delete(&format!("auth:{key}"))
 }
 
 /// Clear all auth data (for logout).

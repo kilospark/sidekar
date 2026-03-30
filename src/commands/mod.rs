@@ -21,6 +21,43 @@ use session::*;
 use totp::*;
 use kv::*;
 
+// ---------------------------------------------------------------------------
+// Argument Parsing Helpers
+// ---------------------------------------------------------------------------
+
+fn parse_selector_with_tokens(
+    ctx: &AppContext,
+    args: &[String],
+    exclude_flags: &[&str],
+) -> Result<(Option<String>, usize)> {
+    let max_tokens = extract_optional_value(args, "--tokens=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let selector_parts: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with("--tokens="))
+        .filter(|a| !exclude_flags.iter().any(|f| *a == *f || a.starts_with(*f)))
+        .map(String::as_str)
+        .collect();
+
+    let selector = if selector_parts.is_empty() {
+        None
+    } else {
+        Some(resolve_selector(ctx, &selector_parts.join(" "))?)
+    };
+
+    Ok((selector, max_tokens))
+}
+
+fn extract_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+fn extract_optional_value(args: &[String], prefix: &str) -> Option<String> {
+    args.iter().find_map(|a| a.strip_prefix(prefix).map(|v| v.to_string()))
+}
+
 pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> Result<()> {
     match command {
         "launch" => cmd_launch(ctx, args).await,
@@ -38,74 +75,31 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             cmd_navigate(ctx, &url_parts.join(" "), !no_dismiss).await
         }
         "dom" => {
-            let mut max_tokens = 0usize;
-            let mut selector_parts = Vec::new();
-            for arg in args {
-                if let Some(raw) = arg.strip_prefix("--tokens=") {
-                    max_tokens = raw.parse::<usize>().unwrap_or(0);
-                } else if arg != "--full" {
-                    selector_parts.push(arg.clone());
-                }
-            }
-
-            let selector = if selector_parts.is_empty() {
-                None
-            } else {
-                Some(resolve_selector(ctx, &selector_parts.join(" "))?)
-            };
+            let (selector, max_tokens) = parse_selector_with_tokens(ctx, args, &["--full"])?;
             cmd_dom(ctx, selector.as_deref(), max_tokens).await
         }
         "read" => {
-            let mut max_tokens = 0usize;
-            let mut selector_parts = Vec::new();
-            for arg in args {
-                if let Some(raw) = arg.strip_prefix("--tokens=") {
-                    max_tokens = raw.parse::<usize>().unwrap_or(0);
-                } else {
-                    selector_parts.push(arg.clone());
-                }
-            }
-            let selector = if selector_parts.is_empty() {
-                None
-            } else {
-                Some(resolve_selector(ctx, &selector_parts.join(" "))?)
-            };
+            let (selector, max_tokens) = parse_selector_with_tokens(ctx, args, &[])?;
             cmd_read(ctx, selector.as_deref(), max_tokens).await
         }
         "text" => {
-            let mut max_tokens = 0usize;
-            let mut selector_parts = Vec::new();
-            for arg in args {
-                if let Some(raw) = arg.strip_prefix("--tokens=") {
-                    max_tokens = raw.parse::<usize>().unwrap_or(0);
-                } else {
-                    selector_parts.push(arg.clone());
-                }
-            }
-            let selector = if selector_parts.is_empty() {
-                None
-            } else {
-                Some(resolve_selector(ctx, &selector_parts.join(" "))?)
-            };
+            let (selector, max_tokens) = parse_selector_with_tokens(ctx, args, &[])?;
             cmd_text(ctx, selector.as_deref(), max_tokens).await
         }
         "axtree" => {
-            let interactive = args.iter().any(|a| a == "-i" || a == "--interactive");
-            let diff = args.iter().any(|a| a == "--diff");
+            let interactive = extract_flag(args, "-i") || extract_flag(args, "--interactive");
+            let diff = extract_flag(args, "--diff");
+            let max_tokens = extract_optional_value(args, "--tokens=")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
             let selector = args
                 .iter()
                 .filter(|a| !matches!(a.as_str(), "-i" | "--interactive" | "--diff"))
                 .find(|a| !a.starts_with("--tokens="))
                 .map(|s| s.as_str());
-            let max_tokens = args
-                .iter()
-                .find_map(|a| a.strip_prefix("--tokens="))
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(0);
             if interactive {
                 cmd_axtree_interactive(ctx, max_tokens, diff).await
             } else {
-                // Default cap for full axtree to prevent 1M+ char output
                 let effective_max = if max_tokens > 0 { max_tokens } else { 4000 };
                 cmd_axtree_full(ctx, selector, effective_max).await
             }
@@ -325,33 +319,29 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "lock" => cmd_lock(ctx, args.first().map(String::as_str)).await,
         "unlock" => cmd_unlock(ctx).await,
         "search" => {
-            let mut max_tokens = 0usize;
-            let mut engine = None;
-            let mut query_parts = Vec::new();
-            for arg in args {
-                if let Some(raw) = arg.strip_prefix("--tokens=") {
-                    max_tokens = raw.parse::<usize>().unwrap_or(0);
-                } else if let Some(raw) = arg.strip_prefix("--engine=") {
-                    engine = Some(raw.to_string());
-                } else {
-                    query_parts.push(arg.clone());
-                }
-            }
+            let engine = extract_optional_value(args, "--engine=").map(|v| v.to_string());
+            let max_tokens = extract_optional_value(args, "--tokens=")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let query_parts: Vec<&str> = args
+                .iter()
+                .filter(|a| !a.starts_with("--engine=") && !a.starts_with("--tokens="))
+                .map(String::as_str)
+                .collect();
             if query_parts.is_empty() {
                 bail!("Usage: sidekar search <query> [--engine=google|bing|duckduckgo|<url>]");
             }
             cmd_search(ctx, &query_parts.join(" "), engine.as_deref(), max_tokens).await
         }
         "readurls" => {
-            let mut max_tokens = 0usize;
-            let mut urls = Vec::new();
-            for arg in args {
-                if let Some(raw) = arg.strip_prefix("--tokens=") {
-                    max_tokens = raw.parse::<usize>().unwrap_or(0);
-                } else {
-                    urls.push(arg.clone());
-                }
-            }
+            let max_tokens = extract_optional_value(args, "--tokens=")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let urls: Vec<String> = args
+                .iter()
+                .filter(|a| !a.starts_with("--tokens="))
+                .cloned()
+                .collect();
             if urls.is_empty() {
                 bail!("Usage: sidekar readurls <url1> <url2> ...");
             }
@@ -554,6 +544,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-windows" | "desktop_windows" => cmd_desktop_windows(ctx, args).await,
         "desktop-find" | "desktop_find" => cmd_desktop_find(ctx, args).await,
         "desktop-click" | "desktop_click" => cmd_desktop_click(ctx, args).await,
+        "desktop-press" | "desktop_press" => cmd_desktop_press(ctx, args).await,
+        "desktop-type" | "desktop_type" => cmd_desktop_type(ctx, args).await,
+        "desktop-paste" | "desktop_paste" => cmd_desktop_paste(ctx, args).await,
         "desktop-launch" | "desktop_launch" => cmd_desktop_launch(ctx, args).await,
         "desktop-activate" | "desktop_activate" => cmd_desktop_activate(ctx, args).await,
         "desktop-quit" | "desktop_quit" => cmd_desktop_quit(ctx, args).await,
