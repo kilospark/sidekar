@@ -14,6 +14,7 @@ pub mod totp;
 use crate::memory::*;
 use crate::pakt::*;
 use crate::rtk::*;
+use crate::tasks::*;
 use batch::*;
 use core::*;
 use data::*;
@@ -598,6 +599,10 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "monitor" => cmd_monitor(ctx, args).await,
         "memory" => {
             cmd_memory(ctx, args)?;
+            Ok(())
+        }
+        "tasks" => {
+            cmd_tasks(ctx, args)?;
             Ok(())
         }
         "compact" => {

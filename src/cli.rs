@@ -798,6 +798,17 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         hidden_in_help: false,
     },
     CommandSpec {
+        name: "tasks",
+        usage: "<add|list|done|reopen|delete|show|depend|undepend|deps> ...",
+        summary: "Local task list with SQLite-backed dependencies",
+        group: CommandGroup::Agent,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+        hidden_in_help: false,
+    },
+    CommandSpec {
         name: "compact",
         usage: "<classify|filter|run> ...",
         summary: "Compact noisy command output for agent use",

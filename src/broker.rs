@@ -410,6 +410,36 @@ fn init_schema(conn: &Connection) -> Result<()> {
         [],
     );
 
+    // Local task graph
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            completed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_status
+            ON tasks(status, priority DESC, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS task_dependencies (
+            task_id INTEGER NOT NULL,
+            depends_on_task_id INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(task_id, depends_on_task_id),
+            CHECK(task_id != depends_on_task_id),
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY(depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends_on
+            ON task_dependencies(depends_on_task_id, task_id);
+        ",
+    )?;
+
     Ok(())
 }
 
