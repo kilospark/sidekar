@@ -79,7 +79,7 @@ Messages use a typed envelope protocol with four kinds: **request**, **response*
 
 ### 2. Web terminal
 
-Every PTY session streams live to [sidekar.dev/terminal](https://sidekar.dev/terminal). Open it from your phone, a tablet, or any browser and see exactly what your agents are doing in real time. The terminal renders full xterm output with scrollback, so you get the same view as the local terminal window. Combined with the relay tunnel, this means you can start an agent on your desktop, walk away, and check on it from anywhere.
+Every PTY session streams live to [sidekar.dev/terminal](https://sidekar.dev/terminal). Open it from your phone, a tablet, or any browser and check in on your agents in real time. The relay carries the raw PTY byte stream and the browser renders it with xterm.js-style scrollback, but the web terminal is a best-effort remote viewer optimized for usability, not a promise of bit-for-bit equivalence with every local terminal and agent UI combination. The local PTY remains the source of truth. Combined with the relay tunnel, this means you can start an agent on your desktop, walk away, and monitor or lightly interact with it from anywhere.
 
 ### 3. Browser automation (CDP + Chrome extension)
 

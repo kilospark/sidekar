@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::types::SessionInfo;
 
-const REPLAY_BUFFER_SIZE: usize = 8 * 1024;
+const SCROLLBACK_BUFFER_SIZE: usize = 512 * 1024;
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const SESSION_TTL_SECS: i64 = 90; // sessions expire if no heartbeat for 90s
 
@@ -29,16 +29,16 @@ pub struct LiveSession {
     pub multiplex: bool,
     pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     pub viewers: Arc<RwLock<Vec<ViewerHandle>>>,
-    pub replay_buffer: Arc<RwLock<ReplayBuffer>>,
+    pub scrollback_buffer: Arc<RwLock<ScrollbackBuffer>>,
 }
 
-/// A simple ring buffer that keeps the last N bytes.
-pub struct ReplayBuffer {
+/// A simple ring buffer that keeps the most recent PTY output bytes for web scrollback.
+pub struct ScrollbackBuffer {
     buf: VecDeque<u8>,
     capacity: usize,
 }
 
-impl ReplayBuffer {
+impl ScrollbackBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             buf: VecDeque::with_capacity(capacity),
@@ -61,7 +61,7 @@ impl ReplayBuffer {
 }
 
 /// Hybrid registry: MongoDB for session metadata (discovery/listing),
-/// in-memory HashMap for live WebSocket state (tunnel_tx, viewers, replay).
+/// in-memory HashMap for live WebSocket state (tunnel_tx, viewers, scrollback).
 #[derive(Clone)]
 pub struct Registry {
     db: mongodb::Database,
@@ -149,7 +149,7 @@ impl Registry {
             multiplex,
             tunnel_tx,
             viewers: Arc::new(RwLock::new(Vec::new())),
-            replay_buffer: Arc::new(RwLock::new(ReplayBuffer::new(REPLAY_BUFFER_SIZE))),
+            scrollback_buffer: Arc::new(RwLock::new(ScrollbackBuffer::new(SCROLLBACK_BUFFER_SIZE))),
         };
         self.live
             .write()
@@ -246,17 +246,23 @@ impl Registry {
             return None;
         }
 
-        let replay = session.replay_buffer.read().await.snapshot();
-        let tunnel_tx = session.tunnel_tx.clone();
         let viewer_id = uuid::Uuid::new_v4().to_string();
-
         let (tx, rx) = mpsc::unbounded_channel();
-        session.viewers.write().await.push(ViewerHandle {
+
+        // Keep the scrollback snapshot and viewer registration contiguous so the
+        // viewer sees a continuous tail of PTY output with no attach-time gap.
+        let scrollback_guard = session.scrollback_buffer.read().await;
+        let mut viewers = session.viewers.write().await;
+        let scrollback = scrollback_guard.snapshot();
+        viewers.push(ViewerHandle {
             id: viewer_id.clone(),
             tx,
         });
+        drop(viewers);
+        drop(scrollback_guard);
 
-        Some((replay, rx, tunnel_tx, viewer_id))
+        let tunnel_tx = session.tunnel_tx.clone();
+        Some((scrollback, rx, tunnel_tx, viewer_id))
     }
 
     /// Remove a viewer from a session.
@@ -271,21 +277,11 @@ impl Registry {
         }
     }
 
-    /// Snapshot of the current replay ring buffer (for on-demand history in the web terminal).
-    pub async fn replay_snapshot(&self, session_id: &str) -> Vec<u8> {
-        let live = self.live.read().await;
-        if let Some(session) = live.get(session_id) {
-            session.replay_buffer.read().await.snapshot()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Broadcast data from tunnel to all viewers and append to replay buffer.
+    /// Broadcast data from tunnel to all viewers and append to scrollback.
     pub async fn broadcast_to_viewers(&self, session_id: &str, data: &[u8]) {
         let live = self.live.read().await;
         if let Some(session) = live.get(session_id) {
-            session.replay_buffer.write().await.push(data);
+            session.scrollback_buffer.write().await.push(data);
             let viewers = session.viewers.read().await;
             for viewer in viewers.iter() {
                 let _ = viewer.tx.send(data.to_vec());
