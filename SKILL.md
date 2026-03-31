@@ -51,8 +51,8 @@ Entry: `sidekar desktop apps`. Explore: `sidekar help desktop`
 **Bus (multi-agent)** — Discover agents, send requests, hand off work, inspect open requests and replies.
 Entry: `sidekar bus who`. Explore: `sidekar help bus`
 
-**Background automation** — Monitor tabs for changes, schedule recurring jobs.
-Entry: `sidekar monitor status`, `sidekar cron list`. Explore: `sidekar help monitor`, `sidekar help cron`
+**Background automation** — Monitor tabs for changes, schedule recurring jobs, run prompts on intervals.
+Entry: `sidekar monitor status`, `sidekar cron list`, `sidekar loop 5m "check status"`. Explore: `sidekar help monitor`, `sidekar help cron`, `sidekar help loop`
 
 **Repo context** — Pack repos, summarize changes, discover and run repo actions.
 Entry: `sidekar help repo`

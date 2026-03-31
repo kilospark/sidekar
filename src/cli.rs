@@ -864,6 +864,17 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         hidden_in_help: false,
     },
     CommandSpec {
+        name: "loop",
+        usage: "<interval> <prompt_or_command>",
+        summary: "Run a prompt on a recurring interval (e.g. loop 5m \"check status\")",
+        group: CommandGroup::Jobs,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+        hidden_in_help: false,
+    },
+    CommandSpec {
         name: "login",
         usage: "",
         summary: "Authenticate with sidekar.dev (device auth flow)",

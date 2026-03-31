@@ -117,6 +117,46 @@ fn parse_field(field: &str, min: u32, max: u32) -> Result<Vec<u32>> {
     Ok(values)
 }
 
+/// Parse a human interval like "5m", "1h", "30s" into a cron expression.
+/// Minimum granularity is 1 minute. Intervals < 1m are clamped to 1m.
+pub(crate) fn interval_to_cron(interval: &str) -> Result<String> {
+    let interval = interval.trim().to_lowercase();
+    let (num_str, unit) = if let Some(n) = interval.strip_suffix('m') {
+        (n, 'm')
+    } else if let Some(n) = interval.strip_suffix('h') {
+        (n, 'h')
+    } else if let Some(n) = interval.strip_suffix('s') {
+        (n, 's')
+    } else {
+        (interval.as_str(), 'm') // default to minutes
+    };
+
+    let num: u32 = num_str.parse().context("Invalid interval number")?;
+    if num == 0 {
+        bail!("Interval must be > 0");
+    }
+
+    match unit {
+        's' => {
+            let minutes = ((num + 59) / 60).max(1);
+            if minutes >= 60 {
+                Ok(format!("0 */{} * * *", minutes / 60))
+            } else {
+                Ok(format!("*/{minutes} * * * *"))
+            }
+        }
+        'm' => {
+            if num >= 60 {
+                Ok(format!("0 */{} * * *", num / 60))
+            } else {
+                Ok(format!("*/{num} * * * *"))
+            }
+        }
+        'h' => Ok(format!("0 */{num} * * *")),
+        _ => bail!("Unknown interval unit. Use s, m, or h"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cron action types
 // ---------------------------------------------------------------------------
@@ -131,6 +171,12 @@ enum CronAction {
     },
     Batch {
         batch: Vec<Value>,
+    },
+    Bash {
+        command: String,
+    },
+    Prompt {
+        prompt: String,
     },
 }
 
@@ -267,7 +313,7 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
 
     let r = running.clone();
     let j = jobs.clone();
-    let task_handle = tokio::spawn(cron_loop(r.clone(), j, cron_ctx));
+    let task_handle = tokio::spawn(cron_loop_supervisor(r.clone(), j, cron_ctx));
 
     *guard = Some(CronState {
         running,
@@ -294,7 +340,7 @@ pub(crate) async fn cmd_cron_create(
 
     // Validate action
     let action_parsed: CronAction = serde_json::from_value(action.clone())
-        .context("Invalid action: must have 'tool'+'args' or 'batch' field")?;
+        .context("Invalid action: must have 'tool', 'batch', 'command', or 'prompt' field")?;
 
     // Validate tool name if single tool
     if let CronAction::Tool { ref tool, .. } = action_parsed {
@@ -304,6 +350,16 @@ pub(crate) async fn cmd_cron_create(
             "cron-create" | "cron-delete" | "kill" | "uninstall"
         ) {
             bail!("Tool '{tool}' cannot be used in cron actions");
+        }
+    }
+    if let CronAction::Bash { ref command } = action_parsed {
+        if command.trim().is_empty() {
+            bail!("Bash command cannot be empty");
+        }
+    }
+    if let CronAction::Prompt { ref prompt } = action_parsed {
+        if prompt.trim().is_empty() {
+            bail!("Prompt text cannot be empty");
         }
     }
 
@@ -414,6 +470,22 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
                     }
                     CronAction::Batch { batch } => {
                         out!(ctx, "  action: batch ({} steps)", batch.len());
+                    }
+                    CronAction::Bash { command } => {
+                        let brief = if command.len() > 80 {
+                            &command[..80]
+                        } else {
+                            command
+                        };
+                        out!(ctx, "  action: bash `{brief}`");
+                    }
+                    CronAction::Prompt { prompt } => {
+                        let brief = if prompt.len() > 80 {
+                            &prompt[..80]
+                        } else {
+                            prompt
+                        };
+                        out!(ctx, "  action: prompt \"{brief}\"");
                     }
                 }
             }
@@ -535,6 +607,33 @@ pub(crate) async fn cmd_cron_delete(ctx: &mut AppContext, job_id: &str) -> Resul
 // ---------------------------------------------------------------------------
 // Background cron loop
 // ---------------------------------------------------------------------------
+
+/// Supervisor that restarts the cron loop if it panics.
+async fn cron_loop_supervisor(
+    running: Arc<AtomicBool>,
+    jobs: Arc<Mutex<Vec<CronJob>>>,
+    cron_ctx: CronContext,
+) {
+    loop {
+        let r = running.clone();
+        let j = jobs.clone();
+        let ctx = cron_ctx.clone();
+
+        match tokio::spawn(cron_loop(r, j, ctx)).await {
+            Ok(()) => break, // normal exit (running set to false)
+            Err(_) => {
+                // task panicked — restart if not shutting down
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        }
+    }
+}
 
 async fn cron_loop(
     running: Arc<AtomicBool>,
@@ -730,11 +829,51 @@ async fn execute_cron_job(
                 Err(_) => bail!("Cron batch timed out after {}s", timeout.as_secs()),
             }
         }
+        CronAction::Bash { command } => {
+            let result = tokio::time::timeout(
+                timeout,
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(command)
+                    .output(),
+            )
+            .await;
+            match result {
+                Ok(Ok(output)) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let mut combined = stdout.to_string();
+                    if !stderr.is_empty() {
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str("[stderr]: ");
+                        combined.push_str(&stderr);
+                    }
+                    if !output.status.success() {
+                        combined.push_str(&format!(
+                            "\n[exit code: {}]",
+                            output.status.code().unwrap_or(-1)
+                        ));
+                    }
+                    combined
+                }
+                Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to run bash command: {e}")),
+                Err(_) => bail!("Cron bash command timed out after {}s", timeout.as_secs()),
+            }
+        }
+        CronAction::Prompt { prompt } => {
+            // Prompt action: the text IS the output, delivered raw to the agent's PTY.
+            prompt.clone()
+        }
     };
 
     // Deliver result via broker queue to the concrete owning/target agent.
     if !output.trim().is_empty() {
-        let msg = format!("[from sidekar-cron]: [cron {job_id}]: {}", output.trim());
+        let msg = match action {
+            CronAction::Prompt { .. } => output.trim().to_string(),
+            _ => format!("[from sidekar-cron]: [cron {job_id}]: {}", output.trim()),
+        };
         let _ = crate::broker::enqueue_message("sidekar-cron", target, &msg);
     }
 
@@ -934,6 +1073,58 @@ mod tests {
         assert!(CronSchedule::parse("*/5 *").is_err()); // too few fields
         assert!(CronSchedule::parse("60 * * * *").is_err()); // minute out of range
         assert!(parse_field("*/0", 0, 59).is_err()); // step 0
+    }
+
+    #[test]
+    fn interval_to_cron_minutes() {
+        assert_eq!(interval_to_cron("5m").unwrap(), "*/5 * * * *");
+        assert_eq!(interval_to_cron("1m").unwrap(), "*/1 * * * *");
+        assert_eq!(interval_to_cron("30m").unwrap(), "*/30 * * * *");
+    }
+
+    #[test]
+    fn interval_to_cron_hours() {
+        assert_eq!(interval_to_cron("1h").unwrap(), "0 */1 * * *");
+        assert_eq!(interval_to_cron("2h").unwrap(), "0 */2 * * *");
+    }
+
+    #[test]
+    fn interval_to_cron_seconds_clamp() {
+        assert_eq!(interval_to_cron("30s").unwrap(), "*/1 * * * *"); // clamped to 1m
+        assert_eq!(interval_to_cron("120s").unwrap(), "*/2 * * * *");
+    }
+
+    #[test]
+    fn interval_to_cron_large_minutes() {
+        assert_eq!(interval_to_cron("120m").unwrap(), "0 */2 * * *");
+    }
+
+    #[test]
+    fn interval_to_cron_default_unit() {
+        assert_eq!(interval_to_cron("10").unwrap(), "*/10 * * * *"); // defaults to minutes
+    }
+
+    #[test]
+    fn interval_to_cron_invalid() {
+        assert!(interval_to_cron("0m").is_err());
+        assert!(interval_to_cron("abc").is_err());
+    }
+
+    #[test]
+    fn cron_action_serde_roundtrip() {
+        let tool: CronAction = serde_json::from_str(r#"{"tool":"screenshot"}"#).unwrap();
+        assert!(matches!(tool, CronAction::Tool { .. }));
+
+        let bash: CronAction = serde_json::from_str(r#"{"command":"echo hello"}"#).unwrap();
+        assert!(matches!(bash, CronAction::Bash { .. }));
+
+        let prompt: CronAction =
+            serde_json::from_str(r#"{"prompt":"check status"}"#).unwrap();
+        assert!(matches!(prompt, CronAction::Prompt { .. }));
+
+        let batch: CronAction =
+            serde_json::from_str(r#"{"batch":[{"tool":"read"}]}"#).unwrap();
+        assert!(matches!(batch, CronAction::Batch { .. }));
     }
 
     #[test]

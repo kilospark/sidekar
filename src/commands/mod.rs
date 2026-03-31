@@ -764,15 +764,29 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
         }
         "cron-create" => {
-            if args.len() < 2 {
+            if args.is_empty() {
                 bail!(
-                    "Usage: sidekar cron create <schedule> <action_json> [--target=T] [--name=N]"
+                    "Usage: sidekar cron create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N]"
                 );
             }
             let schedule = &args[0];
-            let action: serde_json::Value = serde_json::from_str(&args[1]).context(
-                "Invalid action JSON. Use: {\"tool\":\"screenshot\"} or {\"batch\":[...]}",
-            )?;
+
+            // Check for --bash= or --prompt= shorthand flags
+            let bash_val = args.iter().find_map(|a| a.strip_prefix("--bash="));
+            let prompt_val = args.iter().find_map(|a| a.strip_prefix("--prompt="));
+
+            let action: serde_json::Value = if let Some(cmd) = bash_val {
+                json!({"command": cmd})
+            } else if let Some(p) = prompt_val {
+                json!({"prompt": p})
+            } else {
+                if args.len() < 2 {
+                    bail!("Usage: sidekar cron create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N]");
+                }
+                serde_json::from_str(&args[1]).context(
+                    "Invalid action JSON. Use: {\"tool\":\"screenshot\"}, {\"command\":\"...\"}, {\"prompt\":\"...\"}, or --bash=CMD / --prompt=TEXT",
+                )?
+            };
             let target = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--target="))
@@ -798,6 +812,29 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 bail!("Usage: sidekar cron delete <job-id>");
             }
             cron::cmd_cron_delete(ctx, id).await
+        }
+        "loop" => {
+            if args.len() < 2 {
+                bail!("Usage: sidekar loop <interval> <prompt_or_command>\n  e.g. sidekar loop 5m \"check deployment status\"");
+            }
+            let interval = &args[0];
+            let prompt_text = args[1..].join(" ");
+            let schedule = cron::interval_to_cron(interval)?;
+            let action = json!({"prompt": prompt_text});
+            let name_str = format!("loop-{interval}");
+            let created_by =
+                std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
+            let id = cron::cmd_cron_create(
+                ctx,
+                &schedule,
+                &action,
+                "self",
+                Some(&name_str),
+                &created_by,
+            )
+            .await?;
+            let _ = id;
+            Ok(())
         }
         "pack" => {
             cmd_pack(ctx, args)?;

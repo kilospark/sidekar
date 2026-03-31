@@ -30,7 +30,7 @@ csv = "1.4"
 regex = "1.12"
 ignore = "0.4"
 globset = "0.4"
-tokio = { version = "1.48", features = ["rt-multi-thread", "net", "io-util", "io-std", "time", "sync", "macros", "signal"] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "net", "io-util", "io-std", "time", "sync", "macros", "signal", "process"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 flate2 = "1.1"
 tar = "0.4"
