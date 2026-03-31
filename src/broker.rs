@@ -285,12 +285,16 @@ fn init_schema(conn: &Connection) -> Result<()> {
             run_count INTEGER NOT NULL DEFAULT 0,
             error_count INTEGER NOT NULL DEFAULT 0,
             last_error TEXT,
-            active INTEGER NOT NULL DEFAULT 1
+            active INTEGER NOT NULL DEFAULT 1,
+            once INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_cron_active
             ON cron_jobs(active);
         ",
     )?;
+
+    // Migration: add once column to cron_jobs
+    let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN once INTEGER NOT NULL DEFAULT 0");
 
     // TOTP secrets table
     conn.execute_batch(
@@ -1317,6 +1321,7 @@ pub struct CronJobRecord {
     pub error_count: u64,
     pub last_error: Option<String>,
     pub active: bool,
+    pub once: bool,
 }
 
 pub fn create_cron_job(
@@ -1326,13 +1331,14 @@ pub fn create_cron_job(
     action_json: &str,
     target: &str,
     created_by: &str,
+    once: bool,
 ) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
     conn.execute(
-        "INSERT INTO cron_jobs (id, name, schedule, action_json, target, created_by, created_at, active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
-        params![id, name, schedule, action_json, target, created_by, now],
+        "INSERT INTO cron_jobs (id, name, schedule, action_json, target, created_by, created_at, active, once)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+        params![id, name, schedule, action_json, target, created_by, now, once as i64],
     )?;
     Ok(())
 }
@@ -1341,11 +1347,11 @@ pub fn list_cron_jobs(active_only: bool) -> Result<Vec<CronJobRecord>> {
     let conn = open()?;
     let sql = if active_only {
         "SELECT id, name, schedule, action_json, target, created_by, created_at,
-                last_run_at, run_count, error_count, last_error, active
+                last_run_at, run_count, error_count, last_error, active, once
          FROM cron_jobs WHERE active = 1 ORDER BY created_at ASC"
     } else {
         "SELECT id, name, schedule, action_json, target, created_by, created_at,
-                last_run_at, run_count, error_count, last_error, active
+                last_run_at, run_count, error_count, last_error, active, once
          FROM cron_jobs ORDER BY created_at ASC"
     };
     let mut stmt = conn.prepare(sql)?;
@@ -1361,7 +1367,7 @@ pub fn get_cron_job(id: &str) -> Result<Option<CronJobRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
         "SELECT id, name, schedule, action_json, target, created_by, created_at,
-                last_run_at, run_count, error_count, last_error, active
+                last_run_at, run_count, error_count, last_error, active, once
          FROM cron_jobs WHERE id = ?1 LIMIT 1",
     )?;
     stmt.query_row(params![id], row_to_cron_job)
@@ -1411,6 +1417,7 @@ fn row_to_cron_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRecord> {
         error_count: row.get::<_, i64>(9)? as u64,
         last_error: row.get(10)?,
         active: row.get::<_, i64>(11)? != 0,
+        once: row.get::<_, Option<i64>>(12).unwrap_or(Some(0)).unwrap_or(0) != 0,
     })
 }
 

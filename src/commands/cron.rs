@@ -193,6 +193,7 @@ struct CronJob {
     target: String,
     created_by: String,
     last_run_at: Option<u64>,
+    once: bool,
     running: Arc<AtomicBool>, // true while this job is executing (skip pileup)
 }
 
@@ -302,6 +303,7 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
                         target: normalize_loaded_target(&rec.target, &rec.created_by),
                         created_by: rec.created_by,
                         last_run_at: rec.last_run_at,
+                        once: rec.once,
                         running: Arc::new(AtomicBool::new(false)),
                     });
                 }
@@ -330,6 +332,7 @@ pub(crate) async fn cmd_cron_create(
     target: &str,
     name: Option<&str>,
     created_by: &str,
+    once: bool,
 ) -> Result<String> {
     // Validate schedule
     let schedule = CronSchedule::parse(schedule_expr)?;
@@ -388,6 +391,7 @@ pub(crate) async fn cmd_cron_create(
         &action_json,
         &effective_target,
         created_by,
+        once,
     )?;
 
     // Add to in-memory state if cron loop is running
@@ -403,6 +407,7 @@ pub(crate) async fn cmd_cron_create(
             target: effective_target.clone(),
             created_by: created_by.to_string(),
             last_run_at: None,
+            once,
             running: Arc::new(AtomicBool::new(false)),
         });
     }
@@ -413,6 +418,9 @@ pub(crate) async fn cmd_cron_create(
     }
     out!(ctx, "Schedule: {schedule_expr}");
     out!(ctx, "Target: {effective_target}");
+    if once {
+        out!(ctx, "Mode: one-shot (auto-deletes after first run)");
+    }
 
     Ok(id)
 }
@@ -554,6 +562,7 @@ pub(crate) async fn cmd_cron_show(ctx: &mut AppContext, job_id: &str) -> Result<
     out!(ctx, "id: {}", rec.id);
     out!(ctx, "name: {}", rec.name.as_deref().unwrap_or("(unnamed)"));
     out!(ctx, "active: {}", if rec.active { "yes" } else { "no" });
+    out!(ctx, "once: {}", if rec.once { "yes" } else { "no" });
     out!(ctx, "schedule: {}", rec.schedule);
     out!(ctx, "target: {}", rec.target);
     out!(ctx, "owner: {}", rec.created_by);
@@ -689,6 +698,7 @@ async fn cron_loop(
                             target: normalize_loaded_target(&rec.target, &rec.created_by),
                             created_by: rec.created_by,
                             last_run_at: rec.last_run_at,
+                            once: rec.once,
                             running: Arc::new(AtomicBool::new(false)),
                         });
                     }
@@ -714,7 +724,7 @@ async fn cron_loop(
 
         // Check which jobs match
         let jobs_guard = jobs.lock().await;
-        let matching: Vec<(String, CronAction, String, Arc<AtomicBool>)> = jobs_guard
+        let matching: Vec<(String, CronAction, String, bool, Arc<AtomicBool>)> = jobs_guard
             .iter()
             .filter(|j| j.schedule.matches(min, hour, dom, month, dow))
             .filter(|j| !j.running.load(Ordering::Relaxed)) // skip if still running
@@ -723,14 +733,22 @@ async fn cron_loop(
                     j.id.clone(),
                     j.action.clone(),
                     j.target.clone(),
+                    j.once,
                     j.running.clone(),
                 )
             })
             .collect();
         drop(jobs_guard);
 
+        // Collect one-shot job IDs for removal after execution
+        let once_ids: Vec<String> = matching
+            .iter()
+            .filter(|(_, _, _, is_once, _)| *is_once)
+            .map(|(id, _, _, _, _)| id.clone())
+            .collect();
+
         // Execute matching jobs
-        for (job_id, action, target, job_running) in matching {
+        for (job_id, action, target, is_once, job_running) in matching {
             let ctx_clone = cron_ctx.clone();
             let jid = job_id.clone();
             job_running.store(true, Ordering::Relaxed);
@@ -749,7 +767,18 @@ async fn cron_loop(
                         let _ = broker::update_cron_job_run(&jid, Some(&err_msg));
                     }
                 }
+
+                // Auto-delete one-shot jobs after execution
+                if is_once {
+                    let _ = broker::delete_cron_job(&jid);
+                }
             });
+        }
+
+        // Remove one-shot jobs from memory after they fire
+        if !once_ids.is_empty() {
+            let mut jobs_guard = jobs.lock().await;
+            jobs_guard.retain(|j| !once_ids.contains(&j.id));
         }
 
         // Update last_run_at in memory
