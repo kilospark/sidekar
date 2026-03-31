@@ -1,7 +1,7 @@
 //! Sidekar bus — registration, message tracking, and coordination.
 //!
 //! Provides agent identity management, pending message tracking, nudge
-//! timers, broadcast, and bus handoffs. Durable state stored in the broker
+//! timers, and bus handoffs. Durable state stored in the broker
 //! SQLite database, delivery via the broker message queue.
 
 use crate::broker::{self, BrokerAgent};
@@ -699,15 +699,8 @@ fn send_directed_envelope(
         None => bail!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"),
     };
 
-    if envelope.to == "@all" {
-        broadcast(
-            ctx,
-            &channel,
-            &envelope.from.name,
-            &envelope.format_for_paste(),
-        )?;
-        resolve_reply(reply_to);
-        return Ok(());
+    if matches!(envelope.to.as_str(), "@all" | "all") {
+        bail!("Broadcast targets are not supported. Use `sidekar bus who` and message a specific agent.");
     }
 
     let full_message = envelope.format_for_paste();
@@ -796,7 +789,7 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
 
     out!(
         ctx,
-        "Channel \"{channel_label}\":\n{}\n\nUse \"@all\" to broadcast to all agents.",
+        "Channel \"{channel_label}\":\n{}",
         lines.join("\n")
     );
     Ok(())
@@ -837,39 +830,6 @@ pub fn cmd_signal_done(
     let keep_msg_id = envelope.id.clone();
     send_directed_envelope(state, ctx, envelope, reply_to, "Handed off")?;
     cleanup_completed_exchange(&self_name, next, channel.as_deref(), Some(&keep_msg_id));
-    Ok(())
-}
-
-fn broadcast(ctx: &mut AppContext, _channel: &str, my_name: &str, message: &str) -> Result<()> {
-    let all_agents = broker::list_agents(None).unwrap_or_default();
-    let targets: Vec<_> = all_agents
-        .into_iter()
-        .filter(|a| a.id.name != my_name && a.id.nick.as_deref() != Some(my_name))
-        .collect();
-
-    if targets.is_empty() {
-        bail!("No other agents to broadcast to.");
-    }
-
-    let mut delivered: Vec<String> = Vec::new();
-    let mut failed: Vec<String> = Vec::new();
-
-    for agent in &targets {
-        match deliver_via(BROKER_TRANSPORT, &agent.id.name, message, my_name) {
-            Ok(()) => delivered.push(agent.id.name.clone()),
-            Err(_) => failed.push(agent.id.name.clone()),
-        }
-    }
-
-    let total = delivered.len() + failed.len();
-    let mut result = format!("Broadcast to {total} agent(s).");
-    if !delivered.is_empty() {
-        result.push_str(&format!(" Delivered: {}.", delivered.join(", ")));
-    }
-    if !failed.is_empty() {
-        result.push_str(&format!(" Failed: {}.", failed.join(", ")));
-    }
-    out!(ctx, "{result}");
     Ok(())
 }
 

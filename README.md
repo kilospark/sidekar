@@ -75,7 +75,7 @@ Six capability pillars. Everything else (web search, multi-page reads, batch run
 
 Agents find each other and coordinate through a shared message bus. On a single machine, messages flow through a SQLite broker. Across machines, a persistent WSS tunnel to `relay.sidekar.dev` carries bus traffic alongside PTY data on the same connection. From the agent's perspective there's no difference -- `bus send` delivers locally or remotely depending on where the recipient is, and `bus who` lists everyone reachable.
 
-Messages use a typed envelope protocol with four kinds: **request**, **response**, **fyi**, and **handoff**. Each carries a message ID, timestamp, and threading info. Unanswered requests trigger automatic nudge reminders. Agents get auto-assigned nicknames that persist per project across restarts, and `bus send @all` broadcasts to every agent on the channel.
+Messages use a typed envelope protocol with four kinds: **request**, **response**, **fyi**, and **handoff**. Each carries a message ID, timestamp, and threading info. Unanswered requests trigger automatic nudge reminders. Agents get auto-assigned nicknames that persist per project across restarts.
 
 ### 2. Web terminal
 
@@ -152,7 +152,7 @@ Each profile runs its own browser process. The default profile is persistent and
 
 ```bash
 sidekar bus who                       # List agents on your channel (local + relay)
-sidekar bus send <to> <message>       # Send a message to another agent (or @all)
+sidekar bus send <to> <message>       # Send a message to another agent
 sidekar bus done <next> <summary> <request> # Hand off to another agent
 ```
 
