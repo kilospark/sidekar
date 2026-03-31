@@ -4,7 +4,7 @@
 //! The message model ([`crate::message`]) is transport-independent;
 //! transports only care about getting bytes to a destination.
 
-use crate::message::DeliveryResult;
+use crate::message::{DeliveryResult, Envelope};
 use anyhow::{Context, Result};
 use std::time::Duration;
 
@@ -142,4 +142,40 @@ impl Transport for RelayHttp {
     fn name(&self) -> &'static str {
         "relay_http"
     }
+}
+
+pub fn deliver_relay_envelope(target: &str, envelope: &Envelope) -> Result<DeliveryResult> {
+    let token =
+        crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar login"))?;
+    let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));
+    let target = target.to_string();
+    let payload = serde_json::json!({
+        "recipient_session_id": target,
+        "sender": envelope.from.name,
+        "body": envelope.format_for_paste(),
+        "envelope_json": serde_json::to_string(envelope).context("serialize relay envelope")?,
+    });
+
+    std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&payload)
+            .send()
+            .with_context(|| format!("POST {url}"))?;
+        if resp.status().is_success() {
+            Ok(DeliveryResult::Delivered)
+        } else {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            Ok(DeliveryResult::Failed(format!(
+                "relay HTTP {status}: {body}"
+            )))
+        }
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("deliver_relay_envelope thread panicked"))?
 }

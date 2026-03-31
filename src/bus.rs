@@ -14,6 +14,7 @@ const PENDING_GRACE_SECS: u64 = 30;
 const TIMEOUT_SECS: u64 = 300;
 const BROKER_TRANSPORT: &str = "broker";
 const RELAY_HTTP_TRANSPORT: &str = "relay_http";
+const DEFAULT_BUS_LIST_LIMIT: usize = 20;
 
 // --- Terminal title helper ---
 
@@ -584,12 +585,12 @@ pub fn check_outbound_timeouts(state: &SidekarBusState) -> Option<String> {
     for request in expired {
         if pending_message_exists(&request.msg_id) {
             let _ = broker::clear_pending(&request.msg_id);
+            let _ = broker::mark_outbound_timed_out(&request.msg_id, epoch_secs());
             warnings.push(format!(
                 "No response from {} to request {} after {}s.",
                 request.recipient_name, request.msg_id, TIMEOUT_SECS
             ));
         }
-        let _ = broker::delete_outbound_request(&request.msg_id);
     }
 
     if warnings.is_empty() {
@@ -599,7 +600,7 @@ pub fn check_outbound_timeouts(state: &SidekarBusState) -> Option<String> {
     }
 }
 
-fn maybe_track_request(envelope: &Envelope, delivery: &DeliveryTarget) {
+fn maybe_track_request(state: &SidekarBusState, envelope: &Envelope, delivery: &DeliveryTarget) {
     if !matches!(envelope.kind, MessageKind::Request | MessageKind::Handoff) {
         return;
     }
@@ -607,17 +608,19 @@ fn maybe_track_request(envelope: &Envelope, delivery: &DeliveryTarget) {
         let _ = e;
         return;
     }
+    let project = detect_project_name();
     if let Err(e) = broker::set_outbound_request(
-        &envelope.id,
-        &envelope.from.name,
+        envelope,
         &envelope.from.display_name(),
-        &delivery.transport_target,
         delivery.transport_name,
         &delivery.transport_target,
-        envelope.created_at,
+        state.channel(),
+        Some(project.as_str()),
     ) {
         let _ = e;
     }
+    let _ =
+        broker::mark_agent_session_request(&envelope.from.name, &envelope.id, envelope.created_at);
 }
 
 fn cleanup_tracking(msg_id: &str) {
@@ -625,7 +628,13 @@ fn cleanup_tracking(msg_id: &str) {
     let _ = broker::delete_outbound_request(msg_id);
 }
 
-fn resolve_reply(reply_to: Option<&str>) {
+fn resolve_reply(envelope: &Envelope, reply_to: Option<&str>) {
+    if let Some(reply_id) = reply_to {
+        let _ = broker::record_reply(reply_id, envelope);
+    }
+}
+
+fn clear_local_pending_reply(reply_to: Option<&str>) {
     if let Some(reply_id) = reply_to {
         let _ = broker::resolve_reply(reply_id);
     }
@@ -643,7 +652,7 @@ fn cleanup_completed_exchange(
         .map(|agent| agent.id.name)
         .unwrap_or_else(|| other_name.to_string());
     let _ = broker::clear_pending_between_agents(self_name, &canonical_other);
-    let _ = broker::clear_outbound_between_agents(self_name, &canonical_other, keep_msg_id);
+    let _ = broker::close_outbound_between_agents(self_name, &canonical_other, keep_msg_id);
 }
 
 fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionInfo> {
@@ -712,19 +721,29 @@ fn send_directed_envelope(
         )
     })?;
 
-    maybe_track_request(&envelope, &delivery);
+    maybe_track_request(state, &envelope, &delivery);
 
-    if let Err(e) = deliver_via(
-        delivery.transport_name,
-        &delivery.transport_target,
-        &full_message,
-        &envelope.from.name,
-    ) {
+    let delivery_result: Result<()> = if delivery.transport_name == RELAY_HTTP_TRANSPORT {
+        crate::transport::deliver_relay_envelope(&delivery.transport_target, &envelope).map(|_| ())
+    } else {
+        deliver_via(
+            delivery.transport_name,
+            &delivery.transport_target,
+            &full_message,
+            &envelope.from.name,
+        )
+    };
+
+    if let Err(e) = delivery_result {
         cleanup_tracking(&envelope.id);
         bail!("Failed to reach {}: {e}", envelope.to);
     }
 
-    resolve_reply(reply_to);
+    if delivery.transport_name == RELAY_HTTP_TRANSPORT {
+        clear_local_pending_reply(reply_to);
+    } else {
+        resolve_reply(&envelope, reply_to);
+    }
 
     if matches!(envelope.kind, MessageKind::Request | MessageKind::Handoff) {
         out!(
@@ -792,6 +811,147 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
         "Channel \"{channel_label}\":\n{}",
         lines.join("\n")
     );
+    Ok(())
+}
+
+pub fn cmd_requests(
+    state: &SidekarBusState,
+    ctx: &mut AppContext,
+    status: Option<&str>,
+    limit: usize,
+) -> Result<()> {
+    let limit = if limit == 0 {
+        DEFAULT_BUS_LIST_LIMIT
+    } else {
+        limit
+    };
+    let self_name = state
+        .name()
+        .ok_or_else(|| anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"))?;
+    let requests = broker::list_outbound_requests_for_sender(self_name, status, limit)?;
+    if requests.is_empty() {
+        out!(ctx, "No outbound requests.");
+        return Ok(());
+    }
+
+    out!(
+        ctx,
+        "msg_id\tstatus\tkind\tto\tcreated_at\tanswered_at\tpreview"
+    );
+    for request in requests {
+        out!(
+            ctx,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            request.msg_id,
+            request.status,
+            request.kind,
+            request.recipient_name,
+            request.created_at,
+            request
+                .answered_at
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+            request.message_preview.replace('\n', " "),
+        );
+    }
+    Ok(())
+}
+
+pub fn cmd_replies(
+    state: &SidekarBusState,
+    ctx: &mut AppContext,
+    reply_to_msg_id: Option<&str>,
+    limit: usize,
+) -> Result<()> {
+    let limit = if limit == 0 {
+        DEFAULT_BUS_LIST_LIMIT
+    } else {
+        limit
+    };
+    let self_name = state
+        .name()
+        .ok_or_else(|| anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"))?;
+    let replies = broker::list_bus_replies_for_sender(self_name, reply_to_msg_id, limit)?;
+    if replies.is_empty() {
+        out!(ctx, "No replies.");
+        return Ok(());
+    }
+
+    out!(
+        ctx,
+        "reply_to\treply_id\tfrom\tkind\tcreated_at\tmessage"
+    );
+    for reply in replies {
+        out!(
+            ctx,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            reply.reply_to_msg_id,
+            reply.reply_msg_id,
+            reply.sender_label,
+            reply.kind,
+            reply.created_at,
+            reply.message.replace('\n', " "),
+        );
+    }
+    Ok(())
+}
+
+pub fn cmd_show_request(
+    state: &SidekarBusState,
+    ctx: &mut AppContext,
+    msg_id: &str,
+) -> Result<()> {
+    let self_name = state
+        .name()
+        .ok_or_else(|| anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"))?;
+    let request = broker::outbound_request(msg_id)?
+        .ok_or_else(|| anyhow!("Unknown request: {msg_id}"))?;
+    if request.sender_name != self_name {
+        bail!("Request {msg_id} does not belong to the current agent.");
+    }
+
+    out!(ctx, "msg_id: {}", request.msg_id);
+    out!(ctx, "status: {}", request.status);
+    out!(ctx, "kind: {}", request.kind);
+    out!(ctx, "to: {}", request.recipient_name);
+    out!(ctx, "channel: {}", request.channel.as_deref().unwrap_or("-"));
+    out!(ctx, "project: {}", request.project.as_deref().unwrap_or("-"));
+    out!(ctx, "created_at: {}", request.created_at);
+    out!(
+        ctx,
+        "answered_at: {}",
+        request
+            .answered_at
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    out!(
+        ctx,
+        "timed_out_at: {}",
+        request
+            .timed_out_at
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    out!(ctx, "preview: {}", request.message_preview);
+
+    let replies = broker::replies_for_request(msg_id)?;
+    if replies.is_empty() {
+        out!(ctx, "replies: none");
+        return Ok(());
+    }
+
+    out!(ctx, "replies:");
+    for reply in replies {
+        out!(
+            ctx,
+            "- {} {} {} {}",
+            reply.reply_msg_id,
+            reply.kind,
+            reply.sender_label,
+            reply.message.replace('\n', " ")
+        );
+    }
     Ok(())
 }
 

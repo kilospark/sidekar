@@ -126,6 +126,8 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                     v.get("from_session").and_then(|x| x.as_str());
                                 let sender = v.get("sender").and_then(|x| x.as_str());
                                 let body = v.get("body").and_then(|x| x.as_str());
+                                let envelope_json =
+                                    v.get("envelope_json").and_then(|x| x.as_str());
                                 if let (Some(sender), Some(body)) = (sender, body) {
                                     if let Some(recipient_session_id) =
                                         v.get("recipient_session_id").and_then(|x| x.as_str())
@@ -137,6 +139,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                                 recipient_session_id,
                                                 sender,
                                                 body,
+                                                envelope_json,
                                                 from_session,
                                             )
                                             .await;
@@ -150,6 +153,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                                 recipient,
                                                 sender,
                                                 body,
+                                                envelope_json,
                                                 from_session,
                                             )
                                             .await;
@@ -218,6 +222,8 @@ pub struct RelayBusIn {
     pub recipient: Option<String>,
     pub sender: String,
     pub body: String,
+    #[serde(default)]
+    pub envelope_json: Option<String>,
     /// If set, skip this session when forwarding (prevents self-delivery loops).
     #[serde(default)]
     pub from_session: Option<String>,
@@ -262,6 +268,7 @@ pub async fn handle_relay_bus(
                 recipient_session_id,
                 &body.sender,
                 &body.body,
+                body.envelope_json.as_deref(),
                 body.from_session.as_deref(),
             )
             .await;
@@ -273,6 +280,7 @@ pub async fn handle_relay_bus(
                 recipient,
                 &body.sender,
                 &body.body,
+                body.envelope_json.as_deref(),
                 body.from_session.as_deref(),
             )
             .await;

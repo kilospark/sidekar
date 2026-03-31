@@ -1,5 +1,6 @@
 use crate::*;
 
+mod agent_sessions;
 mod batch;
 mod core;
 pub mod cron;
@@ -16,6 +17,7 @@ use crate::pakt::*;
 use crate::repo::*;
 use crate::rtk::*;
 use crate::tasks::*;
+use agent_sessions::*;
 use batch::*;
 use core::*;
 use data::*;
@@ -611,6 +613,10 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             cmd_tasks(ctx, args)?;
             Ok(())
         }
+        "agent-sessions" => {
+            cmd_agent_sessions(ctx, args)?;
+            Ok(())
+        }
         "repo" => {
             cmd_repo(ctx, args)?;
             Ok(())
@@ -624,9 +630,12 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let sub = args.first().map(String::as_str).unwrap_or("");
             let subcommand = match sub {
                 "who" => "bus-who",
+                "requests" => "bus-requests",
+                "replies" => "bus-replies",
+                "show" => "bus-show",
                 "send" => "bus-send",
                 "done" => "bus-done",
-                _ => bail!("Usage: sidekar bus <who|send|done> [args...]"),
+                _ => bail!("Usage: sidekar bus <who|requests|replies|show|send|done> [args...]"),
             };
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
         }
@@ -634,6 +643,49 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let show_all = args.iter().any(|a| a == "--all" || a == "-a");
             let bus_state = recovered_bus_state();
             crate::bus::cmd_who(&bus_state, ctx, show_all)?;
+            Ok(())
+        }
+        "bus-requests" => {
+            let bus_state = recovered_bus_state();
+            let status = args.iter().find_map(|a| a.strip_prefix("--status="));
+            let status = match status {
+                Some("all") | None => None,
+                Some("open") => Some("open"),
+                Some("answered") => Some("answered"),
+                Some("timed-out") | Some("timed_out") => Some("timed_out"),
+                Some("cancelled") => Some("cancelled"),
+                Some(other) => {
+                    bail!(
+                        "Invalid --status={other}. Valid: open, answered, timed-out, cancelled, all"
+                    )
+                }
+            };
+            let limit = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--limit="))
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(20);
+            crate::bus::cmd_requests(&bus_state, ctx, status, limit)?;
+            Ok(())
+        }
+        "bus-replies" => {
+            let bus_state = recovered_bus_state();
+            let limit = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--limit="))
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(20);
+            let msg_id = args.iter().find_map(|a| a.strip_prefix("--msg-id="));
+            crate::bus::cmd_replies(&bus_state, ctx, msg_id, limit)?;
+            Ok(())
+        }
+        "bus-show" => {
+            let bus_state = recovered_bus_state();
+            let msg_id = args.first().map(String::as_str).unwrap_or_default();
+            if msg_id.is_empty() {
+                bail!("Usage: sidekar bus show <msg_id>");
+            }
+            crate::bus::cmd_show_request(&bus_state, ctx, msg_id)?;
             Ok(())
         }
         "bus-send" => {
@@ -705,8 +757,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let subcommand = match sub {
                 "create" => "cron-create",
                 "list" => "cron-list",
+                "show" => "cron-show",
                 "delete" => "cron-delete",
-                _ => bail!("Usage: sidekar cron <create|list|delete> [args...]"),
+                _ => bail!("Usage: sidekar cron <create|list|show|delete> [args...]"),
             };
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
         }
@@ -732,6 +785,13 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "cron-list" => cron::cmd_cron_list(ctx).await,
+        "cron-show" => {
+            let id = args.first().map(String::as_str).unwrap_or_default();
+            if id.is_empty() {
+                bail!("Usage: sidekar cron show <job-id>");
+            }
+            cron::cmd_cron_show(ctx, id).await
+        }
         "cron-delete" => {
             let id = args.first().map(String::as_str).unwrap_or_default();
             if id.is_empty() {

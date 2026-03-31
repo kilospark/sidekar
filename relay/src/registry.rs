@@ -200,12 +200,17 @@ impl Registry {
                         .unwrap_or("sidekar")
                         .to_string();
                     let body = doc.get_str("body").ok().unwrap_or("").to_string();
+                    let envelope_json = doc
+                        .get_str("envelope_json")
+                        .ok()
+                        .map(str::to_string);
                     let payload = serde_json::json!({
                         "ch": "bus",
                         "v": 1,
                         "recipient": recipient_name,
                         "sender": sender,
                         "body": body,
+                        "envelope_json": envelope_json,
                     })
                     .to_string();
 
@@ -496,6 +501,7 @@ impl Registry {
         recipient_session_id: &str,
         sender: &str,
         body: &str,
+        envelope_json: Option<&str>,
         exclude_session: Option<&str>,
     ) {
         if exclude_session == Some(recipient_session_id) {
@@ -529,6 +535,7 @@ impl Registry {
                 "recipient_session_id": recipient_session_id,
                 "sender": sender,
                 "body": body,
+                "envelope_json": envelope_json,
                 "created_at": mongodb::bson::DateTime::now(),
             })
             .await;
@@ -540,6 +547,7 @@ impl Registry {
         recipient_name: &str,
         sender: &str,
         body: &str,
+        envelope_json: Option<&str>,
         exclude_session: Option<&str>,
     ) {
         use futures_util::StreamExt;
@@ -570,6 +578,7 @@ impl Registry {
                     recipient_session_id,
                     sender,
                     body,
+                    envelope_json,
                     exclude_session,
                 )
                 .await;

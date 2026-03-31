@@ -473,6 +473,42 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
     Ok(())
 }
 
+/// Show one cron job in detail.
+pub(crate) async fn cmd_cron_show(ctx: &mut AppContext, job_id: &str) -> Result<()> {
+    let rec = broker::get_cron_job(job_id)?.ok_or_else(|| anyhow!("Cron job '{job_id}' not found."))?;
+    let action_value: Value =
+        serde_json::from_str(&rec.action_json).context("failed to parse stored cron action JSON")?;
+
+    out!(ctx, "id: {}", rec.id);
+    out!(ctx, "name: {}", rec.name.as_deref().unwrap_or("(unnamed)"));
+    out!(ctx, "active: {}", if rec.active { "yes" } else { "no" });
+    out!(ctx, "schedule: {}", rec.schedule);
+    out!(ctx, "target: {}", rec.target);
+    out!(ctx, "owner: {}", rec.created_by);
+    out!(ctx, "created_at: {}", rec.created_at);
+    out!(
+        ctx,
+        "last_run_at: {}",
+        rec.last_run_at
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    out!(ctx, "run_count: {}", rec.run_count);
+    out!(ctx, "error_count: {}", rec.error_count);
+    out!(
+        ctx,
+        "last_error: {}",
+        rec.last_error.as_deref().unwrap_or("-")
+    );
+    out!(
+        ctx,
+        "action_json: {}",
+        serde_json::to_string_pretty(&action_value)
+            .unwrap_or_else(|_| rec.action_json.clone())
+    );
+    Ok(())
+}
+
 /// Delete a cron job by ID.
 pub(crate) async fn cmd_cron_delete(ctx: &mut AppContext, job_id: &str) -> Result<()> {
     // Remove from in-memory state

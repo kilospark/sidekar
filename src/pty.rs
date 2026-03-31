@@ -466,6 +466,7 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     let nick = crate::bus::pick_nickname_for_project(Some(&cwd));
     let pre_fork_name = unique_agent_name(agent, &channel);
     let start_time = std::time::Instant::now();
+    let started_at = crate::message::epoch_secs();
 
     // Set env vars before fork — child inherits them.
     // These let CLI commands (sidekar navigate, etc.) recover bus identity.
@@ -490,7 +491,13 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // From here, any setup failure must clean up the child + broker.
     let mut registered_name: Option<String> = None;
 
-    let setup_result = (|| -> Result<(Arc<OwnedFd>, AgentId, String, Arc<crate::poller::UserInputState>)> {
+    let setup_result = (|| -> Result<(
+        Arc<OwnedFd>,
+        AgentId,
+        String,
+        String,
+        Arc<crate::poller::UserInputState>,
+    )> {
         // Copy parent terminal size to child PTY
         let _ = copy_terminal_size(master_raw);
 
@@ -508,20 +515,31 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
             pane: Some(session_id.clone()),
             agent_type: Some("sidekar".into()),
         };
+        let agent_session_id = format!("pty:{child_pid}:{started_at}");
 
         // Register with broker
         broker::register_agent(&identity, Some(&session_id))?;
         registered_name = Some(name.clone());
+        broker::create_agent_session(
+            &agent_session_id,
+            &identity.name,
+            Some(agent),
+            identity.nick.as_deref(),
+            &cwd,
+            identity.session.as_deref(),
+            Some(&cwd),
+            started_at,
+        )?;
 
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
         let input_state = Arc::new(crate::poller::UserInputState::default());
         crate::poller::start_poller(identity.name.clone(), master_arc.clone(), input_state.clone());
 
-        Ok((master_arc, identity, nick, input_state))
+        Ok((master_arc, identity, nick, agent_session_id, input_state))
     })();
 
-    let (master_arc, identity, nick, input_state) = match setup_result {
+    let (master_arc, identity, nick, agent_session_id, input_state) = match setup_result {
         Ok(v) => v,
         Err(e) => {
             // silent — error propagated via return
@@ -633,6 +651,7 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     cleanup_chrome_session(&pre_fork_name).await;
 
     let _ = crate::memory::finish_agent_session(&identity.name);
+    let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
     let _ = broker::unregister_agent(&identity.name);
 
     if std::env::var("SIDEKAR_VERBOSE").is_ok() {
@@ -1016,8 +1035,23 @@ async fn event_loop(
                         recipient,
                         sender,
                         body,
+                        envelope,
                     }) => {
                         if recipient == agent_name {
+                            if let Some(envelope) = envelope {
+                                match envelope.kind {
+                                    crate::message::MessageKind::Request
+                                    | crate::message::MessageKind::Handoff => {
+                                        let _ = crate::broker::set_pending(&envelope);
+                                    }
+                                    crate::message::MessageKind::Response => {
+                                        if let Some(reply_to) = envelope.reply_to.as_deref() {
+                                            let _ = crate::broker::record_reply(reply_to, &envelope);
+                                        }
+                                    }
+                                    crate::message::MessageKind::Fyi => {}
+                                }
+                            }
                             let _ = crate::broker::enqueue_message(&sender, &recipient, &body);
                         }
                     }
