@@ -792,9 +792,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .find_map(|a| a.strip_prefix("--target="))
                 .unwrap_or("self");
             let name = args.iter().find_map(|a| a.strip_prefix("--name="));
+            let once = args.iter().any(|a| a == "--once");
             let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
             let id =
-                cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by).await?;
+                cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by, once)
+                    .await?;
             let _ = id; // printed by cmd_cron_create
             Ok(())
         }
@@ -815,10 +817,16 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "loop" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar loop <interval> <prompt_or_command>\n  e.g. sidekar loop 5m \"check deployment status\"");
+                bail!("Usage: sidekar loop <interval> <prompt> [--once]\n  e.g. sidekar loop 5m \"check deployment status\"");
             }
             let interval = &args[0];
-            let prompt_text = args[1..].join(" ");
+            let once = args.iter().any(|a| a == "--once");
+            let prompt_text = args[1..]
+                .iter()
+                .filter(|a| *a != "--once")
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
             let schedule = cron::interval_to_cron(interval)?;
             let action = json!({"prompt": prompt_text});
             let name_str = format!("loop-{interval}");
@@ -831,6 +839,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 "self",
                 Some(&name_str),
                 &created_by,
+                once,
             )
             .await?;
             let _ = id;

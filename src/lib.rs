@@ -2462,7 +2462,7 @@ sidekar agent-sessions [show|rename|note] [args] [--limit=N] [--active] [--proje
 sidekar cron <create|list|show|delete> [args...]
 
   Scheduled job subcommands:
-    create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N]
+    create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N] [--once]
     list
     show <job-id>
     delete <job-id>
@@ -2481,22 +2481,25 @@ sidekar cron <create|list|show|delete> [args...]
     sidekar cron create \"*/5 * * * *\" '{\"tool\":\"screenshot\"}'
     sidekar cron create \"*/2 * * * *\" --bash=\"df -h\"
     sidekar cron create \"0 9 * * *\" --prompt=\"check deployment status\"
+    sidekar cron create \"0 9 * * *\" --prompt=\"remind me to review PR\" --once
     sidekar cron delete 123abc"
         }
 
         "loop" => {
             "\
-sidekar loop <interval> <prompt>
+sidekar loop <interval> <prompt> [--once]
 
   Run a prompt on a recurring interval. Creates a cron job with a prompt
   action that gets injected into the owning agent's PTY.
 
   Intervals: 2m, 5m, 30m, 1h, 120s (minimum 1 minute)
+  Options:
+    --once   Fire once then auto-delete
 
   Examples:
     sidekar loop 5m \"check deployment status\"
     sidekar loop 1h \"summarize recent errors\"
-    sidekar loop 2m \"run the smoke test\""
+    sidekar loop 10m \"remind me to review the PR\" --once"
         }
 
         "config" => {
