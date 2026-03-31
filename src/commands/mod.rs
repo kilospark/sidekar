@@ -511,6 +511,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                             );
                         }
                     }
+                    if key == "relay_pty"
+                        && crate::config::RelayPtyMode::parse(raw_value).is_none()
+                    {
+                        bail!("relay_pty must be one of: auto, on, off");
+                    }
                     crate::config::config_set(key, raw_value)?;
                     out!(ctx, "Set {key} = {raw_value}");
                     Ok(())

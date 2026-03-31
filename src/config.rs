@@ -17,6 +17,32 @@ pub enum ConfigKind {
     String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RelayPtyMode {
+    Auto,
+    On,
+    Off,
+}
+
+impl RelayPtyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" => Some(Self::On),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 pub static CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
         key: "telemetry",
@@ -41,6 +67,12 @@ pub static CONFIG_KEYS: &[ConfigKey] = &[
         kind: ConfigKind::Bool,
         default: "true",
         description: "Auto-update on PTY launch",
+    },
+    ConfigKey {
+        key: "relay_pty",
+        kind: ConfigKind::String,
+        default: "auto",
+        description: "Relay PTY policy (auto, on, off)",
     },
     ConfigKey {
         key: "max_tabs",
@@ -77,6 +109,8 @@ pub struct SidekarConfig {
     pub browser: Option<String>,
     #[serde(default = "default_true")]
     pub auto_update: bool,
+    #[serde(default = "default_relay_pty")]
+    pub relay_pty: String,
     #[serde(default = "default_max_tabs")]
     pub max_tabs: usize,
     #[serde(default = "default_cdp_timeout")]
@@ -87,6 +121,9 @@ pub struct SidekarConfig {
 
 fn default_true() -> bool {
     true
+}
+fn default_relay_pty() -> String {
+    RelayPtyMode::Auto.as_str().to_string()
 }
 fn default_max_tabs() -> usize {
     20
@@ -105,6 +142,7 @@ impl Default for SidekarConfig {
             feedback: true,
             browser: None,
             auto_update: true,
+            relay_pty: default_relay_pty(),
             max_tabs: default_max_tabs(),
             cdp_timeout_secs: default_cdp_timeout(),
             max_cron_jobs: default_max_cron_jobs(),
@@ -209,6 +247,10 @@ fn get_u64(key: &str) -> u64 {
 
 pub fn load_config() -> SidekarConfig {
     let browser_val = config_get("browser");
+    let relay_pty = RelayPtyMode::parse(&config_get("relay_pty"))
+        .unwrap_or(RelayPtyMode::Auto)
+        .as_str()
+        .to_string();
     SidekarConfig {
         telemetry: get_bool("telemetry"),
         feedback: get_bool("feedback"),
@@ -218,6 +260,7 @@ pub fn load_config() -> SidekarConfig {
             Some(browser_val)
         },
         auto_update: get_bool("auto_update"),
+        relay_pty,
         max_tabs: get_usize("max_tabs"),
         cdp_timeout_secs: get_u64("cdp_timeout_secs"),
         max_cron_jobs: get_usize("max_cron_jobs"),
@@ -230,8 +273,14 @@ pub fn save_config(config: &SidekarConfig) -> Result<()> {
     config_set("feedback", &config.feedback.to_string())?;
     config_set("browser", config.browser.as_deref().unwrap_or(""))?;
     config_set("auto_update", &config.auto_update.to_string())?;
+    let relay_pty = RelayPtyMode::parse(&config.relay_pty).unwrap_or(RelayPtyMode::Auto);
+    config_set("relay_pty", relay_pty.as_str())?;
     config_set("max_tabs", &config.max_tabs.to_string())?;
     config_set("cdp_timeout_secs", &config.cdp_timeout_secs.to_string())?;
     config_set("max_cron_jobs", &config.max_cron_jobs.to_string())?;
     Ok(())
+}
+
+pub fn relay_pty_mode() -> RelayPtyMode {
+    RelayPtyMode::parse(&config_get("relay_pty")).unwrap_or(RelayPtyMode::Auto)
 }
