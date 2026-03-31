@@ -40,6 +40,7 @@ pub enum TunnelEvent {
         recipient: String,
         sender: String,
         body: String,
+        envelope: Option<crate::message::Envelope>,
     },
     /// Legacy/simple bus frame (body only) — written to PTY.
     BusPlain(String),
@@ -74,7 +75,13 @@ impl TunnelSender {
     }
 
     /// Send a routed bus message to other multiplex tunnels for this user (non-blocking).
-    pub fn send_bus_routed(&self, recipient: &str, sender: &str, body: &str) {
+    pub fn send_bus_routed(
+        &self,
+        recipient: &str,
+        sender: &str,
+        body: &str,
+        envelope: Option<&crate::message::Envelope>,
+    ) {
         let sid = self
             .session_id
             .lock()
@@ -88,6 +95,8 @@ impl TunnelSender {
             "recipient": recipient,
             "sender": sender,
             "body": body,
+            "envelope_json": envelope
+                .and_then(|env| serde_json::to_string(env).ok()),
         });
         let _ = self.tx.try_send(TunnelCommand::BusText(json.to_string()));
     }
@@ -393,6 +402,10 @@ async fn io_loop(
                                     .and_then(|b| b.as_str())
                                     .unwrap_or("")
                                     .to_string();
+                                let envelope = v
+                                    .get("envelope_json")
+                                    .and_then(|x| x.as_str())
+                                    .and_then(|s| serde_json::from_str::<crate::message::Envelope>(s).ok());
                                 if let (Some(recipient), Some(sender)) = (
                                     v.get("recipient").and_then(|x| x.as_str()),
                                     v.get("sender").and_then(|x| x.as_str()),
@@ -401,6 +414,7 @@ async fn io_loop(
                                         recipient: recipient.to_string(),
                                         sender: sender.to_string(),
                                         body: body_str,
+                                        envelope,
                                     });
                                 } else {
                                     let _ = evt_tx.try_send(TunnelEvent::BusPlain(body_str));

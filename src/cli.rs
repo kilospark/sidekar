@@ -809,6 +809,17 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         hidden_in_help: false,
     },
     CommandSpec {
+        name: "agent-sessions",
+        usage: "[show|rename|note] [args] [--limit=N] [--active] [--project=<name>|--all-projects]",
+        summary: "Inspect local Sidekar agent session history",
+        group: CommandGroup::Agent,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+        hidden_in_help: false,
+    },
+    CommandSpec {
         name: "repo",
         usage: "<pack|tree|changes|actions> [args]",
         summary: "Pack repos, summarize changes, and run project actions",
@@ -843,7 +854,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "cron",
-        usage: "<create|list|delete> [args]",
+        usage: "<create|list|show|delete> [args]",
         summary: "Scheduled job subcommands",
         group: CommandGroup::Jobs,
         aliases: &[],

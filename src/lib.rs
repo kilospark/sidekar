@@ -2391,6 +2391,30 @@ sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
     sidekar tasks show 12"
         }
 
+        "agent-sessions" => {
+            "\
+sidekar agent-sessions [show|rename|note] [args] [--limit=N] [--active] [--project=<name>|--all-projects]
+
+  Inspect durable local Sidekar agent session metadata. Lists the current project by default.
+
+  Commands:
+    agent-sessions                           List recent sessions for the current project
+    agent-sessions --all-projects            List recent sessions across all projects
+    agent-sessions --active                  List only still-running sessions
+    agent-sessions show <id>                 Show one session in detail
+    agent-sessions rename <id> <name>        Set a friendly display name
+    agent-sessions note <id> <text>          Store notes on a session
+    agent-sessions note <id> --clear         Clear notes
+
+  Examples:
+    sidekar agent-sessions
+    sidekar agent-sessions --active
+    sidekar agent-sessions --all-projects --limit=50
+    sidekar agent-sessions show pty:12345:1774750000
+    sidekar agent-sessions rename pty:12345:1774750000 \"Frontend worker\"
+    sidekar agent-sessions note pty:12345:1774750000 \"Owned the login fix\""
+        }
+
         "repo" => {
             "\
  sidekar repo <pack|tree|changes|actions> [args]
@@ -2435,15 +2459,17 @@ sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
 
         "cron" => {
             "\
-sidekar cron <create|list|delete> [args...]
+sidekar cron <create|list|show|delete> [args...]
 
   Scheduled job subcommands:
     create <schedule> <action_json> [--target=T] [--name=N]
     list
+    show <job-id>
     delete <job-id>
 
   Examples:
     sidekar cron list
+    sidekar cron show c727227a
     sidekar cron create \"*/5 * * * *\" '{\"tool\":\"screenshot\"}'
     sidekar cron delete 123abc"
         }
