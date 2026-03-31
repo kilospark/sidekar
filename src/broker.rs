@@ -16,6 +16,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 const DB_FILE: &str = "sidekar.sqlite3";
 const LEGACY_DB_FILE: &str = "broker.sqlite3";
+const OUTBOUND_STATUS_OPEN: &str = "open";
+const OUTBOUND_STATUS_ANSWERED: &str = "answered";
+const OUTBOUND_STATUS_TIMED_OUT: &str = "timed_out";
+const OUTBOUND_STATUS_CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Clone)]
 pub struct BrokerAgent {
@@ -35,9 +39,50 @@ pub struct OutboundRequestRecord {
     pub recipient_name: String,
     pub transport_name: String,
     pub transport_target: String,
+    pub kind: String,
+    pub channel: Option<String>,
+    pub project: Option<String>,
+    pub message_preview: String,
+    pub status: String,
     pub created_at: u64,
     pub nudge_count: u32,
     pub last_nudged_at: Option<u64>,
+    pub answered_at: Option<u64>,
+    pub timed_out_at: Option<u64>,
+    pub closed_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BusReplyRecord {
+    pub reply_to_msg_id: String,
+    pub reply_msg_id: String,
+    pub sender_name: String,
+    pub sender_label: String,
+    pub kind: String,
+    pub message: String,
+    pub created_at: u64,
+    pub envelope_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentSessionRecord {
+    pub id: String,
+    pub agent_name: String,
+    pub agent_type: Option<String>,
+    pub display_name: Option<String>,
+    pub nick: Option<String>,
+    pub project: String,
+    pub channel: Option<String>,
+    pub cwd: Option<String>,
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    pub last_active_at: u64,
+    pub request_count: u64,
+    pub reply_count: u64,
+    pub message_count: u64,
+    pub last_request_msg_id: Option<String>,
+    pub last_reply_msg_id: Option<String>,
+    pub notes: Option<String>,
 }
 
 fn data_dir() -> PathBuf {
@@ -117,17 +162,90 @@ fn init_schema(conn: &Connection) -> Result<()> {
             recipient_name TEXT NOT NULL,
             transport_name TEXT NOT NULL,
             transport_target TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'request',
+            channel TEXT,
+            project TEXT,
+            message_preview TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
             created_at INTEGER NOT NULL,
             nudge_count INTEGER NOT NULL DEFAULT 0,
-            last_nudged_at INTEGER
+            last_nudged_at INTEGER,
+            answered_at INTEGER,
+            timed_out_at INTEGER,
+            closed_at INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_outbound_sender
             ON outbound_requests(sender_name, created_at);
+
+        CREATE TABLE IF NOT EXISTS bus_replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reply_to_msg_id TEXT NOT NULL,
+            reply_msg_id TEXT NOT NULL,
+            sender_name TEXT NOT NULL,
+            sender_label TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            envelope_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_bus_replies_reply_to
+            ON bus_replies(reply_to_msg_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_bus_replies_created
+            ON bus_replies(created_at);
+
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            id TEXT PRIMARY KEY,
+            agent_name TEXT NOT NULL,
+            agent_type TEXT,
+            display_name TEXT,
+            nick TEXT,
+            project TEXT NOT NULL,
+            channel TEXT,
+            cwd TEXT,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            last_active_at INTEGER NOT NULL,
+            request_count INTEGER NOT NULL DEFAULT 0,
+            reply_count INTEGER NOT NULL DEFAULT 0,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            last_request_msg_id TEXT,
+            last_reply_msg_id TEXT,
+            notes TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_name
+            ON agent_sessions(agent_name, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_project
+            ON agent_sessions(project, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active
+            ON agent_sessions(last_active_at DESC);
         ",
     )?;
     // Migration: add cwd column if missing (existing databases)
     let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN cwd TEXT");
     let _ = conn.execute_batch("ALTER TABLE outbound_requests ADD COLUMN last_nudged_at INTEGER");
+    let _ = conn.execute_batch(
+        "
+        ALTER TABLE outbound_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'request';
+        ALTER TABLE outbound_requests ADD COLUMN channel TEXT;
+        ALTER TABLE outbound_requests ADD COLUMN project TEXT;
+        ALTER TABLE outbound_requests ADD COLUMN message_preview TEXT NOT NULL DEFAULT '';
+        ALTER TABLE outbound_requests ADD COLUMN status TEXT NOT NULL DEFAULT 'open';
+        ALTER TABLE outbound_requests ADD COLUMN answered_at INTEGER;
+        ALTER TABLE outbound_requests ADD COLUMN timed_out_at INTEGER;
+        ALTER TABLE outbound_requests ADD COLUMN closed_at INTEGER;
+        ",
+    );
+    let _ = conn.execute_batch(
+        "
+        ALTER TABLE agent_sessions ADD COLUMN display_name TEXT;
+        ALTER TABLE agent_sessions ADD COLUMN notes TEXT;
+        ",
+    );
+    // Index on status — must be after migration that adds the column for existing DBs
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_outbound_sender_status
+            ON outbound_requests(sender_name, status, created_at);",
+    );
 
     // Migration: rename pending_messages -> pending_requests (clarity)
     // Must copy data since CREATE TABLE IF NOT EXISTS runs first
@@ -665,27 +783,33 @@ pub fn pending_message(msg_id: &str) -> Result<Option<Envelope>> {
 }
 
 pub fn set_outbound_request(
-    msg_id: &str,
-    sender_name: &str,
+    envelope: &Envelope,
     sender_label: &str,
-    recipient_name: &str,
     transport_name: &str,
     transport_target: &str,
-    created_at: u64,
+    channel: Option<&str>,
+    project: Option<&str>,
 ) -> Result<()> {
     let conn = open()?;
     conn.execute(
         "INSERT OR REPLACE INTO outbound_requests (
-            msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL)",
+            msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target,
+            kind, channel, project, message_preview, status, created_at, nudge_count,
+            last_nudged_at, answered_at, timed_out_at, closed_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, NULL, NULL, NULL)",
         params![
-            msg_id,
-            sender_name,
+            envelope.id,
+            envelope.from.name,
             sender_label,
-            recipient_name,
+            envelope.to,
             transport_name,
             transport_target,
-            created_at as i64,
+            envelope.kind.as_str(),
+            channel,
+            project,
+            envelope.preview(),
+            OUTBOUND_STATUS_OPEN,
+            envelope.created_at as i64,
         ],
     )?;
     Ok(())
@@ -711,14 +835,66 @@ pub fn delete_outbound_for_sender(name: &str) -> Result<()> {
 
 pub fn resolve_reply(msg_id: &str) -> Result<()> {
     let conn = open()?;
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    conn.execute(
         "DELETE FROM pending_requests WHERE id = ?1",
         params![msg_id],
     )?;
+    Ok(())
+}
+
+pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
+    let conn = open()?;
+    let tx = conn.unchecked_transaction()?;
+    let envelope_json =
+        serde_json::to_string(envelope).context("failed to serialize reply envelope")?;
     tx.execute(
-        "DELETE FROM outbound_requests WHERE msg_id = ?1",
-        params![msg_id],
+        "INSERT INTO bus_replies (
+            reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            reply_to_msg_id,
+            envelope.id,
+            envelope.from.name,
+            envelope.from.display_name(),
+            envelope.kind.as_str(),
+            envelope.message,
+            envelope.created_at as i64,
+            envelope_json,
+        ],
+    )?;
+    tx.execute(
+        "DELETE FROM pending_requests WHERE id = ?1",
+        params![reply_to_msg_id],
+    )?;
+    tx.execute(
+        "UPDATE outbound_requests
+         SET status = ?2,
+             answered_at = COALESCE(answered_at, ?3),
+             closed_at = COALESCE(closed_at, ?3)
+         WHERE msg_id = ?1",
+        params![
+            reply_to_msg_id,
+            OUTBOUND_STATUS_ANSWERED,
+            envelope.created_at as i64
+        ],
+    )?;
+    tx.execute(
+        "UPDATE agent_sessions
+         SET reply_count = reply_count + 1,
+             message_count = message_count + 1,
+             last_reply_msg_id = ?2,
+             last_active_at = ?3
+         WHERE id = (
+             SELECT id
+             FROM agent_sessions
+             WHERE agent_name = (
+                 SELECT sender_name FROM outbound_requests WHERE msg_id = ?1
+             )
+               AND ended_at IS NULL
+             ORDER BY started_at DESC
+             LIMIT 1
+         )",
+        params![reply_to_msg_id, envelope.id, envelope.created_at as i64],
     )?;
     tx.commit()?;
     Ok(())
@@ -727,7 +903,9 @@ pub fn resolve_reply(msg_id: &str) -> Result<()> {
 pub fn outbound_request(msg_id: &str) -> Result<Option<OutboundRequestRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target,
+                kind, channel, project, message_preview, status, created_at, nudge_count,
+                last_nudged_at, answered_at, timed_out_at, closed_at
          FROM outbound_requests
          WHERE msg_id = ?1
          LIMIT 1",
@@ -740,12 +918,14 @@ pub fn outbound_request(msg_id: &str) -> Result<Option<OutboundRequestRecord>> {
 pub fn outbound_for_sender(name: &str) -> Result<Vec<OutboundRequestRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target,
+                kind, channel, project, message_preview, status, created_at, nudge_count,
+                last_nudged_at, answered_at, timed_out_at, closed_at
          FROM outbound_requests
-         WHERE sender_name = ?1
+         WHERE sender_name = ?1 AND status = ?2
          ORDER BY created_at ASC",
     )?;
-    let mut rows = stmt.query(params![name])?;
+    let mut rows = stmt.query(params![name, OUTBOUND_STATUS_OPEN])?;
     let mut requests = Vec::new();
     while let Some(row) = rows.next()? {
         requests.push(row_to_outbound(row)?);
@@ -759,12 +939,15 @@ pub fn expired_outbound_for_sender(
 ) -> Result<Vec<OutboundRequestRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target, created_at, nudge_count, last_nudged_at
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target,
+                kind, channel, project, message_preview, status, created_at, nudge_count,
+                last_nudged_at, answered_at, timed_out_at, closed_at
          FROM outbound_requests
-         WHERE sender_name = ?1 AND created_at <= ?2
+         WHERE sender_name = ?1 AND status = ?2 AND created_at <= ?3
          ORDER BY created_at ASC",
     )?;
-    let mut rows = stmt.query(params![name, created_at_cutoff as i64])?;
+    let mut rows =
+        stmt.query(params![name, OUTBOUND_STATUS_OPEN, created_at_cutoff as i64])?;
     let mut requests = Vec::new();
     while let Some(row) = rows.next()? {
         requests.push(row_to_outbound(row)?);
@@ -789,6 +972,204 @@ pub fn increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<u32> {
     Ok(count as u32)
 }
 
+pub fn mark_outbound_timed_out(msg_id: &str, timed_out_at: u64) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "UPDATE outbound_requests
+         SET status = ?2,
+             timed_out_at = COALESCE(timed_out_at, ?3),
+             closed_at = COALESCE(closed_at, ?3)
+         WHERE msg_id = ?1 AND status = ?4",
+        params![
+            msg_id,
+            OUTBOUND_STATUS_TIMED_OUT,
+            timed_out_at as i64,
+            OUTBOUND_STATUS_OPEN
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_outbound_requests_for_sender(
+    sender_name: &str,
+    status: Option<&str>,
+    limit: usize,
+) -> Result<Vec<OutboundRequestRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target,
+                kind, channel, project, message_preview, status, created_at, nudge_count,
+                last_nudged_at, answered_at, timed_out_at, closed_at
+         FROM outbound_requests
+         WHERE sender_name = ?1 AND (?2 IS NULL OR status = ?2)
+         ORDER BY created_at DESC
+         LIMIT ?3",
+    )?;
+    let mut rows = stmt.query(params![sender_name, status, limit.max(1) as i64])?;
+    let mut requests = Vec::new();
+    while let Some(row) = rows.next()? {
+        requests.push(row_to_outbound(row)?);
+    }
+    Ok(requests)
+}
+
+pub fn create_agent_session(
+    id: &str,
+    agent_name: &str,
+    agent_type: Option<&str>,
+    nick: Option<&str>,
+    project: &str,
+    channel: Option<&str>,
+    cwd: Option<&str>,
+    started_at: u64,
+) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "INSERT OR REPLACE INTO agent_sessions (
+            id, agent_name, agent_type, display_name, nick, project, channel, cwd, started_at,
+            ended_at, last_active_at, request_count, reply_count, message_count,
+            last_request_msg_id, last_reply_msg_id, notes
+        ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, NULL, ?8, 0, 0, 0, NULL, NULL, NULL)",
+        params![id, agent_name, agent_type, nick, project, channel, cwd, started_at as i64],
+    )?;
+    Ok(())
+}
+
+pub fn finish_agent_session(id: &str, ended_at: u64) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "UPDATE agent_sessions
+         SET ended_at = COALESCE(ended_at, ?2),
+             last_active_at = CASE
+                 WHEN last_active_at < ?2 THEN ?2
+                 ELSE last_active_at
+             END
+         WHERE id = ?1",
+        params![id, ended_at as i64],
+    )?;
+    Ok(())
+}
+
+pub fn mark_agent_session_request(agent_name: &str, msg_id: &str, created_at: u64) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "UPDATE agent_sessions
+         SET request_count = request_count + 1,
+             message_count = message_count + 1,
+             last_request_msg_id = ?2,
+             last_active_at = ?3
+         WHERE id = (
+             SELECT id
+             FROM agent_sessions
+             WHERE agent_name = ?1 AND ended_at IS NULL
+             ORDER BY started_at DESC
+             LIMIT 1
+         )",
+        params![agent_name, msg_id, created_at as i64],
+    )?;
+    Ok(())
+}
+
+pub fn list_agent_sessions(
+    active_only: bool,
+    project: Option<&str>,
+    limit: usize,
+) -> Result<Vec<AgentSessionRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_name, agent_type, display_name, nick, project, channel, cwd, started_at, ended_at,
+                last_active_at, request_count, reply_count, message_count,
+                last_request_msg_id, last_reply_msg_id, notes
+         FROM agent_sessions
+         WHERE (?1 = 0 OR ended_at IS NULL)
+           AND (?2 IS NULL OR project = ?2)
+         ORDER BY last_active_at DESC, started_at DESC
+         LIMIT ?3",
+    )?;
+    let mut rows = stmt.query(params![if active_only { 1 } else { 0 }, project, limit.max(1) as i64])?;
+    let mut sessions = Vec::new();
+    while let Some(row) = rows.next()? {
+        sessions.push(row_to_agent_session(row)?);
+    }
+    Ok(sessions)
+}
+
+pub fn get_agent_session(id: &str) -> Result<Option<AgentSessionRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_name, agent_type, display_name, nick, project, channel, cwd, started_at, ended_at,
+                last_active_at, request_count, reply_count, message_count,
+                last_request_msg_id, last_reply_msg_id, notes
+         FROM agent_sessions
+         WHERE id = ?1
+         LIMIT 1",
+    )?;
+    stmt.query_row(params![id], row_to_agent_session)
+        .optional()
+        .map_err(Into::into)
+}
+
+pub fn set_agent_session_display_name(id: &str, display_name: Option<&str>) -> Result<bool> {
+    let conn = open()?;
+    let rows = conn.execute(
+        "UPDATE agent_sessions
+         SET display_name = ?2
+         WHERE id = ?1",
+        params![id, display_name],
+    )?;
+    Ok(rows > 0)
+}
+
+pub fn set_agent_session_notes(id: &str, notes: Option<&str>) -> Result<bool> {
+    let conn = open()?;
+    let rows = conn.execute(
+        "UPDATE agent_sessions
+         SET notes = ?2
+         WHERE id = ?1",
+        params![id, notes],
+    )?;
+    Ok(rows > 0)
+}
+
+pub fn list_bus_replies_for_sender(
+    sender_name: &str,
+    reply_to_msg_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<BusReplyRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT r.reply_to_msg_id, r.reply_msg_id, r.sender_name, r.sender_label, r.kind,
+                r.message, r.created_at, r.envelope_json
+         FROM bus_replies r
+         INNER JOIN outbound_requests o ON o.msg_id = r.reply_to_msg_id
+         WHERE o.sender_name = ?1 AND (?2 IS NULL OR r.reply_to_msg_id = ?2)
+         ORDER BY r.created_at DESC
+         LIMIT ?3",
+    )?;
+    let mut rows = stmt.query(params![sender_name, reply_to_msg_id, limit.max(1) as i64])?;
+    let mut replies = Vec::new();
+    while let Some(row) = rows.next()? {
+        replies.push(row_to_bus_reply(row)?);
+    }
+    Ok(replies)
+}
+
+pub fn replies_for_request(msg_id: &str) -> Result<Vec<BusReplyRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
+         FROM bus_replies
+         WHERE reply_to_msg_id = ?1
+         ORDER BY created_at ASC",
+    )?;
+    let mut rows = stmt.query(params![msg_id])?;
+    let mut replies = Vec::new();
+    while let Some(row) = rows.next()? {
+        replies.push(row_to_bus_reply(row)?);
+    }
+    Ok(replies)
+}
+
 pub fn clear_pending_between_agents(recipient_name: &str, sender_name: &str) -> Result<usize> {
     let conn = open()?;
     let pending = pending_for_agent(recipient_name)?;
@@ -804,26 +1185,44 @@ pub fn clear_pending_between_agents(recipient_name: &str, sender_name: &str) -> 
     Ok(deleted)
 }
 
-pub fn clear_outbound_between_agents(
+pub fn close_outbound_between_agents(
     sender_name: &str,
     recipient_name: &str,
     keep_msg_id: Option<&str>,
 ) -> Result<usize> {
     let conn = open()?;
-    let deleted = if let Some(keep_msg_id) = keep_msg_id {
+    let now = crate::message::epoch_secs() as i64;
+    let updated = if let Some(keep_msg_id) = keep_msg_id {
         conn.execute(
-            "DELETE FROM outbound_requests
-             WHERE sender_name = ?1 AND recipient_name = ?2 AND msg_id != ?3",
-            params![sender_name, recipient_name, keep_msg_id],
+            "UPDATE outbound_requests
+             SET status = ?4,
+                 closed_at = COALESCE(closed_at, ?5)
+             WHERE sender_name = ?1 AND recipient_name = ?2 AND msg_id != ?3 AND status = ?6",
+            params![
+                sender_name,
+                recipient_name,
+                keep_msg_id,
+                OUTBOUND_STATUS_CANCELLED,
+                now,
+                OUTBOUND_STATUS_OPEN
+            ],
         )?
     } else {
         conn.execute(
-            "DELETE FROM outbound_requests
-             WHERE sender_name = ?1 AND recipient_name = ?2",
-            params![sender_name, recipient_name],
+            "UPDATE outbound_requests
+             SET status = ?3,
+                 closed_at = COALESCE(closed_at, ?4)
+             WHERE sender_name = ?1 AND recipient_name = ?2 AND status = ?5",
+            params![
+                sender_name,
+                recipient_name,
+                OUTBOUND_STATUS_CANCELLED,
+                now,
+                OUTBOUND_STATUS_OPEN
+            ],
         )?
     };
-    Ok(deleted)
+    Ok(updated)
 }
 
 fn row_to_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrokerAgent> {
@@ -851,9 +1250,52 @@ fn row_to_outbound(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboundRequestR
         recipient_name: row.get(3)?,
         transport_name: row.get(4)?,
         transport_target: row.get(5)?,
+        kind: row.get(6)?,
+        channel: row.get(7)?,
+        project: row.get(8)?,
+        message_preview: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get::<_, i64>(11)? as u64,
+        nudge_count: row.get::<_, i64>(12)? as u32,
+        last_nudged_at: row.get::<_, Option<i64>>(13)?.map(|v| v as u64),
+        answered_at: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+        timed_out_at: row.get::<_, Option<i64>>(15)?.map(|v| v as u64),
+        closed_at: row.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+    })
+}
+
+fn row_to_bus_reply(row: &rusqlite::Row<'_>) -> rusqlite::Result<BusReplyRecord> {
+    Ok(BusReplyRecord {
+        reply_to_msg_id: row.get(0)?,
+        reply_msg_id: row.get(1)?,
+        sender_name: row.get(2)?,
+        sender_label: row.get(3)?,
+        kind: row.get(4)?,
+        message: row.get(5)?,
         created_at: row.get::<_, i64>(6)? as u64,
-        nudge_count: row.get::<_, i64>(7)? as u32,
-        last_nudged_at: row.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+        envelope_json: row.get(7)?,
+    })
+}
+
+fn row_to_agent_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSessionRecord> {
+    Ok(AgentSessionRecord {
+        id: row.get(0)?,
+        agent_name: row.get(1)?,
+        agent_type: row.get(2)?,
+        display_name: row.get(3)?,
+        nick: row.get(4)?,
+        project: row.get(5)?,
+        channel: row.get(6)?,
+        cwd: row.get(7)?,
+        started_at: row.get::<_, i64>(8)? as u64,
+        ended_at: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
+        last_active_at: row.get::<_, i64>(10)? as u64,
+        request_count: row.get::<_, i64>(11)? as u64,
+        reply_count: row.get::<_, i64>(12)? as u64,
+        message_count: row.get::<_, i64>(13)? as u64,
+        last_request_msg_id: row.get(14)?,
+        last_reply_msg_id: row.get(15)?,
+        notes: row.get(16)?,
     })
 }
 
@@ -1692,13 +2134,12 @@ mod tests {
             let envelope = Envelope::new_request(sender.clone(), "receiver", "hello");
             set_pending(&envelope)?;
             set_outbound_request(
-                &envelope.id,
-                &sender.name,
+                &envelope,
                 &sender.display_name(),
-                &envelope.to,
                 "broker",
                 "receiver",
-                envelope.created_at,
+                sender.session.as_deref(),
+                Some("/tmp/project"),
             )?;
 
             let pending = pending_for_agent("receiver")?;
@@ -1708,11 +2149,162 @@ mod tests {
             let outbound = outbound_for_sender("sender")?;
             assert_eq!(outbound.len(), 1);
             assert_eq!(outbound[0].msg_id, envelope.id);
+            assert_eq!(outbound[0].status, OUTBOUND_STATUS_OPEN);
+            assert_eq!(outbound[0].kind, "request");
 
-            resolve_reply(&envelope.id)?;
+            let reply = Envelope::new_response(
+                AgentId::new("receiver"),
+                "sender",
+                "done",
+                envelope.id.clone(),
+            );
+            record_reply(&envelope.id, &reply)?;
 
             assert!(pending_for_agent("receiver")?.is_empty());
             assert!(outbound_for_sender("sender")?.is_empty());
+
+            let stored = outbound_request(&envelope.id)?.context("missing outbound request")?;
+            assert_eq!(stored.status, OUTBOUND_STATUS_ANSWERED);
+            assert_eq!(stored.answered_at, Some(reply.created_at));
+
+            let replies = replies_for_request(&envelope.id)?;
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0].reply_msg_id, reply.id);
+            assert_eq!(replies[0].message, "done");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn marks_outbound_timeouts_without_deleting_history() -> Result<()> {
+        with_test_db(|| {
+            let sender = AgentId {
+                name: "sender".into(),
+                nick: Some("borzoi".into()),
+                session: Some("sess".into()),
+                pane: Some("0:0.1".into()),
+                agent_type: Some("sidekar".into()),
+            };
+            let envelope = Envelope::new_request(sender.clone(), "receiver", "hello");
+            set_outbound_request(
+                &envelope,
+                &sender.display_name(),
+                "broker",
+                "receiver",
+                sender.session.as_deref(),
+                Some("/tmp/project"),
+            )?;
+
+            mark_outbound_timed_out(&envelope.id, envelope.created_at + 60)?;
+
+            let open = outbound_for_sender("sender")?;
+            assert!(open.is_empty());
+
+            let timed_out = list_outbound_requests_for_sender(
+                "sender",
+                Some(OUTBOUND_STATUS_TIMED_OUT),
+                10,
+            )?;
+            assert_eq!(timed_out.len(), 1);
+            assert_eq!(timed_out[0].msg_id, envelope.id);
+            assert_eq!(timed_out[0].timed_out_at, Some(envelope.created_at + 60));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn persists_agent_sessions_and_updates_counters() -> Result<()> {
+        with_test_db(|| {
+            let started_at = 1_700_000_000u64;
+            create_agent_session(
+                "pty:123:1700000000",
+                "sender",
+                Some("claude"),
+                Some("borzoi"),
+                "/tmp/project",
+                Some("/tmp/project"),
+                Some("/tmp/project"),
+                started_at,
+            )?;
+
+            let sender = AgentId {
+                name: "sender".into(),
+                nick: Some("borzoi".into()),
+                session: Some("/tmp/project".into()),
+                pane: Some("0:0.1".into()),
+                agent_type: Some("sidekar".into()),
+            };
+            let envelope = Envelope::new_request(sender.clone(), "receiver", "hello");
+            set_outbound_request(
+                &envelope,
+                &sender.display_name(),
+                "broker",
+                "receiver",
+                sender.session.as_deref(),
+                Some("/tmp/project"),
+            )?;
+            mark_agent_session_request(&sender.name, &envelope.id, envelope.created_at)?;
+
+            let reply = Envelope::new_response(
+                AgentId::new("receiver"),
+                "sender",
+                "done",
+                envelope.id.clone(),
+            );
+            record_reply(&envelope.id, &reply)?;
+            finish_agent_session("pty:123:1700000000", reply.created_at + 10)?;
+
+            let sessions = list_agent_sessions(false, Some("/tmp/project"), 10)?;
+            assert_eq!(sessions.len(), 1);
+            let session = &sessions[0];
+            assert_eq!(session.agent_name, "sender");
+            assert_eq!(session.agent_type.as_deref(), Some("claude"));
+            assert_eq!(session.request_count, 1);
+            assert_eq!(session.reply_count, 1);
+            assert_eq!(session.message_count, 2);
+            assert_eq!(session.last_request_msg_id.as_deref(), Some(envelope.id.as_str()));
+            assert_eq!(session.last_reply_msg_id.as_deref(), Some(reply.id.as_str()));
+            assert_eq!(session.ended_at, Some(reply.created_at + 10));
+
+            let fetched = get_agent_session("pty:123:1700000000")?.context("missing session")?;
+            assert_eq!(fetched.id, "pty:123:1700000000");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn agent_session_display_name_and_notes_are_persisted() -> Result<()> {
+        with_test_db(|| {
+            create_agent_session(
+                "pty:321:1700000000",
+                "sender",
+                Some("codex"),
+                Some("otter"),
+                "/tmp/project",
+                Some("/tmp/project"),
+                Some("/tmp/project"),
+                1_700_000_000,
+            )?;
+
+            assert!(set_agent_session_display_name(
+                "pty:321:1700000000",
+                Some("Review worker")
+            )?);
+            assert!(set_agent_session_notes(
+                "pty:321:1700000000",
+                Some("Owned the PR review thread")
+            )?);
+
+            let session = get_agent_session("pty:321:1700000000")?.context("missing session")?;
+            assert_eq!(session.display_name.as_deref(), Some("Review worker"));
+            assert_eq!(
+                session.notes.as_deref(),
+                Some("Owned the PR review thread")
+            );
+
+            assert!(set_agent_session_notes("pty:321:1700000000", None)?);
+            let cleared = get_agent_session("pty:321:1700000000")?.context("missing session")?;
+            assert_eq!(cleared.notes, None);
             Ok(())
         })
     }
