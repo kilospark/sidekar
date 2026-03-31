@@ -68,6 +68,7 @@ pub mod message;
 pub mod pakt;
 pub mod poller;
 pub mod pty;
+pub mod repo;
 pub mod rtk;
 pub mod scripts;
 pub mod scope;
@@ -2382,6 +2383,35 @@ sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
     sidekar tasks depend 12 8
     sidekar tasks done 8
     sidekar tasks show 12"
+        }
+
+        "repo" => {
+            "\
+sidekar repo <pack|tree> [args]
+
+  Zero-config local repo context for agents. Infers the repo root from the current
+  directory, respects .gitignore and .ignore, and also reads .sidekarignore.
+
+  Subcommands:
+    pack [path]                              Pack repo files to stdout (markdown by default)
+    tree [path]                              Show repo tree with estimated token counts
+
+  Flags:
+    --style=markdown|json|plain              Output format for pack
+    --include=glob1,glob2                    Restrict to matching files
+    --ignore=glob1,glob2                     Exclude additional files
+    --stdin                                  Read explicit file paths from stdin
+    --max-file-bytes=N                       Skip files larger than N bytes (default: 1000000)
+    --diff                                   Include git worktree and staged diffs
+    --logs[=N]                               Include recent git log entries (default: 10)
+
+  Examples:
+    sidekar repo pack
+    sidekar repo tree
+    sidekar repo pack --style=json
+    sidekar repo pack --include='src/**,README.md'
+    rg --files src | sidekar repo pack --stdin
+    sidekar repo pack --diff --logs=5"
         }
 
         "cron" => {

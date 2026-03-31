@@ -21,7 +21,7 @@ Use it for:
 - agent-to-agent messaging and handoff
 - native macOS UI automation
 - background monitoring and scheduled jobs
-- local memory, task tracking, and dependency management
+- local memory, task tracking, repo context, and dependency management
 - output compaction and structured packing for agent context
 - encrypted local secrets and TOTP generation
 
@@ -210,11 +210,35 @@ sidekar cron delete <job-id>
 
 `monitor` is for watching tabs for changes. `cron` is for scheduled automation.
 
+### Repo Context
+
+Use this when you need repo-wide understanding instead of reading files one by one:
+
+```bash
+sidekar repo tree
+sidekar repo pack
+sidekar repo pack --style=json
+```
+
+Use it for:
+
+- quick repo navigation with token-aware tree output
+- packing a whole repo or selected files into one agent-friendly artifact
+- narrowing repo context with `--include`, `--ignore`, or `--stdin`
+- optionally adding `git diff` and recent `git log` context
+
+Do not guess subcommands. Use:
+
+```bash
+sidekar help repo
+```
+
 ### Memory, Tasks, And Context
 
 Use these when the job needs durable local state, dependency tracking, or smaller context:
 
 ```bash
+sidekar repo ...
 sidekar memory ...
 sidekar tasks ...
 sidekar compact ...
@@ -226,12 +250,14 @@ Use them for:
 
 - storing and recalling durable project memory
 - keeping a local task list with dependency edges
+- packing local repositories into a single agent-readable snapshot
 - shrinking noisy command output before it reaches the agent
 - packing structured JSON, YAML, or CSV into a more compact transferable form
 
 Do not guess subcommands. Use:
 
 ```bash
+sidekar help repo
 sidekar help memory
 sidekar help tasks
 sidekar help compact
