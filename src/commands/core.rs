@@ -191,7 +191,7 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
     if let Ok(tabs) = get_debug_tabs(ctx).await {
         if let Some(tab) = tabs.first() {
             if let Some(ref ws_url) = tab.web_socket_debugger_url {
-                if let Ok(mut cdp) = CdpClient::connect(ws_url).await {
+                if let Ok(mut cdp) = DirectCdp::connect(ws_url).await {
                     let _ = cdp
                         .send(
                             "Page.addScriptToEvaluateOnNewDocument",
@@ -260,7 +260,7 @@ pub(super) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
 
     // Inject stealth script to hide navigator.webdriver on all future navigations.
     if let Some(ref ws_url) = new_tab.web_socket_debugger_url {
-        if let Ok(mut cdp) = CdpClient::connect(ws_url).await {
+        if let Ok(mut cdp) = DirectCdp::connect(ws_url).await {
             let _ = cdp
                 .send(
                     "Page.addScriptToEvaluateOnNewDocument",
@@ -1074,7 +1074,7 @@ pub(super) async fn cmd_new_tab(ctx: &mut AppContext, url: Option<&str>) -> Resu
 
     // Inject stealth script on the new tab
     if let Some(ref ws_url) = new_tab.web_socket_debugger_url {
-        if let Ok(mut cdp) = CdpClient::connect(ws_url).await {
+        if let Ok(mut cdp) = DirectCdp::connect(ws_url).await {
             let _ = cdp
                 .send(
                     "Page.addScriptToEvaluateOnNewDocument",

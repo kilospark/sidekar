@@ -209,12 +209,14 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
 
 struct DaemonState {
     ext_state: SharedExtState,
+    cdp_pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>,
 }
 
 impl DaemonState {
     fn new() -> Self {
         Self {
             ext_state: Arc::new(Mutex::new(ExtState::default())),
+            cdp_pool: Arc::new(Mutex::new(crate::cdp_proxy::CdpPool::new())),
         }
     }
 }
@@ -281,8 +283,9 @@ pub async fn run() -> Result<()> {
     // Start housekeeping subsystem (dead agent sweeper, auto-update)
     tokio::spawn(housekeeping_loop());
 
-    // TODO: Start cron subsystem
-    // TODO: Start monitor subsystem
+    // Start CDP pool idle reaper
+    let cdp_pool_for_reaper = state.lock().await.cdp_pool.clone();
+    tokio::spawn(cdp_pool_reaper(cdp_pool_for_reaper));
 
     // Accept connections
     loop {
@@ -339,6 +342,26 @@ async fn handle_connection(
         {
             eprintln!("Extension bridge registration failed: {e:#}");
         }
+        return;
+    }
+
+    if first.get("type").and_then(|v| v.as_str()) == Some("cdp_connect") {
+        let ws_url = first
+            .get("ws_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if ws_url.is_empty() {
+            let err = serde_json::to_string(&json!({"type":"cdp_resp","error":"missing ws_url"}))
+                .unwrap_or_default();
+            let _ = writer.write_all(err.as_bytes()).await;
+            let _ = writer.write_all(b"\n").await;
+            let _ = writer.flush().await;
+            return;
+        }
+        // Upgrade to long-lived CDP proxy connection
+        let pool = state.lock().await.cdp_pool.clone();
+        crate::cdp_proxy::handle_cdp_connection(ws_url, reader, writer, pool).await;
         return;
     }
 
@@ -409,6 +432,16 @@ async fn housekeeping_loop() {
                 check_for_update().await;
             }
         }
+    }
+}
+
+/// Periodically reap idle CDP connections from the pool.
+async fn cdp_pool_reaper(pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    interval.tick().await; // skip immediate
+    loop {
+        interval.tick().await;
+        pool.lock().await.reap_idle();
     }
 }
 

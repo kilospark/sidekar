@@ -220,7 +220,7 @@ const FAVICON_OBSERVER_JS: &str = r#"
 
 /// Attach to a target and inject the favicon MutationObserver.
 /// Returns the CDP session ID for the target, or None on failure.
-async fn inject_favicon_observer(cdp: &mut CdpClient, target_id: &str) -> Option<String> {
+async fn inject_favicon_observer(cdp: &mut DirectCdp, target_id: &str) -> Option<String> {
     // Attach to target with flatten=true so events arrive on the browser connection
     let result = cdp
         .send(
@@ -291,7 +291,7 @@ async fn run_title_watcher(
     error_count: Arc<AtomicU64>,
     last_error: Arc<Mutex<Option<String>>>,
 ) -> Result<()> {
-    let mut cdp = CdpClient::connect(&ws_url).await?;
+    let mut cdp = DirectCdp::connect(&ws_url).await?;
 
     cdp.send("Target.setDiscoverTargets", json!({"discover": true}))
         .await?;
