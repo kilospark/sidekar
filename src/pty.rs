@@ -342,10 +342,10 @@ fn cleanup_child_and_state(
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
-    let (_bin_display, bin_c, c_args) = match resolve_agent(agent)? {
+    let (bin_display, launch_mode, bin_c, c_args) = match resolve_agent(agent)? {
         ResolvedAgent::Binary(path, c_path) => {
             let c_args = prepare_args(&c_path, args)?;
-            (path, c_path, c_args)
+            (path, "binary", c_path, c_args)
         }
         ResolvedAgent::ShellAlias(shell) => {
             // Build a single command string: "agent arg1 arg2 ..."
@@ -367,6 +367,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
             ];
             (
                 format!("{shell} {shell_flag} '{agent} ...'"),
+                "shell",
                 shell_c,
                 c_args,
             )
@@ -380,6 +381,7 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         .unwrap_or_default();
     let nick = crate::bus::pick_nickname_for_project(Some(&cwd));
     let pre_fork_name = unique_agent_name(agent, &channel);
+    let start_time = std::time::Instant::now();
 
     // Set env vars before fork — child inherits them.
     // These let CLI commands (sidekar navigate, etc.) recover bus identity.
@@ -446,9 +448,20 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     let _ = crate::memory::start_agent_session(&identity.name, &cwd);
     if let Ok(brief) = crate::memory::startup_brief(3) {
-        if !brief.trim().is_empty() {
-            eprintln!("\n{brief}\n");
+        if !brief.trim().is_empty() && std::env::var("SIDEKAR_VERBOSE").is_ok() {
+            crate::broker::try_log_error_event("pty_info", "startup_memory_brief", Some(&brief));
         }
+    }
+    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+        crate::broker::try_log_error_event(
+            "pty_info",
+            "agent_launch",
+            Some(&format!(
+                "agent={agent} mode={launch_mode} command={} args={}",
+                bin_display,
+                args.join(" ")
+            )),
+        );
     }
 
     // Optionally establish tunnel to relay for web terminal access (dashboard / web terminal).
@@ -521,6 +534,19 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
 
     let _ = crate::memory::finish_agent_session(&identity.name);
     let _ = broker::unregister_agent(&identity.name);
+
+    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+        crate::broker::try_log_error_event(
+            "pty_info",
+            "agent_exit",
+            Some(&format!(
+                "agent={} exit_code={} runtime_ms={}",
+                agent,
+                exit_code,
+                start_time.elapsed().as_millis()
+            )),
+        );
+    }
 
     // process::exit to terminate the poller thread immediately
     std::process::exit(exit_code);
