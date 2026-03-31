@@ -3,8 +3,9 @@ name: sidekar
 version: 0.3.0
 description: |
   Agent-facing browser automation, messaging, desktop control, background jobs,
-  and encrypted local state. Use Sidekar when you need a real browser,
-  cross-agent coordination, native macOS interaction, or persistent automation.
+  local memory/tasks, context shaping, and encrypted local state. Use Sidekar
+  when you need a real browser, cross-agent coordination, native macOS
+  interaction, persistent local state, or token-aware context utilities.
 allowed-tools:
   - Bash(sidekar:*)
 ---
@@ -20,6 +21,8 @@ Use it for:
 - agent-to-agent messaging and handoff
 - native macOS UI automation
 - background monitoring and scheduled jobs
+- local memory, task tracking, and dependency management
+- output compaction and structured packing for agent context
 - encrypted local secrets and TOTP generation
 
 ## First Step
@@ -206,6 +209,35 @@ sidekar cron delete <job-id>
 ```
 
 `monitor` is for watching tabs for changes. `cron` is for scheduled automation.
+
+### Memory, Tasks, And Context
+
+Use these when the job needs durable local state, dependency tracking, or smaller context:
+
+```bash
+sidekar memory ...
+sidekar tasks ...
+sidekar compact ...
+sidekar pack ...
+sidekar unpack ...
+```
+
+Use them for:
+
+- storing and recalling durable project memory
+- keeping a local task list with dependency edges
+- shrinking noisy command output before it reaches the agent
+- packing structured JSON, YAML, or CSV into a more compact transferable form
+
+Do not guess subcommands. Use:
+
+```bash
+sidekar help memory
+sidekar help tasks
+sidekar help compact
+sidekar help pack
+sidekar help unpack
+```
 
 ### Secrets And Local State
 
