@@ -62,8 +62,7 @@ pub(crate) fn relay_http_base() -> String {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub(crate) struct RelaySessionInfo {
-    #[allow(dead_code)]
-    id: String,
+    pub id: String,
     pub name: String,
     pub nickname: Option<String>,
     pub hostname: String,
@@ -120,7 +119,7 @@ impl Transport for RelayHttp {
                 .post(&url)
                 .header("Authorization", format!("Bearer {token}"))
                 .json(&serde_json::json!({
-                    "recipient": target,
+                    "recipient_session_id": target,
                     "sender": from,
                     "body": message,
                 }))

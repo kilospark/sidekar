@@ -679,7 +679,7 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
     if let Some(sess) = relay_session_for_target(to) {
         return Some(DeliveryTarget {
             transport_name: RELAY_HTTP_TRANSPORT,
-            transport_target: sess.name.clone(),
+            transport_target: sess.id.clone(),
             output_label: format!("via relay ({})", sess.hostname),
         });
     }

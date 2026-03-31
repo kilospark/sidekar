@@ -3,10 +3,15 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::types::SessionInfo;
+use sha2::{Digest, Sha256};
 
 const SCROLLBACK_BUFFER_SIZE: usize = 512 * 1024;
 const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 const SESSION_TTL_SECS: i64 = 90; // sessions expire if no heartbeat for 90s
+const BUS_DISPATCH_INTERVAL_MS: u64 = 250;
+const BUS_MESSAGE_TTL_SECS: i64 = 300;
+const SESSIONS_COLLECTION: &str = "sessions";
+const BUS_MESSAGES_COLLECTION: &str = "relay_bus_messages";
 
 #[derive(Clone, Copy)]
 pub struct TerminalSize {
@@ -34,8 +39,8 @@ pub enum ViewerMsg {
 
 /// Live connection state for a session (in-memory only).
 pub struct LiveSession {
-    pub session_id: String,
     pub user_id: String,
+    pub name: String,
     /// When true, tunnel may send/receive `ch: "bus"` on text frames.
     pub multiplex: bool,
     pub tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
@@ -77,14 +82,22 @@ impl ScrollbackBuffer {
 #[derive(Clone)]
 pub struct Registry {
     db: mongodb::Database,
+    instance_id: String,
+    public_origin: String,
     /// In-memory map: session_id → live connection state.
     live: Arc<RwLock<HashMap<String, LiveSession>>>,
 }
 
 impl Registry {
-    pub fn new(db: mongodb::Database) -> Self {
+    pub fn public_origin(&self) -> &str {
+        &self.public_origin
+    }
+
+    pub fn new(db: mongodb::Database, instance_id: String, public_origin: String) -> Self {
         Self {
             db,
+            instance_id,
+            public_origin,
             live: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -106,7 +119,7 @@ impl Registry {
                 }
                 let now = mongodb::bson::DateTime::now();
                 let _ = db
-                    .collection::<mongodb::bson::Document>("sessions")
+                    .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
                     .update_many(
                         mongodb::bson::doc! {
                             "session_id": { "$in": &session_ids }
@@ -115,6 +128,96 @@ impl Registry {
                             "$set": { "last_heartbeat": now }
                         },
                     )
+                    .await;
+            }
+        });
+    }
+
+    /// Start the background dispatcher that drains Mongo-backed bus messages
+    /// into the locally connected multiplex sessions owned by this relay instance.
+    pub fn start_bus_dispatcher(&self) {
+        let db = self.db.clone();
+        let live = self.live.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+                BUS_DISPATCH_INTERVAL_MS,
+            ));
+            loop {
+                interval.tick().await;
+
+                let session_map: HashMap<String, (String, mpsc::UnboundedSender<TunnelMsg>)> = {
+                    let live = live.read().await;
+                    live.iter()
+                        .filter(|(_, sess)| sess.multiplex)
+                        .map(|(sid, sess)| {
+                            (
+                                sid.clone(),
+                                (sess.name.clone(), sess.tunnel_tx.clone()),
+                            )
+                        })
+                        .collect()
+                };
+
+                if session_map.is_empty() {
+                    continue;
+                }
+
+                let session_ids: Vec<String> = session_map.keys().cloned().collect();
+                let cutoff = mongodb::bson::DateTime::from_millis(
+                    chrono::Utc::now().timestamp_millis() - (BUS_MESSAGE_TTL_SECS * 1000),
+                );
+
+                let collection = db.collection::<mongodb::bson::Document>(BUS_MESSAGES_COLLECTION);
+                let filter = mongodb::bson::doc! {
+                    "recipient_session_id": { "$in": &session_ids },
+                    "created_at": { "$gt": cutoff },
+                };
+
+                let mut cursor = match collection.find(filter).await {
+                    Ok(cursor) => cursor,
+                    Err(_) => continue,
+                };
+
+                use futures_util::StreamExt;
+                while let Some(Ok(doc)) = cursor.next().await {
+                    let Some(id) = doc.get_object_id("_id").ok() else {
+                        continue;
+                    };
+                    let Some(recipient_session_id) =
+                        doc.get_str("recipient_session_id").ok().map(str::to_string)
+                    else {
+                        let _ = collection.delete_one(mongodb::bson::doc! { "_id": id }).await;
+                        continue;
+                    };
+                    let Some((recipient_name, tunnel_tx)) =
+                        session_map.get(&recipient_session_id).cloned()
+                    else {
+                        continue;
+                    };
+                    let sender = doc
+                        .get_str("sender")
+                        .ok()
+                        .unwrap_or("sidekar")
+                        .to_string();
+                    let body = doc.get_str("body").ok().unwrap_or("").to_string();
+                    let payload = serde_json::json!({
+                        "ch": "bus",
+                        "v": 1,
+                        "recipient": recipient_name,
+                        "sender": sender,
+                        "body": body,
+                    })
+                    .to_string();
+
+                    if tunnel_tx.send(TunnelMsg::Text(payload)).is_ok() {
+                        let _ = collection.delete_one(mongodb::bson::doc! { "_id": id }).await;
+                    }
+                }
+
+                let _ = collection
+                    .delete_many(mongodb::bson::doc! {
+                        "created_at": { "$lte": cutoff }
+                    })
                     .await;
             }
         });
@@ -135,7 +238,7 @@ impl Registry {
         rows: u16,
         tunnel_tx: mpsc::UnboundedSender<TunnelMsg>,
     ) -> String {
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id = stable_session_id(&user_id, &name, &hostname);
         let now = mongodb::bson::DateTime::now();
 
         // Write metadata to MongoDB
@@ -147,19 +250,25 @@ impl Registry {
             "cwd": &cwd,
             "hostname": &hostname,
             "nickname": &nickname,
+            "owner_instance_id": &self.instance_id,
+            "owner_origin": &self.public_origin,
             "connected_at": now,
             "last_heartbeat": now,
         };
         let _ = self
             .db
-            .collection::<mongodb::bson::Document>("sessions")
-            .insert_one(doc)
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .replace_one(
+                mongodb::bson::doc! { "session_id": &session_id },
+                doc,
+            )
+            .upsert(true)
             .await;
 
         // Store live state in-memory
         let live_session = LiveSession {
-            session_id: session_id.clone(),
             user_id,
+            name,
             multiplex,
             tunnel_tx,
             viewers: Arc::new(RwLock::new(Vec::new())),
@@ -179,8 +288,13 @@ impl Registry {
         self.live.write().await.remove(session_id);
         let _ = self
             .db
-            .collection::<mongodb::bson::Document>("sessions")
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
             .delete_one(mongodb::bson::doc! { "session_id": session_id })
+            .await;
+        let _ = self
+            .db
+            .collection::<mongodb::bson::Document>(BUS_MESSAGES_COLLECTION)
+            .delete_many(mongodb::bson::doc! { "recipient_session_id": session_id })
             .await;
     }
 
@@ -200,7 +314,7 @@ impl Registry {
 
         let mut cursor = match self
             .db
-            .collection::<mongodb::bson::Document>("sessions")
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
             .find(filter)
             .await
         {
@@ -235,6 +349,7 @@ impl Registry {
                 cwd: doc.get_str("cwd").unwrap_or_default().to_string(),
                 hostname: doc.get_str("hostname").unwrap_or_default().to_string(),
                 nickname: doc.get_str("nickname").ok().map(|s| s.to_string()),
+                owner_origin: doc.get_str("owner_origin").ok().map(|s| s.to_string()),
                 connected_at,
                 viewers: viewer_count,
             });
@@ -282,6 +397,56 @@ impl Registry {
         Some((scrollback, terminal_size, rx, tunnel_tx, viewer_id))
     }
 
+    pub async fn resolve_viewer_route(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> Option<ViewerRoute> {
+        let cutoff = mongodb::bson::DateTime::from_millis(
+            chrono::Utc::now().timestamp_millis() - (SESSION_TTL_SECS * 1000),
+        );
+        let doc = self
+            .db
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .find_one(mongodb::bson::doc! {
+                "session_id": session_id,
+                "user_id": user_id,
+                "last_heartbeat": { "$gt": cutoff },
+            })
+            .await
+            .ok()
+            .flatten()?;
+
+        let owner_instance_id = doc
+            .get_str("owner_instance_id")
+            .ok()
+            .unwrap_or_default()
+            .to_string();
+        let owner_origin = doc
+            .get_str("owner_origin")
+            .ok()
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.public_origin.clone());
+        let local_live = self.live.read().await.contains_key(session_id);
+
+        if owner_instance_id.is_empty() {
+            if local_live {
+                Some(ViewerRoute::Local)
+            } else {
+                Some(ViewerRoute::Remote { owner_origin })
+            }
+        } else if owner_instance_id == self.instance_id {
+            if local_live {
+                Some(ViewerRoute::Local)
+            } else {
+                None
+            }
+        } else {
+            Some(ViewerRoute::Remote { owner_origin })
+        }
+    }
+
     /// Remove a viewer from a session.
     pub async fn remove_viewer(&self, session_id: &str, viewer_id: &str) {
         let live = self.live.read().await;
@@ -325,54 +490,105 @@ impl Registry {
         }
     }
 
-    /// Forward a bus JSON text frame to other multiplex tunnels for the same user.
-    pub async fn forward_bus_to_peers(&self, from_session_id: &str, text: &str) {
-        let user_id = {
-            let live = self.live.read().await;
-            let Some(sess) = live.get(from_session_id) else {
-                return;
-            };
-            if !sess.multiplex {
-                return;
-            }
-            sess.user_id.clone()
-        };
-
-        let live = self.live.read().await;
-        for (sid, sess) in live.iter() {
-            if sess.user_id != user_id {
-                continue;
-            }
-            if sid == from_session_id {
-                continue;
-            }
-            if !sess.multiplex {
-                continue;
-            }
-            let _ = sess.tunnel_tx.send(TunnelMsg::Text(text.to_string()));
-        }
-    }
-
-    /// Push a bus JSON text frame to every multiplex tunnel for this user (e.g. HTTP ingress).
-    /// If `exclude_session` is provided, skip that session (prevents self-delivery loops).
-    pub async fn forward_bus_json_to_user_multiplex(
+    pub async fn enqueue_bus_for_session(
         &self,
         user_id: &str,
-        text: &str,
+        recipient_session_id: &str,
+        sender: &str,
+        body: &str,
         exclude_session: Option<&str>,
     ) {
-        let live = self.live.read().await;
-        for (sid, sess) in live.iter() {
-            if sess.user_id != user_id {
-                continue;
+        if exclude_session == Some(recipient_session_id) {
+            return;
+        }
+
+        let cutoff = mongodb::bson::DateTime::from_millis(
+            chrono::Utc::now().timestamp_millis() - (SESSION_TTL_SECS * 1000),
+        );
+        let session_exists = self
+            .db
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .find_one(mongodb::bson::doc! {
+                "user_id": user_id,
+                "session_id": recipient_session_id,
+                "last_heartbeat": { "$gt": cutoff },
+            })
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        if !session_exists {
+            return;
+        }
+
+        let _ = self
+            .db
+            .collection::<mongodb::bson::Document>(BUS_MESSAGES_COLLECTION)
+            .insert_one(mongodb::bson::doc! {
+                "user_id": user_id,
+                "recipient_session_id": recipient_session_id,
+                "sender": sender,
+                "body": body,
+                "created_at": mongodb::bson::DateTime::now(),
+            })
+            .await;
+    }
+
+    pub async fn enqueue_bus_for_recipient_name(
+        &self,
+        user_id: &str,
+        recipient_name: &str,
+        sender: &str,
+        body: &str,
+        exclude_session: Option<&str>,
+    ) {
+        use futures_util::StreamExt;
+
+        let cutoff = mongodb::bson::DateTime::from_millis(
+            chrono::Utc::now().timestamp_millis() - (SESSION_TTL_SECS * 1000),
+        );
+        let filter = mongodb::bson::doc! {
+            "user_id": user_id,
+            "name": recipient_name,
+            "last_heartbeat": { "$gt": cutoff },
+        };
+
+        let mut cursor = match self
+            .db
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .find(filter)
+            .await
+        {
+            Ok(cursor) => cursor,
+            Err(_) => return,
+        };
+
+        while let Some(Ok(doc)) = cursor.next().await {
+            if let Ok(recipient_session_id) = doc.get_str("session_id") {
+                self.enqueue_bus_for_session(
+                    user_id,
+                    recipient_session_id,
+                    sender,
+                    body,
+                    exclude_session,
+                )
+                .await;
             }
-            if !sess.multiplex {
-                continue;
-            }
-            if exclude_session == Some(sid.as_str()) {
-                continue;
-            }
-            let _ = sess.tunnel_tx.send(TunnelMsg::Text(text.to_string()));
         }
     }
+}
+
+fn stable_session_id(user_id: &str, name: &str, hostname: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(user_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(name.as_bytes());
+    hasher.update(b":");
+    hasher.update(hostname.as_bytes());
+    format!("relay-{}", hex::encode(hasher.finalize()))
+}
+
+pub enum ViewerRoute {
+    Local,
+    Remote { owner_origin: String },
 }
