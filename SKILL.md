@@ -12,20 +12,7 @@ allowed-tools:
 
 # Sidekar
 
-Sidekar is an agent utility binary. Treat it as a capability layer, not as product marketing.
-
-Use it for:
-
-- browser automation in a real Chrome session
-- automation of your normal Chrome profile through the extension
-- agent-to-agent messaging and handoff
-- native macOS UI automation
-- background monitoring and scheduled jobs
-- local memory, task tracking, repo context, and dependency management
-- output compaction and structured packing for agent context
-- encrypted local secrets and TOTP generation
-
-## First Step
+Sidekar is an agent utility binary. Treat it as a capability layer.
 
 Do not guess command syntax. Use the CLI help as the source of truth:
 
@@ -41,255 +28,46 @@ If `sidekar` is missing:
 which sidekar || curl -fsSL https://sidekar.dev/install | sh
 ```
 
-## Capability Map
+## Capabilities
 
-### Browser Automation
+**Browser automation** — Navigate, read, click, type, screenshot in a real Chrome session.
+Entry: `sidekar navigate <url>`, `sidekar read`. Explore: `sidekar help navigate`
 
-Use these for real-browser work on web pages:
+**Extension automation** — Automate the user's normal Chrome profile via the Sidekar extension.
+Entry: `sidekar ext tabs`. Explore: `sidekar help ext`
 
-```bash
-sidekar navigate <url>
-sidekar read
-sidekar ax-tree -i
-sidekar click ...
-sidekar type ...
-```
+**Page perception** — Use the cheapest tool that is sufficient:
+`read` → `ax-tree -i` / `observe` → `text` → `dom` → `search` / `read-urls` → `screenshot --ref=...` → `screenshot`
 
-Sidekar also has browser/session control:
+**Interaction** — Click, hover, fill, type, paste, keyboard, drag, scroll, upload, dialogs, wait.
+Entry: `sidekar click ...`, `sidekar fill ...`. Explore: `sidekar help click`
 
-```bash
-sidekar launch
-sidekar connect
-sidekar tabs
-sidekar tab <id>
-sidekar new-tab [url]
-sidekar close
-sidekar frame <id|sel>
-sidekar activate
-```
+**Browser inspection** — Console, network, cookies, storage, service workers, downloads, security.
+Entry: `sidekar console`, `sidekar network`. Explore: `sidekar help console`
 
-Check detailed syntax with:
+**Desktop automation** — Native macOS UI: find elements, click, type, screenshot, launch/quit apps.
+Entry: `sidekar desktop apps`. Explore: `sidekar help desktop`
 
-```bash
-sidekar help navigate
-sidekar help click
-sidekar help new-tab
-sidekar help frame
-```
+**Bus (multi-agent)** — Discover agents, send requests, hand off work, inspect open requests and replies.
+Entry: `sidekar bus who`. Explore: `sidekar help bus`
 
-### Page Reading And Perception
+**Background automation** — Monitor tabs for changes, schedule recurring jobs.
+Entry: `sidekar monitor status`, `sidekar cron list`. Explore: `sidekar help monitor`, `sidekar help cron`
 
-Use the cheapest tool that is sufficient:
+**Repo context** — Pack repos, summarize changes, discover and run repo actions.
+Entry: `sidekar help repo`
 
-1. `sidekar read`
-2. `sidekar ax-tree -i` or `sidekar observe`
-3. `sidekar text`
-4. `sidekar dom`
-5. `sidekar search`, `sidekar read-urls`, or `sidekar resolve`
-6. `sidekar screenshot --ref=...`
-7. `sidekar screenshot`
+**Memory and tasks** — Durable local memory, task lists with dependency edges, agent session history.
+Entry: `sidekar help memory`, `sidekar help tasks`, `sidekar help agent-sessions`
 
-Useful page-reading commands:
+**Context shaping** — Compact noisy output, pack/unpack structured data (JSON, YAML, CSV).
+Entry: `sidekar help compact`, `sidekar help pack`
 
-```bash
-sidekar read
-sidekar text
-sidekar dom
-sidekar ax-tree -i
-sidekar observe
-sidekar screenshot
-sidekar pdf
-sidekar search <query>
-sidekar read-urls <url1> <url2>
-```
+**Secrets** — Encrypted local key-value store and TOTP generation.
+Entry: `sidekar kv list`, `sidekar totp list`. Explore: `sidekar help kv`, `sidekar help totp`
 
-### Interaction And Page Control
-
-For filling forms, editors, dialogs, and dynamic apps:
-
-```bash
-sidekar click ...
-sidekar hover ...
-sidekar fill ...
-sidekar keyboard ...
-sidekar paste ...
-sidekar insert-text ...
-sidekar wait-for ...
-sidekar wait-for-nav
-sidekar eval ...
-```
-
-Other useful interaction surfaces exist for `select`, `upload`, `drag`, `dialog`, `press`, `scroll`, `media`, `animations`, `zoom`, `lock`, and `unlock`. Use `sidekar help <command>` for exact syntax.
-
-### Browser Inspection And State
-
-Use these when debugging application state or browser behavior:
-
-```bash
-sidekar console ...
-sidekar network ...
-sidekar cookies ...
-sidekar storage ...
-sidekar service-workers ...
-sidekar download ...
-sidekar viewport ...
-sidekar block ...
-sidekar security ...
-```
-
-These are useful for stale app state, service worker issues, request debugging, downloads, and certificate handling.
-
-### Extension Automation
-
-Use `sidekar ext ...` to automate your normal Chrome profile instead of a Sidekar-launched browser.
-
-Start with:
-
-```bash
-sidekar ext tabs
-sidekar help ext
-```
-
-Representative extension tasks:
-
-```bash
-sidekar ext read <tab_id>
-sidekar ext click ...
-sidekar ext type ...
-sidekar ext paste ...
-sidekar ext set-value ...
-sidekar ext ax-tree ...
-sidekar ext eval-page ...
-sidekar ext new-tab
-```
-
-Always use `sidekar help ext` for the current subcommands.
-
-### Bus And Multi-Agent Coordination
-
-Use the bus to discover agents, send requests, and hand off work:
-
-```bash
-sidekar bus who
-sidekar bus send <to> <message>
-sidekar bus done <next> <summary> <request>
-```
-
-If you need agent names first, run `sidekar bus who`.
-
-### Desktop Automation
-
-Use desktop automation for native dialogs, app chrome, file pickers, and surfaces outside the browser.
-
-Common commands:
-
-```bash
-sidekar desktop apps
-sidekar desktop windows --app <name>
-sidekar desktop find --app <name> <query>
-sidekar desktop click --app <name> <query>
-sidekar desktop screenshot
-sidekar desktop launch <app>
-sidekar desktop activate --app <name>
-sidekar desktop quit --app <name>
-```
-
-### Background Automation
-
-Use these for persistent or reactive workflows:
-
-```bash
-sidekar monitor start ...
-sidekar monitor status
-sidekar monitor stop
-
-sidekar cron create ...
-sidekar cron list
-sidekar cron delete <job-id>
-```
-
-`monitor` is for watching tabs for changes. `cron` is for scheduled automation.
-
-### Repo Context
-
-Use this when you need repo-wide understanding instead of reading files one by one:
-
-Use it for:
-
-- quick repo navigation and packing
-- compact change summaries for the current worktree or a ref comparison
-- discovering likely repo actions and running one with bounded output
-
-Do not guess subcommands. Use:
-
-```bash
-sidekar help repo
-```
-
-### Memory, Tasks, And Context
-
-Use these when the job needs durable local state, dependency tracking, or smaller context:
-
-```bash
-sidekar repo ...
-sidekar memory ...
-sidekar tasks ...
-sidekar compact ...
-sidekar pack ...
-sidekar unpack ...
-```
-
-Use them for:
-
-- storing and recalling durable project memory
-- keeping a local task list with dependency edges
-- packing local repositories into a single agent-readable snapshot
-- shrinking noisy command output before it reaches the agent
-- packing structured JSON, YAML, or CSV into a more compact transferable form
-
-Do not guess subcommands. Use:
-
-```bash
-sidekar help repo
-sidekar help memory
-sidekar help tasks
-sidekar help compact
-sidekar help pack
-sidekar help unpack
-```
-
-### Secrets And Local State
-
-Use Sidekar for encrypted local values and TOTP codes:
-
-```bash
-sidekar kv set <key> <value>
-sidekar kv get <key>
-sidekar kv list
-sidekar kv delete <key>
-
-sidekar totp add <service> <account> <secret>
-sidekar totp list
-sidekar totp get <service> <account>
-sidekar totp remove <id>
-```
-
-### Account And Environment
-
-These are less common during task execution, but they matter when auth or device state is involved:
-
-```bash
-sidekar login
-sidekar logout
-sidekar devices
-sidekar sessions
-sidekar config ...
-sidekar daemon ...
-sidekar errors
-sidekar feedback ...
-```
-
-Use `sidekar feedback ...` when Sidekar is broken, confusing, flaky, or missing a needed feature. Do not include URLs, company names, usernames, project names, or file paths in the comment.
+**Account** — Login, logout, devices, sessions, config, daemon, errors, feedback.
+Entry: `sidekar login`, `sidekar help config`
 
 ## Operating Rules
 
@@ -306,22 +84,8 @@ Use `sidekar feedback ...` when Sidekar is broken, confusing, flaky, or missing 
 
 ## Targeting Priority
 
-Prefer targets in this order:
-
 1. refs from `ax-tree -i`, `observe`, or `text`
 2. `--text "..."` matches
 3. CSS selectors
 4. `sidekar eval ...` as an escape hatch
 5. coordinates as a last resort
-
-## Source Of Truth
-
-The command surface changes over time. Always prefer:
-
-```bash
-sidekar --help
-sidekar help <command>
-sidekar help ext
-```
-
-over memorized syntax.
