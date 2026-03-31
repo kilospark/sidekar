@@ -70,6 +70,7 @@ pub mod poller;
 pub mod pty;
 pub mod rtk;
 pub mod scripts;
+pub mod scope;
 pub mod skill;
 pub mod tasks;
 pub mod transport;
@@ -2334,9 +2335,9 @@ sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|deta
   Replaces hosted memory/hook flows with in-binary storage and retrieval.
 
   Subcommands:
-    write <type> <summary>                     Store a durable memory
-    search <query>                             Search stored memories
-    context                                    Show a startup memory brief
+    write <type> <summary>                     Store a durable memory (project by default)
+    search <query>                             Search memories in current project scope by default
+    context                                    Show a scoped startup memory brief
     observe <tool> <summary>                   Append a raw observation
     sessions                                   List recent memory session summaries
     compact                                    Synthesize related project memories
@@ -2347,7 +2348,9 @@ sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|deta
 
   Examples:
     sidekar memory write convention \"Use Readability.js before scraping article text\"
+    sidekar memory write convention \"Use Readability.js\" --scope=global
     sidekar memory search readability
+    sidekar memory search readability --scope=all
     sidekar memory context
     sidekar memory compact
     sidekar memory rate 12 helpful
@@ -2361,8 +2364,8 @@ sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
   Local SQLite-backed task list with dependency edges.
 
   Subcommands:
-    add <title> [--notes=...] [--priority=N]   Create a task
-    list [--status=open|done|all] [--ready]    List tasks
+    add <title> [--notes=...] [--priority=N]   Create a task (project by default)
+    list [--status=open|done|all] [--ready]    List tasks in current project scope by default
     done <id>                                  Mark task done
     reopen <id>                                Mark task open again
     delete <id>                                Delete a task
@@ -2373,7 +2376,9 @@ sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
 
   Examples:
     sidekar tasks add \"Ship task graph\" --priority=2
+    sidekar tasks add \"Renew LLC\" --scope=global
     sidekar tasks list --ready
+    sidekar tasks list --scope=all
     sidekar tasks depend 12 8
     sidekar tasks done 8
     sidekar tasks show 12"

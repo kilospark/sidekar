@@ -6,6 +6,8 @@ struct TaskRow {
     id: i64,
     title: String,
     notes: Option<String>,
+    scope: String,
+    project: Option<String>,
     status: String,
     priority: i64,
     created_at: i64,
@@ -37,12 +39,15 @@ fn cmd_tasks_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .iter()
         .find(|arg| !arg.starts_with("--"))
         .cloned()
-        .context("Usage: sidekar tasks add <title> [--notes=...] [--priority=N]")?;
+        .context(
+            "Usage: sidekar tasks add <title> [--notes=...] [--priority=N] [--scope=project|global] [--project=P]",
+        )?;
     let notes = extract_optional_value(args, "--notes=");
     let priority = extract_optional_value(args, "--priority=")
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
-    let id = insert_task(&title, notes.as_deref(), priority)?;
+    let (scope, project) = parse_task_write_scope(args)?;
+    let id = insert_task(&title, notes.as_deref(), priority, &scope, project.as_deref())?;
     out!(ctx, "Stored task [{}].", id);
     Ok(())
 }
@@ -60,9 +65,10 @@ fn cmd_tasks_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let limit = extract_optional_value(args, "--limit=")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(50);
+    let (scope_view, project) = parse_task_view_scope(args)?;
 
     let conn = crate::broker::open_db()?;
-    let rows = load_tasks(&conn, &status, limit)?;
+    let rows = load_tasks(&conn, &status, limit, scope_view, project.as_deref())?;
     let mut printed = false;
     for row in rows {
         let unfinished = unfinished_dependency_count(&conn, row.id)?;
@@ -81,13 +87,15 @@ fn cmd_tasks_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         } else {
             String::new()
         };
+        let scope = render_scope_suffix(&row, scope_view, project.as_deref());
         out!(
             ctx,
-            "[{}] [{}] p={} {}{}",
+            "[{}] [{}] p={} {}{}{}",
             row.id,
             marker,
             row.priority,
             row.title,
+            scope,
             state
         );
     }
@@ -131,6 +139,12 @@ fn cmd_tasks_show(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let unfinished = unfinished_dependency_count(&conn, id)?;
 
     out!(ctx, "[{}] {}", task.id, task.title);
+    out!(ctx, "scope: {}", task.scope);
+    out!(
+        ctx,
+        "project: {}",
+        task.project.unwrap_or_else(|| "-".to_string())
+    );
     out!(ctx, "status: {}", task.status);
     out!(ctx, "priority: {}", task.priority);
     out!(
@@ -258,13 +272,26 @@ fn cmd_tasks_deps(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn insert_task(title: &str, notes: Option<&str>, priority: i64) -> Result<i64> {
+fn insert_task(
+    title: &str,
+    notes: Option<&str>,
+    priority: i64,
+    scope: &str,
+    project: Option<&str>,
+) -> Result<i64> {
     let conn = crate::broker::open_db()?;
     let now = now_epoch_ms();
     conn.execute(
-        "INSERT INTO tasks (title, notes, status, priority, created_at, updated_at)
-         VALUES (?1, ?2, 'open', ?3, ?4, ?4)",
-        params![title.trim(), notes.map(str::trim), priority, now],
+        "INSERT INTO tasks (title, notes, scope, project, status, priority, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6, ?6)",
+        params![
+            title.trim(),
+            notes.map(str::trim),
+            scope,
+            project,
+            priority,
+            now
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -283,10 +310,13 @@ fn update_task_status(id: i64, status: &str) -> Result<()> {
 
 fn add_dependency(task_id: i64, depends_on_id: i64) -> Result<()> {
     let conn = crate::broker::open_db()?;
-    ensure_task_exists(&conn, task_id)?;
-    ensure_task_exists(&conn, depends_on_id)?;
+    let task = fetch_required_task(&conn, task_id)?;
+    let depends_on = fetch_required_task(&conn, depends_on_id)?;
     if task_id == depends_on_id {
         bail!("A task cannot depend on itself.");
+    }
+    if task.scope != depends_on.scope || task.project != depends_on.project {
+        bail!("Dependencies must stay within the same scope and project bucket.");
     }
     if introduces_cycle(&conn, task_id, depends_on_id)? {
         bail!(
@@ -331,18 +361,16 @@ fn introduces_cycle(conn: &rusqlite::Connection, task_id: i64, depends_on_id: i6
 }
 
 fn ensure_task_exists(conn: &rusqlite::Connection, id: i64) -> Result<()> {
-    let exists: Option<i64> = conn
-        .query_row("SELECT id FROM tasks WHERE id = ?1", [id], |row| row.get(0))
-        .optional()?;
-    if exists.is_none() {
-        bail!("Task [{}] not found.", id);
-    }
-    Ok(())
+    fetch_required_task(conn, id).map(|_| ())
+}
+
+fn fetch_required_task(conn: &rusqlite::Connection, id: i64) -> Result<TaskRow> {
+    fetch_task(conn, id)?.ok_or_else(|| anyhow!("Task [{}] not found.", id))
 }
 
 fn fetch_task(conn: &rusqlite::Connection, id: i64) -> Result<Option<TaskRow>> {
     conn.query_row(
-        "SELECT id, title, notes, status, priority, created_at, updated_at, completed_at
+        "SELECT id, title, notes, scope, project, status, priority, created_at, updated_at, completed_at
          FROM tasks
          WHERE id = ?1",
         [id],
@@ -351,11 +379,13 @@ fn fetch_task(conn: &rusqlite::Connection, id: i64) -> Result<Option<TaskRow>> {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 notes: row.get(2)?,
-                status: row.get(3)?,
-                priority: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                completed_at: row.get(7)?,
+                scope: row.get(3)?,
+                project: row.get(4)?,
+                status: row.get(5)?,
+                priority: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                completed_at: row.get(9)?,
             })
         },
     )
@@ -363,43 +393,63 @@ fn fetch_task(conn: &rusqlite::Connection, id: i64) -> Result<Option<TaskRow>> {
     .map_err(Into::into)
 }
 
-fn load_tasks(conn: &rusqlite::Connection, status: &str, limit: usize) -> Result<Vec<TaskRow>> {
-    let sql = match status {
-        "open" => {
-            "SELECT id, title, notes, status, priority, created_at, updated_at, completed_at
-             FROM tasks
-             WHERE status = 'open'
-             ORDER BY priority DESC, created_at DESC
-             LIMIT ?1"
-        }
-        "done" => {
-            "SELECT id, title, notes, status, priority, created_at, updated_at, completed_at
-             FROM tasks
-             WHERE status = 'done'
-             ORDER BY completed_at DESC, created_at DESC
-             LIMIT ?1"
-        }
-        "all" => {
-            "SELECT id, title, notes, status, priority, created_at, updated_at, completed_at
-             FROM tasks
-             ORDER BY status ASC, priority DESC, created_at DESC
-             LIMIT ?1"
-        }
+fn load_tasks(
+    conn: &rusqlite::Connection,
+    status: &str,
+    limit: usize,
+    scope_view: crate::scope::ScopeView,
+    project: Option<&str>,
+) -> Result<Vec<TaskRow>> {
+    let status_clause = match status {
+        "open" => "status = 'open'",
+        "done" => "status = 'done'",
+        "all" => "1=1",
         _ => bail!("Invalid status: {status}"),
     };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([limit as i64], |row| {
+    let sql = match scope_view {
+        crate::scope::ScopeView::Project => format!(
+            "SELECT id, title, notes, scope, project, status, priority, created_at, updated_at, completed_at
+             FROM tasks
+             WHERE ({status_clause}) AND ((scope = 'project' AND project = ?1) OR scope = 'global')
+             ORDER BY status ASC, priority DESC, created_at DESC
+             LIMIT ?2"
+        ),
+        crate::scope::ScopeView::Global => format!(
+            "SELECT id, title, notes, scope, project, status, priority, created_at, updated_at, completed_at
+             FROM tasks
+             WHERE ({status_clause}) AND scope = 'global'
+             ORDER BY status ASC, priority DESC, created_at DESC
+             LIMIT ?1"
+        ),
+        crate::scope::ScopeView::All => format!(
+            "SELECT id, title, notes, scope, project, status, priority, created_at, updated_at, completed_at
+             FROM tasks
+             WHERE {status_clause}
+             ORDER BY status ASC, priority DESC, created_at DESC
+             LIMIT ?1"
+        ),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let mut map_row = |row: &rusqlite::Row<'_>| {
         Ok(TaskRow {
             id: row.get(0)?,
             title: row.get(1)?,
             notes: row.get(2)?,
-            status: row.get(3)?,
-            priority: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
-            completed_at: row.get(7)?,
+            scope: row.get(3)?,
+            project: row.get(4)?,
+            status: row.get(5)?,
+            priority: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            completed_at: row.get(9)?,
         })
-    })?;
+    };
+    let rows = match scope_view {
+        crate::scope::ScopeView::Project => stmt.query_map(params![project, limit as i64], &mut map_row)?,
+        crate::scope::ScopeView::Global | crate::scope::ScopeView::All => {
+            stmt.query_map(params![limit as i64], &mut map_row)?
+        }
+    };
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -418,7 +468,7 @@ fn unfinished_dependency_count(conn: &rusqlite::Connection, task_id: i64) -> Res
 
 fn task_dependencies(conn: &rusqlite::Connection, task_id: i64) -> Result<Vec<TaskRow>> {
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.notes, t.status, t.priority, t.created_at, t.updated_at, t.completed_at
+        "SELECT t.id, t.title, t.notes, t.scope, t.project, t.status, t.priority, t.created_at, t.updated_at, t.completed_at
          FROM task_dependencies td
          JOIN tasks t ON t.id = td.depends_on_task_id
          WHERE td.task_id = ?1
@@ -429,11 +479,13 @@ fn task_dependencies(conn: &rusqlite::Connection, task_id: i64) -> Result<Vec<Ta
             id: row.get(0)?,
             title: row.get(1)?,
             notes: row.get(2)?,
-            status: row.get(3)?,
-            priority: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
-            completed_at: row.get(7)?,
+            scope: row.get(3)?,
+            project: row.get(4)?,
+            status: row.get(5)?,
+            priority: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            completed_at: row.get(9)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -442,7 +494,7 @@ fn task_dependencies(conn: &rusqlite::Connection, task_id: i64) -> Result<Vec<Ta
 
 fn blocking_tasks(conn: &rusqlite::Connection, task_id: i64) -> Result<Vec<TaskRow>> {
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.title, t.notes, t.status, t.priority, t.created_at, t.updated_at, t.completed_at
+        "SELECT t.id, t.title, t.notes, t.scope, t.project, t.status, t.priority, t.created_at, t.updated_at, t.completed_at
          FROM task_dependencies td
          JOIN tasks t ON t.id = td.task_id
          WHERE td.depends_on_task_id = ?1
@@ -453,11 +505,13 @@ fn blocking_tasks(conn: &rusqlite::Connection, task_id: i64) -> Result<Vec<TaskR
             id: row.get(0)?,
             title: row.get(1)?,
             notes: row.get(2)?,
-            status: row.get(3)?,
-            priority: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
-            completed_at: row.get(7)?,
+            scope: row.get(3)?,
+            project: row.get(4)?,
+            status: row.get(5)?,
+            priority: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            completed_at: row.get(9)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -474,6 +528,54 @@ fn parse_task_id(value: Option<&String>, usage: &str) -> Result<i64> {
 fn extract_optional_value(args: &[String], prefix: &str) -> Option<String> {
     args.iter()
         .find_map(|arg| arg.strip_prefix(prefix).map(ToOwned::to_owned))
+}
+
+fn parse_task_write_scope(args: &[String]) -> Result<(String, Option<String>)> {
+    let scope = crate::scope::parse_stored_scope(
+        &extract_optional_value(args, "--scope=").unwrap_or_else(|| crate::scope::PROJECT_SCOPE.to_string()),
+    )?
+    .to_string();
+    let project = if scope == crate::scope::PROJECT_SCOPE {
+        Some(
+            extract_optional_value(args, "--project=")
+                .unwrap_or_else(|| crate::scope::resolve_project_name(None)),
+        )
+    } else {
+        None
+    };
+    Ok((scope, project))
+}
+
+fn parse_task_view_scope(args: &[String]) -> Result<(crate::scope::ScopeView, Option<String>)> {
+    let scope = crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
+    let project = if scope == crate::scope::ScopeView::Project {
+        Some(
+            extract_optional_value(args, "--project=")
+                .unwrap_or_else(|| crate::scope::resolve_project_name(None)),
+        )
+    } else {
+        None
+    };
+    Ok((scope, project))
+}
+
+fn render_scope_suffix(
+    row: &TaskRow,
+    scope_view: crate::scope::ScopeView,
+    current_project: Option<&str>,
+) -> String {
+    if row.scope == crate::scope::GLOBAL_SCOPE {
+        " [global]".to_string()
+    } else if scope_view == crate::scope::ScopeView::All
+        || row.project.as_deref() != current_project
+    {
+        row.project
+            .as_deref()
+            .map(|project| format!(" [{project}]"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(test)]
@@ -500,8 +602,9 @@ mod tests {
     #[test]
     fn prevents_cycles() -> Result<()> {
         with_test_home(|| {
-            let a = insert_task("A", None, 0)?;
-            let b = insert_task("B", None, 0)?;
+            let project = crate::scope::resolve_project_name(None);
+            let a = insert_task("A", None, 0, crate::scope::PROJECT_SCOPE, Some(&project))?;
+            let b = insert_task("B", None, 0, crate::scope::PROJECT_SCOPE, Some(&project))?;
             add_dependency(a, b)?;
             let err = add_dependency(b, a).expect_err("cycle should fail");
             assert!(err.to_string().contains("cycle"));
@@ -512,8 +615,9 @@ mod tests {
     #[test]
     fn ready_list_hides_blocked_tasks() -> Result<()> {
         with_test_home(|| {
-            let a = insert_task("A", None, 0)?;
-            let b = insert_task("B", None, 0)?;
+            let project = crate::scope::resolve_project_name(None);
+            let a = insert_task("A", None, 0, crate::scope::PROJECT_SCOPE, Some(&project))?;
+            let b = insert_task("B", None, 0, crate::scope::PROJECT_SCOPE, Some(&project))?;
             add_dependency(b, a)?;
 
             let mut ctx = AppContext::new()?;
@@ -527,6 +631,28 @@ mod tests {
             cmd_tasks(&mut ctx, &["list".into(), "--ready".into()])?;
             let output = ctx.drain_output();
             assert!(output.contains("[2]"));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn project_list_includes_global_tasks_but_not_other_projects() -> Result<()> {
+        with_test_home(|| {
+            let current = crate::scope::resolve_project_name(None);
+            let other = "other-project".to_string();
+            let _project_task =
+                insert_task("project", None, 0, crate::scope::PROJECT_SCOPE, Some(&current))?;
+            let _global_task =
+                insert_task("global", None, 0, crate::scope::GLOBAL_SCOPE, None)?;
+            let _other_task =
+                insert_task("other", None, 0, crate::scope::PROJECT_SCOPE, Some(&other))?;
+
+            let mut ctx = AppContext::new()?;
+            cmd_tasks(&mut ctx, &["list".into()])?;
+            let output = ctx.drain_output();
+            assert!(output.contains("project"));
+            assert!(output.contains("global [global]"));
+            assert!(!output.contains("other"));
             Ok(())
         })
     }
