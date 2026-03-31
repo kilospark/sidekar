@@ -3,7 +3,6 @@
 //! Runs as an in-process tokio task (like monitor). Jobs are persisted in the
 //! broker SQLite database and restored on startup.
 
-use super::monitor::{deliver_notification, resolve_delivery};
 use crate::broker;
 use crate::*;
 use std::sync::Arc;
@@ -146,6 +145,7 @@ struct CronJob {
     schedule_expr: String,
     action: CronAction,
     target: String,
+    created_by: String,
     last_run_at: Option<u64>,
     running: Arc<AtomicBool>, // true while this job is executing (skip pileup)
 }
@@ -236,6 +236,9 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
     if let Ok(records) = broker::list_cron_jobs(true) {
         let mut loaded = jobs.lock().await;
         for rec in records {
+            if !job_belongs_to_agent(&rec.target, &rec.created_by, cron_ctx.agent_name.as_deref()) {
+                continue;
+            }
             match CronSchedule::parse(&rec.schedule) {
                 Ok(sched) => {
                     let action: CronAction = match serde_json::from_str(&rec.action_json) {
@@ -250,7 +253,8 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
                         schedule: sched,
                         schedule_expr: rec.schedule,
                         action,
-                        target: rec.target,
+                        target: normalize_loaded_target(&rec.target, &rec.created_by),
+                        created_by: rec.created_by,
                         last_run_at: rec.last_run_at,
                         running: Arc::new(AtomicBool::new(false)),
                     });
@@ -303,6 +307,8 @@ pub(crate) async fn cmd_cron_create(
         }
     }
 
+    let effective_target = normalize_cron_target(target, created_by)?;
+
     // Check job limit (use broker as source of truth — works with or without cron loop)
     let max_jobs = crate::config::load_config().max_cron_jobs;
     let current_count = broker::list_cron_jobs(true)
@@ -319,7 +325,14 @@ pub(crate) async fn cmd_cron_create(
 
     // Persist to broker (works from any shell — the running PTY wrapper picks it up)
     let action_json = serde_json::to_string(&action_parsed)?;
-    broker::create_cron_job(&id, name, schedule_expr, &action_json, target, created_by)?;
+    broker::create_cron_job(
+        &id,
+        name,
+        schedule_expr,
+        &action_json,
+        &effective_target,
+        created_by,
+    )?;
 
     // Add to in-memory state if cron loop is running
     let cell = cron_cell().await;
@@ -331,7 +344,8 @@ pub(crate) async fn cmd_cron_create(
             schedule,
             schedule_expr: schedule_expr.to_string(),
             action: action_parsed,
-            target: target.to_string(),
+            target: effective_target.clone(),
+            created_by: created_by.to_string(),
             last_run_at: None,
             running: Arc::new(AtomicBool::new(false)),
         });
@@ -342,7 +356,7 @@ pub(crate) async fn cmd_cron_create(
         out!(ctx, "Name: {n}");
     }
     out!(ctx, "Schedule: {schedule_expr}");
-    out!(ctx, "Target: {target}");
+    out!(ctx, "Target: {effective_target}");
 
     Ok(id)
 }
@@ -373,11 +387,12 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
 
                 out!(
                     ctx,
-                    "[{}] {} — schedule: {} — target: {} — {}{}",
+                    "[{}] {} — schedule: {} — target: {} — owner: {} — {}{}",
                     job.id,
                     name_str,
                     job.schedule_expr,
                     job.target,
+                    job.created_by,
                     last_run,
                     running_str
                 );
@@ -440,11 +455,12 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
                         let name_str = rec.name.as_deref().unwrap_or("(unnamed)");
                         out!(
                             ctx,
-                            "[{}] {} — schedule: {} — target: {} — {} runs",
+                            "[{}] {} — schedule: {} — target: {} — owner: {} — {} runs",
                             rec.id,
                             name_str,
                             rec.schedule,
                             rec.target,
+                            rec.created_by,
                             rec.run_count
                         );
                     }
@@ -504,6 +520,8 @@ async fn cron_loop(
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let owner_name = cron_ctx.agent_name.clone();
+
     loop {
         interval.tick().await;
 
@@ -515,6 +533,9 @@ async fn cron_loop(
         if let Ok(records) = broker::list_cron_jobs(true) {
             let mut mem_jobs = jobs.lock().await;
             for rec in records {
+                if !job_belongs_to_agent(&rec.target, &rec.created_by, owner_name.as_deref()) {
+                    continue;
+                }
                 if mem_jobs.iter().any(|j| j.id == rec.id) {
                     continue; // already loaded
                 }
@@ -530,7 +551,8 @@ async fn cron_loop(
                             schedule: sched,
                             schedule_expr: rec.schedule,
                             action,
-                            target: rec.target,
+                            target: normalize_loaded_target(&rec.target, &rec.created_by),
+                            created_by: rec.created_by,
                             last_run_at: rec.last_run_at,
                             running: Arc::new(AtomicBool::new(false)),
                         });
@@ -540,7 +562,14 @@ async fn cron_loop(
             }
             // Remove jobs that were deleted from broker
             let broker_ids: std::collections::HashSet<String> = broker::list_cron_jobs(true)
-                .map(|recs| recs.into_iter().map(|r| r.id).collect())
+                .map(|recs| {
+                    recs.into_iter()
+                        .filter(|r| {
+                            job_belongs_to_agent(&r.target, &r.created_by, owner_name.as_deref())
+                        })
+                        .map(|r| r.id)
+                        .collect()
+                })
                 .unwrap_or_default();
             mem_jobs.retain(|j| broker_ids.contains(&j.id));
         }
@@ -667,25 +696,47 @@ async fn execute_cron_job(
         }
     };
 
-    // Deliver result via broker queue
+    // Deliver result via broker queue to the concrete owning/target agent.
     if !output.trim().is_empty() {
-        let msg = format!("[cron {job_id}]: {}", output.trim());
-
-        if target == "self" || target.is_empty() {
-            // Deliver to self via broker queue
-            match resolve_delivery() {
-                Ok(delivery) => {
-                    let _ = deliver_notification(&delivery, &msg);
-                }
-                Err(_) => {}
-            }
-        } else {
-            // Deliver to named agent via broker queue
-            let _ = crate::broker::enqueue_message("sidekar-cron", target, &msg);
-        }
+        let msg = format!("[from sidekar-cron]: [cron {job_id}]: {}", output.trim());
+        let _ = crate::broker::enqueue_message("sidekar-cron", target, &msg);
     }
 
     Ok(())
+}
+
+fn normalize_cron_target(target: &str, created_by: &str) -> Result<String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() || trimmed == "self" {
+        if created_by == "cli" {
+            bail!(
+                "Cron target `self` requires a Sidekar agent context. Run inside `sidekar <agent>` or pass --target=<agent-name>."
+            );
+        }
+        return Ok(created_by.to_string());
+    }
+
+    if let Ok(Some(agent)) = crate::broker::find_agent(trimmed, None) {
+        return Ok(agent.id.name);
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn normalize_loaded_target(target: &str, created_by: &str) -> String {
+    let trimmed = target.trim();
+    if trimmed.is_empty() || trimmed == "self" {
+        created_by.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn job_belongs_to_agent(target: &str, created_by: &str, agent_name: Option<&str>) -> bool {
+    let Some(agent_name) = agent_name else {
+        return false;
+    };
+    normalize_loaded_target(target, created_by) == agent_name
 }
 
 /// Map cron action args (JSON object) to CLI arg vector for dispatch.
@@ -847,5 +898,36 @@ mod tests {
         assert!(CronSchedule::parse("*/5 *").is_err()); // too few fields
         assert!(CronSchedule::parse("60 * * * *").is_err()); // minute out of range
         assert!(parse_field("*/0", 0, 59).is_err()); // step 0
+    }
+
+    #[test]
+    fn normalize_self_target_to_creator() {
+        assert_eq!(
+            normalize_cron_target("self", "cheetah-sidekar-1").unwrap(),
+            "cheetah-sidekar-1"
+        );
+        assert_eq!(
+            normalize_loaded_target("self", "cheetah-sidekar-1"),
+            "cheetah-sidekar-1"
+        );
+    }
+
+    #[test]
+    fn job_belongs_to_concrete_owner_only() {
+        assert!(job_belongs_to_agent(
+            "cheetah-sidekar-1",
+            "cheetah-sidekar-1",
+            Some("cheetah-sidekar-1")
+        ));
+        assert!(!job_belongs_to_agent(
+            "cheetah-sidekar-1",
+            "cheetah-sidekar-1",
+            Some("otter-sidekar-1")
+        ));
+        assert!(job_belongs_to_agent(
+            "self",
+            "cheetah-sidekar-1",
+            Some("cheetah-sidekar-1")
+        ));
     }
 }

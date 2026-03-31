@@ -214,18 +214,11 @@ sidekar cron delete <job-id>
 
 Use this when you need repo-wide understanding instead of reading files one by one:
 
-```bash
-sidekar repo tree
-sidekar repo pack
-sidekar repo pack --style=json
-```
-
 Use it for:
 
-- quick repo navigation with token-aware tree output
-- packing a whole repo or selected files into one agent-friendly artifact
-- narrowing repo context with `--include`, `--ignore`, or `--stdin`
-- optionally adding `git diff` and recent `git log` context
+- quick repo navigation and packing
+- compact change summaries for the current worktree or a ref comparison
+- discovering likely repo actions and running one with bounded output
 
 Do not guess subcommands. Use:
 
