@@ -727,8 +727,7 @@ fn handle_sidekar_command(line: &str) -> String {
                     }
                     _ => "No agents registered.".to_string(),
                 },
-                _ => "@sidekar bus commands:\n  \
-                      @sidekar bus who          — list registered agents"
+                _ => "@sidekar bus commands:\n  @sidekar bus who          — list registered agents"
                     .to_string(),
             }
         }
@@ -764,20 +763,26 @@ fn handle_sidekar_command(line: &str) -> String {
                         }
                     }
                 }
-                _ => "@sidekar cron commands:\n  \
-                      @sidekar cron list              — list active jobs\n  \
-                      @sidekar cron delete <job-id>   — delete a job"
-                    .to_string(),
+                _ => concat!(
+                    "@sidekar cron commands:\n",
+                    "  @sidekar cron list              — list active jobs\n",
+                    "  @sidekar cron delete <job-id>   — delete a job",
+                )
+                .to_string(),
             }
         }
-        "help" | _ => "@sidekar commands:\n  \
-             @sidekar channel          — show current channel\n  \
-             @sidekar channel <name>   — set channel\n  \
-             @sidekar bus who          — list registered agents\n  \
-             @sidekar cron list        — list cron jobs\n  \
-             @sidekar cron delete <id> — delete a cron job\n  \
-             @sidekar help             — show this help"
-            .to_string(),
+        "who" => handle_sidekar_command("@sidekar bus who"),
+        "help" | _ => concat!(
+            "@sidekar commands:\n",
+            "  @sidekar channel          — show current channel\n",
+            "  @sidekar channel <name>   — set channel\n",
+            "  @sidekar who              — list registered agents\n",
+            "  @sidekar bus who          — list registered agents\n",
+            "  @sidekar cron list        — list cron jobs\n",
+            "  @sidekar cron delete <id> — delete a cron job\n",
+            "  @sidekar help             — show this help",
+        )
+        .to_string(),
     }
 }
 
@@ -938,6 +943,12 @@ async fn event_loop(
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
+
+    let nick_prefix = if nick.is_empty() {
+        String::new()
+    } else {
+        format!("{nick} — ")
+    };
 
     let master_fd = master.as_raw_fd();
 
@@ -1160,9 +1171,14 @@ async fn event_loop(
                         }) {
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
-                                // Write the child output to the local terminal unchanged.
-                                // For local PTY sessions, Sidekar should behave like a transparent wrapper.
-                                if stdout.write_all(raw).await.is_err() {
+                                // Preserve terminal transparency except for OSC window-title
+                                // sequences, where we prefix the agent nickname.
+                                let local_data = if nick_prefix.is_empty() {
+                                    std::borrow::Cow::Borrowed(raw)
+                                } else {
+                                    rewrite_osc_titles(raw, &nick_prefix)
+                                };
+                                if stdout.write_all(&local_data).await.is_err() {
                                     break;
                                 }
                                 let _ = stdout.flush().await;
@@ -1170,7 +1186,11 @@ async fn event_loop(
                                 // Fan-out to tunnel with normalized control sequences for the web terminal.
                                 if let Some(ref tx) = tunnel_tx {
                                     let filtered = filter_osc_color_sequences(raw);
-                                    let tunnel_data = rewrite_osc_titles(&filtered, nick).into_owned();
+                                    let tunnel_data = if nick_prefix.is_empty() {
+                                        filtered.into_owned()
+                                    } else {
+                                        rewrite_osc_titles(&filtered, &nick_prefix).into_owned()
+                                    };
                                     tx.send_data(tunnel_data);
                                 }
                             }
@@ -1247,5 +1267,19 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
         Ok(())
+    }
+
+    #[test]
+    fn rewrite_osc_titles_prepends_formatted_nick_prefix() {
+        let raw = b"\x1b]0;claude\x07";
+        let rewritten = rewrite_osc_titles(raw, "borzoi — ");
+        assert_eq!(rewritten.as_ref(), b"\x1b]0;borzoi \xE2\x80\x94 claude\x07");
+    }
+
+    #[test]
+    fn sidekar_help_is_multiline_without_indent_garbling() {
+        let help = handle_sidekar_command("@sidekar help");
+        assert!(help.contains("@sidekar who              — list registered agents"));
+        assert!(help.contains("\n  @sidekar bus who          — list registered agents\n"));
     }
 }
