@@ -28,15 +28,77 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn shell_function_bootstrap(shell: &str) -> Option<(String, String)> {
+fn extract_zsh_wrapper_prelude(shell: &str, agent: &str) -> Option<String> {
+    const ALIAS_START: &str = "__SIDEKAR_ALIAS_START__";
+    const ALIAS_END: &str = "__SIDEKAR_ALIAS_END__";
+    const FUNC_START: &str = "__SIDEKAR_FUNC_START__";
+    const FUNC_END: &str = "__SIDEKAR_FUNC_END__";
+
+    let agent_word = shell_quote(agent);
+    let dump_cmd = format!(
+        "print -r -- {alias_start}; \
+         alias -- {agent_word} 2>/dev/null || true; \
+         print -r -- {alias_end}; \
+         print -r -- {func_start}; \
+         typeset -pf -- {agent_word} 2>/dev/null || true; \
+         print -r -- {func_end}",
+        alias_start = shell_quote(ALIAS_START),
+        alias_end = shell_quote(ALIAS_END),
+        func_start = shell_quote(FUNC_START),
+        func_end = shell_quote(FUNC_END),
+    );
+
+    let out = std::process::Command::new(shell)
+        .args(["-ic", &dump_cmd])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    fn between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
+        let (_, rest) = haystack.split_once(start)?;
+        let (body, _) = rest.split_once(end)?;
+        Some(body)
+    }
+
+    let alias_body = between(&stdout, ALIAS_START, ALIAS_END)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let func_body = between(&stdout, FUNC_START, FUNC_END)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut prelude = String::new();
+    if let Some(alias_line) = alias_body {
+        prelude.push_str("setopt aliases; alias ");
+        prelude.push_str(alias_line);
+        prelude.push('\n');
+    }
+    if let Some(func_def) = func_body {
+        prelude.push_str(func_def);
+        prelude.push('\n');
+    }
+
+    if prelude.is_empty() {
+        None
+    } else {
+        Some(prelude)
+    }
+}
+
+fn shell_function_bootstrap(shell: &str, agent: &str) -> Option<(String, String)> {
     let shell_name = Path::new(shell).file_name()?.to_str()?;
+    let home = dirs::home_dir()?;
 
     match shell_name {
-        // Use an interactive zsh so function wrappers defined in ~/.zshrc
-        // are available even when that file returns early for non-interactive shells.
-        "zsh" => Some(("-ic".into(), String::new())),
+        "zsh" => {
+            let rc = shell_quote(&home.join(".zshrc").to_string_lossy());
+            let prelude = extract_zsh_wrapper_prelude(shell, agent).unwrap_or_else(|| {
+                format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; ")
+            });
+            Some(("-c".into(), prelude))
+        }
         "bash" => {
-            let home = dirs::home_dir()?;
             let rc = shell_quote(&home.join(".bashrc").to_string_lossy());
             Some((
                 "-c".into(),
@@ -249,7 +311,6 @@ fn prepare_args(bin: &std::ffi::CString, args: &[String]) -> Result<Vec<std::ffi
 }
 
 /// Detect a channel name. Priority: $PWD → git repo name → hostname.
-/// Channel can also be set at runtime via `@sidekar channel <name>`.
 pub(crate) fn detect_channel() -> String {
     // 1. Full path ($PWD) — agents in the same directory are on the same channel
     if let Ok(cwd) = std::env::current_dir() {
@@ -379,8 +440,8 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
                 cmd_str.push_str(&shell_quote(arg));
             }
 
-            let (shell_flag, shell_prelude) =
-                shell_function_bootstrap(&shell).unwrap_or_else(|| ("-ic".into(), String::new()));
+            let (shell_flag, shell_prelude) = shell_function_bootstrap(&shell, agent)
+                .unwrap_or_else(|| ("-ic".into(), String::new()));
             let full_cmd = format!("{shell_prelude}{cmd_str}");
             let shell_c = std::ffi::CString::new(shell.as_str()).context("invalid shell path")?;
             let c_args = vec![
@@ -558,9 +619,6 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
         tunnel,
         &nick,
         &identity.name,
-        agent,
-        &cwd,
-        &relay_policy_text,
         &input_state,
     )
     .await;
@@ -713,253 +771,6 @@ async fn cleanup_chrome_session(agent_name: &str) {
 // Async event loop
 // ---------------------------------------------------------------------------
 
-/// Handle a `@sidekar <command>` line typed by the user.
-/// Returns a response string to echo to the terminal.
-fn parse_sidekar_command(line: &str) -> (&str, &str) {
-    let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-    (
-        parts.get(1).copied().unwrap_or("help"),
-        parts.get(2).copied().unwrap_or(""),
-    )
-}
-
-fn handle_sidekar_command(line: &str) -> String {
-    let (cmd, arg) = parse_sidekar_command(line);
-
-    match cmd {
-        "channel" => {
-            if arg.is_empty() {
-                // Show current channel
-                let channel = CHANNEL_OVERRIDE
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone())
-                    .unwrap_or_else(detect_channel);
-                format!("Channel: {channel}")
-            } else {
-                // Set channel
-                if let Ok(mut guard) = CHANNEL_OVERRIDE.lock() {
-                    *guard = Some(arg.to_string());
-                }
-                // Update broker registration
-                if let Ok(agents) = broker::list_agents(None) {
-                    let my_pid = std::process::id().to_string();
-                    let my_pane = format!("pty-{my_pid}");
-                    if let Some(agent) = agents
-                        .iter()
-                        .find(|a| a.pane_unique_id.as_deref() == Some(&my_pane))
-                    {
-                        let updated = crate::message::AgentId {
-                            name: agent.id.name.clone(),
-                            nick: agent.id.nick.clone(),
-                            session: Some(arg.to_string()),
-                            pane: agent.id.pane.clone(),
-                            agent_type: agent.id.agent_type.clone(),
-                        };
-                        let _ = broker::register_agent(&updated, Some(&my_pane));
-                    }
-                }
-                format!("Channel set to: {arg}")
-            }
-        }
-        "bus" => {
-            let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
-            let sub = sub_parts.first().copied().unwrap_or("who");
-            match sub {
-                "who" | "" => {
-                    let channel = effective_channel();
-                    match broker::list_agents(Some(&channel)) {
-                    Ok(agents) if !agents.is_empty() => {
-                        let mut lines = Vec::new();
-                        let my_pane = format!("pty-{}", std::process::id());
-                        for a in &agents {
-                            let you = if a.pane_unique_id.as_deref() == Some(&my_pane) {
-                                " (you)"
-                            } else {
-                                ""
-                            };
-                            let nick =
-                                a.id.nick
-                                    .as_deref()
-                                    .map(|n| format!(" \"{n}\""))
-                                    .unwrap_or_default();
-                            lines.push(format!("  - {}{}{}", a.id.name, nick, you));
-                        }
-                        format!("Channel \"{channel}\":\n{}", lines.join("\n"))
-                    }
-                    _ => format!("No agents on \"{channel}\"."),
-                }
-                }
-                _ => "@sidekar bus commands:\n  @sidekar bus who          — list registered agents"
-                    .to_string(),
-            }
-        }
-        "cron" => {
-            // Dispatch to cron subcommands synchronously via a small tokio block
-            let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
-            let sub = sub_parts.first().copied().unwrap_or("list");
-            match sub {
-                "list" | "" => match crate::broker::list_cron_jobs(true) {
-                    Ok(jobs) if jobs.is_empty() => "No active cron jobs.".to_string(),
-                    Ok(jobs) => {
-                        let mut lines = Vec::new();
-                        for j in &jobs {
-                            let name = j.name.as_deref().unwrap_or("(unnamed)");
-                            lines.push(format!(
-                                "  [{}] {} — schedule: {} — target: {} — {} runs",
-                                j.id, name, j.schedule, j.target, j.run_count
-                            ));
-                        }
-                        format!("Cron jobs:\n{}", lines.join("\n"))
-                    }
-                    Err(e) => format!("Error: {e}"),
-                },
-                "delete" => {
-                    let job_id = sub_parts.get(1).copied().unwrap_or("").trim();
-                    if job_id.is_empty() {
-                        "@sidekar cron delete <job-id>".to_string()
-                    } else {
-                        match crate::broker::delete_cron_job(job_id) {
-                            Ok(true) => format!("Cron job {job_id} deleted."),
-                            Ok(false) => format!("Cron job '{job_id}' not found."),
-                            Err(e) => format!("Error: {e}"),
-                        }
-                    }
-                }
-                _ => concat!(
-                    "@sidekar cron commands:\n",
-                    "  @sidekar cron list              — list active jobs\n",
-                    "  @sidekar cron delete <job-id>   — delete a job",
-                )
-                .to_string(),
-            }
-        }
-        "who" => handle_sidekar_command("@sidekar bus who"),
-        "help" | _ => concat!(
-            "@sidekar commands:\n",
-            "  @sidekar channel          — show current channel\n",
-            "  @sidekar channel <name>   — set channel\n",
-            "  @sidekar who              — list registered agents\n",
-            "  @sidekar bus who          — list registered agents\n",
-            "  @sidekar relay status     — show relay/web PTY status\n",
-            "  @sidekar relay connect    — connect relay/web PTY now\n",
-            "  @sidekar relay disconnect — disconnect relay/web PTY now\n",
-            "  @sidekar cron list        — list cron jobs\n",
-            "  @sidekar cron delete <id> — delete a cron job\n",
-            "  @sidekar help             — show this help",
-        )
-        .to_string(),
-    }
-}
-
-struct RelayRuntimeContext<'a> {
-    agent_name: &'a str,
-    agent_type: &'a str,
-    cwd: &'a str,
-    nick: &'a str,
-    policy_label: &'a str,
-}
-
-async fn handle_relay_command(
-    arg: &str,
-    relay_ctx: &RelayRuntimeContext<'_>,
-    tunnel_tx: &mut Option<crate::tunnel::TunnelSender>,
-    tunnel_rx: &mut Option<crate::tunnel::TunnelReceiver>,
-) -> String {
-    let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
-    let sub = sub_parts.first().copied().unwrap_or("status").trim();
-    match sub {
-        "" | "status" => {
-            let state = if tunnel_tx.is_some() {
-                "connected"
-            } else {
-                "disconnected"
-            };
-            let logged_in = if crate::auth::auth_token().is_some() {
-                "yes"
-            } else {
-                "no"
-            };
-            format!(
-                "Relay: {state} (policy: {}, logged_in: {logged_in})",
-                relay_ctx.policy_label
-            )
-        }
-        "disconnect" => {
-            if let Some(tx) = tunnel_tx.take() {
-                tx.shutdown();
-                *tunnel_rx = None;
-                "Relay disconnected.".to_string()
-            } else {
-                "Relay already disconnected.".to_string()
-            }
-        }
-        "connect" => {
-            if tunnel_tx.is_some() {
-                return "Relay already connected.".to_string();
-            }
-            let Some(token) = crate::auth::auth_token() else {
-                return "Relay unavailable: no device token; run: sidekar login".to_string();
-            };
-            match connect_relay_tunnel(
-                &token,
-                relay_ctx.agent_name,
-                relay_ctx.agent_type,
-                relay_ctx.cwd,
-                relay_ctx.nick,
-            )
-            .await
-            {
-                Ok((tx, rx)) => {
-                    *tunnel_tx = Some(tx);
-                    *tunnel_rx = Some(rx);
-                    "Relay connected.".to_string()
-                }
-                Err(e) => {
-                    crate::broker::try_log_error_event(
-                        "relay_tunnel",
-                        &format!("{e:#}"),
-                        Some("runtime connect"),
-                    );
-                    format!("Relay connect failed: {e}")
-                }
-            }
-        }
-        _ => concat!(
-            "@sidekar relay commands:\n",
-            "  @sidekar relay status     — show relay/web PTY status\n",
-            "  @sidekar relay connect    — connect relay/web PTY now\n",
-            "  @sidekar relay disconnect — disconnect relay/web PTY now",
-        )
-        .to_string(),
-    }
-}
-
-fn format_inline_terminal_block(message: &str) -> String {
-    let mut out = String::new();
-    out.push_str("\r\x1b[2K\r\n");
-    for line in message.lines() {
-        out.push_str("\x1b[2K");
-        out.push_str(line);
-        out.push_str("\r\n");
-    }
-    out.push_str("\x1b[2K");
-    out
-}
-
-/// Global channel override set by `@sidekar channel <name>`.
-static CHANNEL_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-/// Get the effective channel: override → detect_channel().
-#[allow(dead_code)]
-pub(crate) fn effective_channel() -> String {
-    CHANNEL_OVERRIDE
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_else(detect_channel)
-}
-
 /// Filter out OSC color query/response sequences (OSC 10-19) from input data.
 /// These are terminal color queries (ESC ] 10 ; ? BEL) and responses (ESC ] 10 ; rgb:... BEL)
 /// that can leak through when the browser's xterm.js queries colors or when the host
@@ -1100,9 +911,6 @@ async fn event_loop(
     tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
     nick: &str,
     agent_name: &str,
-    agent_type: &str,
-    cwd: &str,
-    relay_policy_label: &str,
     input_state: &Arc<crate::poller::UserInputState>,
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1155,21 +963,12 @@ async fn event_loop(
     let mut buf_in = [0u8; 4096];
     let mut buf_out = [0u8; 8192];
 
-    // Line buffer for @sidekar command interception.
-    // Accumulates stdin bytes; when CR/LF is seen, checks for @sidekar prefix.
+    // Line buffer for pending-user-input tracking.
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
-    let mut intercepting = false; // true when line_buf starts with "@sidekar"
     // Split tunnel into sender + receiver (if connected)
-    let (mut tunnel_tx, mut tunnel_rx) = match tunnel {
+    let (tunnel_tx, mut tunnel_rx) = match tunnel {
         Some((tx, rx)) => (Some(tx), Some(rx)),
         None => (None, None),
-    };
-    let relay_ctx = RelayRuntimeContext {
-        agent_name,
-        agent_type,
-        cwd,
-        nick,
-        policy_label: relay_policy_label,
     };
 
     loop {
@@ -1234,7 +1033,6 @@ async fn event_loop(
             }
 
             // stdin → master fd (user typing forwarded to agent)
-            // Intercepts lines starting with "@sidekar" for local commands.
             result = stdin.read(&mut buf_in) => {
                 match result {
                     Ok(0) | Err(_) => break, // stdin closed
@@ -1252,83 +1050,17 @@ async fn event_loop(
 
                         for &byte in chunk {
                             if byte == b'\r' || byte == b'\n' {
-                                if intercepting {
-                                    // Handle the @sidekar command locally
-                                    let line = String::from_utf8_lossy(&line_buf).to_string();
-                                    let response = if matches!(parse_sidekar_command(&line).0, "relay")
-                                    {
-                                        handle_relay_command(
-                                            parse_sidekar_command(&line).1,
-                                            &relay_ctx,
-                                            &mut tunnel_tx,
-                                            &mut tunnel_rx,
-                                        )
-                                        .await
-                                    } else {
-                                        handle_sidekar_command(&line)
-                                    };
-                                    // Render a cleared local block so we don't leave stale
-                                    // full-screen UI text behind on shorter response lines.
-                                    let rendered = format_inline_terminal_block(&response);
-                                    let _ = stdout.write_all(rendered.as_bytes()).await;
-                                    let _ = stdout.flush().await;
-                                    line_buf.clear();
-                                    input_state.clear_pending_line();
-                                    intercepting = false;
-                                } else {
-                                    // Bytes were already forwarded individually;
-                                    // just clear the prefix-detection buffer and
-                                    // forward the CR/LF itself.
-                                    line_buf.clear();
-                                    input_state.clear_pending_line();
-                                    let _ = write_all_fd(master_fd, &[byte]);
-                                }
+                                line_buf.clear();
+                                input_state.clear_pending_line();
+                                let _ = write_all_fd(master_fd, &[byte]);
                             } else if byte == 0x7f || byte == 0x08 {
-                                // Backspace — remove from buffer
-                                if intercepting {
-                                    line_buf.pop();
-                                    input_state.set_pending_line(&line_buf);
-                                    // Echo backspace to terminal
-                                    let _ = stdout.write_all(b"\x08 \x08").await;
-                                    let _ = stdout.flush().await;
-                                    // Check if we've backspaced out of @sidekar prefix
-                                    if !line_buf.starts_with(b"@sidekar") {
-                                        intercepting = false;
-                                        // Flush what we have to the agent
-                                        if !line_buf.is_empty() {
-                                            let _ = write_all_fd(master_fd, &line_buf);
-                                            line_buf.clear();
-                                            input_state.clear_pending_line();
-                                        }
-                                    }
-                                } else {
-                                    // Forward backspace and update line buffer
-                                    line_buf.pop();
-                                    input_state.set_pending_line(&line_buf);
-                                    let _ = write_all_fd(master_fd, &[byte]);
-                                }
+                                line_buf.pop();
+                                input_state.set_pending_line(&line_buf);
+                                let _ = write_all_fd(master_fd, &[byte]);
                             } else {
                                 line_buf.push(byte);
                                 input_state.set_pending_line(&line_buf);
-                                // Check if we're entering @sidekar mode
-                                if line_buf.starts_with(b"@sidekar") {
-                                    if !intercepting {
-                                        intercepting = true;
-                                    }
-                                    // Echo character locally (agent won't see it)
-                                    let _ = stdout.write_all(&[byte]).await;
-                                    let _ = stdout.flush().await;
-                                } else if intercepting {
-                                    // We were intercepting but the prefix broke — shouldn't happen
-                                    // since we check starts_with above, but safety net
-                                    intercepting = false;
-                                    let _ = write_all_fd(master_fd, &line_buf);
-                                    line_buf.clear();
-                                    input_state.clear_pending_line();
-                                } else {
-                                    // Normal byte — forward immediately
-                                    let _ = write_all_fd(master_fd, &[byte]);
-                                }
+                                let _ = write_all_fd(master_fd, &[byte]);
                             }
                         }
                     }
@@ -1415,10 +1147,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn zsh_shell_bootstrap_uses_interactive_mode() {
-        let (flag, prelude) = shell_function_bootstrap("/bin/zsh").expect("zsh bootstrap");
-        assert_eq!(flag, "-ic");
-        assert!(prelude.is_empty());
+    fn zsh_shell_bootstrap_uses_noninteractive_mode() {
+        let (flag, _prelude) =
+            shell_function_bootstrap("/bin/zsh", "claude-d").expect("zsh bootstrap");
+        assert_eq!(flag, "-c");
     }
 
     #[test]
@@ -1439,11 +1171,20 @@ mod tests {
             "[[ -o interactive ]] || return\nfoo-sidekar-test() { echo ok; }\n",
         )?;
 
+        let old_home = std::env::var_os("HOME");
+        // Safety: test holds the process-global HOME mutex and restores HOME before returning.
+        unsafe { std::env::set_var("HOME", &tmp) };
+        let (flag, prelude) =
+            shell_function_bootstrap("/bin/zsh", "foo-sidekar-test").expect("zsh bootstrap");
         let output = Command::new("/bin/zsh")
-            .arg("-ic")
-            .arg("foo-sidekar-test")
+            .arg(flag)
+            .arg(format!("{prelude}foo-sidekar-test"))
             .env("HOME", &tmp)
             .output()?;
+        match old_home {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
         assert!(output.status.success(), "{output:?}");
@@ -1458,17 +1199,4 @@ mod tests {
         assert_eq!(rewritten.as_ref(), b"\x1b]0;borzoi \xE2\x80\x94 claude\x07");
     }
 
-    #[test]
-    fn sidekar_help_is_multiline_without_indent_garbling() {
-        let help = handle_sidekar_command("@sidekar help");
-        assert!(help.contains("@sidekar who              — list registered agents"));
-        assert!(help.contains("\n  @sidekar bus who          — list registered agents\n"));
-        assert!(help.contains("\n  @sidekar relay status     — show relay/web PTY status\n"));
-    }
-
-    #[test]
-    fn inline_terminal_block_clears_each_line() {
-        let rendered = format_inline_terminal_block("one\ntwo");
-        assert_eq!(rendered, "\r\x1b[2K\r\n\x1b[2Kone\r\n\x1b[2Ktwo\r\n\x1b[2K");
-    }
 }

@@ -417,6 +417,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             notes TEXT,
+            scope TEXT NOT NULL DEFAULT 'project',
+            project TEXT,
             status TEXT NOT NULL DEFAULT 'open',
             priority INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
@@ -437,6 +439,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends_on
             ON task_dependencies(depends_on_task_id, task_id);
+        ",
+    )?;
+    let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
+    let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN project TEXT");
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_tasks_scope
+            ON tasks(scope, project, status, priority DESC, created_at DESC);
         ",
     )?;
 
@@ -1703,6 +1713,47 @@ mod tests {
 
             assert!(pending_for_agent("receiver")?.is_empty());
             assert!(outbound_for_sender("sender")?.is_empty());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn migrates_legacy_tasks_table_before_creating_scope_index() -> Result<()> {
+        with_test_db(|| {
+            let path = db_path();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let conn = Connection::open(&path)?;
+            conn.execute_batch(
+                "
+                CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    notes TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    completed_at INTEGER
+                );
+                ",
+            )?;
+            drop(conn);
+
+            let conn = open()?;
+            let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+            let cols = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert!(cols.iter().any(|c| c == "scope"));
+            assert!(cols.iter().any(|c| c == "project"));
+
+            let mut idx_stmt = conn.prepare("PRAGMA index_list(tasks)")?;
+            let indexes = idx_stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert!(indexes.iter().any(|idx| idx == "idx_tasks_scope"));
             Ok(())
         })
     }

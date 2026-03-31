@@ -193,7 +193,7 @@ pub fn maybe_record_cli_observation(command: &str, args: &[String]) -> Result<()
         Ok(value) if !value.trim().is_empty() => value,
         _ => return Ok(()),
     };
-    let project = resolve_project_name(None);
+    let project = crate::scope::resolve_project_name(None);
     ensure_session_started(&session_name, &project)?;
     let summary = summarize_cli_command(command, args);
     record_observation(&session_name, &project, command, &summary)?;
@@ -202,7 +202,7 @@ pub fn maybe_record_cli_observation(command: &str, args: &[String]) -> Result<()
 }
 
 pub fn start_agent_session(session_name: &str, cwd: &str) -> Result<()> {
-    let project = resolve_project_name(Some(cwd));
+    let project = crate::scope::resolve_project_name(Some(cwd));
     ensure_session_started(session_name, &project)?;
     record_session_event(
         session_name,
@@ -263,8 +263,8 @@ pub fn finish_agent_session(session_name: &str) -> Result<()> {
 }
 
 pub fn startup_brief(limit: usize) -> Result<String> {
-    let project = resolve_project_name(None);
-    build_context_text(&project, None, limit)
+    let project = crate::scope::resolve_project_name(None);
+    build_context_text(crate::scope::ScopeView::Project, Some(&project), None, limit)
 }
 
 fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -275,12 +275,17 @@ fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let event_type = normalize_event_type(&args[0])?;
     let summary = args[1].clone();
-    let project =
-        extract_optional_value(args, "--project=").unwrap_or_else(|| resolve_project_name(None));
-    let scope = extract_optional_value(args, "--scope=").unwrap_or_else(|| "project".to_string());
-    if !matches!(scope.as_str(), "project" | "global") {
-        bail!("Invalid scope: {scope}. Valid: project, global");
-    }
+    let scope = crate::scope::parse_stored_scope(
+        &extract_optional_value(args, "--scope=")
+            .unwrap_or_else(|| crate::scope::PROJECT_SCOPE.to_string()),
+    )?
+    .to_string();
+    let project = if scope == crate::scope::PROJECT_SCOPE {
+        extract_optional_value(args, "--project=")
+            .unwrap_or_else(|| crate::scope::resolve_project_name(None))
+    } else {
+        "global".to_string()
+    };
     let confidence = extract_optional_value(args, "--confidence=")
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.8);
@@ -304,8 +309,19 @@ fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .iter()
         .find(|arg| !arg.starts_with("--"))
         .cloned()
-        .context("Usage: sidekar memory search <query> [--project=P] [--type=T] [--limit=N]")?;
-    let project = extract_optional_value(args, "--project=");
+        .context(
+            "Usage: sidekar memory search <query> [--scope=project|global|all] [--project=P] [--type=T] [--limit=N]",
+        )?;
+    let scope_view =
+        crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
+    let project = if scope_view == crate::scope::ScopeView::Project {
+        Some(
+            extract_optional_value(args, "--project=")
+                .unwrap_or_else(|| crate::scope::resolve_project_name(None)),
+        )
+    } else {
+        extract_optional_value(args, "--project=")
+    };
     let event_type = extract_optional_value(args, "--type=")
         .map(|value| normalize_event_type(&value))
         .transpose()?;
@@ -313,7 +329,13 @@ fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(10);
 
-    let results = search_events(&query, project.as_deref(), event_type.as_deref(), limit)?;
+    let results = search_events(
+        &query,
+        scope_view,
+        project.as_deref(),
+        event_type.as_deref(),
+        limit,
+    )?;
     if results.is_empty() {
         out!(ctx, "No memories found.");
         return Ok(());
@@ -346,8 +368,16 @@ fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let project =
-        extract_optional_value(args, "--project=").unwrap_or_else(|| resolve_project_name(None));
+    let scope_view =
+        crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
+    let project = if scope_view == crate::scope::ScopeView::Project {
+        Some(
+            extract_optional_value(args, "--project=")
+                .unwrap_or_else(|| crate::scope::resolve_project_name(None)),
+        )
+    } else {
+        extract_optional_value(args, "--project=")
+    };
     let hint = extract_optional_value(args, "--hint=");
     let limit = extract_optional_value(args, "--limit=")
         .and_then(|value| value.parse::<usize>().ok())
@@ -355,7 +385,7 @@ fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     out!(
         ctx,
         "{}",
-        build_context_text(&project, hint.as_deref(), limit)?
+        build_context_text(scope_view, project.as_deref(), hint.as_deref(), limit)?
     );
     Ok(())
 }
@@ -366,8 +396,8 @@ fn cmd_memory_observe(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let tool = args[0].clone();
     let summary = args[1].clone();
-    let project =
-        extract_optional_value(args, "--project=").unwrap_or_else(|| resolve_project_name(None));
+    let project = extract_optional_value(args, "--project=")
+        .unwrap_or_else(|| crate::scope::resolve_project_name(None));
     let session_name = extract_optional_value(args, "--session=")
         .or_else(|| env::var("SIDEKAR_AGENT_NAME").ok())
         .unwrap_or_else(|| format!("manual-{}", now_epoch_ms()));
@@ -777,12 +807,12 @@ fn write_memory_event(
         return Ok(format!("Deduplicated existing memory [{}].", existing_id));
     }
 
-    let search_project = if scope == "global" {
-        None
+    let (search_scope, search_project) = if scope == crate::scope::GLOBAL_SCOPE {
+        (crate::scope::ScopeView::Global, None)
     } else {
-        Some(project)
+        (crate::scope::ScopeView::Project, Some(project))
     };
-    let near = search_events(summary, search_project, Some(event_type), 3)?;
+    let near = search_events(summary, search_scope, search_project, Some(event_type), 3)?;
     for candidate in &near {
         if scope == "global" && candidate.row.scope != "global" {
             continue;
@@ -879,11 +909,27 @@ fn write_memory_event(
     Ok(format!("Stored memory [{}].", event_id))
 }
 
-fn build_context_text(project: &str, task_hint: Option<&str>, limit: usize) -> Result<String> {
+fn build_context_text(
+    scope_view: crate::scope::ScopeView,
+    project: Option<&str>,
+    task_hint: Option<&str>,
+    limit: usize,
+) -> Result<String> {
     let conn = crate::broker::open_db()?;
-    let mut sections = vec![format!("# Sidekar Memory: {project}")];
+    let title = match scope_view {
+        crate::scope::ScopeView::Project => format!(
+            "# Sidekar Memory: {}",
+            project.unwrap_or(crate::scope::PROJECT_SCOPE)
+        ),
+        crate::scope::ScopeView::Global => "# Sidekar Memory: global".to_string(),
+        crate::scope::ScopeView::All => "# Sidekar Memory: all".to_string(),
+    };
+    let mut sections = vec![title];
 
-    if let Some(summary) = latest_session_summary(&conn, project)? {
+    if scope_view == crate::scope::ScopeView::Project
+        && let Some(project) = project
+        && let Some(summary) = latest_session_summary(&conn, project)?
+    {
         sections.push(format!("\n## Last Session\n- Goal: {}", summary.goal));
         if !summary.accomplished.is_empty() {
             sections.push(format!("- Done: {}", summary.accomplished.join("; ")));
@@ -893,11 +939,14 @@ fn build_context_text(project: &str, task_hint: Option<&str>, limit: usize) -> R
         }
     }
 
-    if let Some(snapshot) = latest_snapshot(&conn, project)? {
+    if scope_view == crate::scope::ScopeView::Project
+        && let Some(project) = project
+        && let Some(snapshot) = latest_snapshot(&conn, project)?
+    {
         sections.push(format!("\n## Snapshot\n{}", snapshot.trim()));
     }
 
-    let ranked = ranked_recent_events(&conn, project, limit * 4)?;
+    let ranked = ranked_recent_events(&conn, scope_view, project, limit * 4)?;
     let deduped = dedupe_rows_by_norm(ranked.into_iter().map(|item| item.row).collect());
     let ids_to_reinforce: Vec<i64> = deduped.iter().take(limit * 4).map(|row| row.id).collect();
     reinforce_events(ids_to_reinforce)?;
@@ -930,7 +979,7 @@ fn build_context_text(project: &str, task_hint: Option<&str>, limit: usize) -> R
     }
 
     if let Some(hint) = task_hint {
-        let relevant = search_events(hint, Some(project), None, 5)?;
+        let relevant = search_events(hint, scope_view, project, None, 5)?;
         if !relevant.is_empty() {
             sections.push("\n## Relevant To Current Task".to_string());
             for item in relevant.iter().take(5) {
@@ -951,6 +1000,7 @@ fn build_context_text(project: &str, task_hint: Option<&str>, limit: usize) -> R
 
 fn search_events(
     query: &str,
+    scope_view: crate::scope::ScopeView,
     project: Option<&str>,
     event_type: Option<&str>,
     limit: usize,
@@ -961,8 +1011,8 @@ fn search_events(
         return Ok(Vec::new());
     }
 
-    let sql = match (project, event_type) {
-        (Some(_), Some(_)) => {
+    let sql = match (scope_view, event_type) {
+        (crate::scope::ScopeView::Project, Some(_)) => {
             "SELECT e.id, e.project, e.event_type, e.scope, e.summary, e.confidence,
                     e.reinforcement_count, e.tags_json, e.supersedes_json, e.superseded_by,
                     e.created_at, e.updated_at, bm25(memory_events_fts) AS rank
@@ -975,7 +1025,7 @@ fn search_events(
              ORDER BY rank
              LIMIT ?4"
         }
-        (Some(_), None) => {
+        (crate::scope::ScopeView::Project, None) => {
             "SELECT e.id, e.project, e.event_type, e.scope, e.summary, e.confidence,
                     e.reinforcement_count, e.tags_json, e.supersedes_json, e.superseded_by,
                     e.created_at, e.updated_at, bm25(memory_events_fts) AS rank
@@ -987,7 +1037,32 @@ fn search_events(
              ORDER BY rank
              LIMIT ?3"
         }
-        (None, Some(_)) => {
+        (crate::scope::ScopeView::Global, Some(_)) => {
+            "SELECT e.id, e.project, e.event_type, e.scope, e.summary, e.confidence,
+                    e.reinforcement_count, e.tags_json, e.supersedes_json, e.superseded_by,
+                    e.created_at, e.updated_at, bm25(memory_events_fts) AS rank
+             FROM memory_events_fts
+             JOIN memory_events e ON memory_events_fts.rowid = e.id
+             WHERE memory_events_fts MATCH ?1
+               AND e.scope = 'global'
+               AND e.event_type = ?2
+               AND e.superseded_by IS NULL
+             ORDER BY rank
+             LIMIT ?3"
+        }
+        (crate::scope::ScopeView::Global, None) => {
+            "SELECT e.id, e.project, e.event_type, e.scope, e.summary, e.confidence,
+                    e.reinforcement_count, e.tags_json, e.supersedes_json, e.superseded_by,
+                    e.created_at, e.updated_at, bm25(memory_events_fts) AS rank
+             FROM memory_events_fts
+             JOIN memory_events e ON memory_events_fts.rowid = e.id
+             WHERE memory_events_fts MATCH ?1
+               AND e.scope = 'global'
+               AND e.superseded_by IS NULL
+             ORDER BY rank
+             LIMIT ?2"
+        }
+        (crate::scope::ScopeView::All, Some(_)) => {
             "SELECT e.id, e.project, e.event_type, e.scope, e.summary, e.confidence,
                     e.reinforcement_count, e.tags_json, e.supersedes_json, e.superseded_by,
                     e.created_at, e.updated_at, bm25(memory_events_fts) AS rank
@@ -999,7 +1074,7 @@ fn search_events(
              ORDER BY rank
              LIMIT ?3"
         }
-        (None, None) => {
+        (crate::scope::ScopeView::All, None) => {
             "SELECT e.id, e.project, e.event_type, e.scope, e.summary, e.confidence,
                     e.reinforcement_count, e.tags_json, e.supersedes_json, e.superseded_by,
                     e.created_at, e.updated_at, bm25(memory_events_fts) AS rank
@@ -1013,13 +1088,22 @@ fn search_events(
     };
 
     let mut stmt = conn.prepare(sql)?;
-    let mut rows = match (project, event_type) {
-        (Some(project), Some(event_type)) => {
+    let mut rows = match (scope_view, project, event_type) {
+        (crate::scope::ScopeView::Project, Some(project), Some(event_type)) => {
             stmt.query(params![cleaned, project, event_type, limit as i64])?
         }
-        (Some(project), None) => stmt.query(params![cleaned, project, limit as i64])?,
-        (None, Some(event_type)) => stmt.query(params![cleaned, event_type, limit as i64])?,
-        (None, None) => stmt.query(params![cleaned, limit as i64])?,
+        (crate::scope::ScopeView::Project, Some(project), None) => {
+            stmt.query(params![cleaned, project, limit as i64])?
+        }
+        (crate::scope::ScopeView::Global, _, Some(event_type))
+        | (crate::scope::ScopeView::All, _, Some(event_type)) => {
+            stmt.query(params![cleaned, event_type, limit as i64])?
+        }
+        (crate::scope::ScopeView::Global, _, None)
+        | (crate::scope::ScopeView::All, _, None) => stmt.query(params![cleaned, limit as i64])?,
+        (crate::scope::ScopeView::Project, None, _) => {
+            bail!("project scope queries require a project context")
+        }
     };
 
     let mut results = Vec::new();
@@ -1053,18 +1137,43 @@ fn search_events(
 
 fn ranked_recent_events(
     conn: &rusqlite::Connection,
-    project: &str,
+    scope_view: crate::scope::ScopeView,
+    project: Option<&str>,
     limit: usize,
 ) -> Result<Vec<SearchResultRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, project, event_type, scope, summary, confidence, reinforcement_count,
-                tags_json, supersedes_json, superseded_by, created_at, updated_at
-         FROM memory_events
-         WHERE (project = ?1 OR scope = 'global') AND superseded_by IS NULL
-         ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
-         LIMIT ?2",
-    )?;
-    let mut rows = stmt.query(params![project, limit as i64])?;
+    let sql = match scope_view {
+        crate::scope::ScopeView::Project => {
+            "SELECT id, project, event_type, scope, summary, confidence, reinforcement_count,
+                    tags_json, supersedes_json, superseded_by, created_at, updated_at
+             FROM memory_events
+             WHERE (project = ?1 OR scope = 'global') AND superseded_by IS NULL
+             ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
+             LIMIT ?2"
+        }
+        crate::scope::ScopeView::Global => {
+            "SELECT id, project, event_type, scope, summary, confidence, reinforcement_count,
+                    tags_json, supersedes_json, superseded_by, created_at, updated_at
+             FROM memory_events
+             WHERE scope = 'global' AND superseded_by IS NULL
+             ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
+             LIMIT ?1"
+        }
+        crate::scope::ScopeView::All => {
+            "SELECT id, project, event_type, scope, summary, confidence, reinforcement_count,
+                    tags_json, supersedes_json, superseded_by, created_at, updated_at
+             FROM memory_events
+             WHERE superseded_by IS NULL
+             ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
+             LIMIT ?1"
+        }
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = match scope_view {
+        crate::scope::ScopeView::Project => stmt.query(params![project, limit as i64])?,
+        crate::scope::ScopeView::Global | crate::scope::ScopeView::All => {
+            stmt.query(params![limit as i64])?
+        }
+    };
     let mut results = Vec::new();
     while let Some(row) = rows.next()? {
         let event = MemoryEventRow {
@@ -1092,7 +1201,7 @@ fn compact_project(event_type: Option<&str>, project: Option<&str>) -> Result<us
     let conn = crate::broker::open_db()?;
     let project = project
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| resolve_project_name(None));
+        .unwrap_or_else(|| crate::scope::resolve_project_name(None));
     let rows = find_active_events(&conn, Some(&project), event_type)?;
     let mut compacted = 0usize;
 
@@ -1561,34 +1670,6 @@ fn normalize_event_type(value: &str) -> Result<String> {
     }
 }
 
-fn resolve_project_name(cwd: Option<&str>) -> String {
-    let path = cwd
-        .map(PathBuf::from)
-        .or_else(|| env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-    if let Ok(output) = Command::new("git")
-        .args([
-            "-C",
-            &path.to_string_lossy(),
-            "rev-parse",
-            "--show-toplevel",
-        ])
-        .output()
-    {
-        if output.status.success() {
-            let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Some(name) = Path::new(&top).file_name().and_then(|value| value.to_str()) {
-                return name.to_string();
-            }
-        }
-    }
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "default".to_string())
-}
-
 fn summarize_cli_command(command: &str, args: &[String]) -> String {
     match command {
         "navigate" => format!("navigated to {}", safe_arg(args.first())),
@@ -1948,7 +2029,13 @@ mod tests {
                 "user",
             )?;
 
-            let results = search_events("Readability.js", Some("alpha"), None, 5)?;
+            let results = search_events(
+                "Readability.js",
+                crate::scope::ScopeView::Project,
+                Some("alpha"),
+                None,
+                5,
+            )?;
             assert_eq!(results.len(), 1);
             assert_eq!(
                 results[0].row.summary,
