@@ -332,12 +332,39 @@ fn cleanup_child_and_state(
     }
 }
 
+fn resolved_relay_policy(override_policy: Option<bool>) -> crate::config::RelayPtyMode {
+    match override_policy {
+        Some(true) => crate::config::RelayPtyMode::On,
+        Some(false) => crate::config::RelayPtyMode::Off,
+        None => crate::config::relay_pty_mode(),
+    }
+}
+
+fn relay_policy_label(override_policy: Option<bool>) -> String {
+    match override_policy {
+        Some(true) => "--relay".to_string(),
+        Some(false) => "--no-relay".to_string(),
+        None => format!("config:{}", crate::config::relay_pty_mode().as_str()),
+    }
+}
+
+async fn connect_relay_tunnel(
+    token: &str,
+    session_name: &str,
+    agent_type: &str,
+    cwd: &str,
+    nick: &str,
+) -> Result<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)> {
+    let (cols, rows) = current_terminal_size().unwrap_or((80, 24));
+    crate::tunnel::connect(token, session_name, agent_type, cwd, nick, cols, rows).await
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 /// Launch an agent inside a sidekar-owned PTY.
-pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
+pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>) -> Result<()> {
     let (bin_display, launch_mode, bin_c, c_args) = match resolve_agent(agent)? {
         ResolvedAgent::Binary(path, c_path) => {
             let c_args = prepare_args(&c_path, args)?;
@@ -453,35 +480,51 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
             "pty_info",
             "agent_launch",
             Some(&format!(
-                "agent={agent} mode={launch_mode} command={} args={}",
+                "agent={agent} mode={launch_mode} command={} args={} relay_policy={}",
                 bin_display,
-                args.join(" ")
+                args.join(" "),
+                relay_policy_label(relay_override),
             )),
         );
     }
 
+    let relay_policy = resolved_relay_policy(relay_override);
+    let relay_policy_text = relay_policy_label(relay_override);
+
     // Optionally establish tunnel to relay for web terminal access (dashboard / web terminal).
-    let tunnel = if let Some(token) = crate::auth::auth_token() {
-        let cwd_str = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".into());
-        let (cols, rows) = current_terminal_size().unwrap_or((80, 24));
-        match crate::tunnel::connect(&token, &identity.name, agent, &cwd_str, &nick, cols, rows)
-            .await
-        {
-            Ok(t) => Some(t),
-            Err(e) => {
-                crate::broker::try_log_error_event("relay_tunnel", &format!("{e:#}"), None);
+    let tunnel = match relay_policy {
+        crate::config::RelayPtyMode::Off => {
+            if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+                crate::broker::try_log_error_event(
+                    "relay_tunnel",
+                    "disabled by policy",
+                    Some(&relay_policy_text),
+                );
+            }
+            None
+        }
+        crate::config::RelayPtyMode::Auto | crate::config::RelayPtyMode::On => {
+            if let Some(token) = crate::auth::auth_token() {
+                match connect_relay_tunnel(&token, &identity.name, agent, &cwd, &nick).await {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        crate::broker::try_log_error_event(
+                            "relay_tunnel",
+                            &format!("{e:#}"),
+                            Some(&relay_policy_text),
+                        );
+                        None
+                    }
+                }
+            } else {
+                crate::broker::try_log_error_event(
+                    "relay_tunnel",
+                    "skipped: no device token; run: sidekar login",
+                    Some(&relay_policy_text),
+                );
                 None
             }
         }
-    } else {
-        crate::broker::try_log_error_event(
-            "relay_tunnel",
-            "skipped: no device token; run: sidekar login",
-            None,
-        );
-        None
     };
 
     // Ensure the Chrome extension bridge / daemon is running
@@ -515,6 +558,9 @@ pub async fn run_agent(agent: &str, args: &[String]) -> Result<()> {
         tunnel,
         &nick,
         &identity.name,
+        agent,
+        &cwd,
+        &relay_policy_text,
         &input_state,
     )
     .await;
@@ -669,11 +715,16 @@ async fn cleanup_chrome_session(agent_name: &str) {
 
 /// Handle a `@sidekar <command>` line typed by the user.
 /// Returns a response string to echo to the terminal.
-fn handle_sidekar_command(line: &str) -> String {
+fn parse_sidekar_command(line: &str) -> (&str, &str) {
     let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-    // parts[0] = "@sidekar", parts[1] = command, parts[2] = args
-    let cmd = parts.get(1).map(|s| *s).unwrap_or("help");
-    let arg = parts.get(2).map(|s| *s).unwrap_or("");
+    (
+        parts.get(1).copied().unwrap_or("help"),
+        parts.get(2).copied().unwrap_or(""),
+    )
+}
+
+fn handle_sidekar_command(line: &str) -> String {
+    let (cmd, arg) = parse_sidekar_command(line);
 
     match cmd {
         "channel" => {
@@ -715,18 +766,30 @@ fn handle_sidekar_command(line: &str) -> String {
             let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
             let sub = sub_parts.first().copied().unwrap_or("who");
             match sub {
-                "who" | "" => match broker::list_agents(None) {
+                "who" | "" => {
+                    let channel = effective_channel();
+                    match broker::list_agents(Some(&channel)) {
                     Ok(agents) if !agents.is_empty() => {
                         let mut lines = Vec::new();
+                        let my_pane = format!("pty-{}", std::process::id());
                         for a in &agents {
-                            let nick = a.id.nick.as_deref().unwrap_or("");
-                            let chan = a.id.session.as_deref().unwrap_or("?");
-                            lines.push(format!("  {} \"{}\" (channel: {})", a.id.name, nick, chan));
+                            let you = if a.pane_unique_id.as_deref() == Some(&my_pane) {
+                                " (you)"
+                            } else {
+                                ""
+                            };
+                            let nick =
+                                a.id.nick
+                                    .as_deref()
+                                    .map(|n| format!(" \"{n}\""))
+                                    .unwrap_or_default();
+                            lines.push(format!("  - {}{}{}", a.id.name, nick, you));
                         }
-                        format!("Agents:\n{}", lines.join("\n"))
+                        format!("Channel \"{channel}\":\n{}", lines.join("\n"))
                     }
-                    _ => "No agents registered.".to_string(),
-                },
+                    _ => format!("No agents on \"{channel}\"."),
+                }
+                }
                 _ => "@sidekar bus commands:\n  @sidekar bus who          — list registered agents"
                     .to_string(),
             }
@@ -778,12 +841,110 @@ fn handle_sidekar_command(line: &str) -> String {
             "  @sidekar channel <name>   — set channel\n",
             "  @sidekar who              — list registered agents\n",
             "  @sidekar bus who          — list registered agents\n",
+            "  @sidekar relay status     — show relay/web PTY status\n",
+            "  @sidekar relay connect    — connect relay/web PTY now\n",
+            "  @sidekar relay disconnect — disconnect relay/web PTY now\n",
             "  @sidekar cron list        — list cron jobs\n",
             "  @sidekar cron delete <id> — delete a cron job\n",
             "  @sidekar help             — show this help",
         )
         .to_string(),
     }
+}
+
+struct RelayRuntimeContext<'a> {
+    agent_name: &'a str,
+    agent_type: &'a str,
+    cwd: &'a str,
+    nick: &'a str,
+    policy_label: &'a str,
+}
+
+async fn handle_relay_command(
+    arg: &str,
+    relay_ctx: &RelayRuntimeContext<'_>,
+    tunnel_tx: &mut Option<crate::tunnel::TunnelSender>,
+    tunnel_rx: &mut Option<crate::tunnel::TunnelReceiver>,
+) -> String {
+    let sub_parts: Vec<&str> = arg.splitn(2, ' ').collect();
+    let sub = sub_parts.first().copied().unwrap_or("status").trim();
+    match sub {
+        "" | "status" => {
+            let state = if tunnel_tx.is_some() {
+                "connected"
+            } else {
+                "disconnected"
+            };
+            let logged_in = if crate::auth::auth_token().is_some() {
+                "yes"
+            } else {
+                "no"
+            };
+            format!(
+                "Relay: {state} (policy: {}, logged_in: {logged_in})",
+                relay_ctx.policy_label
+            )
+        }
+        "disconnect" => {
+            if let Some(tx) = tunnel_tx.take() {
+                tx.shutdown();
+                *tunnel_rx = None;
+                "Relay disconnected.".to_string()
+            } else {
+                "Relay already disconnected.".to_string()
+            }
+        }
+        "connect" => {
+            if tunnel_tx.is_some() {
+                return "Relay already connected.".to_string();
+            }
+            let Some(token) = crate::auth::auth_token() else {
+                return "Relay unavailable: no device token; run: sidekar login".to_string();
+            };
+            match connect_relay_tunnel(
+                &token,
+                relay_ctx.agent_name,
+                relay_ctx.agent_type,
+                relay_ctx.cwd,
+                relay_ctx.nick,
+            )
+            .await
+            {
+                Ok((tx, rx)) => {
+                    *tunnel_tx = Some(tx);
+                    *tunnel_rx = Some(rx);
+                    "Relay connected.".to_string()
+                }
+                Err(e) => {
+                    crate::broker::try_log_error_event(
+                        "relay_tunnel",
+                        &format!("{e:#}"),
+                        Some("runtime connect"),
+                    );
+                    format!("Relay connect failed: {e}")
+                }
+            }
+        }
+        _ => concat!(
+            "@sidekar relay commands:\n",
+            "  @sidekar relay status     — show relay/web PTY status\n",
+            "  @sidekar relay connect    — connect relay/web PTY now\n",
+            "  @sidekar relay disconnect — disconnect relay/web PTY now",
+        )
+        .to_string(),
+    }
+}
+
+fn format_inline_terminal_block(message: &str) -> String {
+    let mut out = String::new();
+    out.push_str("\r\x1b[2K\r\n");
+    for line in message.lines() {
+        out.push_str("\x1b[2K");
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str("\x1b[2K");
+    out
 }
 
 /// Global channel override set by `@sidekar channel <name>`.
@@ -939,6 +1100,9 @@ async fn event_loop(
     tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
     nick: &str,
     agent_name: &str,
+    agent_type: &str,
+    cwd: &str,
+    relay_policy_label: &str,
     input_state: &Arc<crate::poller::UserInputState>,
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -996,9 +1160,16 @@ async fn event_loop(
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut intercepting = false; // true when line_buf starts with "@sidekar"
     // Split tunnel into sender + receiver (if connected)
-    let (tunnel_tx, mut tunnel_rx) = match tunnel {
+    let (mut tunnel_tx, mut tunnel_rx) = match tunnel {
         Some((tx, rx)) => (Some(tx), Some(rx)),
         None => (None, None),
+    };
+    let relay_ctx = RelayRuntimeContext {
+        agent_name,
+        agent_type,
+        cwd,
+        nick,
+        policy_label: relay_policy_label,
     };
 
     loop {
@@ -1084,11 +1255,22 @@ async fn event_loop(
                                 if intercepting {
                                     // Handle the @sidekar command locally
                                     let line = String::from_utf8_lossy(&line_buf).to_string();
-                                    let response = handle_sidekar_command(&line);
-                                    // Echo newline + response to user's terminal
-                                    let _ = stdout.write_all(b"\r\n").await;
-                                    let _ = stdout.write_all(response.as_bytes()).await;
-                                    let _ = stdout.write_all(b"\r\n").await;
+                                    let response = if matches!(parse_sidekar_command(&line).0, "relay")
+                                    {
+                                        handle_relay_command(
+                                            parse_sidekar_command(&line).1,
+                                            &relay_ctx,
+                                            &mut tunnel_tx,
+                                            &mut tunnel_rx,
+                                        )
+                                        .await
+                                    } else {
+                                        handle_sidekar_command(&line)
+                                    };
+                                    // Render a cleared local block so we don't leave stale
+                                    // full-screen UI text behind on shorter response lines.
+                                    let rendered = format_inline_terminal_block(&response);
+                                    let _ = stdout.write_all(rendered.as_bytes()).await;
                                     let _ = stdout.flush().await;
                                     line_buf.clear();
                                     input_state.clear_pending_line();
@@ -1281,5 +1463,12 @@ mod tests {
         let help = handle_sidekar_command("@sidekar help");
         assert!(help.contains("@sidekar who              — list registered agents"));
         assert!(help.contains("\n  @sidekar bus who          — list registered agents\n"));
+        assert!(help.contains("\n  @sidekar relay status     — show relay/web PTY status\n"));
+    }
+
+    #[test]
+    fn inline_terminal_block_clears_each_line() {
+        let rendered = format_inline_terminal_block("one\ntwo");
+        assert_eq!(rendered, "\r\x1b[2K\r\n\x1b[2Kone\r\n\x1b[2Ktwo\r\n\x1b[2K");
     }
 }

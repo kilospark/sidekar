@@ -32,6 +32,21 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         }
     }
 
+    let saw_relay = args.iter().any(|a| a == "--relay");
+    let saw_no_relay = args.iter().any(|a| a == "--no-relay");
+    if saw_relay && saw_no_relay {
+        bail!("Use only one of: --relay, --no-relay");
+    }
+    let relay_override = if saw_relay {
+        args.retain(|a| a != "--relay");
+        Some(true)
+    } else if saw_no_relay {
+        args.retain(|a| a != "--no-relay");
+        Some(false)
+    } else {
+        None
+    };
+
     // Parse global --tab <id> flag before extracting the command
     let override_tab_id = if let Some(pos) = args.iter().position(|a| a == "--tab") {
         if pos + 1 < args.len() {
@@ -254,7 +269,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
-        return sidekar::pty::run_agent(&command, &args).await;
+        return sidekar::pty::run_agent(&command, &args, relay_override).await;
+    }
+    if relay_override.is_some() {
+        bail!("--relay and --no-relay only apply to: sidekar <agent> [args...]");
     }
     if !sidekar::is_known_command(&command) {
         bail!("Unknown command: {command}");
@@ -281,7 +299,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // Fetch encryption key from server if logged in
     if !matches!(
         command.as_str(),
-        "login" | "memory" | "tasks" | "compact" | "pack" | "unpack"
+        "login" | "config" | "memory" | "tasks" | "compact" | "pack" | "unpack"
     ) {
         if crate::auth::auth_token().is_some() {
             if let Err(e) = crate::broker::fetch_encryption_key().await {

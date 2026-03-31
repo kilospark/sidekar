@@ -1165,6 +1165,14 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(out, "Global flags:");
     let _ = writeln!(
         out,
+        "  --relay             Force relay/web PTY on for sidekar <agent>"
+    );
+    let _ = writeln!(
+        out,
+        "  --no-relay          Force relay/web PTY off for sidekar <agent>"
+    );
+    let _ = writeln!(
+        out,
         "  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)"
     );
     let _ = writeln!(out);
