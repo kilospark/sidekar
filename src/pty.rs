@@ -30,17 +30,13 @@ fn shell_quote(s: &str) -> String {
 
 fn shell_function_bootstrap(shell: &str) -> Option<(String, String)> {
     let shell_name = Path::new(shell).file_name()?.to_str()?;
-    let home = dirs::home_dir()?;
 
     match shell_name {
-        "zsh" => {
-            let rc = shell_quote(&home.join(".zshrc").to_string_lossy());
-            Some((
-                "-c".into(),
-                format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; "),
-            ))
-        }
+        // Use an interactive zsh so function wrappers defined in ~/.zshrc
+        // are available even when that file returns early for non-interactive shells.
+        "zsh" => Some(("-ic".into(), String::new())),
         "bash" => {
+            let home = dirs::home_dir()?;
             let rc = shell_quote(&home.join(".bashrc").to_string_lossy());
             Some((
                 "-c".into(),
@@ -1206,5 +1202,50 @@ async fn event_loop(
         libc::WEXITSTATUS(status)
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn zsh_shell_bootstrap_uses_interactive_mode() {
+        let (flag, prelude) = shell_function_bootstrap("/bin/zsh").expect("zsh bootstrap");
+        assert_eq!(flag, "-ic");
+        assert!(prelude.is_empty());
+    }
+
+    #[test]
+    fn zsh_function_launch_works_when_zshrc_returns_for_noninteractive_shells() -> Result<()> {
+        if Command::new("which").arg("zsh").output()?.status.success() == false {
+            return Ok(());
+        }
+
+        let _home_guard = crate::test_home_lock().lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "sidekar-pty-test-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp)?;
+        std::fs::write(
+            tmp.join(".zshrc"),
+            "[[ -o interactive ]] || return\nfoo-sidekar-test() { echo ok; }\n",
+        )?;
+
+        let output = Command::new("/bin/zsh")
+            .arg("-ic")
+            .arg("foo-sidekar-test")
+            .env("HOME", &tmp)
+            .output()?;
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+        Ok(())
     }
 }
