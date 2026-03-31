@@ -81,14 +81,25 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if sidekar::config::is_first_run() && !matches!(command.as_str(), "telemetry" | "config") {
         let config = sidekar::config::SidekarConfig::default();
         let _ = sidekar::config::save_config(&config);
-        eprintln!("");
-        eprintln!("Thanks for installing sidekar!");
-        eprintln!("");
-        eprintln!("Anonymous telemetry is enabled by default to help us improve.");
-        eprintln!("It collects: tool usage counts, error counts (no personal data).");
-        eprintln!("");
-        eprintln!("To disable: sidekar config set telemetry false");
-        eprintln!("");
+        let message = "Thanks for installing sidekar!\n\nAnonymous telemetry is enabled by default to help us improve.\nIt collects: tool usage counts, error counts (no personal data).\n\nTo disable: sidekar config set telemetry false";
+        if env::var("SIDEKAR_PTY").is_ok() {
+            if env::var("SIDEKAR_VERBOSE").is_ok() {
+                sidekar::broker::try_log_error_event(
+                    "pty_info",
+                    "first_run_telemetry_notice",
+                    Some(message),
+                );
+            }
+        } else {
+            eprintln!("");
+            eprintln!("Thanks for installing sidekar!");
+            eprintln!("");
+            eprintln!("Anonymous telemetry is enabled by default to help us improve.");
+            eprintln!("It collects: tool usage counts, error counts (no personal data).");
+            eprintln!("");
+            eprintln!("To disable: sidekar config set telemetry false");
+            eprintln!("");
+        }
     }
 
     if command == "uninstall" {
@@ -357,7 +368,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         if ctx.auto_discover_last_session().is_err() {
             let in_pty = env::var("SIDEKAR_PTY").is_ok();
             if in_pty && sidekar::command_should_auto_launch_browser(&command) {
-                eprintln!("sidekar: no active session, auto-launching Chrome...");
+                if env::var("SIDEKAR_VERBOSE").is_ok() {
+                    sidekar::broker::try_log_error_event(
+                        "pty_info",
+                        "auto_launch_browser",
+                        Some(&format!("command={command}")),
+                    );
+                }
                 commands::dispatch(&mut ctx, "launch", &[]).await?;
                 ctx.output.clear();
             } else {
