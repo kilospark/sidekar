@@ -777,7 +777,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bus",
-        usage: "<who|send|done> [args]",
+        usage: "<who|requests|replies|show|send|done> [args]",
         summary: "Agent bus subcommands",
         group: CommandGroup::Agent,
         aliases: &[],
@@ -810,8 +810,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "repo",
-        usage: "<pack|tree> [args]",
-        summary: "Pack local repositories into agent-friendly context",
+        usage: "<pack|tree|changes|actions> [args]",
+        summary: "Pack repos, summarize changes, and run project actions",
         group: CommandGroup::Agent,
         aliases: &[],
         requires_session: false,
