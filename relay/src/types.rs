@@ -29,6 +29,7 @@ pub struct SessionInfo {
     pub cwd: String,
     pub hostname: String,
     pub nickname: Option<String>,
+    pub owner_origin: Option<String>,
     pub connected_at: chrono::DateTime<chrono::Utc>,
     pub viewers: usize,
 }

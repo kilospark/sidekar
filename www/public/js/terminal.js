@@ -7,7 +7,8 @@
     return;
   }
 
-  var relayHost = document.body.getAttribute("data-relay-host") || "relay.sidekar.dev";
+  var relayOrigin =
+    document.body.getAttribute("data-relay-origin") || "https://relay.sidekar.dev";
   var statusDot = document.getElementById("status-dot");
   var statusText = document.getElementById("status-text");
   var ws = null;
@@ -108,77 +109,79 @@
       .then(function (data) {
         if (!data) return; // redirecting
 
-        var wsUrl = "wss://" + relayHost + "/session/" + sessionId;
-        if (data.token) {
-          wsUrl += "?token=" + encodeURIComponent(data.token);
-        }
-
-        ws = new WebSocket(wsUrl);
-        ws.binaryType = "arraybuffer";
-
-        ws.onopen = function () {
-          setStatus("connected", "connected");
-          sessionProtocolReady = false;
-          legacyRelay = false;
-          expectScrollbackBytes = 0;
-        };
-
-        ws.onmessage = function (event) {
-          if (typeof event.data === "string") {
-            try {
-              var j = JSON.parse(event.data);
-              if (j.type === "session" && j.v === 1) {
-                sessionProtocolReady = true;
-                expectScrollbackBytes = j.scrollback_bytes | 0;
-                setRemoteGeometry(j.cols | 0, j.rows | 0);
-                return;
-              }
-              if (j.type === "pty" && j.v === 1 && j.event === "resize") {
-                setRemoteGeometry(j.cols | 0, j.rows | 0);
-                return;
-              }
-            } catch (e) {}
-            return;
+        return resolveOwnerOrigin(data.token).then(function (ownerOrigin) {
+          var wsUrl = toWebSocketOrigin(ownerOrigin) + "/session/" + sessionId;
+          if (data.token) {
+            wsUrl += "?token=" + encodeURIComponent(data.token);
           }
 
-          var u8 = new Uint8Array(event.data);
+          ws = new WebSocket(wsUrl);
+          ws.binaryType = "arraybuffer";
 
-          if (!sessionProtocolReady && !legacyRelay) {
-            legacyRelay = true;
-            sessionProtocolReady = true;
-            var stickLegacy = isViewportNearBottom();
-            term.write(u8, function () {
-              if (stickLegacy) term.scrollToBottom();
-            });
-            return;
-          }
-
-          if (expectScrollbackBytes > 0) {
+          ws.onopen = function () {
+            setStatus("connected", "connected");
+            sessionProtocolReady = false;
+            legacyRelay = false;
             expectScrollbackBytes = 0;
-            var stickScrollback = isViewportNearBottom();
+          };
+
+          ws.onmessage = function (event) {
+            if (typeof event.data === "string") {
+              try {
+                var j = JSON.parse(event.data);
+                if (j.type === "session" && j.v === 1) {
+                  sessionProtocolReady = true;
+                  expectScrollbackBytes = j.scrollback_bytes | 0;
+                  setRemoteGeometry(j.cols | 0, j.rows | 0);
+                  return;
+                }
+                if (j.type === "pty" && j.v === 1 && j.event === "resize") {
+                  setRemoteGeometry(j.cols | 0, j.rows | 0);
+                  return;
+                }
+              } catch (e) {}
+              return;
+            }
+
+            var u8 = new Uint8Array(event.data);
+
+            if (!sessionProtocolReady && !legacyRelay) {
+              legacyRelay = true;
+              sessionProtocolReady = true;
+              var stickLegacy = isViewportNearBottom();
+              term.write(u8, function () {
+                if (stickLegacy) term.scrollToBottom();
+              });
+              return;
+            }
+
+            if (expectScrollbackBytes > 0) {
+              expectScrollbackBytes = 0;
+              var stickScrollback = isViewportNearBottom();
+              term.write(u8, function () {
+                if (stickScrollback) term.scrollToBottom();
+              });
+              return;
+            }
+
+            var stickToBottom = isViewportNearBottom();
             term.write(u8, function () {
-              if (stickScrollback) term.scrollToBottom();
+              if (stickToBottom) term.scrollToBottom();
             });
-            return;
-          }
+          };
 
-          var stickToBottom = isViewportNearBottom();
-          term.write(u8, function () {
-            if (stickToBottom) term.scrollToBottom();
-          });
-        };
+          ws.onclose = function () {
+            setStatus("error", "disconnected — reconnecting...");
+            scheduleReconnect();
+          };
 
-        ws.onclose = function () {
-          setStatus("error", "disconnected — reconnecting...");
-          scheduleReconnect();
-        };
-
-        ws.onerror = function () {
-          if (ws) ws.close();
-        };
+          ws.onerror = function () {
+            if (ws) ws.close();
+          };
+        });
       })
       .catch(function () {
-        setStatus("error", "auth failed — retrying...");
+        setStatus("error", "session unavailable — retrying...");
         scheduleReconnect();
       });
   }
@@ -216,3 +219,25 @@
 
   connect();
 })();
+  function toWebSocketOrigin(origin) {
+    return origin.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
+  }
+
+  function resolveOwnerOrigin(token) {
+    var url =
+      relayOrigin +
+      "/session/" +
+      encodeURIComponent(sessionId) +
+      "/resolve?token=" +
+      encodeURIComponent(token);
+    return fetch(url)
+      .then(function (res) {
+        if (res.status === 401) throw new Error("unauthorized");
+        if (res.status === 404) throw new Error("not found");
+        if (!res.ok) throw new Error("resolve failed");
+        return res.json();
+      })
+      .then(function (data) {
+        return data.owner_origin || relayOrigin;
+      });
+  }

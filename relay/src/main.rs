@@ -22,6 +22,13 @@ async fn main() {
     let jwt_secret =
         std::env::var("JWT_SECRET").expect("JWT_SECRET environment variable is required").trim().to_string();
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
+    let instance_id = std::env::var("RELAY_INSTANCE_ID")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let public_origin = std::env::var("RELAY_PUBLIC_ORIGIN")
+        .unwrap_or_else(|_| "https://relay.sidekar.dev".into())
+        .trim_end_matches('/')
+        .to_string();
 
     // Connect to MongoDB
     let client = mongodb::Client::with_uri_str(&mongodb_uri)
@@ -30,15 +37,10 @@ async fn main() {
     let db = client.database("sidekar");
     tracing::info!("connected to MongoDB");
 
-    // Clean up any stale sessions from previous relay instances
-    let _ = db
-        .collection::<mongodb::bson::Document>("sessions")
-        .delete_many(mongodb::bson::doc! {})
-        .await;
-
     // Create registry (hybrid: MongoDB for metadata, in-memory for live connections)
-    let registry = Registry::new(db.clone());
+    let registry = Registry::new(db.clone(), instance_id, public_origin);
     registry.start_heartbeat();
+    registry.start_bus_dispatcher();
 
     // App state
     let state = AppState {
@@ -61,6 +63,7 @@ async fn main() {
         .route("/health", get(|| async { "ok" }))
         .route("/tunnel", get(bridge::handle_tunnel_upgrade))
         .route("/session/{id}", get(bridge::handle_viewer_upgrade))
+        .route("/session/{id}/resolve", get(bridge::handle_resolve_session))
         .route("/sessions", get(bridge::handle_list_sessions))
         .route("/relay/bus", post(bridge::handle_relay_bus))
         .layer(cors)

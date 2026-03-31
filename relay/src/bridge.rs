@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::auth;
-use crate::registry::Registry;
+use crate::registry::{Registry, ViewerRoute};
 use crate::types::{RegisterMsg, SessionInfo};
 
 /// Shared application state.
@@ -79,7 +79,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     let session_id = state
         .registry
         .register(
-            user_id,
+            user_id.clone(),
             register_msg.session_name,
             register_msg.agent_type,
             register_msg.cwd,
@@ -122,10 +122,39 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                             if v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
-                                state
-                                    .registry
-                                    .forward_bus_to_peers(&session_id, &text)
-                                    .await;
+                                let from_session =
+                                    v.get("from_session").and_then(|x| x.as_str());
+                                let sender = v.get("sender").and_then(|x| x.as_str());
+                                let body = v.get("body").and_then(|x| x.as_str());
+                                if let (Some(sender), Some(body)) = (sender, body) {
+                                    if let Some(recipient_session_id) =
+                                        v.get("recipient_session_id").and_then(|x| x.as_str())
+                                    {
+                                        state
+                                            .registry
+                                            .enqueue_bus_for_session(
+                                                &user_id,
+                                                recipient_session_id,
+                                                sender,
+                                                body,
+                                                from_session,
+                                            )
+                                            .await;
+                                    } else if let Some(recipient) =
+                                        v.get("recipient").and_then(|x| x.as_str())
+                                    {
+                                        state
+                                            .registry
+                                            .enqueue_bus_for_recipient_name(
+                                                &user_id,
+                                                recipient,
+                                                sender,
+                                                body,
+                                                from_session,
+                                            )
+                                            .await;
+                                    }
+                                }
                                 continue;
                             }
                             if v.get("ch").and_then(|x| x.as_str()) == Some("pty")
@@ -183,7 +212,10 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
 
 #[derive(Deserialize)]
 pub struct RelayBusIn {
-    pub recipient: String,
+    #[serde(default)]
+    pub recipient_session_id: Option<String>,
+    #[serde(default)]
+    pub recipient: Option<String>,
     pub sender: String,
     pub body: String,
     /// If set, skip this session when forwarding (prevents self-delivery loops).
@@ -222,21 +254,31 @@ pub async fn handle_relay_bus(
         }
     };
 
-    let envelope = serde_json::json!({
-        "ch": "bus",
-        "v": 1,
-        "recipient": body.recipient,
-        "sender": body.sender,
-        "body": body.body,
-    });
-    state
-        .registry
-        .forward_bus_json_to_user_multiplex(
-            &user_id,
-            &envelope.to_string(),
-            body.from_session.as_deref(),
-        )
-        .await;
+    if let Some(recipient_session_id) = body.recipient_session_id.as_deref() {
+        state
+            .registry
+            .enqueue_bus_for_session(
+                &user_id,
+                recipient_session_id,
+                &body.sender,
+                &body.body,
+                body.from_session.as_deref(),
+            )
+            .await;
+    } else if let Some(recipient) = body.recipient.as_deref() {
+        state
+            .registry
+            .enqueue_bus_for_recipient_name(
+                &user_id,
+                recipient,
+                &body.sender,
+                &body.body,
+                body.from_session.as_deref(),
+            )
+            .await;
+    } else {
+        return (axum::http::StatusCode::BAD_REQUEST, "missing recipient").into_response();
+    }
 
     Json(serde_json::json!({ "ok": true })).into_response()
 }
@@ -275,7 +317,65 @@ pub async fn handle_viewer_upgrade(
         }
     };
 
+    match state.registry.resolve_viewer_route(&session_id, &user_id).await {
+        Some(ViewerRoute::Local) => {}
+        Some(ViewerRoute::Remote { owner_origin }) => {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "session owned by another relay instance",
+                    "owner_origin": owner_origin,
+                })),
+            )
+                .into_response();
+        }
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "session not found").into_response();
+        }
+    }
+
     ws.on_upgrade(move |socket| handle_viewer_socket(socket, session_id, user_id, state))
+}
+
+#[derive(Deserialize)]
+pub struct ResolveQuery {
+    pub token: Option<String>,
+}
+
+/// GET /session/{id}/resolve — resolve the current owner origin for this session.
+pub async fn handle_resolve_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(query): Query<ResolveQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let jwt = query
+        .token
+        .or_else(|| extract_cookie_token(&headers, "sidekar_session"));
+
+    let jwt = match jwt {
+        Some(t) => t,
+        None => return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response(),
+    };
+
+    let user_id = match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
+        Some(uid) => uid,
+        None => return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response(),
+    };
+
+    match state.registry.resolve_viewer_route(&session_id, &user_id).await {
+        Some(ViewerRoute::Local) => Json(serde_json::json!({
+            "session_id": session_id,
+            "owner_origin": state.registry.public_origin(),
+        }))
+        .into_response(),
+        Some(ViewerRoute::Remote { owner_origin }) => Json(serde_json::json!({
+            "session_id": session_id,
+            "owner_origin": owner_origin,
+        }))
+        .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "session not found").into_response(),
+    }
 }
 
 async fn handle_viewer_socket(
