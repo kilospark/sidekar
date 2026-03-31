@@ -15,8 +15,6 @@
 - [ ] Attention/notification system (desktop notifications, terminal badges)
 - [ ] Task queue visibility and claiming UX
 - [ ] Session inspection tools (`sidekar sessions`, `sidekar attach`)
-- [ ] Test multiple relay machines in Fly.io
-- [ ] Test GCP for relay
 - [ ] Refactor/security review
 - [ ] Add nairo/memory integration
 - [ ] Define `nairo` scope model: project-level vs user-level
@@ -38,3 +36,4 @@
 - [x] `--verbose` flag for startup messages
 - [x] Suppress Chrome automation infobar (`--test-type`)
 - [x] Bus warning when not in sidekar wrapper
+- [x] Move relay from Fly.io to GCP
