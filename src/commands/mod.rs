@@ -13,6 +13,7 @@ pub mod totp;
 
 use crate::memory::*;
 use crate::pakt::*;
+use crate::repo::*;
 use crate::rtk::*;
 use crate::tasks::*;
 use batch::*;
@@ -608,6 +609,10 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "tasks" => {
             cmd_tasks(ctx, args)?;
+            Ok(())
+        }
+        "repo" => {
+            cmd_repo(ctx, args)?;
             Ok(())
         }
         "compact" => {

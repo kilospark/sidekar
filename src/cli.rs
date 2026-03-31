@@ -809,6 +809,17 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         hidden_in_help: false,
     },
     CommandSpec {
+        name: "repo",
+        usage: "<pack|tree> [args]",
+        summary: "Pack local repositories into agent-friendly context",
+        group: CommandGroup::Agent,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+        hidden_in_help: false,
+    },
+    CommandSpec {
         name: "compact",
         usage: "<classify|filter|run> ...",
         summary: "Compact noisy command output for agent use",
