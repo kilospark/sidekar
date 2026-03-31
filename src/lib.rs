@@ -56,6 +56,7 @@ pub mod api_client;
 pub mod auth;
 pub mod broker;
 pub mod bus;
+pub mod cdp_proxy;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -316,7 +317,8 @@ fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> 
     Ok(())
 }
 
-pub struct CdpClient {
+/// Direct WebSocket connection to Chrome's CDP (used when daemon unavailable).
+pub struct DirectCdp {
     pub ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     pub next_id: u64,
     pub pending_events: VecDeque<Value>,
@@ -325,7 +327,7 @@ pub struct CdpClient {
     closed: bool,
 }
 
-impl CdpClient {
+impl DirectCdp {
     pub async fn connect(ws_url: &str) -> Result<Self> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -529,10 +531,85 @@ impl CdpClient {
     }
 }
 
-impl Drop for CdpClient {
+impl Drop for DirectCdp {
     fn drop(&mut self) {
         if !self.closed && std::env::var_os("SIDEKAR_DEBUG").is_some() {
-            eprintln!("sidekar: CdpClient dropped without close()");
+            eprintln!("sidekar: DirectCdp dropped without close()");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CdpClient — unified handle (direct WS or daemon proxy)
+// ---------------------------------------------------------------------------
+
+/// Unified CDP handle. Commands use this type; the connection may be
+/// a direct WebSocket or proxied through the sidekar daemon.
+pub enum CdpClient {
+    Direct(DirectCdp),
+    Proxied(cdp_proxy::DaemonCdpProxy),
+}
+
+impl CdpClient {
+    /// Send a CDP command (no session scope).
+    pub async fn send(&mut self, method: &str, params: Value) -> Result<Value> {
+        match self {
+            Self::Direct(d) => d.send(method, params).await,
+            Self::Proxied(p) => p.send(method, params).await,
+        }
+    }
+
+    /// Send a CDP command scoped to a session.
+    pub async fn send_to_session(
+        &mut self,
+        method: &str,
+        params: Value,
+        session_id: &str,
+    ) -> Result<Value> {
+        match self {
+            Self::Direct(d) => d.send_to_session(method, params, session_id).await,
+            Self::Proxied(p) => p.send_to_session(method, params, session_id).await,
+        }
+    }
+
+    /// Wait for a CDP event, with timeout.
+    pub async fn next_event(&mut self, wait: Duration) -> Result<Option<Value>> {
+        match self {
+            Self::Direct(d) => d.next_event(wait).await,
+            Self::Proxied(p) => p.next_event(wait).await,
+        }
+    }
+
+    /// Close the connection. For proxied connections, this only closes the
+    /// unix socket — the daemon keeps the WS connection alive for reuse.
+    pub async fn close(self) {
+        match self {
+            Self::Direct(d) => d.close().await,
+            Self::Proxied(p) => p.close().await,
+        }
+    }
+
+    /// Access/set the auto-dialog handler.
+    pub fn set_auto_dialog(&mut self, accept: bool, prompt_text: String) {
+        match self {
+            Self::Direct(d) => d.auto_dialog = Some((accept, prompt_text)),
+            Self::Proxied(p) => p.auto_dialog = Some((accept, prompt_text)),
+        }
+    }
+
+    /// Clear the auto-dialog handler.
+    pub fn clear_auto_dialog(&mut self) {
+        match self {
+            Self::Direct(d) => d.auto_dialog = None,
+            Self::Proxied(p) => p.auto_dialog = None,
+        }
+    }
+
+    /// Access pending events buffer (for draining).
+    pub fn pending_events_mut(&mut self) -> &mut VecDeque<Value> {
+        match self {
+            Self::Direct(d) => &mut d.pending_events,
+            Self::Proxied(p) => &mut p.pending_events,
         }
     }
 }
@@ -545,6 +622,7 @@ pub async fn open_cdp(ctx: &mut AppContext) -> Result<CdpClient> {
             if msg.contains("WebSocket closed")
                 || msg.contains("Connection refused")
                 || msg.contains("failed to connect")
+                || msg.contains("daemon")
             {
                 wlog!("CDP connection failed ({msg}), retrying...");
                 sleep(Duration::from_millis(500)).await;
@@ -574,7 +652,19 @@ async fn open_cdp_once(ctx: &mut AppContext) -> Result<CdpClient> {
     let ws_url = tab
         .web_socket_debugger_url
         .ok_or_else(|| anyhow!("No active tab for this session. Navigate to a URL first."))?;
-    CdpClient::connect(&ws_url).await
+
+    // Try daemon proxy first (persistent connection, keepalive)
+    if daemon::is_running() {
+        match cdp_proxy::DaemonCdpProxy::connect(&ws_url).await {
+            Ok(proxy) => return Ok(CdpClient::Proxied(proxy)),
+            Err(_) => {
+                // Daemon unavailable or proxy failed — fall back to direct
+            }
+        }
+    }
+
+    // Direct connection (ephemeral per-call WS)
+    Ok(CdpClient::Direct(DirectCdp::connect(&ws_url).await?))
 }
 
 pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
@@ -644,7 +734,7 @@ pub async fn verify_cdp_ready(ctx: &AppContext) -> Result<()> {
         .web_socket_debugger_url
         .as_ref()
         .ok_or_else(|| anyhow!("No WebSocket URL"))?;
-    let mut cdp = CdpClient::connect(ws_url).await?;
+    let mut cdp = DirectCdp::connect(ws_url).await?;
     cdp.send("Browser.getVersion", json!({})).await?;
     cdp.closed = true; // prevent Drop warning — ephemeral check
     Ok(())
@@ -680,7 +770,7 @@ pub async fn create_new_window(ctx: &AppContext, url: Option<&str>) -> Result<De
         .web_socket_debugger_url
         .as_ref()
         .ok_or_else(|| anyhow!("No WebSocket URL for existing tab"))?;
-    let mut cdp = CdpClient::connect(ws_url).await?;
+    let mut cdp = DirectCdp::connect(ws_url).await?;
     let result = cdp
         .send(
             "Target.createTarget",
@@ -742,7 +832,7 @@ pub async fn detect_browser_from_port(ctx: &AppContext) -> Option<String> {
 
 /// Get the CDP window ID for a given target (tab).
 pub async fn get_window_id_for_target(_ctx: &AppContext, tab_ws_url: &str) -> Result<i64> {
-    let mut cdp = CdpClient::connect(tab_ws_url).await?;
+    let mut cdp = DirectCdp::connect(tab_ws_url).await?;
     let result = cdp.send("Browser.getWindowForTarget", json!({})).await?;
     cdp.close().await;
     result
@@ -757,7 +847,7 @@ pub async fn minimize_window_by_id(
     tab_ws_url: &str,
     window_id: i64,
 ) -> Result<()> {
-    let mut cdp = CdpClient::connect(tab_ws_url).await?;
+    let mut cdp = DirectCdp::connect(tab_ws_url).await?;
     cdp.send(
         "Browser.setWindowBounds",
         json!({"windowId": window_id, "bounds": {"windowState": "minimized"}}),
@@ -773,7 +863,7 @@ pub async fn restore_window_by_id(
     tab_ws_url: &str,
     window_id: i64,
 ) -> Result<()> {
-    let mut cdp = CdpClient::connect(tab_ws_url).await?;
+    let mut cdp = DirectCdp::connect(tab_ws_url).await?;
     cdp.send(
         "Browser.setWindowBounds",
         json!({"windowId": window_id, "bounds": {"windowState": "normal"}}),
@@ -891,7 +981,7 @@ pub async fn prepare_cdp(ctx: &mut AppContext, cdp: &mut CdpClient) -> Result<()
 
     if let Some(handler) = state.dialog_handler.clone() {
         cdp.send("Page.enable", json!({})).await?;
-        cdp.auto_dialog = Some((handler.accept, handler.prompt_text));
+        cdp.set_auto_dialog(handler.accept, handler.prompt_text);
         state.dialog_handler = None;
         ctx.save_session_state(&state)?;
     }
