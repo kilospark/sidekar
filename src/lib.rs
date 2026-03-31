@@ -2284,15 +2284,21 @@ sidekar grid [spec]
 
         "bus" => {
             "\
-sidekar bus <who|send|done> [args...]
+sidekar bus <who|requests|replies|show|send|done> [args...]
 
   Agent bus subcommands:
     who
+    requests [--status=open|answered|timed-out|cancelled|all] [--limit=N]
+    replies [--msg-id=<request_id>] [--limit=N]
+    show <msg_id>
     send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]
     done <next> <summary> <request> [--reply-to=<msg_id>]
 
   Examples:
     sidekar bus who
+    sidekar bus requests --status=open
+    sidekar bus replies --msg-id=msg_123
+    sidekar bus show msg_123
     sidekar bus send claude-2 \"Please review the PR\"
     sidekar bus done claude-2 \"Done\" \"Please take over\""
         }
@@ -2387,7 +2393,7 @@ sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...
 
         "repo" => {
             "\
-sidekar repo <pack|tree> [args]
+ sidekar repo <pack|tree|changes|actions> [args]
 
   Zero-config local repo context for agents. Infers the repo root from the current
   directory, respects .gitignore and .ignore, and also reads .sidekarignore.
@@ -2395,6 +2401,9 @@ sidekar repo <pack|tree> [args]
   Subcommands:
     pack [path]                              Pack repo files to stdout (markdown by default)
     tree [path]                              Show repo tree with estimated token counts
+    changes [path]                           Summarize changed files with lightweight symbol hints
+    actions [path]                           Discover likely test/lint/build/run actions
+    actions run <id> [path]                  Run a discovered action with compact output
 
   Flags:
     --style=markdown|json|plain              Output format for pack
@@ -2404,10 +2413,20 @@ sidekar repo <pack|tree> [args]
     --max-file-bytes=N                       Skip files larger than N bytes (default: 1000000)
     --diff                                   Include git worktree and staged diffs
     --logs[=N]                               Include recent git log entries (default: 10)
+    --since=<ref>                            Compare changes against a git ref (changes)
+    --max-files=N                            Limit reported files in changes (default: 20)
+    --max-symbols=N                          Limit symbol hints per changed file (default: 20)
+    --timeout=N                              Action timeout in seconds (actions run, default: 120)
+    --max-output-chars=N                     Clamp action stdout/stderr (actions run, default: 12000)
+    --include-output                         Include action stdout/stderr in the result
 
   Examples:
     sidekar repo pack
     sidekar repo tree
+    sidekar repo changes
+    sidekar repo changes --since=origin/main
+    sidekar repo actions
+    sidekar repo actions run cargo:check
     sidekar repo pack --style=json
     sidekar repo pack --include='src/**,README.md'
     rg --files src | sidekar repo pack --stdin
