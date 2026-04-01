@@ -43,6 +43,7 @@ async fn exec_bash(args: &Value) -> Result<String> {
         .and_then(|v| v.as_u64())
         .unwrap_or(120);
 
+    // Execute the command
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
         tokio::process::Command::new("bash")
@@ -58,22 +59,68 @@ async fn exec_bash(args: &Value) -> Result<String> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let exit_code = output.status.code().unwrap_or(-1);
 
-    let mut result = String::new();
+    let mut raw = String::new();
     if !stdout.is_empty() {
-        result.push_str(&stdout);
+        raw.push_str(&stdout);
     }
     if !stderr.is_empty() {
-        if !result.is_empty() {
-            result.push('\n');
+        if !raw.is_empty() {
+            raw.push('\n');
         }
-        result.push_str("STDERR:\n");
-        result.push_str(&stderr);
+        raw.push_str(&stderr);
     }
+
+    // Pipe through sidekar compact filter for token-efficient output.
+    // Compacts known tools (git, cargo, npm, cat, grep, etc.).
+    // Unknown commands pass through unchanged.
+    let result = if !raw.is_empty() {
+        compact_output(command, &raw).await.unwrap_or(raw)
+    } else {
+        raw
+    };
+
+    let mut final_result = result;
     if exit_code != 0 {
-        result.push_str(&format!("\nExit code: {exit_code}"));
+        final_result.push_str(&format!("\nExit code: {exit_code}"));
     }
-    if result.is_empty() {
-        result.push_str("(no output)");
+    if final_result.is_empty() {
+        final_result.push_str("(no output)");
     }
-    Ok(result)
+    Ok(final_result)
+}
+
+/// Pipe raw output through `sidekar compact filter <command>` for token savings.
+async fn compact_output(command: &str, raw: &str) -> Option<String> {
+    let mut child = tokio::process::Command::new("sidekar")
+        .arg("compact")
+        .arg("filter")
+        .args(command.split_whitespace())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    use tokio::io::AsyncWriteExt;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(raw.as_bytes()).await;
+        drop(stdin);
+    }
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        child.wait_with_output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if output.status.success() {
+        let compacted = String::from_utf8_lossy(&output.stdout).to_string();
+        if !compacted.is_empty() {
+            return Some(compacted);
+        }
+    }
+
+    None
 }
