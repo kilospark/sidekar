@@ -260,6 +260,15 @@ impl AppContext {
     pub fn load_session_state(&self) -> Result<SessionState> {
         let session_id = self.require_session_id()?.to_string();
         let path = self.session_state_file(&session_id);
+        // Shared lock for consistent reads (exclusive lock taken by save)
+        let lock_path = path.with_extension("lock");
+        let _lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .ok()
+            .and_then(|f| { f.lock_shared().ok(); Some(f) });
         let mut state = if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("failed reading {}", path.display()))?;
@@ -284,7 +293,18 @@ impl AppContext {
     pub fn save_session_state(&self, state: &SessionState) -> Result<()> {
         let session_id = self.require_session_id()?;
         let path = self.session_state_file(session_id);
-        atomic_write_json(&path, state)
+        // File-level lock to prevent concurrent read-modify-write races
+        let lock_path = path.with_extension("lock");
+        let lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .with_context(|| format!("failed opening lock {}", lock_path.display()))?;
+        lock_file.lock_exclusive().ok();
+        let result = atomic_write_json(&path, state);
+        lock_file.unlock().ok();
+        result
     }
 
     pub fn auto_discover_last_session(&mut self) -> Result<()> {

@@ -359,11 +359,11 @@ pub(crate) async fn cmd_cron_create(
         if command.trim().is_empty() {
             bail!("Bash command cannot be empty");
         }
-        // Block self-replicating cron jobs
-        let lower = command.to_lowercase();
-        if lower.contains("sidekar cron") || lower.contains("sidekar loop") {
-            bail!("Bash cron actions cannot create or modify cron/loop jobs (prevents self-replication)");
-        }
+    }
+    // Block cron creation from within cron execution (anti-replication).
+    // Checked via env var set in execute_cron_job, not string matching.
+    if std::env::var("SIDEKAR_CRON_DEPTH").is_ok() {
+        bail!("Cannot create cron/loop jobs from within a cron action (prevents self-replication)");
     }
     if let CronAction::Prompt { ref prompt } = action_parsed {
         if prompt.trim().is_empty() {
@@ -824,6 +824,9 @@ async fn execute_cron_job(
             }
         }
     }
+
+    // Prevent cron actions from creating more cron jobs (anti-replication)
+    unsafe { std::env::set_var("SIDEKAR_CRON_DEPTH", "1") };
 
     // Mark tool action so monitor doesn't double-notify
     super::monitor::mark_tool_action();
