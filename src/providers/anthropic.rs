@@ -53,13 +53,7 @@ pub async fn stream(
         headers.insert("x-api-key", api_key.parse()?);
     }
 
-    if super::is_verbose() {
-        eprintln!("\x1b[2m--- API Request ---");
-        eprintln!("POST {url}");
-        eprintln!("Headers: {headers:?}");
-        eprintln!("Body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
-        eprintln!("---\x1b[0m");
-    }
+    super::log_api_request(&url, &headers, &body);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -76,9 +70,7 @@ pub async fn stream(
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        if super::is_verbose() {
-            eprintln!("\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m");
-        }
+        super::log_api_error(status, &text);
         bail!("Anthropic API error ({}): {}", status, text);
     }
 
@@ -249,7 +241,7 @@ async fn parse_sse_stream(
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut decoder = super::SseDecoder::new();
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut usage = Usage::default();
@@ -267,39 +259,15 @@ async fn parse_sse_stream(
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("error reading SSE chunk")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk);
 
-        // Normalize \r\n to \n for consistent parsing
-        if buffer.contains('\r') {
-            buffer = buffer.replace("\r\n", "\n");
-        }
-
-        while let Some(event_end) = buffer.find("\n\n") {
-            let event_text = buffer[..event_end].to_string();
-            buffer = buffer[event_end + 2..].to_string();
-
-            let mut event_type = String::new();
-            let mut event_data_parts: Vec<String> = Vec::new();
-
-            for line in event_text.lines() {
-                if let Some(rest) = line.strip_prefix("event: ") {
-                    event_type = rest.to_string();
-                } else if let Some(rest) = line.strip_prefix("data: ") {
-                    event_data_parts.push(rest.to_string());
-                }
-            }
-
-            let event_data = event_data_parts.join("\n");
-            if event_data.is_empty() {
-                continue;
-            }
-
-            let data: Value = match serde_json::from_str(&event_data) {
-                Ok(v) => v,
-                Err(_) => continue,
+        while let Some(event) = decoder.next_event() {
+            let data: Value = match super::parse_sse_json(&event) {
+                Some(v) => v,
+                None => continue,
             };
 
-            match event_type.as_str() {
+            match event.event_type.as_deref().unwrap_or("") {
                 "message_start" => {
                     if let Some(msg) = data.get("message") {
                         model_id = msg.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();

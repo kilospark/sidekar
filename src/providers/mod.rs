@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod codex;
 pub mod oauth;
 
+use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
 
 static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -12,6 +13,123 @@ pub fn set_verbose(v: bool) {
 
 pub fn is_verbose() -> bool {
     VERBOSE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {
+    if !is_verbose() {
+        return;
+    }
+
+    eprintln!("\x1b[2m--- API Request ---");
+    eprintln!("POST {url}");
+    eprintln!("Headers: {headers:?}");
+    eprintln!(
+        "Body: {}",
+        serde_json::to_string_pretty(body).unwrap_or_default()
+    );
+    eprintln!("---\x1b[0m");
+}
+
+pub(super) fn log_api_error(status: StatusCode, text: &str) {
+    if !is_verbose() {
+        return;
+    }
+
+    eprintln!("\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m");
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SseEvent {
+    pub event_type: Option<String>,
+    pub data: String,
+}
+
+pub(super) struct SseDecoder {
+    buffer: String,
+}
+
+impl SseDecoder {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+        }
+    }
+
+    pub fn push_chunk(&mut self, chunk: &[u8]) {
+        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+
+        if self.buffer.contains('\r') {
+            self.buffer = self.buffer.replace("\r\n", "\n").replace('\r', "\n");
+        }
+    }
+
+    pub fn next_event(&mut self) -> Option<SseEvent> {
+        while let Some(event_end) = self.buffer.find("\n\n") {
+            let event_text = self.buffer[..event_end].to_string();
+            self.buffer = self.buffer[event_end + 2..].to_string();
+
+            let mut event_type = None;
+            let mut event_data_parts = Vec::new();
+
+            for line in event_text.lines() {
+                if let Some(rest) = line.strip_prefix("event: ") {
+                    event_type = Some(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix("event:") {
+                    event_type = Some(rest.trim().to_string());
+                } else if let Some(rest) = line.strip_prefix("data: ") {
+                    if rest == "[DONE]" {
+                        continue;
+                    }
+                    event_data_parts.push(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    let rest = rest.trim_start();
+                    if rest == "[DONE]" {
+                        continue;
+                    }
+                    event_data_parts.push(rest.to_string());
+                }
+            }
+
+            let data = event_data_parts.join("\n");
+            if data.is_empty() {
+                continue;
+            }
+
+            return Some(SseEvent { event_type, data });
+        }
+
+        None
+    }
+}
+
+pub(super) fn parse_sse_json(event: &SseEvent) -> Option<serde_json::Value> {
+    serde_json::from_str(&event.data).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SseDecoder;
+
+    #[test]
+    fn sse_decoder_parses_named_events_with_crlf_chunks() {
+        let mut decoder = SseDecoder::new();
+        decoder.push_chunk(b"event: message_start\r\ndata: {\"ok\":1}\r\n\r\n");
+
+        let event = decoder.next_event().expect("expected SSE event");
+        assert_eq!(event.event_type.as_deref(), Some("message_start"));
+        assert_eq!(event.data, "{\"ok\":1}");
+    }
+
+    #[test]
+    fn sse_decoder_ignores_done_and_collects_data_only_events() {
+        let mut decoder = SseDecoder::new();
+        decoder.push_chunk(b"data: [DONE]\n\ndata: {\"type\":\"response.created\"}\n\n");
+
+        let event = decoder.next_event().expect("expected SSE event");
+        assert_eq!(event.event_type, None);
+        assert_eq!(event.data, "{\"type\":\"response.created\"}");
+        assert!(decoder.next_event().is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------
