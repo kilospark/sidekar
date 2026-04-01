@@ -12,6 +12,7 @@ pub struct ReplOptions {
     pub model: Option<String>,
     pub credential: Option<String>,
     pub verbose: bool,
+    pub resume: bool,
 }
 
 /// Entry point for the REPL.
@@ -125,8 +126,13 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         return Ok(());
     }
 
-    // Interactive mode: resume or create session
-    let (mut session_id, mut history) = init_session(&cwd, &model)?;
+    // Default: fresh session. --resume to continue a previous one.
+    let (mut session_id, mut history) = if opts.resume {
+        init_session(&cwd, &model)?
+    } else {
+        let id = session::create_session(&cwd, &model, "repl")?;
+        (id, Vec::new())
+    };
 
     print_banner(&model);
 
