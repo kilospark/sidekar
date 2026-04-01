@@ -10,8 +10,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "bash".into(),
             description: "Execute a bash command and return its output. Use this for shell \
-                commands, including sidekar CLI commands (e.g., `sidekar navigate`, \
-                `sidekar click`, `sidekar memory write`, etc.)."
+                commands, build tools, git, and any CLI tools available on the system."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
