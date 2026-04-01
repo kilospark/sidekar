@@ -18,15 +18,21 @@ pub struct ReplOptions {
 pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     providers::set_verbose(opts.verbose || std::env::var("SIDEKAR_VERBOSE").is_ok());
 
+    let cred = opts.credential.as_deref();
+
+    // Infer default model from credential if no model specified
+    let default_model = match cred.and_then(providers::oauth::provider_type_for) {
+        Some("codex") => "gpt-5.1-codex-mini",
+        _ => providers::default_model(),
+    };
+
     let model = opts.model
         .or_else(|| std::env::var("SIDEKAR_MODEL").ok())
-        .unwrap_or_else(|| providers::default_model().to_string());
+        .unwrap_or_else(|| default_model.to_string());
 
     let provider_kind = providers::model_info(&model)
         .map(|m| m.provider)
         .ok_or_else(|| anyhow::anyhow!("Unsupported model: {model}"))?;
-
-    let cred = opts.credential.as_deref();
 
     let provider = match provider_kind {
         providers::ProviderKind::Anthropic => {
