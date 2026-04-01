@@ -224,37 +224,42 @@ fn build_system_prompt() -> String {
         .unwrap_or_else(|_| ".".to_string());
 
     let today = chrono_lite_today();
-    let skill_content = load_sidekar_skill();
 
     let mut prompt = String::new();
 
     prompt.push_str(
         "You are sidekar, a capable coding and automation assistant running as a REPL.\n\
-         You have access to tools for running shell commands, reading/writing files, \
-         and searching codebases.\n\n\
-         You also have access to the sidekar CLI for browser automation, desktop automation, \
-         inter-agent messaging, memory, and more — all accessible through the bash tool.\n\n",
+         You have tools for shell commands, file operations, and code search.\n\
+         You also have the `sidekar` CLI available via bash for extended capabilities.\n\n",
     );
 
+    // Guidelines
     prompt.push_str(
         "## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
-         - Use the read tool to read files, not cat/head/tail via bash.\n\
-         - Use the edit tool for surgical file edits, not sed/awk via bash.\n\
-         - Use grep/glob tools for searching, not grep/find via bash.\n\
-         - Use bash for shell commands, build/test commands, git, and sidekar CLI commands.\n\
-         - When running sidekar commands, use the CLI syntax: `sidekar <command> [args]`.\n\
+         - Use the read tool for files, edit for surgical changes, grep/glob for search.\n\
+         - Use bash for shell commands, build/test, git, and sidekar CLI commands.\n\
          - Do not guess file contents — read them first.\n\
-         - Show file paths clearly when referencing code.\n\n",
+         - Show file paths when referencing code.\n\n",
     );
 
-    if !skill_content.is_empty() {
-        prompt.push_str("## Sidekar CLI Reference\n\n\
-            The sidekar CLI is available in your PATH. Use it through the bash tool.\n\n");
-        prompt.push_str(&skill_content);
-        prompt.push_str("\n\n");
-    }
+    // Slim capability map — not the full SKILL.md
+    prompt.push_str(
+        "## sidekar CLI (via bash tool)\n\n\
+         Run `sidekar help <command>` for detailed syntax.\n\n\
+         Browser: navigate, read, click, type, fill, screenshot, ax-tree, observe, tabs, new-tab, close\n\
+         Extension (user's Chrome): ext tabs, ext read, ext click, ext type\n\
+         Desktop (macOS): desktop apps, desktop find, desktop click, desktop screenshot\n\
+         Bus (multi-agent): bus who, bus send <agent> <msg>, bus done <next> <summary> <request>\n\
+         Background: monitor start/stop, cron create/list/delete, loop <interval> <prompt>\n\
+         Memory: memory write/search/context/compact/patterns\n\
+         Tasks: tasks add/list/done/deps\n\
+         Context: compact <cmd>, pack/unpack <file>\n\
+         Secrets: kv get/set/list, totp get/add\n\
+         Repo: repo pack, repo actions\n\n",
+    );
 
+    // Project context files (AGENTS.md, CLAUDE.md, etc.)
     let context_files = load_context_files(&cwd);
     if !context_files.is_empty() {
         prompt.push_str("## Project Context\n\n");
@@ -267,24 +272,6 @@ fn build_system_prompt() -> String {
     ));
 
     prompt
-}
-
-fn load_sidekar_skill() -> String {
-    let candidates = [
-        dirs::home_dir().map(|h| h.join(".local/share/sidekar/SKILL.md")),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("SKILL.md"))),
-        Some(std::path::PathBuf::from("SKILL.md")),
-    ];
-    for candidate in candidates.into_iter().flatten() {
-        if let Ok(content) = std::fs::read_to_string(&candidate) {
-            if !content.is_empty() {
-                return content;
-            }
-        }
-    }
-    String::new()
 }
 
 fn load_context_files(cwd: &str) -> String {
