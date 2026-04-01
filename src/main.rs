@@ -205,6 +205,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                 let mut model: Option<String> = None;
                 let mut credential: Option<String> = None;
                 let mut verbose = false;
+                let mut resume = false;
                 let mut i = 0;
                 while i < args.len() {
                     match args[i].as_str() {
@@ -212,11 +213,12 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                         "-m" if i + 1 < args.len() => { model = Some(args[i + 1].clone()); i += 2; }
                         "-r" if i + 1 < args.len() => { credential = Some(args[i + 1].clone()); i += 2; }
                         "--verbose" | "-v" => { verbose = true; i += 1; }
+                        "--resume" => { resume = true; i += 1; }
                         _ => { i += 1; }
                     }
                 }
                 return sidekar::repl::run_with_options(sidekar::repl::ReplOptions {
-                    prompt, model, credential, verbose,
+                    prompt, model, credential, verbose, resume,
                 }).await;
             }
         }
