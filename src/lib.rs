@@ -710,10 +710,24 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
         }
     }
 
-    // Auto-recover: create a new tab if all owned tabs are gone
+    // If no owned tab was found, verify we're talking to the right Chrome
+    // before creating a replacement. If the CDP port is serving another agent's
+    // browser, bail instead of silently creating tabs in the wrong instance.
     let selected = match tab {
         Some(t) => t,
         None => {
+            // Check if any of Chrome's current tabs are from a different session
+            // (i.e., another agent owns tabs on this port). If so, refuse to create.
+            let other_sessions = other_sessions_on_port(ctx, &state).await;
+            if !other_sessions.is_empty() {
+                bail!(
+                    "Session tab lost but port {}:{} is serving another session ({}). \
+                     Run `sidekar launch` to start a fresh browser.",
+                    ctx.cdp_host,
+                    ctx.cdp_port,
+                    other_sessions.join(", ")
+                );
+            }
             wlog!("Session tab lost — auto-creating replacement tab");
             let new_tab = create_new_tab(ctx, None).await?;
             state.tabs.push(new_tab.id.clone());
@@ -724,6 +738,42 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
     ctx.save_session_state(&state)?;
 
     Ok(selected)
+}
+
+/// Check if any other sidekar sessions own tabs on the same CDP port.
+/// Returns session IDs of any sessions whose tabs are found on this port.
+async fn other_sessions_on_port(ctx: &AppContext, current_state: &SessionState) -> Vec<String> {
+    let current_sid = current_state.session_id.clone();
+    let data_dir = ctx.data_dir();
+
+    // Scan all state files looking for sessions that share our port
+    let mut others = Vec::new();
+    if let Ok(entries) = fs::read_dir(&data_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with("state-") || !name_str.ends_with(".json") {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                if let Ok(state) = serde_json::from_str::<SessionState>(&content) {
+                    if state.session_id == current_sid || state.session_id.is_empty() {
+                        continue;
+                    }
+                    // Same port?
+                    let port_matches = state.port.map_or(false, |p| p == ctx.cdp_port);
+                    let host_matches = state
+                        .host
+                        .as_deref()
+                        .map_or(true, |h| h == ctx.cdp_host);
+                    if port_matches && host_matches && !state.tabs.is_empty() {
+                        others.push(state.session_id);
+                    }
+                }
+            }
+        }
+    }
+    others
 }
 
 /// Verify Chrome's CDP is fully operational: HTTP + WebSocket + Browser.getVersion.
