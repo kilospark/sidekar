@@ -546,20 +546,49 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
     }
 }
 
-/// Read a line from the socket, but reject lines longer than `max_len` bytes.
+/// Read a line from the socket, rejecting lines longer than `max_len` bytes.
+/// Uses `read_until` on a pre-capped buffer to avoid unbounded allocation.
 async fn read_line_limited(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     buf: &mut String,
     max_len: usize,
 ) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
     buf.clear();
-    let n = reader.read_line(buf).await?;
-    if buf.len() > max_len {
-        buf.clear();
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "line exceeds maximum length",
-        ));
+    let mut raw = Vec::with_capacity(4096);
+    loop {
+        let mut byte = [0u8; 1];
+        let n = reader.read(&mut byte).await?;
+        if n == 0 {
+            // EOF
+            if raw.is_empty() {
+                return Ok(0);
+            }
+            break;
+        }
+        if byte[0] == b'\n' {
+            raw.push(byte[0]);
+            break;
+        }
+        raw.push(byte[0]);
+        if raw.len() > max_len {
+            // Drain remaining bytes until newline or EOF to avoid desync
+            loop {
+                let n = reader.read(&mut byte).await?;
+                if n == 0 || byte[0] == b'\n' {
+                    break;
+                }
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line exceeds maximum length",
+            ));
+        }
     }
-    Ok(n)
+    let s = String::from_utf8(raw).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })?;
+    let len = s.len();
+    *buf = s;
+    Ok(len)
 }
