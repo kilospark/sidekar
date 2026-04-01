@@ -16,7 +16,7 @@ pub struct ReplOptions {
 
 /// Entry point for the REPL.
 pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
-    providers::set_verbose(opts.verbose);
+    providers::set_verbose(opts.verbose || std::env::var("SIDEKAR_VERBOSE").is_ok());
 
     let model = opts.model
         .or_else(|| std::env::var("SIDEKAR_MODEL").ok())
@@ -60,11 +60,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         eprintln!("\x1b[2m[bus registration failed: {e}]\x1b[0m");
     }
 
-    // Resume or create session
-    let (mut session_id, mut history) = init_session(&cwd, &model)?;
-
-    // Single-prompt mode: run one turn and exit
+    // Single-prompt mode: fresh session, one turn, exit
     if let Some(input) = prompt {
+        let session_id = session::create_session(&cwd, &model, "oneshot")?;
+        let mut history: Vec<ChatMessage> = Vec::new();
         let user_msg = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text: input }],
@@ -85,6 +84,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let _ = broker::unregister_agent(&bus_name);
         return Ok(());
     }
+
+    // Interactive mode: resume or create session
+    let (mut session_id, mut history) = init_session(&cwd, &model)?;
 
     print_banner(&model);
 
