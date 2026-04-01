@@ -225,35 +225,19 @@ fn build_system_prompt() -> String {
 
     let today = chrono_lite_today();
 
-    let mut prompt = String::new();
-
-    prompt.push_str(
-        "You are a capable coding and automation assistant running as a REPL.\n\
-         You have tools for shell commands, file operations, and code search.\n\n",
-    );
-
-    prompt.push_str(
-        "## Guidelines\n\
+    format!(
+        "You are a capable coding and automation assistant.\n\
+         You have tools for shell commands, file operations, and code search.\n\n\
+         ## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
          - Use the read tool for files, edit for surgical changes, grep/glob for search.\n\
          - Use bash for shell commands, build/test, git, and any CLI tools.\n\
          - Do not guess file contents — read them first.\n\
-         - Show file paths when referencing code.\n\n",
-    );
-
-    // Project context files (AGENTS.md, CLAUDE.md, etc.)
-    let context_files = load_context_files(&cwd);
-    if !context_files.is_empty() {
-        prompt.push_str("## Project Context\n\n");
-        prompt.push_str(&context_files);
-        prompt.push_str("\n\n");
-    }
-
-    prompt.push_str(&format!(
-        "## Environment\n- Working directory: {cwd}\n- Date: {today}\n"
-    ));
-
-    prompt
+         - Show file paths when referencing code.\n\n\
+         ## Environment\n\
+         - Working directory: {cwd}\n\
+         - Date: {today}\n"
+    )
 }
 
 fn load_context_files(cwd: &str) -> String {
