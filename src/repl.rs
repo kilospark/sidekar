@@ -227,11 +227,9 @@ fn build_system_prompt() -> String {
 
     format!(
         "You are a capable coding and automation assistant.\n\
-         You have tools for shell commands, file operations, and code search.\n\n\
+         You have a bash tool for running shell commands.\n\n\
          ## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
-         - Use the read tool for files, edit for surgical changes, grep/glob for search.\n\
-         - Use bash for shell commands, build/test, git, and any CLI tools.\n\
          - Do not guess file contents — read them first.\n\
          - Show file paths when referencing code.\n\n\
          ## Environment\n\
