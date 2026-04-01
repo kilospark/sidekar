@@ -228,35 +228,17 @@ fn build_system_prompt() -> String {
     let mut prompt = String::new();
 
     prompt.push_str(
-        "You are sidekar, a capable coding and automation assistant running as a REPL.\n\
-         You have tools for shell commands, file operations, and code search.\n\
-         You also have the `sidekar` CLI available via bash for extended capabilities.\n\n",
+        "You are a capable coding and automation assistant running as a REPL.\n\
+         You have tools for shell commands, file operations, and code search.\n\n",
     );
 
-    // Guidelines
     prompt.push_str(
         "## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
          - Use the read tool for files, edit for surgical changes, grep/glob for search.\n\
-         - Use bash for shell commands, build/test, git, and sidekar CLI commands.\n\
+         - Use bash for shell commands, build/test, git, and any CLI tools.\n\
          - Do not guess file contents — read them first.\n\
          - Show file paths when referencing code.\n\n",
-    );
-
-    // Slim capability map — not the full SKILL.md
-    prompt.push_str(
-        "## sidekar CLI (via bash tool)\n\n\
-         Run `sidekar help <command>` for detailed syntax.\n\n\
-         Browser: navigate, read, click, type, fill, screenshot, ax-tree, observe, tabs, new-tab, close\n\
-         Extension (user's Chrome): ext tabs, ext read, ext click, ext type\n\
-         Desktop (macOS): desktop apps, desktop find, desktop click, desktop screenshot\n\
-         Bus (multi-agent): bus who, bus send <agent> <msg>, bus done <next> <summary> <request>\n\
-         Background: monitor start/stop, cron create/list/delete, loop <interval> <prompt>\n\
-         Memory: memory write/search/context/compact/patterns\n\
-         Tasks: tasks add/list/done/deps\n\
-         Context: compact <cmd>, pack/unpack <file>\n\
-         Secrets: kv get/set/list, totp get/add\n\
-         Repo: repo pack, repo actions\n\n",
     );
 
     // Project context files (AGENTS.md, CLAUDE.md, etc.)
