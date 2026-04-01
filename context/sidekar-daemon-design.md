@@ -85,20 +85,36 @@ Claude Code has CronCreate/CronList/CronDelete — session-only, in-memory, gone
 ```
 cron_create:
   schedule: "*/5 * * * *"      # standard 5-field cron, local timezone
-  action:                       # what to do when it fires
-    tool: "screenshot"          # sidekar tool name
-    args: { "url": "..." }     # tool arguments
+  action:                       # what to do when it fires (four types)
+    tool: "screenshot"          # 1. sidekar tool dispatch
+    args: { "url": "..." }
     # OR
-    batch: [...]               # batch sequence
+    batch: [...]               # 2. batch sequence of tools
+    # OR
+    command: "echo hello"      # 3. bash command (sh -c)
+    # OR
+    prompt: "check status"     # 4. inject text into agent PTY
   target: "agent-name"         # who gets the result via bus send
   name: "dashboard-check"     # human-readable label (optional)
+  --once                        # fire once then auto-delete
+
+loop:                           # shortcut for prompt-action cron
+  interval: "5m"               # human-friendly: 2m, 1h, 120s
+  prompt: "check deployment"
+  --once                        # optional one-shot
 
 cron_list:
   # returns all active cron jobs with next fire time
 
+cron_show:
+  id: "..."                    # detailed job info
+
 cron_delete:
   id: "..."                    # job ID from cron_create
 ```
+
+Anti-replication: `SIDEKAR_CRON_DEPTH` env var blocks cron creation from within
+cron actions. `max_cron_jobs` (default 10) is the hard cap.
 
 ### Persistence
 
