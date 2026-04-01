@@ -1,89 +1,133 @@
 # REPL Memory & System Prompt Design Discussion
 
-Date: 2026-04-01
+Date: 2026-04-01 (updated)
 
-Cross-repo analysis of system prompts and memory mechanisms from pi-mono, free-code (Claude Code), hermes-agent, and anything-llm. Applied to sidekar repl design.
+Cross-repo analysis of system prompts and memory mechanisms from six coding agent implementations. Applied to sidekar repl design.
 
-## System Prompt Architecture Comparison
+Repos analyzed:
+- **pi-mono** — badlogic/pi-mono (TypeScript, Anthropic/OpenAI/Google)
+- **free-code** — paoloanzn/free-code (Claude Code source, TypeScript/Bun)
+- **hermes-agent** — NousResearch/hermes-agent (Python, multi-provider)
+- **anything-llm** — Mintplex-Labs/anything-llm (Node.js, RAG-focused)
+- **claw42** — kilospark/claw42 (Rust agent + Next.js dashboard, multi-provider)
+- **codex** — openai/codex (Rust + TypeScript, OpenAI Codex CLI)
 
-| | **Claude Code** (free-code) | **pi-mono** | **hermes-agent** | **AnythingLLM** |
+---
+
+## System Prompt Architecture
+
+| | **Claude Code** | **pi-mono** | **hermes** | **claw42** | **Codex** | **AnythingLLM** |
+|---|---|---|---|---|---|---|
+| **Structure** | 18+ dynamic sections, cached vs cache-breaking per turn | Layered builder (intro, tools, guidelines, context, skills, date) | 7-layer assembly (identity, tool guidance, honcho, memory, skills, context, metadata) | Two-layer: identity files (SOUL/AGENTS/SKILLS/USER/IDENTITY.md) + tool instructions | XML-tagged sections (environment, user, apps, skills, plugins, AGENTS.md) | Simple: base + RAG context |
+| **Context files** | CLAUDE.md from 4 tiers (managed/user/project/local) + ancestor walk + @include + .claude/rules/*.md | AGENTS.md/CLAUDE.md from cwd + ancestors + global | .hermes.md first → AGENTS.md → CLAUDE.md → .cursorrules | AGENTS.md + SOUL.md + SKILLS.md from control plane DB | AGENTS.md scoped per directory tree, deeper files take precedence, user instructions override | Workspace settings only |
+| **Skills** | XML `<available_skills>`, model reads full file on demand | Same XML format, disableModelInvocation flag | Markdown index, conditional show (requires/fallback_for) | SKILLS.md from dashboard, composed process enforcement | Skills as `<skills_instructions>` tag | N/A |
+| **Caching** | Cache boundary marker, cached prefix reused across turns | Rebuilt only on tool change or extension reload | Frozen snapshot, rebuilt only after compression | Dynamic per-turn (no caching, fresh prompt each turn) | Not documented | N/A |
+| **Persona** | N/A (identity in prompt) | Custom prompt replaces default | SOUL.md or DEFAULT_AGENT_IDENTITY | SOUL.md (custom system prompt or _soul_default from DB), IDENTITY.md (agent self-discovery) | Personality enum in config | N/A |
+
+## Memory Systems
+
+| | **Claude Code** | **pi-mono** | **hermes** | **claw42** | **Codex** | **AnythingLLM** |
+|---|---|---|---|---|---|---|
+| **Persistent memory** | 4-type taxonomy (user/feedback/project/reference), markdown+frontmatter in ~/.claude/projects/ | None (compaction only) | 2 files: MEMORY.md (2200 chars) + USER.md (1375 chars), § delimited | Keyword-search recall, append-only markdown (MEMORY.md + daily logs), categories: core/daily/conversation | Staged pipeline: Stage1 extraction → Phase2 global consolidation, SQLite-backed | Vector DB plugin |
+| **Session memory** | 9-section template (12K cap), extracted at token thresholds | Compaction entries in JSONL | FTS5 cross-session search + Honcho dialectic modeling | Per-session history in HashMap, trimmed to 50 msgs, compacted with LLM | Rollout system with resume/fork, cross-session message history | Last N messages |
+| **Auto-extraction** | Forked subagent (max 5 turns), fire-and-forget, mutually exclusive with main agent | None | None (agent writes explicitly) | Heartbeat promotes daily→core memories every ~12h | Stage1 extraction per thread, Phase2 consolidation global | None |
+| **Memory recall** | Sonnet side-query selects up to 5 relevant files from manifest | buildSessionContext() injects compaction summaries | Frozen snapshot in system prompt, live writes don't change until compression | Top 5 keyword-matched entries prepended to user message (15% token budget) | Phase2InputSelection with usage tracking (citation counting) | Vector similarity search |
+| **Memory budget** | MEMORY.md: 200 lines/25KB, topic files unlimited | N/A | MEMORY.md: 2200 chars, USER.md: 1375 chars | 15% of remaining token budget for memory context | Not documented | top-K results |
+
+## Heartbeat & Background
+
+| | **claw42** | **hermes** | **Codex** | Others |
 |---|---|---|---|---|
-| **Structure** | Dynamic sections (18+), cached vs cache-breaking per turn | Layered builder (intro, tools, guidelines, context, skills, date) | 7-layer assembly (identity, tool guidance, honcho, memory, skills, context files, metadata) | Simple: base + context injection |
-| **Context files** | CLAUDE.md from 4 tiers (managed, user, project, local) + ancestor walk + `@include` directives + `.claude/rules/*.md` glob-conditional | AGENTS.md/CLAUDE.md from cwd + ancestors + global | .hermes.md/HERMES.md (first wins) → AGENTS.md → CLAUDE.md → .cursorrules | Workspace settings only |
-| **Skills** | XML `<available_skills>` with name/description/location; model reads full file on demand | Same XML format; `disableModelInvocation` flag | Markdown index with category groupings; conditional show (requires/fallback_for toolsets) | N/A |
-| **Caching** | Prompt split at cache boundary marker; cached prefix reused across turns; cache-breaking sections recompute | System prompt rebuilt only on tool change or extension reload | Frozen snapshot — rebuilt only after compression | N/A |
+| **Heartbeat** | Every 30min, reads HEARTBEAT.md checklist, runs full agent turn, suppresses if HEARTBEAT_OK | N/A | N/A | N/A |
+| **Memory hygiene** | Every ~12h, promotes daily memories to core, prunes stale entries | N/A | Stage1/Phase2 pipeline consolidation | N/A |
+| **Events** | ON_EVENT.md handlers (e.g., on_title_change), debounced 3s, non-blocking | N/A | N/A | N/A |
+| **Cron** | CRON.toml, 5-field schedule, state persisted, re-parses each iteration | cron scheduler with platform delivery | N/A | N/A |
 
-## Memory Systems Comparison
+## History & Compaction
 
-| | **Claude Code** | **pi-mono** | **hermes-agent** | **AnythingLLM** |
-|---|---|---|---|---|
-| **Persistent memory** | 4-type taxonomy (user/feedback/project/reference) in `~/.claude/projects/<proj>/memory/` as markdown+frontmatter | None (compaction summaries only) | 2 files: MEMORY.md (2200 chars) + USER.md (1375 chars), § delimited entries | Vector DB plugin (explicit store/search) |
-| **Session memory** | Structured template (9 sections: Title, State, Tasks, Files, Workflow, Errors, Docs, Learnings, Results, Worklog) — 12K token cap | Compaction entries in JSONL session file | FTS5 search across all sessions + Honcho dialectic user modeling | Conversation history (last N messages) |
-| **Auto-extraction** | Forked subagent (max 5 turns) runs after each query, fire-and-forget, mutually exclusive with main agent writes | None — manual compaction only | None — agent writes memory explicitly via tool | None |
-| **Memory recall** | Sonnet side-query selects up to 5 relevant topic files from manifest; MEMORY.md always in system prompt | buildSessionContext() injects compaction summaries as messages | Frozen snapshot injected at session start; live writes don't change prompt until compression | Vector similarity search (top-K) |
-| **Index** | MEMORY.md (200 lines, 25KB max) — one-line pointers to topic files | N/A | N/A (entries are inline in MEMORY.md/USER.md) | N/A |
+| | **Claude Code** | **pi-mono** | **hermes** | **claw42** | **Codex** | **AnythingLLM** |
+|---|---|---|---|---|---|---|
+| **Trigger** | Auto at contextWindow - reserveTokens | Auto at contextWindow - reserveTokens | 50% of context window | Count (>30 msgs) + configurable threshold | Not documented (rollout-based) | Token limit |
+| **Strategy** | Microcompact (clear old tool results) + full summarization | LLM summarizes oldest turns, keeps recent by token budget | Phase 1: clear old results. Phase 2: LLM structured summary | Keep last 10, serialize+summarize older, cascade existing summaries | Resume/fork model (keeps full rollout history) | Middle truncation ("cannonball") |
+| **Summary format** | 9 sections: Goal, Constraints, Progress, Decisions, Next Steps, Critical Context, File Ops | Goal, Constraints, Progress (Done/InProgress/Blocked), Key Decisions, Next Steps, Critical Context | Same structured template | Single `[Conversation Summary]` block, low temperature (0.2) | Per-thread Stage1 extraction (raw_memory + rollout_summary) | N/A |
+| **Preservation** | Previous summary iteratively updated | Previous summary preserved and updated | Previous summary integrated | Cascading: existing summary preserved and integrated | Rollout history retained, forked | Priority: user > system > history |
+
+## Token Budget Allocation (claw42)
+
+claw42 has the most explicit budget system:
+- **60%** history (conversation turns)
+- **15%** memory context (recalled memories)
+- **25%** tool results (capped at 50KB per result)
+- System prompt and first user message get remainder
 
 ## Key Design Patterns
 
-### 1. Frozen snapshot + compression-triggered reload (hermes)
-System prompt is cached for prefix cache stability. Memory writes during a session don't change the prompt. Only after compaction does the memory reload, capturing new writes.
+### 1. Frozen snapshot + compression-triggered reload (hermes, claw42)
+System prompt cached for prefix cache stability. Memory writes mid-session don't change the prompt. Only after compaction does memory reload. claw42 does this implicitly — memory snapshot is built once at turn start.
 
 ### 2. Four-type memory taxonomy (Claude Code)
-user/feedback/project/reference with explicit "what NOT to save" rules prevents memory bloat. The `description` field enables relevance-based recall without reading full files.
+user/feedback/project/reference with "what NOT to save" rules. Description field enables relevance-based recall without reading full files. Most sophisticated deduplication of the six.
 
 ### 3. Auto-extraction via forked subagent (Claude Code)
-Fire-and-forget background extraction after each turn. Max 5 turns. Read-only tools except for memory dir. Cursor-based (only processes new messages). Coalescing prevents duplicate runs.
+Fire-and-forget background extraction. Max 5 turns. Read-only tools except memory dir. Cursor-based. Coalescing prevents duplicates. Highest automation level.
 
-### 4. Session search with FTS5 + LLM summarization (hermes)
-Raw FTS5 is fast; expensive LLM summarization only on top N results. Empty query = instant recent sessions list (zero LLM cost).
+### 4. Heartbeat memory hygiene (claw42)
+Background timer promotes ephemeral daily memories to durable core storage. Self-healing checks (CDP, disk). Only implementation that actively curates its own memory.
 
-### 5. Structured session notes (Claude Code)
-9-section template (Current State, Task spec, Files, Workflow, Errors, Learnings, etc.) with 2000 tokens/section cap. Preserved through compaction.
+### 5. Staged memory pipeline (Codex)
+Stage1 per-thread extraction → Phase2 global consolidation. Usage tracking (citation counting). Most structured pipeline for multi-session memory.
 
-### 6. Honcho dialectic modeling (hermes)
-External service that builds a user model from conversation history. Prefetched in background, consumed next turn.
+### 6. AGENTS.md scoped by directory (Codex)
+AGENTS.md files scope to their directory tree. Deeper files take precedence. Direct user instructions override all. Clean hierarchical model.
+
+### 7. Keyword recall with budget (claw42)
+Simple but effective: keyword match, score by fraction of matches, top 5, capped at 15% of token budget. No LLM needed for recall.
+
+### 8. Session search with FTS5 + LLM summarization (hermes)
+Raw FTS5 is fast; expensive LLM summarization only on top N results. Empty query = instant recent sessions.
+
+### 9. Append-only memory with entity tags (claw42)
+Audit trail by design — forget is a no-op for markdown backend. Entity tags (person:alice, project:auth) enable structured queries without a schema.
+
+### 10. Context fragment tags (Codex)
+XML tags (`<environment_context>`, `<user_instructions>`, `<skills_instructions>`) wrap each context section. Clean separation, easy to strip or replace.
+
+---
 
 ## Adoption Priority for sidekar repl
 
 | # | Feature | From | Effort | Why |
 |---|---------|------|--------|-----|
-| 1 | Frozen system prompt with compression reload | hermes | Small | Cache stability |
-| 2 | Memory tool (store/recall/forget) | hermes | Medium | Simple 2-file approach |
-| 3 | FTS5 on session entries | hermes | Small | Already have SQLite |
-| 4 | Context file hierarchy | Claude Code | Small | Add .sidekar/rules/*.md |
-| 5 | Structured compaction summary | pi-mono/CC | Done | Already implemented |
-| 6 | Auto-memory extraction | Claude Code | Large | Needs careful CLI design |
+| 1 | Memory recall injected into user message | claw42 | Small | sidekar already has memory; just prepend top matches before user msg |
+| 2 | Frozen prompt with compression reload | hermes/claw42 | Small | Cache stability, already nearly there |
+| 3 | FTS5 on session entries | hermes | Small | Already have SQLite table, add virtual table |
+| 4 | AGENTS.md scoped loading | Codex | Small | Directory-scoped, deeper wins, user overrides |
+| 5 | Token budget allocation | claw42 | Medium | Explicit %s for history/memory/tools |
+| 6 | Heartbeat memory promotion | claw42 | Medium | Background daily→core curation |
+| 7 | Auto-memory extraction | Claude Code | Large | Forked subagent pattern |
+| 8 | Staged memory pipeline | Codex | Large | Multi-phase extraction + consolidation |
+
+---
 
 ## Open Design Questions
 
-### SKILL.md in system prompt
+### Memory approach for sidekar repl
+sidekar already has `sidekar memory` (FTS5, typed entries, tags, search, compact). Options:
+1. **Inject top matches** — like claw42, prepend recalled memories to user message each turn (15% budget)
+2. **Tools only** — LLM calls `sidekar memory search/write` through bash on demand
+3. **Hybrid** — inject a brief on session start, tools for explicit save/search
 
-**Current:** sidekar's SKILL.md (the full CLI reference doc, ~4000 tokens) is injected directly into the system prompt.
+### Context file loading
+Stripped from system prompt. Options:
+1. **Codex model** — AGENTS.md scoped by directory, deeper wins, auto-loaded
+2. **On demand** — LLM reads context files when it needs them via bash
+3. **Skill-triggered** — context loading as a discoverable skill
 
-**Problem:** In REPL mode, the LLM IS sidekar — it calls sidekar through the bash tool. The SKILL.md was written for OTHER agents (Claude Code, Codex, Cursor) to learn how to use sidekar. But when sidekar is the agent, it already has bash/read/write/edit/glob/grep as native tools. Injecting SKILL.md:
-- Wastes ~4000 tokens of context on every turn
-- Contains instructions like "Use the CLI help as the source of truth" — but the REPL already IS the CLI
-- Has operating rules and targeting priority that are redundant with the built-in tool descriptions
+### Persona system
+claw42 has SOUL.md (custom system prompt) + IDENTITY.md (agent self-discovery). Could enable:
+- `~/.sidekar/SOUL.md` — global personality
+- `.sidekar/SOUL.md` — project-specific persona
+- Identity emergence through self-modification
 
-**Options:**
-1. **Don't inject SKILL.md** — the LLM already has sidekar commands available via bash. If it needs to know a command, it can run `sidekar help <command>`.
-2. **Inject a slim summary** — a short (~500 token) capability map listing command categories without full syntax. The LLM runs `sidekar help <command>` for details.
-3. **Inject only non-obvious commands** — skip browser/desktop basics, include bus, memory, tasks, compact, and other coordination commands that the LLM wouldn't discover on its own.
-4. **Progressive disclosure like pi-mono** — list skills as name+description in prompt, LLM reads the full file only when needed. This is what pi-mono does with skills.
-
-**Recommendation (TBD):** Option 2 or 4 — slim capability map in prompt, full details on demand via `sidekar help` or `read SKILL.md`.
-
-### Memory approach
-
-sidekar already has `sidekar memory` — a full FTS5-backed memory system with types, tags, search, compact, and patterns. The REPL could expose this as a tool directly rather than building a separate memory system. The LLM would call `sidekar memory write "fact"` and `sidekar memory search "topic"` through bash.
-
-### Context files
-
-sidekar currently loads AGENTS.md and CLAUDE.md from cwd + ancestors. Should also support:
-- `.sidekar/rules/*.md` (project-specific REPL instructions)
-- `~/.sidekar/SYSTEM.md` (global REPL personality)
-- `SIDEKAR.md` (project-level sidekar-specific instructions)
-
-### Session search
-
-The `repl_entries` table could get an FTS5 virtual table for cross-session search, similar to hermes. Combined with sidekar's existing memory search, this would give the REPL agent full recall across both structured memory and conversation history.
+### Session memory vs persistent memory
+Claude Code separates session notes (9-section template, 12K cap) from persistent memory (4-type files). claw42 has daily logs that get promoted to core. Question: should sidekar repl have session-scoped notes that survive compaction?
