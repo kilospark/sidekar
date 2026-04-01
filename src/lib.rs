@@ -685,6 +685,14 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
     let mut state = ctx.load_session_state()?;
     let tabs = get_debug_tabs(ctx).await?;
 
+    // Prune stale tab IDs that no longer exist in Chrome
+    let live_ids: HashSet<&str> = tabs.iter().map(|t| t.id.as_str()).collect();
+    let before = state.tabs.len();
+    state.tabs.retain(|id| live_ids.contains(id.as_str()));
+    if state.tabs.len() < before {
+        wlog!("Pruned {} stale tab ID(s) from session state", before - state.tabs.len());
+    }
+
     let mut tab = None;
     if let Some(active_id) = state.active_tab_id.clone() {
         tab = tabs
@@ -785,9 +793,9 @@ pub async fn verify_cdp_ready(ctx: &AppContext) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow!("No WebSocket URL"))?;
     let mut cdp = DirectCdp::connect(ws_url).await?;
-    cdp.send("Browser.getVersion", json!({})).await?;
-    cdp.closed = true; // prevent Drop warning — ephemeral check
-    Ok(())
+    let result = cdp.send("Browser.getVersion", json!({})).await;
+    cdp.close().await;
+    result.map(|_| ())
 }
 
 pub async fn get_debug_tabs(ctx: &AppContext) -> Result<Vec<DebugTab>> {
@@ -931,9 +939,10 @@ pub async fn http_get_text(ctx: &AppContext, path: &str) -> Result<String> {
         .send()
         .await
         .with_context(|| format!("GET {url} failed"))?;
-    resp.text()
+    timeout(Duration::from_secs(10), resp.text())
         .await
-        .context("failed reading GET response body")
+        .with_context(|| format!("GET {url} body read timed out"))?
+        .with_context(|| format!("GET {url} body read failed"))
 }
 
 pub async fn http_put_text(ctx: &AppContext, path: &str) -> Result<String> {
@@ -944,9 +953,10 @@ pub async fn http_put_text(ctx: &AppContext, path: &str) -> Result<String> {
         .send()
         .await
         .with_context(|| format!("PUT {url} failed"))?;
-    resp.text()
+    timeout(Duration::from_secs(10), resp.text())
         .await
-        .context("failed reading PUT response body")
+        .with_context(|| format!("PUT {url} body read timed out"))?
+        .with_context(|| format!("PUT {url} body read failed"))
 }
 
 pub fn check_js_error(result: &Value) -> Result<()> {

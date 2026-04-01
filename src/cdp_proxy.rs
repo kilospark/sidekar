@@ -66,8 +66,9 @@ impl CdpPool {
                 conn.last_used.store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
                 return conn.cmd_tx.clone();
             }
-            // Connection task died — remove and recreate
         }
+        // Remove dead entry before recreating
+        self.connections.remove(ws_url);
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let last_used = Arc::new(std::sync::atomic::AtomicU64::new(epoch_secs()));
@@ -143,16 +144,15 @@ async fn connection_task(
     mut cmd_rx: mpsc::UnboundedReceiver<PoolCmd>,
     last_used: Arc<std::sync::atomic::AtomicU64>,
 ) {
-    // Try to connect
-    let mut ws = match connect_ws(&ws_url).await {
-        Ok(ws) => ws,
-        Err(e) => {
-            // Drain any pending commands with errors
-            while let Some(cmd) = cmd_rx.recv().await {
-                if let PoolCmd::Send { response_tx, .. } = cmd {
-                    let _ = response_tx.send(Err(anyhow::anyhow!("CDP connect failed: {e}")));
-                }
-            }
+    // Try to connect (with timeout to avoid hanging on unresponsive ports)
+    let mut ws = match tokio::time::timeout(Duration::from_secs(10), connect_ws(&ws_url)).await {
+        Ok(Ok(ws)) => ws,
+        Ok(Err(e)) => {
+            drain_pending_with_error(&mut cmd_rx, &format!("CDP connect failed: {e}")).await;
+            return;
+        }
+        Err(_) => {
+            drain_pending_with_error(&mut cmd_rx, "CDP connect timed out after 10s").await;
             return;
         }
     };
@@ -261,6 +261,18 @@ async fn connection_task(
                     break;
                 }
             }
+        }
+    }
+}
+
+/// Drain all pending pool commands, sending each an error response.
+async fn drain_pending_with_error(
+    cmd_rx: &mut mpsc::UnboundedReceiver<PoolCmd>,
+    msg: &str,
+) {
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        if let PoolCmd::Send { response_tx, .. } = cmd {
+            let _ = response_tx.send(Err(anyhow::anyhow!("{}", msg)));
         }
     }
 }
@@ -503,7 +515,13 @@ pub async fn handle_cdp_connection(
                                     p.dispatch_cdp(&ws_url, method, params, session_id)
                                 };
                                 let result = match rx {
-                                    Ok(rx) => rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("CDP response dropped"))),
+                                    Ok(rx) => {
+                                        match tokio::time::timeout(Duration::from_secs(120), rx).await {
+                                            Ok(Ok(val)) => val,
+                                            Ok(Err(_)) => Err(anyhow::anyhow!("CDP response dropped")),
+                                            Err(_) => Err(anyhow::anyhow!("CDP response timed out after 120s")),
+                                        }
+                                    }
                                     Err(e) => Err(e),
                                 };
 
