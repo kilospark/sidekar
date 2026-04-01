@@ -359,6 +359,11 @@ pub(crate) async fn cmd_cron_create(
         if command.trim().is_empty() {
             bail!("Bash command cannot be empty");
         }
+        // Block self-replicating cron jobs
+        let lower = command.to_lowercase();
+        if lower.contains("sidekar cron") || lower.contains("sidekar loop") {
+            bail!("Bash cron actions cannot create or modify cron/loop jobs (prevents self-replication)");
+        }
     }
     if let CronAction::Prompt { ref prompt } = action_parsed {
         if prompt.trim().is_empty() {

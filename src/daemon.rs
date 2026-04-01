@@ -16,6 +16,10 @@ use tokio::sync::Mutex;
 
 use crate::ext::{ExtState, SharedExtState};
 
+/// Maximum line length accepted on the daemon socket (1 MB).
+/// Prevents memory exhaustion from a malicious local client.
+const MAX_LINE_LEN: usize = 1_048_576;
+
 fn data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -58,6 +62,10 @@ pub fn ensure_running() -> Result<()> {
     if is_running() {
         return Ok(());
     }
+
+    // Clean stale pid/socket from a previous crash (kill -9, etc.)
+    let _ = std::fs::remove_file(pid_path());
+    let _ = std::fs::remove_file(socket_path());
 
     let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
     let child = std::process::Command::new(exe)
@@ -309,11 +317,9 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
-    let Ok(n) = reader.read_line(&mut line).await else {
-        return;
-    };
-    if n == 0 {
-        return;
+    match read_line_limited(&mut reader, &mut line, MAX_LINE_LEN).await {
+        Ok(0) | Err(_) => return,
+        _ => {}
     }
 
     let first = match serde_json::from_str::<Value>(line.trim()) {
@@ -369,8 +375,8 @@ async fn handle_connection(
     loop {
         let cmd = match current.take() {
             Some(v) => v,
-            None => match reader.read_line(&mut line).await {
-                Ok(0) => break,
+            None => match read_line_limited(&mut reader, &mut line, MAX_LINE_LEN).await {
+                Ok(0) | Err(_) => break,
                 Ok(_) => {
                     let parsed = serde_json::from_str::<Value>(line.trim());
                     line.clear();
@@ -389,7 +395,6 @@ async fn handle_connection(
                         }
                     }
                 }
-                Err(_) => break,
             },
         };
 
@@ -537,8 +542,24 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
             crate::ext::get_status(&s.ext_state).await
         }
 
-        // TODO: cron commands (create, list, delete)
-        // TODO: monitor commands (start, stop)
         _ => json!({"error": format!("Unknown command: {cmd_type}")}),
     }
+}
+
+/// Read a line from the socket, but reject lines longer than `max_len` bytes.
+async fn read_line_limited(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    buf: &mut String,
+    max_len: usize,
+) -> std::io::Result<usize> {
+    buf.clear();
+    let n = reader.read_line(buf).await?;
+    if buf.len() > max_len {
+        buf.clear();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "line exceeds maximum length",
+        ));
+    }
+    Ok(n)
 }
