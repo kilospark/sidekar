@@ -56,6 +56,10 @@ pub mod api_client;
 pub mod auth;
 pub mod broker;
 pub mod bus;
+
+pub mod agent;
+pub mod providers;
+pub mod repl;
 pub mod cdp_proxy;
 pub mod cli;
 pub mod commands;
@@ -259,8 +263,14 @@ impl AppContext {
         let mut state = if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("failed reading {}", path.display()))?;
-            serde_json::from_str::<SessionState>(&content)
-                .with_context(|| format!("failed parsing {}", path.display()))?
+            match serde_json::from_str::<SessionState>(&content) {
+                Ok(s) => s,
+                Err(e) => {
+                    wlog!("Corrupt session state at {}, resetting: {e}", path.display());
+                    let _ = fs::remove_file(&path);
+                    SessionState::default()
+                }
+            }
         } else {
             SessionState::default()
         };
@@ -729,11 +739,11 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
             let other_sessions = other_sessions_on_port(ctx, &state).await;
             if !other_sessions.is_empty() {
                 bail!(
-                    "Session tab lost but port {}:{} is serving another session ({}). \
-                     Run `sidekar launch` to start a fresh browser.",
-                    ctx.cdp_host,
+                    "All tabs for this session were closed. Other session(s) ({}) \
+                     are using the same browser on port {}. \
+                     Run `sidekar new-tab` to create a tab, or `sidekar launch` for a fresh browser.",
+                    other_sessions.join(", "),
                     ctx.cdp_port,
-                    other_sessions.join(", ")
                 );
             }
             wlog!("Session tab lost — auto-creating replacement tab");

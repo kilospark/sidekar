@@ -163,25 +163,38 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         .spawn()
         .with_context(|| format!("failed launching browser at {}", browser.path))?;
 
-    // Wait for Chrome to start and expose at least one tab
+    // Wait for Chrome to start and expose at least one tab.
+    // Clean-home launches can take longer (profile creation), so allow up to 30s.
     let mut ready = false;
-    for _ in 0..30 {
+    let mut last_err = String::new();
+    for _ in 0..60 {
         sleep(Duration::from_millis(500)).await;
-        if let Ok(tabs) = get_debug_tabs(ctx).await {
-            if !tabs.is_empty() {
+        match get_debug_tabs(ctx).await {
+            Ok(tabs) if !tabs.is_empty() => {
                 // HTTP is up — now verify WebSocket + CDP protocol
-                if verify_cdp_ready(ctx).await.is_ok() {
-                    ready = true;
-                    break;
+                match verify_cdp_ready(ctx).await {
+                    Ok(()) => {
+                        ready = true;
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("WS check failed: {e:#}");
+                    }
                 }
-                // WebSocket not ready yet — keep polling
+            }
+            Ok(_) => {
+                last_err = "HTTP up but no tabs yet".to_string();
+            }
+            Err(e) => {
+                last_err = format!("{e:#}");
             }
         }
     }
     if !ready {
         bail!(
-            "{} launched but debug port not responding after 15s.",
-            browser.name
+            "{} launched but debug port not responding after 30s. Last error: {}",
+            browser.name,
+            last_err
         );
     }
 
