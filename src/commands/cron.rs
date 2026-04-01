@@ -360,8 +360,8 @@ pub(crate) async fn cmd_cron_create(
             bail!("Bash command cannot be empty");
         }
     }
-    // Block cron creation from within cron execution (anti-replication).
-    // Checked via env var set in execute_cron_job, not string matching.
+    // Anti-replication: env var guard (best-effort, bypassable by child unset).
+    // The hard cap at max_cron_jobs (default 10) is the real safety net.
     if std::env::var("SIDEKAR_CRON_DEPTH").is_ok() {
         bail!("Cannot create cron/loop jobs from within a cron action (prevents self-replication)");
     }
