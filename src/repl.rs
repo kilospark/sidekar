@@ -20,9 +20,21 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     let cred = opts.credential.as_deref();
 
-    // Infer default model from credential if no model specified
+    // Validate credential name if provided
+    if let Some(name) = cred {
+        if providers::oauth::provider_type_for(name).is_none() {
+            anyhow::bail!(
+                "Unknown credential: '{name}'. Credential names must start with 'claude' or 'codex'.\n\
+                 Examples: claude, claude-1, codex, codex-work\n\
+                 Login with: sidekar repl login {name}"
+            );
+        }
+    }
+
+    // Infer default model from credential provider
     let default_model = match cred.and_then(providers::oauth::provider_type_for) {
         Some("codex") => "gpt-5.1-codex-mini",
+        Some("anthropic") => providers::default_model(),
         _ => providers::default_model(),
     };
 
@@ -30,9 +42,31 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         .or_else(|| std::env::var("SIDEKAR_MODEL").ok())
         .unwrap_or_else(|| default_model.to_string());
 
+    // Validate model name
     let provider_kind = providers::model_info(&model)
         .map(|m| m.provider)
-        .ok_or_else(|| anyhow::anyhow!("Unsupported model: {model}"))?;
+        .ok_or_else(|| {
+            let available = providers::MODELS.iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!("Unknown model: '{model}'. Available: {available}")
+        })?;
+
+    // Validate credential and model match the same provider
+    if let Some(name) = cred {
+        let cred_provider = providers::oauth::provider_type_for(name).unwrap_or("");
+        let model_provider = match provider_kind {
+            providers::ProviderKind::Anthropic => "anthropic",
+            providers::ProviderKind::Codex => "codex",
+        };
+        if cred_provider != model_provider {
+            anyhow::bail!(
+                "Mismatch: credential '{name}' is {cred_provider} but model '{model}' is {model_provider}.\n\
+                 Use a matching model or credential."
+            );
+        }
+    }
 
     let provider = match provider_kind {
         providers::ProviderKind::Anthropic => {
