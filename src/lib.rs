@@ -202,6 +202,15 @@ impl AppContext {
         self.data_dir().join("last-session")
     }
 
+    /// Whether this process is running inside a named agent (PTY wrapper).
+    /// When true, session discovery must NEVER fall back to the generic
+    /// last-session file — that would connect to another agent's browser.
+    pub fn is_named_agent(&self) -> bool {
+        env::var("SIDEKAR_AGENT_NAME")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    }
+
     pub fn session_state_file(&self, session_id: &str) -> PathBuf {
         self.data_dir().join(format!("state-{session_id}.json"))
     }
@@ -308,13 +317,22 @@ impl AppContext {
     }
 
     pub fn auto_discover_last_session(&mut self) -> Result<()> {
-        let sid = fs::read_to_string(self.last_session_file())
-            .context("No active session")?
-            .trim()
-            .to_string();
-        if sid.is_empty() {
-            bail!("No active session");
-        }
+        let session_file = self.last_session_file();
+        let sid = match fs::read_to_string(&session_file) {
+            Ok(s) => {
+                let trimmed = s.trim().to_string();
+                if trimmed.is_empty() {
+                    bail!("No active session");
+                }
+                trimmed
+            }
+            Err(_) => {
+                // Per-agent file doesn't exist. If we're a named agent,
+                // do NOT fall back to the generic file — that belongs to
+                // another agent and would cause cross-session tab takeover.
+                bail!("No active session");
+            }
+        };
         self.current_session_id = Some(sid);
         self.hydrate_connection_from_state()
     }
