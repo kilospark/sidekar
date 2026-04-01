@@ -99,14 +99,15 @@ impl CdpPool {
         });
     }
 
-    /// Send a CDP command through the pool.
-    pub async fn send_cdp(
+    /// Dispatch a CDP command through the pool. Returns a oneshot receiver
+    /// for the response. The caller must NOT hold the pool lock while awaiting.
+    pub fn dispatch_cdp(
         &mut self,
         ws_url: &str,
         method: &str,
         params: Value,
         session_id: Option<&str>,
-    ) -> Result<Value> {
+    ) -> Result<oneshot::Receiver<Result<Value>>> {
         let cmd_tx = self.get_or_create(ws_url);
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -119,9 +120,7 @@ impl CdpPool {
             })
             .map_err(|_| anyhow::anyhow!("CDP connection task died"))?;
 
-        response_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("CDP connection task dropped response"))?
+        Ok(response_rx)
     }
 
     /// Subscribe to events for a ws_url. Returns a receiver for CDP events.
@@ -498,9 +497,14 @@ pub async fn handle_cdp_connection(
                                 let session_id = cmd.get("session_id").and_then(Value::as_str);
                                 let req_id = cmd.get("req_id").and_then(Value::as_u64).unwrap_or(0);
 
-                                let result = {
-                                    let mut pool = pool.lock().await;
-                                    pool.send_cdp(&ws_url, method, params, session_id).await
+                                // Dispatch under lock (brief), then await response without lock
+                                let rx = {
+                                    let mut p = pool.lock().await;
+                                    p.dispatch_cdp(&ws_url, method, params, session_id)
+                                };
+                                let result = match rx {
+                                    Ok(rx) => rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("CDP response dropped"))),
+                                    Err(e) => Err(e),
                                 };
 
                                 let response = match result {
