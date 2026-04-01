@@ -77,6 +77,7 @@ pub mod repo;
 pub mod rtk;
 pub mod scripts;
 pub mod scope;
+pub mod session;
 pub mod skill;
 pub mod tasks;
 pub mod transport;
