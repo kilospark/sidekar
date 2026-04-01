@@ -63,6 +63,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     };
 
     if args.is_empty() {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return sidekar::repl::run().await;
+        }
         print_help();
         return Ok(());
     }
@@ -280,7 +283,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
 
     // Auto-route eligible browser commands through the Chrome extension when it
     // is connected and authenticated.
-    if sidekar::is_ext_routable_command(&command) && sidekar::ext::is_ext_available() {
+    // Extension routing: only use when NOT inside a PTY wrapper.
+    // PTY agents must use their own CDP-launched Chrome for session isolation.
+    let in_pty = env::var("SIDEKAR_PTY").is_ok();
+    if !in_pty && sidekar::is_ext_routable_command(&command) && sidekar::ext::is_ext_available() {
         let default_tab = match override_tab_id.as_deref() {
             None => None,
             Some(s) => match s.parse::<u64>() {
