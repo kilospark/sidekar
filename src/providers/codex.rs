@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::{
@@ -29,13 +30,7 @@ pub async fn stream(
         headers.insert("chatgpt-account-id", account_id.parse()?);
     }
 
-    if super::is_verbose() {
-        eprintln!("\x1b[2m--- API Request ---");
-        eprintln!("POST {url}");
-        eprintln!("Headers: {headers:?}");
-        eprintln!("Body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
-        eprintln!("---\x1b[0m");
-    }
+    super::log_api_request(&url, &headers, &body);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -52,9 +47,7 @@ pub async fn stream(
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        if super::is_verbose() {
-            eprintln!("\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m");
-        }
+        super::log_api_error(status, &text);
         bail!("Codex API error ({}): {}", status, text);
     }
 
@@ -103,9 +96,10 @@ fn build_request_body(
                 // Tool results
                 for block in &msg.content {
                     if let ContentBlock::ToolResult { tool_use_id, content, .. } = block {
+                        let (call_id, _) = split_tool_call_ids(tool_use_id);
                         input.push(json!({
                             "type": "function_call_output",
-                            "call_id": tool_use_id,
+                            "call_id": call_id,
                             "output": content,
                         }));
                     }
@@ -129,10 +123,11 @@ fn build_request_body(
                 // Tool calls
                 for block in &msg.content {
                     if let ContentBlock::ToolCall { id, name, arguments } = block {
+                        let (call_id, item_id) = split_tool_call_ids(id);
                         input.push(json!({
                             "type": "function_call",
-                            "id": id,
-                            "call_id": id,
+                            "id": item_id,
+                            "call_id": call_id,
                             "name": name,
                             "arguments": arguments.to_string(),
                         }));
@@ -177,50 +172,24 @@ async fn parse_sse_stream(
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut decoder = super::SseDecoder::new();
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut usage = Usage::default();
     let mut model_id = String::new();
     let mut has_tool_calls = false;
-    let mut tool_index = 0usize;
+    let mut next_tool_index = 0usize;
+    let mut pending_tool_calls: HashMap<String, PendingToolCall> = HashMap::new();
 
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("error reading SSE chunk")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk);
 
-        if buffer.contains('\r') {
-            buffer = buffer.replace("\r\n", "\n");
-        }
-
-        while let Some(event_end) = buffer.find("\n\n") {
-            let event_text = buffer[..event_end].to_string();
-            buffer = buffer[event_end + 2..].to_string();
-
-            let mut event_data_parts: Vec<String> = Vec::new();
-            for line in event_text.lines() {
-                if let Some(rest) = line.strip_prefix("data: ") {
-                    if rest == "[DONE]" {
-                        continue;
-                    }
-                    event_data_parts.push(rest.to_string());
-                } else if let Some(rest) = line.strip_prefix("data:") {
-                    if rest.trim() == "[DONE]" {
-                        continue;
-                    }
-                    event_data_parts.push(rest.to_string());
-                }
-            }
-
-            let event_data = event_data_parts.join("\n");
-            if event_data.is_empty() {
-                continue;
-            }
-
-            let data: Value = match serde_json::from_str(&event_data) {
-                Ok(v) => v,
-                Err(_) => continue,
+        while let Some(event) = decoder.next_event() {
+            let data: Value = match super::parse_sse_json(&event) {
+                Some(v) => v,
+                None => continue,
             };
 
             let event_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -240,15 +209,37 @@ async fn parse_sse_stream(
 
                     if item_type == "function_call" {
                         has_tool_calls = true;
-                        let id = item.get("call_id")
+                        let item_id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let call_id = item
+                            .get("call_id")
                             .or_else(|| item.get("id"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
                         let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let partial_json = item
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let index = next_tool_index;
+                        next_tool_index += 1;
+                        pending_tool_calls.insert(
+                            item_id,
+                            PendingToolCall {
+                                call_id: call_id.clone(),
+                                index,
+                                partial_json,
+                                name: name.clone(),
+                            },
+                        );
                         let _ = tx.send(StreamEvent::ToolCallStart {
-                            index: tool_index,
-                            id: id.clone(),
+                            index,
+                            id: call_id,
                             name: name.clone(),
                         });
                     }
@@ -264,30 +255,29 @@ async fn parse_sse_stream(
 
                 "response.function_call_arguments.delta" => {
                     if let Some(delta) = data.get("delta").and_then(|v| v.as_str()) {
+                        let index = if let Some(call) =
+                            get_pending_tool_call_mut(&mut pending_tool_calls, &data)
+                        {
+                            call.partial_json.push_str(delta);
+                            call.index
+                        } else {
+                            0
+                        };
                         let _ = tx.send(StreamEvent::ToolCallDelta {
-                            index: tool_index,
+                            index,
                             delta: delta.to_string(),
                         });
                     }
                 }
 
                 "response.function_call_arguments.done" => {
-                    let call_id = data.get("item_id")
-                        .or_else(|| data.get("call_id"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let args_str = data.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
-                    let arguments: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
-
-                    let _ = tx.send(StreamEvent::ToolCallEnd { index: tool_index });
-                    content_blocks.push(ContentBlock::ToolCall {
-                        id: call_id,
-                        name,
-                        arguments,
-                    });
-                    tool_index += 1;
+                    if let Some(call) = get_pending_tool_call_mut(&mut pending_tool_calls, &data) {
+                        call.partial_json = data
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&call.partial_json)
+                            .to_string();
+                    }
                 }
 
                 "response.output_text.done" => {
@@ -295,6 +285,55 @@ async fn parse_sse_stream(
                         if !text.is_empty() {
                             content_blocks.push(ContentBlock::Text { text: text.to_string() });
                         }
+                    }
+                }
+
+                "response.output_item.done" => {
+                    let item = data.get("item").unwrap_or(&Value::Null);
+                    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                    if item_type == "function_call" {
+                        let item_id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let pending = pending_tool_calls.remove(&item_id);
+                        let index = pending.as_ref().map(|call| call.index).unwrap_or(0);
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_string)
+                            .or_else(|| pending.as_ref().map(|call| call.call_id.clone()))
+                            .unwrap_or_else(|| item_id.clone());
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_string)
+                            .or_else(|| pending.as_ref().map(|call| call.name.clone()))
+                            .unwrap_or_default();
+                        let args_str = item
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .filter(|args| !args.is_empty())
+                            .map(str::to_string)
+                            .or_else(|| pending.as_ref().map(|call| call.partial_json.clone()))
+                            .unwrap_or_else(|| "{}".to_string());
+                        let arguments: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
+                        let stored_id = if item_id.is_empty() || item_id == call_id {
+                            call_id.clone()
+                        } else {
+                            format!("{call_id}|{item_id}")
+                        };
+
+                        let _ = tx.send(StreamEvent::ToolCallEnd { index });
+                        content_blocks.push(ContentBlock::ToolCall {
+                            id: stored_id,
+                            name,
+                            arguments,
+                        });
                     }
                 }
 
@@ -341,4 +380,51 @@ async fn parse_sse_stream(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct PendingToolCall {
+    call_id: String,
+    index: usize,
+    partial_json: String,
+    name: String,
+}
+
+fn get_event_call_id(data: &Value) -> Option<String> {
+    data.get("item_id")
+        .or_else(|| data.get("call_id"))
+        .or_else(|| data.get("item").and_then(|item| item.get("call_id")))
+        .or_else(|| data.get("item").and_then(|item| item.get("id")))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn get_pending_tool_call_mut<'a>(
+    pending_tool_calls: &'a mut HashMap<String, PendingToolCall>,
+    data: &Value,
+) -> Option<&'a mut PendingToolCall> {
+    if let Some(event_id) = get_event_call_id(data) {
+        if pending_tool_calls.contains_key(&event_id) {
+            return pending_tool_calls.get_mut(&event_id);
+        }
+    }
+
+    if pending_tool_calls.len() == 1 {
+        let only_key = pending_tool_calls.keys().next()?.to_string();
+        return pending_tool_calls.get_mut(&only_key);
+    }
+
+    None
+}
+
+fn split_tool_call_ids(stored_id: &str) -> (String, String) {
+    if let Some((call_id, item_id)) = stored_id.split_once('|') {
+        return (call_id.to_string(), item_id.to_string());
+    }
+
+    if stored_id.starts_with("call_") {
+        return (stored_id.to_string(), stored_id.to_string());
+    }
+
+    (stored_id.to_string(), stored_id.to_string())
 }
