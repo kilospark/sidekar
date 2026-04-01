@@ -63,9 +63,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     };
 
     if args.is_empty() {
-        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            return sidekar::repl::run().await;
-        }
         print_help();
         return Ok(());
     }
@@ -138,6 +135,111 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         }
         return Ok(());
     }
+    // REPL agent mode: sidekar repl [login|logout]
+    if command == "repl" {
+        let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+        match sub {
+            "login" => {
+                // sidekar repl login <nickname>
+                // nickname determines provider: claude-* → anthropic, codex-* → openai
+                let nickname = args.get(1).map(|s| s.as_str()).unwrap_or("claude");
+                let provider_type = sidekar::providers::oauth::provider_type_for(nickname)
+                    .unwrap_or(if nickname == "anthropic" { "anthropic" } else if nickname == "codex" || nickname == "openai" { "codex" } else { "anthropic" });
+                // Clear existing creds for this nickname before login
+                let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
+                let _ = sidekar::broker::kv_delete(&kv_key);
+                match provider_type {
+                    "anthropic" => {
+                        let token = sidekar::providers::oauth::get_anthropic_token(Some(nickname)).await?;
+                        if token.contains("sk-ant-oat") {
+                            println!("Logged in as '{nickname}' (Claude OAuth).");
+                        } else {
+                            println!("Using API key from environment for '{nickname}'.");
+                        }
+                    }
+                    "codex" => {
+                        let (_, account_id) = sidekar::providers::oauth::get_codex_token(Some(nickname)).await?;
+                        println!("Logged in as '{nickname}' (Codex, account: {}).", if account_id.is_empty() { "unknown" } else { &account_id });
+                    }
+                    _ => {
+                        eprintln!("Unknown provider type for nickname '{nickname}'.");
+                        eprintln!("Use claude-<name> for Claude or codex-<name> for Codex.");
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
+            }
+            "logout" => {
+                let nickname = args.get(1).map(|s| s.as_str()).unwrap_or("all");
+                if nickname == "all" {
+                    // Delete all oauth:* keys
+                    let creds = sidekar::providers::oauth::list_credentials();
+                    for (name, _) in &creds {
+                        let _ = sidekar::broker::kv_delete(&sidekar::providers::oauth::kv_key_for(name));
+                    }
+                    // Also delete legacy keys
+                    let _ = sidekar::broker::kv_delete(sidekar::providers::oauth::KV_KEY_ANTHROPIC);
+                    let _ = sidekar::broker::kv_delete(sidekar::providers::oauth::KV_KEY_CODEX);
+                    println!("All OAuth credentials removed.");
+                } else {
+                    let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
+                    let _ = sidekar::broker::kv_delete(&kv_key);
+                    println!("Credentials for '{nickname}' removed.");
+                }
+                return Ok(());
+            }
+            "credentials" => {
+                let creds = sidekar::providers::oauth::list_credentials();
+                if creds.is_empty() {
+                    println!("No stored credentials. Use: sidekar repl login <nickname>");
+                } else {
+                    println!("Stored credentials:");
+                    for (name, provider) in &creds {
+                        println!("  {name} ({provider})");
+                    }
+                }
+                return Ok(());
+            }
+            _ => {
+                let mut prompt: Option<String> = None;
+                let mut model: Option<String> = None;
+                let mut credential: Option<String> = None;
+                let mut verbose = false;
+                let mut i = 0;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "-p" if i + 1 < args.len() => { prompt = Some(args[i + 1].clone()); i += 2; }
+                        "-m" if i + 1 < args.len() => { model = Some(args[i + 1].clone()); i += 2; }
+                        "-r" if i + 1 < args.len() => { credential = Some(args[i + 1].clone()); i += 2; }
+                        "--verbose" | "-v" => { verbose = true; i += 1; }
+                        _ => { i += 1; }
+                    }
+                }
+                return sidekar::repl::run_with_options(sidekar::repl::ReplOptions {
+                    prompt, model, credential, verbose,
+                }).await;
+            }
+        }
+    }
+
+    // Device auth for sidekar.dev: sidekar web login/logout
+    if command == "web" {
+        let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+        match sub {
+            "login" => return sidekar::auth::device_auth_flow().await,
+            "logout" => {
+                sidekar::auth::logout()?;
+                println!("Logged out. Device token removed.");
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Usage: sidekar web [login|logout]");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Legacy aliases
     if command == "login" {
         return sidekar::auth::device_auth_flow().await;
     }

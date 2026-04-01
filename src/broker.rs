@@ -104,7 +104,7 @@ pub fn open_db() -> Result<Connection> {
     open()
 }
 
-fn open() -> Result<Connection> {
+pub(crate) fn open() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
 
     // Migrate: rename broker.sqlite3 → sidekar.sqlite3
