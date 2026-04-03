@@ -1198,11 +1198,11 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(out, "Global flags:");
     let _ = writeln!(
         out,
-        "  --relay             Force relay/web PTY on for sidekar <agent>"
+        "  --relay             Enable relay tunnel for sidekar <agent>"
     );
     let _ = writeln!(
         out,
-        "  --no-relay          Force relay/web PTY off for sidekar <agent>"
+        "  --no-relay          Disable relay tunnel for sidekar <agent>"
     );
     let _ = writeln!(
         out,
