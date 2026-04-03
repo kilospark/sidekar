@@ -98,6 +98,40 @@ pub fn remove_codex_ca() {
     let _ = std::fs::write(&config_path, if cleaned.ends_with('\n') { cleaned } else { cleaned + "\n" });
 }
 
+/// Squash runs of 2+ newlines into a single newline in the raw body.
+/// Handles both raw `\n` bytes (pretty-printed JSON) and escaped `\\n`
+/// sequences inside JSON string values.
+fn squash_newlines(body: &[u8]) -> (Vec<u8>, usize) {
+    // Replace runs of escaped newlines: \\n\\n+ → \\n
+    // Also squash raw 0x0a runs for pretty-printed JSON.
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        // Check for escaped newline sequence: \n (two bytes: 0x5c 0x6e)
+        if i + 1 < body.len() && body[i] == b'\\' && body[i + 1] == b'n' {
+            out.push(b'\\');
+            out.push(b'n');
+            i += 2;
+            // Skip consecutive \n sequences
+            while i + 1 < body.len() && body[i] == b'\\' && body[i + 1] == b'n' {
+                i += 2;
+            }
+        } else if body[i] == b'\n' {
+            out.push(b'\n');
+            i += 1;
+            // Skip consecutive raw newlines
+            while i < body.len() && body[i] == b'\n' {
+                i += 1;
+            }
+        } else {
+            out.push(body[i]);
+            i += 1;
+        }
+    }
+    let saved = body.len() - out.len();
+    (out, saved)
+}
+
 /// Resolve upstream from request headers.
 /// `x-api-key` or `anthropic-version` → api.anthropic.com
 /// `authorization: Bearer ...` → api.openai.com
@@ -127,6 +161,7 @@ struct ProxyState {
     ca_key: rcgen::KeyPair,
     tls_connector: tokio_rustls::TlsConnector,
     host_cache: RwLock<HashMap<String, Arc<CachedCert>>>,
+    verbose: bool,
 }
 
 /// Start the proxy. Returns `(port, ca_cert_path)`.
@@ -170,19 +205,14 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
         ca_key,
         tls_connector,
         host_cache: RwLock::new(HashMap::new()),
+        verbose,
     });
 
-    crate::broker::try_log_event(
-        "info",
-        "proxy",
-        &format!("listening on 127.0.0.1:{port}"),
-        None,
-    );
     if verbose {
         crate::broker::try_log_event(
             "debug",
             "proxy",
-            "modes: reverse (ANTHROPIC_BASE_URL) + MITM (HTTPS_PROXY)",
+            &format!("listening on 127.0.0.1:{port} (reverse + MITM)"),
             None,
         );
     }
@@ -291,14 +321,40 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
         k.to_lowercase() == "upgrade" && v.to_lowercase() == "websocket"
     });
 
-    let ws_tag = if is_websocket { " [WS]" } else { "" };
-    crate::broker::try_log_event(
-        "info",
-        "proxy",
-        &format!("REVERSE {method} {path} → {upstream_host}{ws_tag} ({content_length}b)"),
-        // Log headers for debugging
-        Some(&raw_headers.iter().map(|h| h.trim_end()).collect::<Vec<_>>().join(" | ")),
-    );
+    if state.verbose {
+        let ws_tag = if is_websocket { " [WS]" } else { "" };
+        crate::broker::try_log_event(
+            "debug",
+            "proxy",
+            &format!("REVERSE {method} {path} → {upstream_host}{ws_tag} ({content_length}b)"),
+            Some(&raw_headers.iter().map(|h| h.trim_end()).collect::<Vec<_>>().join(" | ")),
+        );
+    }
+
+    // Squash consecutive newlines in request body
+    let (body, newlines_saved) = if content_length > 0 {
+        let (squashed, saved) = squash_newlines(&body);
+        if saved > 0 {
+            // Update Content-Length in raw_headers
+            for h in raw_headers.iter_mut() {
+                if h.to_lowercase().starts_with("content-length:") {
+                    *h = format!("Content-Length: {}\r\n", squashed.len());
+                }
+            }
+            if state.verbose {
+                crate::broker::try_log_event(
+                    "debug",
+                    "proxy",
+                    &format!("squashed {saved}b newlines from request ({} → {})", content_length, squashed.len()),
+                    None,
+                );
+            }
+        }
+        (squashed, saved)
+    } else {
+        (body, 0)
+    };
+    let _ = newlines_saved; // used above
 
     // Connect TLS to upstream
     let upstream_tcp = TcpStream::connect((upstream_host, upstream_port)).await?;
@@ -314,7 +370,7 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
         upstream_write.write_all(h.as_bytes()).await?;
     }
     upstream_write.write_all(b"\r\n").await?;
-    if content_length > 0 {
+    if !body.is_empty() {
         upstream_write.write_all(&body).await?;
     }
     upstream_write.flush().await?;
@@ -414,12 +470,14 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
         .await?;
     stream.flush().await?;
 
-    crate::broker::try_log_event(
-        "info",
-        "proxy",
-        &format!("CONNECT {host}:{port}"),
-        None,
-    );
+    if state.verbose {
+        crate::broker::try_log_event(
+            "debug",
+            "proxy",
+            &format!("CONNECT {host}:{port}"),
+            None,
+        );
+    }
 
     let cached = get_host_cert(&state, &host).await?;
 
