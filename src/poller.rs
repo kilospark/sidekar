@@ -51,14 +51,19 @@ impl UserInputState {
         }
     }
 
-    fn has_pending_line(&self) -> bool {
+    pub fn has_pending_line(&self) -> bool {
         self.pending_line
             .lock()
             .map(|pending| !pending.is_empty())
             .unwrap_or(false)
     }
 
-    fn is_idle(&self) -> bool {
+    /// Returns true if the user has typed anything since the PTY started.
+    pub fn has_ever_had_input(&self) -> bool {
+        self.last_user_input_at_ms.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn is_idle(&self) -> bool {
         let last = self.last_user_input_at_ms.load(Ordering::Relaxed);
         if last == 0 {
             return true;

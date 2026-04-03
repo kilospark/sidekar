@@ -392,11 +392,11 @@ fn cleanup_child_and_state(
     }
 }
 
-fn resolved_relay_policy(override_policy: Option<bool>) -> crate::config::RelayPtyMode {
+fn resolved_relay_policy(override_policy: Option<bool>) -> crate::config::RelayMode {
     match override_policy {
-        Some(true) => crate::config::RelayPtyMode::On,
-        Some(false) => crate::config::RelayPtyMode::Off,
-        None => crate::config::relay_pty_mode(),
+        Some(true) => crate::config::RelayMode::On,
+        Some(false) => crate::config::RelayMode::Off,
+        None => crate::config::relay_mode(),
     }
 }
 
@@ -404,7 +404,7 @@ fn relay_policy_label(override_policy: Option<bool>) -> String {
     match override_policy {
         Some(true) => "--relay".to_string(),
         Some(false) => "--no-relay".to_string(),
-        None => format!("config:{}", crate::config::relay_pty_mode().as_str()),
+        None => format!("config:{}", crate::config::relay_mode().as_str()),
     }
 }
 
@@ -422,6 +422,14 @@ async fn connect_relay_tunnel(
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
+
+/// First message injected into the agent's stdin after startup.
+/// Compact directive: load sidekar, set behavioral ground rules.
+const STARTUP_INJECT: &str =
+    "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear.";
+
+/// Seconds to wait before injecting — lets the agent finish startup output.
+const STARTUP_INJECT_DELAY_SECS: u64 = 5;
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>) -> Result<()> {
@@ -571,7 +579,7 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
 
     // Optionally establish tunnel to relay for web terminal access (dashboard / web terminal).
     let tunnel = match relay_policy {
-        crate::config::RelayPtyMode::Off => {
+        crate::config::RelayMode::Off | crate::config::RelayMode::Auto => {
             if std::env::var("SIDEKAR_VERBOSE").is_ok() {
                 crate::broker::try_log_error_event(
                     "relay_tunnel",
@@ -581,7 +589,7 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
             }
             None
         }
-        crate::config::RelayPtyMode::Auto | crate::config::RelayPtyMode::On => {
+        crate::config::RelayMode::On => {
             if let Some(token) = crate::auth::auth_token() {
                 match connect_relay_tunnel(&token, &identity.name, agent, &cwd, &nick).await {
                     Ok(t) => Some(t),
@@ -625,6 +633,24 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // When the child calls `sidekar launch` or `sidekar connect`, the
     // last-session file is updated. We read it and update the cron context.
     let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
+
+    // Inject startup message after agent initializes.
+    // Skipped if the user types anything before the delay elapses.
+    {
+        let inject_fd = master_arc.clone();
+        let inject_input = input_state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(STARTUP_INJECT_DELAY_SECS)).await;
+            // Don't inject if user already started interacting
+            if inject_input.has_ever_had_input() || inject_input.has_pending_line() {
+                return;
+            }
+            let fd = inject_fd.as_raw_fd();
+            let _ = write_all_fd(fd, STARTUP_INJECT.as_bytes());
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = write_all_fd(fd, b"\r");
+        });
+    }
 
     // Enter raw mode (must happen after eprintln messages)
     let raw_guard = RawModeGuard::enter()?;

@@ -2,10 +2,10 @@
 name: sidekar
 version: 0.3.0
 description: |
-  Agent-facing browser automation, messaging, desktop control, background jobs,
-  local memory/tasks, context shaping, and encrypted local state. Use Sidekar
-  when you need a real browser, cross-agent coordination, native macOS
-  interaction, persistent local state, or token-aware context utilities.
+  Agent utility layer: inter-agent bus, encrypted secrets (KV/TOTP), durable
+  memory & tasks, browser/desktop automation, scheduled jobs, repo context,
+  and output compaction. Use Sidekar when you need coordination, persistence,
+  real browsers, or token-efficient tooling.
 allowed-tools:
   - Bash(sidekar:*)
 ---
@@ -19,7 +19,6 @@ Do not guess command syntax. Use the CLI help as the source of truth:
 ```bash
 sidekar --help
 sidekar help <command>
-sidekar help ext
 ```
 
 If `sidekar` is missing:
@@ -30,62 +29,61 @@ which sidekar || curl -fsSL https://sidekar.dev/install | sh
 
 ## Capabilities
 
+**Bus (multi-agent)** — Discover agents, send requests, hand off work, track replies.
+Entry: `sidekar bus who`. Explore: `sidekar help bus`
+
+**Secrets (KV)** — Encrypted local key-value store for tokens, API keys, credentials.
+Entry: `sidekar kv list`, `sidekar kv get <key>`. Explore: `sidekar help kv`
+
+**TOTP** — Store TOTP secrets, generate current codes for automated login flows.
+Entry: `sidekar totp list`, `sidekar totp get <service> <account>`. Explore: `sidekar help totp`
+
+**Memory** — Durable local memory scoped to project or global. Write conventions, search context, compact related memories, rate and review.
+Entry: `sidekar memory context`, `sidekar memory search <query>`. Explore: `sidekar help memory`
+
+**Tasks** — Local task list with priority and dependency edges.
+Entry: `sidekar tasks list`, `sidekar tasks add "<title>"`. Explore: `sidekar help tasks`
+
+**Agent sessions** — Inspect session history, add notes, rename sessions.
+Entry: `sidekar agent-sessions`. Explore: `sidekar help agent-sessions`
+
+**Scheduled jobs** — Cron expressions or simple intervals. Run tools, bash, or inject prompts.
+Entry: `sidekar cron list`, `sidekar loop 5m "check status"`. Explore: `sidekar help cron`, `sidekar help loop`
+
+**Repo context** — Pack repos, summarize changes, discover and run project actions.
+Entry: `sidekar repo tree`, `sidekar repo changes`. Explore: `sidekar help repo`
+
+**Context shaping** — Compact noisy output for agents. Pack/unpack structured data.
+Entry: `sidekar compact run <cmd>`, `sidekar pack <file>`. Explore: `sidekar help compact`, `sidekar help pack`
+
 **Browser automation** — Navigate, read, click, type, screenshot in a real Chrome session.
 Entry: `sidekar navigate <url>`, `sidekar read`. Explore: `sidekar help navigate`
+- *Perception*: `read` → `ax-tree -i` / `observe` → `text` → `dom` → `search` / `read-urls` → `screenshot`
+- *Interaction*: `click`, `fill`, `type`, `keyboard`, `scroll`, `drag`, `upload`, `wait-for`
+- *Inspection*: `console`, `network`, `cookies`, `storage`, `service-workers`
 
 **Extension automation** — Automate the user's normal Chrome profile via the Sidekar extension.
 Entry: `sidekar ext tabs`. Explore: `sidekar help ext`
 
-**Page perception** — Use the cheapest tool that is sufficient:
-`read` → `ax-tree -i` / `observe` → `text` → `dom` → `search` / `read-urls` → `screenshot --ref=...` → `screenshot`
-
-**Interaction** — Click, hover, fill, type, paste, keyboard, drag, scroll, upload, dialogs, wait.
-Entry: `sidekar click ...`, `sidekar fill ...`. Explore: `sidekar help click`
-
-**Browser inspection** — Console, network, cookies, storage, service workers, downloads, security.
-Entry: `sidekar console`, `sidekar network`. Explore: `sidekar help console`
-
 **Desktop automation** — Native macOS UI: find elements, click, type, screenshot, launch/quit apps.
 Entry: `sidekar desktop apps`. Explore: `sidekar help desktop`
 
-**Bus (multi-agent)** — Discover agents, send requests, hand off work, inspect open requests and replies.
-Entry: `sidekar bus who`. Explore: `sidekar help bus`
+**Monitor** — Watch browser tabs for background changes.
+Entry: `sidekar monitor status`. Explore: `sidekar help monitor`
 
-**Background automation** — Monitor tabs for changes, schedule recurring jobs, run prompts on intervals.
-Entry: `sidekar monitor status`, `sidekar cron list`, `sidekar loop 5m "check status"`. Explore: `sidekar help monitor`, `sidekar help cron`, `sidekar help loop`
-
-**Repo context** — Pack repos, summarize changes, discover and run repo actions.
-Entry: `sidekar help repo`
-
-**Memory and tasks** — Durable local memory, task lists with dependency edges, agent session history.
-Entry: `sidekar help memory`, `sidekar help tasks`, `sidekar help agent-sessions`
-
-**Context shaping** — Compact noisy output, pack/unpack structured data (JSON, YAML, CSV).
-Entry: `sidekar help compact`, `sidekar help pack`
-
-**Secrets** — Encrypted local key-value store and TOTP generation.
-Entry: `sidekar kv list`, `sidekar totp list`. Explore: `sidekar help kv`, `sidekar help totp`
-
-**Account** — Login, logout, devices, sessions, config, daemon, errors, feedback.
+**Account** — Login, logout, devices, sessions, config, daemon.
 Entry: `sidekar login`, `sidekar help config`
 
 ## Operating Rules
 
-1. After state-changing browser actions, read the returned brief before deciding the next step.
-2. Prefer `read`, `ax-tree -i`, or `text` before taking screenshots.
-3. Prefer refs from `ax-tree -i` or `observe` over brittle selectors.
-4. Use `--text` matches before CSS selectors when that is simpler and reliable.
-5. Use coordinates only as a last resort.
-6. If login, CAPTCHA, or 2FA blocks progress, run `sidekar activate` and tell the user.
-7. Never touch tabs you did not create in your session.
-8. Close tabs you opened when the task is done.
-9. For stale or broken web apps, inspect `storage`, `service-workers`, `cookies`, and `network` before guessing.
-10. Use CLI help for exact syntax instead of inventing flags or subcommands.
-
-## Targeting Priority
-
-1. refs from `ax-tree -i`, `observe`, or `text`
-2. `--text "..."` matches
-3. CSS selectors
-4. `sidekar eval ...` as an escape hatch
-5. coordinates as a last resort
+1. Use CLI help for exact syntax — never invent flags or subcommands.
+2. Check `sidekar bus who` before assuming you are working alone.
+3. Use `sidekar kv` for any secret or credential — never store in plain files.
+4. Use `sidekar totp get` during login flows that require 2FA codes.
+5. Write durable learnings to `sidekar memory write` so future sessions benefit.
+6. Pipe noisy command output through `sidekar compact filter` or use `sidekar compact run`.
+7. After state-changing browser actions, read the returned brief before deciding next step.
+8. Prefer `read`, `ax-tree -i`, or `text` before taking screenshots.
+9. Prefer refs from `ax-tree -i` or `observe` over CSS selectors; coordinates only as last resort.
+10. If login, CAPTCHA, or 2FA blocks browser progress, run `sidekar activate` and tell the user.
+11. Never touch browser tabs you did not create. Close tabs you opened when done.

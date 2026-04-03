@@ -2720,12 +2720,12 @@ sidekar config [list|get|set|reset] [key] [value]
     config set <key> <val>   Set a value
     config reset <key>       Revert to default
 
-  Keys: telemetry, feedback, browser, auto_update, relay_pty, max_tabs, cdp_timeout_secs, max_cron_jobs
+  Keys: telemetry, feedback, browser, auto_update, relay, max_tabs, cdp_timeout_secs, max_cron_jobs
 
   Examples:
     sidekar config list
     sidekar config set telemetry false
-    sidekar config set relay_pty off
+    sidekar config set relay off
     sidekar config set browser brave
     sidekar config reset browser"
         }
