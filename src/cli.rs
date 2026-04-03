@@ -39,7 +39,6 @@ pub struct CommandSpec {
     pub requires_session: bool,
     pub auto_launch_browser: bool,
     pub ext_routable: bool,
-    pub hidden_in_help: bool,
 }
 
 const REMOVED_COMMANDS: &[(&str, &str)] = &[
@@ -102,7 +101,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "connect",
@@ -113,7 +111,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "navigate",
@@ -124,7 +121,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "back",
@@ -135,7 +131,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "forward",
@@ -146,7 +141,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "reload",
@@ -157,7 +151,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "tabs",
@@ -168,7 +161,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "tab",
@@ -179,7 +171,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "new-tab",
@@ -190,7 +181,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "close",
@@ -201,7 +191,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "activate",
@@ -212,7 +201,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "minimize",
@@ -223,7 +211,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "kill",
@@ -234,7 +221,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "frames",
@@ -245,7 +231,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "frame",
@@ -256,7 +241,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "read",
@@ -267,7 +251,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "text",
@@ -278,7 +261,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "dom",
@@ -289,7 +271,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "ax-tree",
@@ -300,7 +281,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "observe",
@@ -311,7 +291,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "find",
@@ -322,7 +301,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "resolve",
@@ -333,7 +311,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "screenshot",
@@ -344,7 +321,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "pdf",
@@ -355,7 +331,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "search",
@@ -366,7 +341,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "read-urls",
@@ -377,7 +351,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "grid",
@@ -388,7 +361,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "batch",
@@ -399,7 +371,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "click",
@@ -410,7 +381,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "hover",
@@ -421,7 +391,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "focus",
@@ -432,7 +401,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "clear",
@@ -443,7 +411,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "type",
@@ -454,7 +421,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "fill",
@@ -465,7 +431,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "keyboard",
@@ -476,7 +441,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "paste",
@@ -487,7 +451,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "clipboard",
@@ -498,7 +461,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "insert-text",
@@ -509,7 +471,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "select",
@@ -520,7 +481,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "upload",
@@ -531,7 +491,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "drag",
@@ -542,7 +501,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "dialog",
@@ -553,7 +511,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "wait-for",
@@ -564,7 +521,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "wait-for-nav",
@@ -575,7 +531,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "press",
@@ -586,7 +541,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "scroll",
@@ -597,7 +551,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "eval",
@@ -608,7 +561,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: true,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "media",
@@ -619,7 +571,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "animations",
@@ -630,7 +581,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "zoom",
@@ -641,7 +591,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "lock",
@@ -652,7 +601,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "unlock",
@@ -663,7 +611,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "cookies",
@@ -674,7 +621,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "console",
@@ -685,7 +631,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "network",
@@ -696,7 +641,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "block",
@@ -707,7 +651,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "viewport",
@@ -718,7 +661,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "download",
@@ -729,7 +671,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "storage",
@@ -740,7 +681,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "service-workers",
@@ -751,7 +691,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "security",
@@ -762,7 +701,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "desktop",
@@ -773,7 +711,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "bus",
@@ -784,7 +721,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "memory",
@@ -795,7 +731,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "tasks",
@@ -806,7 +741,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "agent-sessions",
@@ -817,7 +751,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "repo",
@@ -828,7 +761,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "compact",
@@ -839,7 +771,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "monitor",
@@ -850,7 +781,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: true,
         auto_launch_browser: true,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "cron",
@@ -861,7 +791,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "loop",
@@ -872,51 +801,26 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
-        name: "login",
-        usage: "",
-        summary: "Authenticate with sidekar.dev (device auth flow)",
+        name: "device",
+        usage: "<login|logout|list>",
+        summary: "Device authentication and management",
         group: CommandGroup::Account,
         aliases: &[],
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
-        name: "logout",
-        usage: "",
-        summary: "Remove device token and clear encryption state",
-        group: CommandGroup::Account,
-        aliases: &[],
-        requires_session: false,
-        auto_launch_browser: false,
-        ext_routable: false,
-        hidden_in_help: false,
-    },
-    CommandSpec {
-        name: "devices",
-        usage: "",
-        summary: "List registered devices for your account",
-        group: CommandGroup::Account,
-        aliases: &[],
-        requires_session: false,
-        auto_launch_browser: false,
-        ext_routable: false,
-        hidden_in_help: false,
-    },
-    CommandSpec {
-        name: "sessions",
-        usage: "",
+        name: "session",
+        usage: "<list>",
         summary: "List active sessions for your account",
         group: CommandGroup::Account,
         aliases: &[],
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "totp",
@@ -927,7 +831,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "pack",
@@ -938,7 +841,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "unpack",
@@ -949,7 +851,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "kv",
@@ -960,7 +861,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "run",
@@ -971,7 +871,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "daemon",
@@ -982,7 +881,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "config",
@@ -993,18 +891,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
-    },
-    CommandSpec {
-        name: "telemetry",
-        usage: "[on|off|status]",
-        summary: "Manage anonymous telemetry",
-        group: CommandGroup::System,
-        aliases: &[],
-        requires_session: false,
-        auto_launch_browser: false,
-        ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "feedback",
@@ -1015,7 +901,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "errors",
@@ -1026,7 +911,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "update",
@@ -1037,7 +921,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "install",
@@ -1048,7 +931,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "uninstall",
@@ -1059,7 +941,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "skill",
@@ -1070,7 +951,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
     CommandSpec {
         name: "ext",
@@ -1081,7 +961,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         requires_session: false,
         auto_launch_browser: false,
         ext_routable: false,
-        hidden_in_help: false,
     },
 ];
 

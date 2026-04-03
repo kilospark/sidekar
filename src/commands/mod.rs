@@ -385,31 +385,6 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             Ok(())
         }
-        "telemetry" => {
-            let action = args.first().map(String::as_str).unwrap_or("status");
-            let mut config = crate::config::load_config();
-            match action {
-                "on" | "enable" => {
-                    config.telemetry = true;
-                    crate::config::save_config(&config)?;
-                    out!(ctx, "Telemetry enabled. Thank you!");
-                }
-                "off" | "disable" => {
-                    config.telemetry = false;
-                    crate::config::save_config(&config)?;
-                    out!(ctx, "Telemetry disabled.");
-                }
-                "status" | "" => {
-                    out!(
-                        ctx,
-                        "Telemetry: {}",
-                        if config.telemetry { "on" } else { "off" }
-                    );
-                }
-                _ => bail!("Usage: sidekar telemetry [on|off|status]"),
-            }
-            Ok(())
-        }
         "install" => cmd_setup(ctx).await,
         "uninstall" => cmd_uninstall(ctx).await,
         "config" => {

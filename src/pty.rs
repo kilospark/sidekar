@@ -426,7 +426,7 @@ async fn connect_relay_tunnel(
 /// First message injected into the agent's stdin after startup.
 /// Compact directive: load sidekar, set behavioral ground rules.
 const STARTUP_INJECT: &str =
-    "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear.";
+    "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically.";
 
 /// Seconds to wait before injecting — lets the agent finish startup output.
 const STARTUP_INJECT_DELAY_SECS: u64 = 5;
