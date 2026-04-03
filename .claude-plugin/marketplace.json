@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Browser automation via Chrome DevTools Protocol for Claude Code",
-    "version": "1.0.8"
+    "version": "1.0.9"
   },
   "plugins": [
     {
       "name": "sidekar",
       "description": "Control Chrome via raw CDP - browse the web, interact with pages, accomplish goals through a perceive-act loop",
-      "version": "1.0.8",
+      "version": "1.0.9",
       "source": {
         "source": "github",
         "repo": "kilospark/sidekar"
