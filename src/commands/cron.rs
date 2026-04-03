@@ -560,9 +560,10 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
 
 /// Show one cron job in detail.
 pub(crate) async fn cmd_cron_show(ctx: &mut AppContext, job_id: &str) -> Result<()> {
-    let rec = broker::get_cron_job(job_id)?.ok_or_else(|| anyhow!("Cron job '{job_id}' not found."))?;
-    let action_value: Value =
-        serde_json::from_str(&rec.action_json).context("failed to parse stored cron action JSON")?;
+    let rec =
+        broker::get_cron_job(job_id)?.ok_or_else(|| anyhow!("Cron job '{job_id}' not found."))?;
+    let action_value: Value = serde_json::from_str(&rec.action_json)
+        .context("failed to parse stored cron action JSON")?;
 
     out!(ctx, "id: {}", rec.id);
     out!(ctx, "name: {}", rec.name.as_deref().unwrap_or("(unnamed)"));
@@ -589,8 +590,7 @@ pub(crate) async fn cmd_cron_show(ctx: &mut AppContext, job_id: &str) -> Result<
     out!(
         ctx,
         "action_json: {}",
-        serde_json::to_string_pretty(&action_value)
-            .unwrap_or_else(|_| rec.action_json.clone())
+        serde_json::to_string_pretty(&action_value).unwrap_or_else(|_| rec.action_json.clone())
     );
     Ok(())
 }
@@ -1155,12 +1155,10 @@ mod tests {
         let bash: CronAction = serde_json::from_str(r#"{"command":"echo hello"}"#).unwrap();
         assert!(matches!(bash, CronAction::Bash { .. }));
 
-        let prompt: CronAction =
-            serde_json::from_str(r#"{"prompt":"check status"}"#).unwrap();
+        let prompt: CronAction = serde_json::from_str(r#"{"prompt":"check status"}"#).unwrap();
         assert!(matches!(prompt, CronAction::Prompt { .. }));
 
-        let batch: CronAction =
-            serde_json::from_str(r#"{"batch":[{"tool":"read"}]}"#).unwrap();
+        let batch: CronAction = serde_json::from_str(r#"{"batch":[{"tool":"read"}]}"#).unwrap();
         assert!(matches!(batch, CronAction::Batch { .. }));
     }
 

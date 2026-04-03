@@ -39,7 +39,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         _ => providers::default_model(),
     };
 
-    let model = opts.model
+    let model = opts
+        .model
         .or_else(|| std::env::var("SIDEKAR_MODEL").ok())
         .unwrap_or_else(|| default_model.to_string());
 
@@ -47,7 +48,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let provider_kind = providers::model_info(&model)
         .map(|m| m.provider)
         .ok_or_else(|| {
-            let available = providers::MODELS.iter()
+            let available = providers::MODELS
+                .iter()
                 .map(|m| m.id)
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -116,7 +118,15 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Box::new(|event: &StreamEvent| render_event(event));
 
         let pre_len = history.len();
-        crate::agent::run(&provider, &model, &system_prompt, &mut history, &tool_defs, on_event).await?;
+        crate::agent::run(
+            &provider,
+            &model,
+            &system_prompt,
+            &mut history,
+            &tool_defs,
+            on_event,
+        )
+        .await?;
 
         for msg in &history[pre_len..] {
             let _ = session::append_message(&session_id, msg);
@@ -297,7 +307,11 @@ fn load_context_files(cwd: &str) -> String {
                     if !result.is_empty() {
                         result.push_str("\n---\n\n");
                     }
-                    result.push_str(&format!("Contents of {}:\n\n{}", path.display(), content.trim()));
+                    result.push_str(&format!(
+                        "Contents of {}:\n\n{}",
+                        path.display(),
+                        content.trim()
+                    ));
                 }
             }
         }
@@ -326,7 +340,20 @@ fn chrono_lite_today() -> String {
         remaining -= days_in_year;
         y += 1;
     }
-    let months = [31, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31,
+        if is_leap(y) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 1;
     for &days_in_month in &months {
         if remaining < days_in_month {
@@ -358,15 +385,13 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
 
     match cmd {
         "/quit" | "/exit" | "/q" => SlashResult::Quit,
-        "/new" | "/reset" => {
-            match session::create_session(cwd, model, "anthropic") {
-                Ok(id) => SlashResult::SwitchSession(id),
-                Err(e) => {
-                    eprintln!("Failed to create session: {e}");
-                    SlashResult::Continue
-                }
+        "/new" | "/reset" => match session::create_session(cwd, model, "anthropic") {
+            Ok(id) => SlashResult::SwitchSession(id),
+            Err(e) => {
+                eprintln!("Failed to create session: {e}");
+                SlashResult::Continue
             }
-        }
+        },
         "/sessions" => {
             match session::list_sessions(cwd, 10) {
                 Ok(sessions) => {
@@ -396,7 +421,11 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
                     eprintln!("Pick a session:");
                     for (i, s) in sessions.iter().enumerate() {
                         let msgs = session::message_count(&s.id).unwrap_or(0);
-                        let marker = if s.id == current_session { " (current)" } else { "" };
+                        let marker = if s.id == current_session {
+                            " (current)"
+                        } else {
+                            ""
+                        };
                         let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
                         eprintln!("  [{i}] {name} — {msgs} msgs{marker}");
                     }
@@ -424,11 +453,24 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
             );
             eprintln!("Set with: SIDEKAR_MODEL=<model-id>\n");
 
-            let has_claude = broker::kv_get(providers::oauth::KV_KEY_ANTHROPIC).ok().flatten().is_some()
+            let has_claude = broker::kv_get(providers::oauth::KV_KEY_ANTHROPIC)
+                .ok()
+                .flatten()
+                .is_some()
                 || std::env::var("ANTHROPIC_API_KEY").is_ok();
 
-            eprintln!("Claude (Anthropic) {}:", if has_claude { "\x1b[32m✓\x1b[0m" } else { "\x1b[2mnot logged in\x1b[0m" });
-            for m in providers::MODELS.iter().filter(|m| m.provider == providers::ProviderKind::Anthropic) {
+            eprintln!(
+                "Claude (Anthropic) {}:",
+                if has_claude {
+                    "\x1b[32m✓\x1b[0m"
+                } else {
+                    "\x1b[2mnot logged in\x1b[0m"
+                }
+            );
+            for m in providers::MODELS
+                .iter()
+                .filter(|m| m.provider == providers::ProviderKind::Anthropic)
+            {
                 eprintln!("  {} ({})", m.id, m.display_name);
             }
             SlashResult::Continue

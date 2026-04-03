@@ -514,8 +514,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                             );
                         }
                     }
-                    if key == "relay_pty"
-                        && crate::config::RelayPtyMode::parse(raw_value).is_none()
+                    if key == "relay_pty" && crate::config::RelayPtyMode::parse(raw_value).is_none()
                     {
                         bail!("relay_pty must be one of: auto, on, off");
                     }
@@ -781,7 +780,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 json!({"prompt": p})
             } else {
                 if args.len() < 2 {
-                    bail!("Usage: sidekar cron create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N]");
+                    bail!(
+                        "Usage: sidekar cron create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N]"
+                    );
                 }
                 serde_json::from_str(&args[1]).context(
                     "Invalid action JSON. Use: {\"tool\":\"screenshot\"}, {\"command\":\"...\"}, {\"prompt\":\"...\"}, or --bash=CMD / --prompt=TEXT",
@@ -794,9 +795,8 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let name = args.iter().find_map(|a| a.strip_prefix("--name="));
             let once = args.iter().any(|a| a == "--once");
             let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
-            let id =
-                cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by, once)
-                    .await?;
+            let id = cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by, once)
+                .await?;
             let _ = id; // printed by cmd_cron_create
             Ok(())
         }
@@ -817,7 +817,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "loop" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar loop <interval> <prompt> [--once]\n  e.g. sidekar loop 5m \"check deployment status\"");
+                bail!(
+                    "Usage: sidekar loop <interval> <prompt> [--once]\n  e.g. sidekar loop 5m \"check deployment status\""
+                );
             }
             let interval = &args[0];
             let once = args.iter().any(|a| a == "--once");
@@ -830,8 +832,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let schedule = cron::interval_to_cron(interval)?;
             let action = json!({"prompt": prompt_text});
             let name_str = format!("loop-{interval}");
-            let created_by =
-                std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
+            let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
             let id = cron::cmd_cron_create(
                 ctx,
                 &schedule,

@@ -35,6 +35,7 @@ export default async function handler(req, res) {
       hostname: d.hostname || "",
       nickname: d.nickname || null,
       connected_at: d.connected_at,
+      relay_url: d.owner_origin || null,
     }));
 
     res.json({ sessions });

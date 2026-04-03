@@ -7,7 +7,7 @@
     return fetch("/api/auth/session")
       .then(function (res) {
         if (res.status === 401) {
-          window.location.href = "/api/auth/github?redirect=/devices";
+          window.location.href = "/login?redirect=/devices";
           return null;
         }
         if (!res.ok) throw new Error("Auth check failed");
@@ -32,7 +32,7 @@
     return fetch("/api/auth/devices")
       .then(function (res) {
         if (res.status === 401) {
-          window.location.href = "/api/auth/github?redirect=/devices";
+          window.location.href = "/login?redirect=/devices";
           return null;
         }
         if (!res.ok) throw new Error("Failed to fetch devices");

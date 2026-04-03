@@ -93,9 +93,8 @@ fn shell_function_bootstrap(shell: &str, agent: &str) -> Option<(String, String)
     match shell_name {
         "zsh" => {
             let rc = shell_quote(&home.join(".zshrc").to_string_lossy());
-            let prelude = extract_zsh_wrapper_prelude(shell, agent).unwrap_or_else(|| {
-                format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; ")
-            });
+            let prelude = extract_zsh_wrapper_prelude(shell, agent)
+                .unwrap_or_else(|| format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; "));
             Some(("-c".into(), prelude))
         }
         "bash" => {
@@ -1232,5 +1231,4 @@ mod tests {
         let rewritten = rewrite_osc_titles(raw, "borzoi — ");
         assert_eq!(rewritten.as_ref(), b"\x1b]0;borzoi \xE2\x80\x94 claude\x07");
     }
-
 }

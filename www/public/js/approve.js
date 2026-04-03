@@ -10,7 +10,7 @@
     .then(function (res) {
       if (res.status === 401) {
         // Not logged in — redirect to GitHub OAuth, then back here
-        window.location.href = "/api/auth/github?redirect=/approve";
+        window.location.href = "/login?redirect=/approve";
         return;
       }
       if (!res.ok) throw new Error("Auth check failed");

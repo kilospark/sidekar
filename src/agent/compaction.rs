@@ -60,10 +60,7 @@ pub async fn maybe_compact(
     match phase2_summarize(provider, model, history).await {
         Ok(()) => {
             let after = estimate_tokens(history);
-            eprintln!(
-                "\x1b[2m[Compacted to ~{}k tokens]\x1b[0m",
-                after / 1000,
-            );
+            eprintln!("\x1b[2m[Compacted to ~{}k tokens]\x1b[0m", after / 1000,);
             true
         }
         Err(e) => {
@@ -147,9 +144,14 @@ async fn phase2_summarize(
                 ContentBlock::ToolCall { name, .. } => {
                     summary_input.push_str(&format!("{role}: [called tool: {name}]\n"));
                 }
-                ContentBlock::ToolResult { content, is_error, .. } => {
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
                     let prefix = if *is_error { "ERROR" } else { "result" };
-                    summary_input.push_str(&format!("{role}: [tool {prefix}]: {}\n", truncate(content, 500)));
+                    summary_input.push_str(&format!(
+                        "{role}: [tool {prefix}]: {}\n",
+                        truncate(content, 500)
+                    ));
                 }
                 ContentBlock::Thinking { .. } => {}
             }

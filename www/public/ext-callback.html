@@ -89,7 +89,7 @@ h1 { font-size: 20px; margin-bottom: 8px; }
   }
 
   try {
-    const resp = await fetch("/api/auth/ext-token", {
+    const resp = await fetch("/api/auth/device?action=ext-generate", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },

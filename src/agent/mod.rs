@@ -5,8 +5,7 @@ use anyhow::{Result, bail};
 use tokio::sync::mpsc;
 
 use crate::providers::{
-    AssistantResponse, ChatMessage, ContentBlock, Provider, Role, StopReason, StreamEvent,
-    ToolDef,
+    AssistantResponse, ChatMessage, ContentBlock, Provider, Role, StopReason, StreamEvent, ToolDef,
 };
 
 const MAX_ITERATIONS: usize = 25;
@@ -31,7 +30,10 @@ pub async fn run(
 
     loop {
         if iteration >= MAX_ITERATIONS {
-            eprintln!("\nsidekar: reached max iterations ({}), stopping", MAX_ITERATIONS);
+            eprintln!(
+                "\nsidekar: reached max iterations ({}), stopping",
+                MAX_ITERATIONS
+            );
             break;
         }
         iteration += 1;
@@ -57,9 +59,11 @@ pub async fn run(
             .content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::ToolCall { id, name, arguments } => {
-                    Some((id.clone(), name.clone(), arguments.clone()))
-                }
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => Some((id.clone(), name.clone(), arguments.clone())),
                 _ => None,
             })
             .collect();

@@ -76,8 +76,14 @@ async function handleCallback(req, res) {
     name: user.name,
   });
 
-  setSessionCookie(res, jwt);
   const returnTo = req.query.state || "/dashboard";
+
+  // Mobile app: redirect to custom URL scheme instead of setting cookie
+  if (returnTo === "mobile") {
+    return res.redirect(302, `sidekar://auth/callback?token=${encodeURIComponent(jwt)}`);
+  }
+
+  setSessionCookie(res, jwt);
   return res.redirect(302, returnTo);
   } catch (err) {
     return res.status(500).json({ error: "internal error" });

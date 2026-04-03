@@ -63,7 +63,8 @@ impl CdpPool {
     fn get_or_create(&mut self, ws_url: &str) -> mpsc::UnboundedSender<PoolCmd> {
         if let Some(conn) = self.connections.get(ws_url) {
             if !conn.cmd_tx.is_closed() {
-                conn.last_used.store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
+                conn.last_used
+                    .store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
                 return conn.cmd_tx.clone();
             }
         }
@@ -160,8 +161,7 @@ async fn connection_task(
     let mut next_id: u64 = 1;
     let mut pending: HashMap<u64, PendingRequest> = HashMap::new();
     let mut subscribers: Vec<mpsc::UnboundedSender<Value>> = Vec::new();
-    let mut ping_interval =
-        tokio::time::interval(Duration::from_secs(WS_PING_INTERVAL_SECS));
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(WS_PING_INTERVAL_SECS));
     ping_interval.tick().await; // skip immediate tick
 
     use futures_util::{SinkExt, StreamExt};
@@ -266,10 +266,7 @@ async fn connection_task(
 }
 
 /// Drain all pending pool commands, sending each an error response.
-async fn drain_pending_with_error(
-    cmd_rx: &mut mpsc::UnboundedReceiver<PoolCmd>,
-    msg: &str,
-) {
+async fn drain_pending_with_error(cmd_rx: &mut mpsc::UnboundedReceiver<PoolCmd>, msg: &str) {
     while let Ok(cmd) = cmd_rx.try_recv() {
         if let PoolCmd::Send { response_tx, .. } = cmd {
             let _ = response_tx.send(Err(anyhow::anyhow!("{}", msg)));

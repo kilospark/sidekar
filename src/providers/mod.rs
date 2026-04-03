@@ -149,10 +149,7 @@ pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "thinking")]
-    Thinking {
-        thinking: String,
-        signature: String,
-    },
+    Thinking { thinking: String, signature: String },
     #[serde(rename = "tool_use")]
     ToolCall {
         id: String,
@@ -395,8 +392,21 @@ impl Provider {
             Provider::Anthropic { api_key, base_url } => {
                 anthropic::stream(api_key, base_url, model, system_prompt, messages, tools).await
             }
-            Provider::Codex { api_key, account_id, base_url } => {
-                codex::stream(api_key, account_id, base_url, model, system_prompt, messages, tools).await
+            Provider::Codex {
+                api_key,
+                account_id,
+                base_url,
+            } => {
+                codex::stream(
+                    api_key,
+                    account_id,
+                    base_url,
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                )
+                .await
             }
         }
     }

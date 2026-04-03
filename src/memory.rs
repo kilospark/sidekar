@@ -264,7 +264,12 @@ pub fn finish_agent_session(session_name: &str) -> Result<()> {
 
 pub fn startup_brief(limit: usize) -> Result<String> {
     let project = crate::scope::resolve_project_name(None);
-    build_context_text(crate::scope::ScopeView::Project, Some(&project), None, limit)
+    build_context_text(
+        crate::scope::ScopeView::Project,
+        Some(&project),
+        None,
+        limit,
+    )
 }
 
 fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -1099,8 +1104,9 @@ fn search_events(
         | (crate::scope::ScopeView::All, _, Some(event_type)) => {
             stmt.query(params![cleaned, event_type, limit as i64])?
         }
-        (crate::scope::ScopeView::Global, _, None)
-        | (crate::scope::ScopeView::All, _, None) => stmt.query(params![cleaned, limit as i64])?,
+        (crate::scope::ScopeView::Global, _, None) | (crate::scope::ScopeView::All, _, None) => {
+            stmt.query(params![cleaned, limit as i64])?
+        }
         (crate::scope::ScopeView::Project, None, _) => {
             bail!("project scope queries require a project context")
         }

@@ -47,7 +47,13 @@ fn cmd_tasks_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
     let (scope, project) = parse_task_write_scope(args)?;
-    let id = insert_task(&title, notes.as_deref(), priority, &scope, project.as_deref())?;
+    let id = insert_task(
+        &title,
+        notes.as_deref(),
+        priority,
+        &scope,
+        project.as_deref(),
+    )?;
     out!(ctx, "Stored task [{}].", id);
     Ok(())
 }
@@ -445,7 +451,9 @@ fn load_tasks(
         })
     };
     let rows = match scope_view {
-        crate::scope::ScopeView::Project => stmt.query_map(params![project, limit as i64], &mut map_row)?,
+        crate::scope::ScopeView::Project => {
+            stmt.query_map(params![project, limit as i64], &mut map_row)?
+        }
         crate::scope::ScopeView::Global | crate::scope::ScopeView::All => {
             stmt.query_map(params![limit as i64], &mut map_row)?
         }
@@ -532,7 +540,8 @@ fn extract_optional_value(args: &[String], prefix: &str) -> Option<String> {
 
 fn parse_task_write_scope(args: &[String]) -> Result<(String, Option<String>)> {
     let scope = crate::scope::parse_stored_scope(
-        &extract_optional_value(args, "--scope=").unwrap_or_else(|| crate::scope::PROJECT_SCOPE.to_string()),
+        &extract_optional_value(args, "--scope=")
+            .unwrap_or_else(|| crate::scope::PROJECT_SCOPE.to_string()),
     )?
     .to_string();
     let project = if scope == crate::scope::PROJECT_SCOPE {
@@ -547,7 +556,8 @@ fn parse_task_write_scope(args: &[String]) -> Result<(String, Option<String>)> {
 }
 
 fn parse_task_view_scope(args: &[String]) -> Result<(crate::scope::ScopeView, Option<String>)> {
-    let scope = crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
+    let scope =
+        crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
     let project = if scope == crate::scope::ScopeView::Project {
         Some(
             extract_optional_value(args, "--project=")
@@ -640,10 +650,14 @@ mod tests {
         with_test_home(|| {
             let current = crate::scope::resolve_project_name(None);
             let other = "other-project".to_string();
-            let _project_task =
-                insert_task("project", None, 0, crate::scope::PROJECT_SCOPE, Some(&current))?;
-            let _global_task =
-                insert_task("global", None, 0, crate::scope::GLOBAL_SCOPE, None)?;
+            let _project_task = insert_task(
+                "project",
+                None,
+                0,
+                crate::scope::PROJECT_SCOPE,
+                Some(&current),
+            )?;
+            let _global_task = insert_task("global", None, 0, crate::scope::GLOBAL_SCOPE, None)?;
             let _other_task =
                 insert_task("other", None, 0, crate::scope::PROJECT_SCOPE, Some(&other))?;
 
