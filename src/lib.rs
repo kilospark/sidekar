@@ -2730,16 +2730,34 @@ sidekar config [list|get|set|reset] [key] [value]
     sidekar config reset browser"
         }
 
-        "telemetry" => {
+        "device" => {
             "\
-sidekar telemetry [on|off|status]
+sidekar device <login|logout|list>
 
-  Enable, disable, or inspect anonymous telemetry collection.
+  Manage device authentication with sidekar.dev.
+
+  Subcommands:
+    login     Authenticate this device (device auth flow)
+    logout    Remove device token and clear encryption state
+    list      List registered devices for your account
 
   Examples:
-    sidekar telemetry status
-    sidekar telemetry off
-    sidekar telemetry on"
+    sidekar device login
+    sidekar device list
+    sidekar device logout"
+        }
+
+        "session" => {
+            "\
+sidekar session <list>
+
+  Manage active relay sessions.
+
+  Subcommands:
+    list      List active sessions for your account
+
+  Examples:
+    sidekar session list"
         }
 
         "feedback" => {
@@ -2765,35 +2783,6 @@ sidekar errors [N]
   Examples:
     sidekar errors
     sidekar errors 100"
-        }
-
-        "login" => {
-            "\
-sidekar login
-
-  Authenticate with sidekar.dev using the device auth flow.
-  Enables relay-backed sessions, dashboard access, and extension auth."
-        }
-
-        "logout" => {
-            "\
-sidekar logout
-
-  Remove the local device token and clear local encryption state."
-        }
-
-        "devices" => {
-            "\
-sidekar devices
-
-  List registered devices for the authenticated Sidekar account."
-        }
-
-        "sessions" => {
-            "\
-sidekar sessions
-
-  List active Sidekar sessions visible to the authenticated account."
         }
 
         "daemon" => {

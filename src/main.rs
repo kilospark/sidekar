@@ -93,7 +93,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     // Show telemetry info on first run (when no config exists yet)
-    if sidekar::config::is_first_run() && !matches!(command.as_str(), "telemetry" | "config") {
+    if sidekar::config::is_first_run() && !matches!(command.as_str(), "config") {
         let config = sidekar::config::SidekarConfig::default();
         let _ = sidekar::config::save_config(&config);
         let message = "Thanks for installing sidekar!\n\nAnonymous telemetry is enabled by default to help us improve.\nIt collects: tool usage counts, error counts (no personal data).\n\nTo disable: sidekar config set telemetry false";
@@ -263,84 +263,86 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         }
     }
 
-    // Device auth for sidekar.dev: sidekar web login/logout
-    if command == "web" {
+    // sidekar device <login|logout|list>
+    if command == "device" {
         let sub = args.first().map(|s| s.as_str()).unwrap_or("");
         match sub {
             "login" => return sidekar::auth::device_auth_flow().await,
             "logout" => {
                 sidekar::auth::logout()?;
-                println!("Logged out. Device token removed.");
+                println!("Signed out. Device token removed.");
+                return Ok(());
+            }
+            "list" => {
+                let data = sidekar::api_client::list_devices().await?;
+                if let Some(devices) = data.get("devices").and_then(|v| v.as_array()) {
+                    if devices.is_empty() {
+                        println!("No devices registered.");
+                    } else {
+                        println!(
+                            "{:<20} {:<10} {:<8} {:<12} {}",
+                            "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN"
+                        );
+                        for d in devices {
+                            let hostname = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                            let os = d.get("os").and_then(|v| v.as_str()).unwrap_or("-");
+                            let arch = d.get("arch").and_then(|v| v.as_str()).unwrap_or("-");
+                            let version = d
+                                .get("sidekar_version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("-");
+                            let last_seen = d
+                                .get("last_seen_at")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("-");
+                            println!(
+                                "{:<20} {:<10} {:<8} {:<12} {}",
+                                hostname, os, arch, version, last_seen
+                            );
+                        }
+                    }
+                }
                 return Ok(());
             }
             _ => {
-                eprintln!("Usage: sidekar web [login|logout]");
+                eprintln!("Usage: sidekar device <login|logout|list>");
                 std::process::exit(1);
             }
         }
     }
 
-    // Legacy aliases
-    if command == "login" {
-        return sidekar::auth::device_auth_flow().await;
-    }
-    if command == "logout" {
-        sidekar::auth::logout()?;
-        println!("Logged out. Device token removed.");
-        return Ok(());
-    }
-    if command == "devices" {
-        let data = sidekar::api_client::list_devices().await?;
-        if let Some(devices) = data.get("devices").and_then(|v| v.as_array()) {
-            if devices.is_empty() {
-                println!("No devices registered.");
-            } else {
-                println!(
-                    "{:<20} {:<10} {:<8} {:<12} {}",
-                    "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN"
-                );
-                for d in devices {
-                    let hostname = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
-                    let os = d.get("os").and_then(|v| v.as_str()).unwrap_or("-");
-                    let arch = d.get("arch").and_then(|v| v.as_str()).unwrap_or("-");
-                    let version = d
-                        .get("sidekar_version")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("-");
-                    let last_seen = d
-                        .get("last_seen_at")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("-");
-                    println!(
-                        "{:<20} {:<10} {:<8} {:<12} {}",
-                        hostname, os, arch, version, last_seen
-                    );
+    // sidekar session list
+    if command == "session" {
+        let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+        match sub {
+            "list" => {
+                let data = sidekar::api_client::list_sessions().await?;
+                if let Some(sessions) = data.get("sessions").and_then(|v| v.as_array()) {
+                    if sessions.is_empty() {
+                        println!("No active sessions.");
+                    } else {
+                        println!(
+                            "{:<20} {:<15} {:<12} {}",
+                            "NAME", "AGENT", "HOSTNAME", "CWD"
+                        );
+                        for s in sessions {
+                            let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                            let agent = s.get("agent_type").and_then(|v| v.as_str()).unwrap_or("-");
+                            let hostname = s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                            let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("-");
+                            println!("{:<20} {:<15} {:<12} {}", name, agent, hostname, cwd);
+                        }
+                    }
                 }
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Usage: sidekar session <list>");
+                std::process::exit(1);
             }
         }
-        return Ok(());
     }
-    if command == "sessions" {
-        let data = sidekar::api_client::list_sessions().await?;
-        if let Some(sessions) = data.get("sessions").and_then(|v| v.as_array()) {
-            if sessions.is_empty() {
-                println!("No active sessions.");
-            } else {
-                println!(
-                    "{:<20} {:<15} {:<12} {}",
-                    "NAME", "AGENT", "HOSTNAME", "CWD"
-                );
-                for s in sessions {
-                    let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("-");
-                    let agent = s.get("agent_type").and_then(|v| v.as_str()).unwrap_or("-");
-                    let hostname = s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
-                    let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("-");
-                    println!("{:<20} {:<15} {:<12} {}", name, agent, hostname, cwd);
-                }
-            }
-        }
-        return Ok(());
-    }
+
 
     // Daemon
     if command == "daemon" {
@@ -448,7 +450,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // Fetch encryption key from server if logged in
     if !matches!(
         command.as_str(),
-        "login" | "config" | "memory" | "tasks" | "compact" | "pack" | "unpack"
+        "device" | "config" | "memory" | "tasks" | "compact" | "pack" | "unpack"
     ) {
         if crate::auth::auth_token().is_some() {
             if let Err(e) = crate::broker::fetch_encryption_key().await {
