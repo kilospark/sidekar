@@ -363,27 +363,44 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             Ok(())
         }
-        "errors" => {
-            let n = args
-                .first()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(50);
-            let rows = crate::broker::error_events_recent(n)?;
-            if rows.is_empty() {
-                out!(ctx, "No rows in error_events (~/.sidekar/sidekar.sqlite3).");
-                return Ok(());
+        "event" => {
+            let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+            match sub {
+                "list" => {
+                    let mut limit = 50usize;
+                    let mut level_filter: Option<&str> = None;
+                    for arg in args.iter().skip(1) {
+                        if let Some(lvl) = arg.strip_prefix("--level=") {
+                            level_filter = Some(lvl);
+                        } else if let Ok(n) = arg.parse::<usize>() {
+                            limit = n;
+                        }
+                    }
+                    let rows = crate::broker::events_recent(limit, level_filter)?;
+                    if rows.is_empty() {
+                        out!(ctx, "No events.");
+                        return Ok(());
+                    }
+                    out!(ctx, "id\tcreated_at\tlevel\tsource\tmessage");
+                    for r in rows {
+                        let details = r.details.as_deref().unwrap_or("");
+                        let msg = if details.is_empty() {
+                            r.message.clone()
+                        } else {
+                            format!("{} | {}", r.message, details)
+                        };
+                        out!(ctx, "{}\t{}\t{}\t{}\t{}", r.id, r.created_at, r.level, r.source, msg);
+                    }
+                    Ok(())
+                }
+                "clear" => {
+                    let level_filter = args.iter().skip(1).find_map(|a| a.strip_prefix("--level="));
+                    let deleted = crate::broker::events_clear(level_filter)?;
+                    out!(ctx, "Deleted {deleted} events.");
+                    Ok(())
+                }
+                _ => bail!("Unknown subcommand: event {sub}. Use: event list, event clear"),
             }
-            out!(ctx, "id\tcreated_at\tsource\tmessage");
-            for r in rows {
-                let details = r.details.as_deref().unwrap_or("");
-                let msg = if details.is_empty() {
-                    r.message.clone()
-                } else {
-                    format!("{} | {}", r.message, details)
-                };
-                out!(ctx, "{}\t{}\t{}\t{}", r.id, r.created_at, r.source, msg);
-            }
-            Ok(())
         }
         "install" => cmd_setup(ctx).await,
         "uninstall" => cmd_uninstall(ctx).await,

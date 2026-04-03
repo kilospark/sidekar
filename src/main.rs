@@ -47,6 +47,21 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         None
     };
 
+    let saw_proxy = args.iter().any(|a| a == "--proxy");
+    let saw_no_proxy = args.iter().any(|a| a == "--no-proxy");
+    if saw_proxy && saw_no_proxy {
+        bail!("Use only one of: --proxy, --no-proxy");
+    }
+    let proxy_override = if saw_proxy {
+        args.retain(|a| a != "--proxy");
+        Some(true)
+    } else if saw_no_proxy {
+        args.retain(|a| a != "--no-proxy");
+        Some(false)
+    } else {
+        None
+    };
+
     // Parse global --tab <id> flag before extracting the command
     let override_tab_id = if let Some(pos) = args.iter().position(|a| a == "--tab") {
         if pos + 1 < args.len() {
@@ -99,8 +114,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let message = "Thanks for installing sidekar!\n\nAnonymous telemetry is enabled by default to help us improve.\nIt collects: tool usage counts, error counts (no personal data).\n\nTo disable: sidekar config set telemetry false";
         if env::var("SIDEKAR_PTY").is_ok() {
             if env::var("SIDEKAR_VERBOSE").is_ok() {
-                sidekar::broker::try_log_error_event(
-                    "pty_info",
+                sidekar::broker::try_log_event(
+                    "debug",
+                    "pty",
                     "first_run_telemetry_notice",
                     Some(message),
                 );
@@ -417,10 +433,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
-        return sidekar::pty::run_agent(&command, &args, relay_override).await;
+        return sidekar::pty::run_agent(&command, &args, relay_override, proxy_override).await;
     }
-    if relay_override.is_some() {
-        bail!("--relay and --no-relay only apply to: sidekar <agent> [args...]");
+    if relay_override.is_some() || proxy_override.is_some() {
+        bail!("--relay/--no-relay/--proxy/--no-proxy only apply to: sidekar <agent> [args...]");
     }
     if !sidekar::is_known_command(&command) {
         bail!("Unknown command: {command}");
@@ -538,8 +554,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             let in_pty = env::var("SIDEKAR_PTY").is_ok();
             if in_pty && sidekar::command_should_auto_launch_browser(&command) {
                 if env::var("SIDEKAR_VERBOSE").is_ok() {
-                    sidekar::broker::try_log_error_event(
-                        "pty_info",
+                    sidekar::broker::try_log_event(
+                        "debug",
+                        "pty",
                         "auto_launch_browser",
                         Some(&format!("command={command}")),
                     );

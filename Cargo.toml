@@ -43,6 +43,10 @@ libc = "0.2"
 totp-rs = { version = "5.6", features = ["gen_secret", "otpauth"] }
 aes-gcm = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio-rustls = "0.26"
+webpki-roots = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["async"] }

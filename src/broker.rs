@@ -376,20 +376,34 @@ fn init_schema(conn: &Connection) -> Result<()> {
          DELETE FROM auth;",
     );
 
-    // Local error log (durable, queryable)
+    // Event log (durable, queryable) — was error_events, now events with level column
     conn.execute_batch(
         "
-        CREATE TABLE IF NOT EXISTS error_events (
+        CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at INTEGER NOT NULL,
+            level TEXT NOT NULL DEFAULT 'error',
             source TEXT NOT NULL,
             message TEXT NOT NULL,
             details TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_error_events_created
-            ON error_events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_events_created
+            ON events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_events_level
+            ON events(level);
         ",
     )?;
+    // Migrate from old table if it exists
+    let has_old: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='error_events'")?
+        .exists([])?;
+    if has_old {
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO events (id, created_at, level, source, message, details)
+             SELECT id, created_at, 'error', source, message, details FROM error_events;
+             DROP TABLE error_events;",
+        )?;
+    }
 
     // Local memory layer
     conn.execute_batch(
@@ -2038,50 +2052,75 @@ pub fn decrypt(encrypted: &str) -> Result<String> {
     String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e))
 }
 
-/// One row from `error_events` (local SQLite log).
+/// One row from the `events` table.
 #[derive(Debug, Clone)]
-pub struct ErrorEventRow {
+pub struct EventRow {
     pub id: i64,
     pub created_at: i64,
+    pub level: String,
     pub source: String,
     pub message: String,
     pub details: Option<String>,
 }
 
-/// Append an error row. Prefer [`try_log_error_event`] from call sites where failure must not propagate.
-pub fn log_error_event(source: &str, message: &str, details: Option<&str>) -> Result<()> {
+/// Append an event. Prefer [`try_log_event`] from call sites where failure must not propagate.
+pub fn log_event(level: &str, source: &str, message: &str, details: Option<&str>) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
     conn.execute(
-        "INSERT INTO error_events (created_at, source, message, details) VALUES (?1, ?2, ?3, ?4)",
-        params![now, source, message, details],
+        "INSERT INTO events (created_at, level, source, message, details) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![now, level, source, message, details],
     )?;
     Ok(())
 }
 
-/// Best-effort persist. If the DB is unavailable, the event is dropped (no stderr spam).
-pub fn try_log_error_event(source: &str, message: &str, details: Option<&str>) {
-    let _ = log_error_event(source, message, details);
+/// Best-effort persist. If the DB is unavailable, the event is silently dropped.
+pub fn try_log_event(level: &str, source: &str, message: &str, details: Option<&str>) {
+    let _ = log_event(level, source, message, details);
 }
 
-/// Recent errors, newest first (cap 500).
-pub fn error_events_recent(limit: usize) -> Result<Vec<ErrorEventRow>> {
+/// Convenience: log an error event.
+pub fn try_log_error(source: &str, message: &str, details: Option<&str>) {
+    try_log_event("error", source, message, details);
+}
+
+/// Recent events, newest first. Filter by level if provided.
+pub fn events_recent(limit: usize, level: Option<&str>) -> Result<Vec<EventRow>> {
     let conn = open()?;
     let lim = limit.min(500).max(1) as i64;
-    let mut stmt = conn.prepare(
-        "SELECT id, created_at, source, message, details FROM error_events ORDER BY id DESC LIMIT ?1",
-    )?;
-    let rows = stmt.query_map(params![lim], |row| {
-        Ok(ErrorEventRow {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match level {
+        Some(lvl) => (
+            "SELECT id, created_at, level, source, message, details FROM events WHERE level = ?1 ORDER BY id DESC LIMIT ?2",
+            vec![Box::new(lvl.to_string()), Box::new(lim)],
+        ),
+        None => (
+            "SELECT id, created_at, level, source, message, details FROM events ORDER BY id DESC LIMIT ?1",
+            vec![Box::new(lim)],
+        ),
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter()), |row| {
+        Ok(EventRow {
             id: row.get(0)?,
             created_at: row.get(1)?,
-            source: row.get(2)?,
-            message: row.get(3)?,
-            details: row.get(4)?,
+            level: row.get(2)?,
+            source: row.get(3)?,
+            message: row.get(4)?,
+            details: row.get(5)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// Delete all events, or only those matching a level.
+pub fn events_clear(level: Option<&str>) -> Result<u64> {
+    let conn = open()?;
+    let changed = match level {
+        Some(lvl) => conn.execute("DELETE FROM events WHERE level = ?1", params![lvl])?,
+        None => conn.execute("DELETE FROM events", [])?,
+    };
+    Ok(changed as u64)
 }
 
 // ---------------------------------------------------------------------------

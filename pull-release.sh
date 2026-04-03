@@ -47,7 +47,7 @@ done
 echo ""
 echo "=== Downloading release binaries ==="
 mkdir -p "$DEST"
-gh release download "$TAG" --repo "$REPO" --pattern "*.tar.gz" --dir "$DEST/" --clobber
+gh release download "$TAG" --repo "$REPO" --pattern "*.tar.gz" --pattern "*.minisig" --dir "$DEST/" --clobber
 ls -lh "$DEST/"
 
 echo ""
