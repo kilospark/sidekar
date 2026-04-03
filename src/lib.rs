@@ -64,6 +64,7 @@ pub mod commands;
 pub mod config;
 pub mod daemon;
 pub mod desktop;
+pub mod events;
 pub mod ext;
 pub mod ipc;
 pub mod memory;

@@ -989,6 +989,9 @@ async fn event_loop(
         None => (None, None),
     };
 
+    // Structured event parser — emits semantic events alongside raw PTY bytes
+    let mut event_parser = crate::events::EventParser::new();
+
     loop {
         tokio::select! {
             biased;
@@ -1139,6 +1142,11 @@ async fn event_loop(
                                         rewrite_osc_titles(&filtered, &nick_prefix).into_owned()
                                     };
                                     tx.send_data(tunnel_data);
+
+                                    // Emit structured events alongside raw bytes
+                                    for event in event_parser.feed(raw) {
+                                        tx.send_event(crate::events::event_to_json(&event));
+                                    }
                                 }
                             }
                             Ok(Err(_)) => break,
@@ -1155,6 +1163,13 @@ async fn event_loop(
     // the tokio stdout has its own buffer separate from std::io::stdout().
     // The child's final escape sequences (rmcup etc.) must be flushed now.
     let _ = stdout.flush().await;
+
+    // Flush any pending events before shutting down
+    if let Some(ref tx) = tunnel_tx {
+        for event in event_parser.flush() {
+            tx.send_event(crate::events::event_to_json(&event));
+        }
+    }
 
     // Shut down tunnel gracefully
     if let Some(tx) = tunnel_tx {
