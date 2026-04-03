@@ -100,7 +100,7 @@
     fetch("/api/auth/session?ws=1")
       .then(function (res) {
         if (res.status === 401) {
-          window.location.href = "/api/auth/github?redirect=/terminal/" + sessionId;
+          window.location.href = "/login?redirect=/terminal/" + sessionId;
           return null;
         }
         if (!res.ok) throw new Error("Auth check failed");

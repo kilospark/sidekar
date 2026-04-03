@@ -709,7 +709,9 @@ fn send_directed_envelope(
     };
 
     if matches!(envelope.to.as_str(), "@all" | "all") {
-        bail!("Broadcast targets are not supported. Use `sidekar bus who` and message a specific agent.");
+        bail!(
+            "Broadcast targets are not supported. Use `sidekar bus who` and message a specific agent."
+        );
     }
 
     let full_message = envelope.format_for_paste();
@@ -806,11 +808,7 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
         ));
     }
 
-    out!(
-        ctx,
-        "Channel \"{channel_label}\":\n{}",
-        lines.join("\n")
-    );
+    out!(ctx, "Channel \"{channel_label}\":\n{}", lines.join("\n"));
     Ok(())
 }
 
@@ -825,9 +823,9 @@ pub fn cmd_requests(
     } else {
         limit
     };
-    let self_name = state
-        .name()
-        .ok_or_else(|| anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"))?;
+    let self_name = state.name().ok_or_else(|| {
+        anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
+    })?;
     let requests = broker::list_outbound_requests_for_sender(self_name, status, limit)?;
     if requests.is_empty() {
         out!(ctx, "No outbound requests.");
@@ -868,19 +866,16 @@ pub fn cmd_replies(
     } else {
         limit
     };
-    let self_name = state
-        .name()
-        .ok_or_else(|| anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"))?;
+    let self_name = state.name().ok_or_else(|| {
+        anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
+    })?;
     let replies = broker::list_bus_replies_for_sender(self_name, reply_to_msg_id, limit)?;
     if replies.is_empty() {
         out!(ctx, "No replies.");
         return Ok(());
     }
 
-    out!(
-        ctx,
-        "reply_to\treply_id\tfrom\tkind\tcreated_at\tmessage"
-    );
+    out!(ctx, "reply_to\treply_id\tfrom\tkind\tcreated_at\tmessage");
     for reply in replies {
         out!(
             ctx,
@@ -896,16 +891,12 @@ pub fn cmd_replies(
     Ok(())
 }
 
-pub fn cmd_show_request(
-    state: &SidekarBusState,
-    ctx: &mut AppContext,
-    msg_id: &str,
-) -> Result<()> {
-    let self_name = state
-        .name()
-        .ok_or_else(|| anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>"))?;
-    let request = broker::outbound_request(msg_id)?
-        .ok_or_else(|| anyhow!("Unknown request: {msg_id}"))?;
+pub fn cmd_show_request(state: &SidekarBusState, ctx: &mut AppContext, msg_id: &str) -> Result<()> {
+    let self_name = state.name().ok_or_else(|| {
+        anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
+    })?;
+    let request =
+        broker::outbound_request(msg_id)?.ok_or_else(|| anyhow!("Unknown request: {msg_id}"))?;
     if request.sender_name != self_name {
         bail!("Request {msg_id} does not belong to the current agent.");
     }
@@ -914,8 +905,16 @@ pub fn cmd_show_request(
     out!(ctx, "status: {}", request.status);
     out!(ctx, "kind: {}", request.kind);
     out!(ctx, "to: {}", request.recipient_name);
-    out!(ctx, "channel: {}", request.channel.as_deref().unwrap_or("-"));
-    out!(ctx, "project: {}", request.project.as_deref().unwrap_or("-"));
+    out!(
+        ctx,
+        "channel: {}",
+        request.channel.as_deref().unwrap_or("-")
+    );
+    out!(
+        ctx,
+        "project: {}",
+        request.project.as_deref().unwrap_or("-")
+    );
     out!(ctx, "created_at: {}", request.created_at);
     out!(
         ctx,

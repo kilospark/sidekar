@@ -28,9 +28,9 @@ pub struct SessionEntry {
     pub id: String,
     pub session_id: String,
     pub parent_id: Option<String>,
-    pub entry_type: String, // "message", "compaction", "model_change"
+    pub entry_type: String,   // "message", "compaction", "model_change"
     pub role: Option<String>, // "user", "assistant"
-    pub content: String,    // JSON blob
+    pub content: String,      // JSON blob
     pub created_at: f64,
 }
 
@@ -180,8 +180,7 @@ pub fn load_history(session_id: &str) -> Result<Vec<ChatMessage>> {
             "assistant" => Role::Assistant,
             _ => Role::User,
         };
-        let content: Vec<ContentBlock> =
-            serde_json::from_str(&content_json).unwrap_or_default();
+        let content: Vec<ContentBlock> = serde_json::from_str(&content_json).unwrap_or_default();
         messages.push(ChatMessage { role, content });
     }
     Ok(messages)

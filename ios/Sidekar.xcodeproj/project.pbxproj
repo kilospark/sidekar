@@ -1,0 +1,429 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		190824A04BAF664FE507AAD4 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 349DE75928C57210AFDD2558 /* APIClient.swift */; };
+		193ED30910CC55D35E4F694E /* TerminalViewWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4127DBE05A05F74938BDDF1 /* TerminalViewWrapper.swift */; };
+		432240E46BB7DD7B474C670A /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21CC0E76540F563E94C731D2 /* AuthService.swift */; };
+		53EA662C5D214E266DE546F7 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D9F169BFD2CE40BA168E6E3 /* LoginView.swift */; };
+		5EB175503645642108BFD1E2 /* SidekarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 845857BD0CE76D8347D050AD /* SidekarApp.swift */; };
+		8FDEF6888AA0C1EC92FA2A4C /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02462E79B958D1213DECBECB /* KeychainHelper.swift */; };
+		932299CA050CD6A3370EBBBE /* SessionsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD88EA403A50B8920EA333E /* SessionsListView.swift */; };
+		972D73CC510AB5054452153B /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A6DCD3EBB8523460311A949 /* Session.swift */; };
+		B0BB708719A57D5ACBD38C04 /* SessionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9926173BDB014D5C4DB1BDB8 /* SessionCardView.swift */; };
+		C89A16EED560C7C7C057CA8D /* TerminalContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29930C607DE7D593B0A1F19 /* TerminalContainerView.swift */; };
+		CAAFCC3658A19676887AE1CB /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923B5DD634D11509F7D76FCA /* WebSocketManager.swift */; };
+		D1B1F4420EA923A4DCC6C4C8 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 9071AEBA5E876989442AD092 /* SwiftTerm */; };
+		F0EDF7DEBCD01609E8AC72A3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1580210499183D6043C663C7 /* Assets.xcassets */; };
+		F86FB04C40AA184778C16BE9 /* AuthUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A7AE536C1C43F4781D223A /* AuthUser.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		02462E79B958D1213DECBECB /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		0A6DCD3EBB8523460311A949 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
+		1580210499183D6043C663C7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		18A7AE536C1C43F4781D223A /* AuthUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthUser.swift; sourceTree = "<group>"; };
+		21CC0E76540F563E94C731D2 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
+		2A80082C95EA3DBFBD8BE5AF /* Sidekar.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Sidekar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		349DE75928C57210AFDD2558 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		3DD88EA403A50B8920EA333E /* SessionsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsListView.swift; sourceTree = "<group>"; };
+		4BAB782BF8EC03A99CA0D204 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7D9F169BFD2CE40BA168E6E3 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		845857BD0CE76D8347D050AD /* SidekarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidekarApp.swift; sourceTree = "<group>"; };
+		923B5DD634D11509F7D76FCA /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
+		9926173BDB014D5C4DB1BDB8 /* SessionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCardView.swift; sourceTree = "<group>"; };
+		D4127DBE05A05F74938BDDF1 /* TerminalViewWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewWrapper.swift; sourceTree = "<group>"; };
+		E29930C607DE7D593B0A1F19 /* TerminalContainerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContainerView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FCB94751EB9D3BF9155804C0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1B1F4420EA923A4DCC6C4C8 /* SwiftTerm in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		157F201932137516C402AC75 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				349DE75928C57210AFDD2558 /* APIClient.swift */,
+				21CC0E76540F563E94C731D2 /* AuthService.swift */,
+				923B5DD634D11509F7D76FCA /* WebSocketManager.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		2C9FBD12419F7951736E7279 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				7D9F169BFD2CE40BA168E6E3 /* LoginView.swift */,
+				9926173BDB014D5C4DB1BDB8 /* SessionCardView.swift */,
+				3DD88EA403A50B8920EA333E /* SessionsListView.swift */,
+				E29930C607DE7D593B0A1F19 /* TerminalContainerView.swift */,
+				D4127DBE05A05F74938BDDF1 /* TerminalViewWrapper.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		30C35040D0483304D14571EE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2A80082C95EA3DBFBD8BE5AF /* Sidekar.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		379204CED7AF19CF8282B3AF /* Sidekar */ = {
+			isa = PBXGroup;
+			children = (
+				1580210499183D6043C663C7 /* Assets.xcassets */,
+				4BAB782BF8EC03A99CA0D204 /* Info.plist */,
+				845857BD0CE76D8347D050AD /* SidekarApp.swift */,
+				B0F187D289A78837CB311C71 /* Models */,
+				157F201932137516C402AC75 /* Services */,
+				6E3B8BEC1FB82EA38598B8CB /* Utilities */,
+				2C9FBD12419F7951736E7279 /* Views */,
+			);
+			path = Sidekar;
+			sourceTree = "<group>";
+		};
+		6E3B8BEC1FB82EA38598B8CB /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				02462E79B958D1213DECBECB /* KeychainHelper.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		8E9082C09180C6709FD33F1B = {
+			isa = PBXGroup;
+			children = (
+				379204CED7AF19CF8282B3AF /* Sidekar */,
+				30C35040D0483304D14571EE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B0F187D289A78837CB311C71 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				18A7AE536C1C43F4781D223A /* AuthUser.swift */,
+				0A6DCD3EBB8523460311A949 /* Session.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		4DCB54AD4EAECFC326138135 /* Sidekar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7DE758784101763EBDABE92F /* Build configuration list for PBXNativeTarget "Sidekar" */;
+			buildPhases = (
+				E2FCFEC6FB2C1C39232D49A7 /* Sources */,
+				07762ABA29CF07194B006E1E /* Resources */,
+				FCB94751EB9D3BF9155804C0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Sidekar;
+			packageProductDependencies = (
+				9071AEBA5E876989442AD092 /* SwiftTerm */,
+			);
+			productName = Sidekar;
+			productReference = 2A80082C95EA3DBFBD8BE5AF /* Sidekar.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		55F5B6B4C31C70E614AC3642 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 1FCA5306D9827EDE692462A8 /* Build configuration list for PBXProject "Sidekar" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 8E9082C09180C6709FD33F1B;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				710AD4419E3652F2B96EFC00 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 30C35040D0483304D14571EE /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				4DCB54AD4EAECFC326138135 /* Sidekar */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		07762ABA29CF07194B006E1E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F0EDF7DEBCD01609E8AC72A3 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E2FCFEC6FB2C1C39232D49A7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				190824A04BAF664FE507AAD4 /* APIClient.swift in Sources */,
+				432240E46BB7DD7B474C670A /* AuthService.swift in Sources */,
+				F86FB04C40AA184778C16BE9 /* AuthUser.swift in Sources */,
+				8FDEF6888AA0C1EC92FA2A4C /* KeychainHelper.swift in Sources */,
+				53EA662C5D214E266DE546F7 /* LoginView.swift in Sources */,
+				972D73CC510AB5054452153B /* Session.swift in Sources */,
+				B0BB708719A57D5ACBD38C04 /* SessionCardView.swift in Sources */,
+				932299CA050CD6A3370EBBBE /* SessionsListView.swift in Sources */,
+				5EB175503645642108BFD1E2 /* SidekarApp.swift in Sources */,
+				C89A16EED560C7C7C057CA8D /* TerminalContainerView.swift in Sources */,
+				193ED30910CC55D35E4F694E /* TerminalViewWrapper.swift in Sources */,
+				CAAFCC3658A19676887AE1CB /* WebSocketManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		996486A597E3A7F1FF1288EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A57EB60874E1A3B7FD106A46 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sidekar/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Sidekar;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.sidekar.Sidekar;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DE2B28EA695A066D0642B039 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Sidekar/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Sidekar;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.sidekar.Sidekar;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E988FEB1F6C2DADEB25D5CE3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1FCA5306D9827EDE692462A8 /* Build configuration list for PBXProject "Sidekar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				996486A597E3A7F1FF1288EC /* Debug */,
+				E988FEB1F6C2DADEB25D5CE3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7DE758784101763EBDABE92F /* Build configuration list for PBXNativeTarget "Sidekar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A57EB60874E1A3B7FD106A46 /* Debug */,
+				DE2B28EA695A066D0642B039 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		710AD4419E3652F2B96EFC00 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		9071AEBA5E876989442AD092 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 710AD4419E3652F2B96EFC00 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 55F5B6B4C31C70E614AC3642 /* Project object */;
+}

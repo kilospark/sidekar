@@ -585,9 +585,8 @@ async fn read_line_limited(
             ));
         }
     }
-    let s = String::from_utf8(raw).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let s = String::from_utf8(raw)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let len = s.len();
     *buf = s;
     Ok(len)

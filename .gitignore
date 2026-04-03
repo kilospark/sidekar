@@ -15,3 +15,6 @@ www/public/binaries/
 !.env.example
 relay/target/
 minisign.key
+ios/build/
+ios/Sidekar.xcodeproj/xcuserdata/
+ios/Sidekar.xcodeproj/project.xcworkspace/xcuserdata/

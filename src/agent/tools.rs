@@ -38,10 +38,7 @@ async fn exec_bash(args: &Value) -> Result<String> {
         .get("command")
         .and_then(|v| v.as_str())
         .context("bash: missing 'command'")?;
-    let timeout_secs = args
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(120);
+    let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
 
     // Execute the command
     let output = tokio::time::timeout(
@@ -107,13 +104,10 @@ async fn compact_output(command: &str, raw: &str) -> Option<String> {
         drop(stdin);
     }
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        child.wait_with_output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
 
     if output.status.success() {
         let compacted = String::from_utf8_lossy(&output.stdout).to_string();

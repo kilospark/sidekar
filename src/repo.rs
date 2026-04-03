@@ -396,7 +396,9 @@ fn parse_repo_changes_args(args: &[String]) -> Result<RepoChangesArgs> {
         } else if target.is_none() {
             target = Some(arg.clone());
         } else {
-            bail!("Usage: sidekar repo changes [path] [--since=<ref>] [--style=json|plain] [--max-files=N] [--max-symbols=N]");
+            bail!(
+                "Usage: sidekar repo changes [path] [--since=<ref>] [--style=json|plain] [--max-files=N] [--max-symbols=N]"
+            );
         }
     }
 
@@ -456,7 +458,9 @@ fn parse_repo_actions_run_args(args: &[String]) -> Result<RepoActionsRunArgs> {
         } else if target.is_none() {
             target = Some(arg.clone());
         } else {
-            bail!("Usage: sidekar repo actions run <action-id> [path] [--timeout=N] [--max-output-chars=N] [--include-output] [--style=json|plain]");
+            bail!(
+                "Usage: sidekar repo actions run <action-id> [path] [--timeout=N] [--max-output-chars=N] [--include-output] [--style=json|plain]"
+            );
         }
     }
 
@@ -493,7 +497,9 @@ fn parse_repo_args(args: &[String]) -> Result<RepoArgs> {
         } else if target.is_none() {
             target = Some(arg.clone());
         } else {
-            bail!("Usage: sidekar repo <pack|tree> [path] [--include=...] [--ignore=...] [--stdin]");
+            bail!(
+                "Usage: sidekar repo <pack|tree> [path] [--include=...] [--ignore=...] [--stdin]"
+            );
         }
     }
 
@@ -540,7 +546,13 @@ fn build_repo_changes_summary(args: &RepoChangesArgs) -> Result<RepoChangesSumma
     } else {
         let output = run_git_capture(
             git_root,
-            &["status", "--porcelain=v1", "--untracked-files=all", "--", &scope_spec],
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                &scope_spec,
+            ],
         )?;
         parse_porcelain_status_output(&output)
     };
@@ -572,7 +584,12 @@ fn build_repo_changes_summary(args: &RepoChangesArgs) -> Result<RepoChangesSumma
         .map(|entry| RepoChangedFile {
             path: entry.path.clone(),
             status: entry.status.as_str().to_string(),
-            symbols: summarize_changed_file_symbols(git_root, &entry.path, entry.status, args.max_symbols),
+            symbols: summarize_changed_file_symbols(
+                git_root,
+                &entry.path,
+                entry.status,
+                args.max_symbols,
+            ),
         })
         .collect::<Vec<_>>();
 
@@ -591,9 +608,16 @@ fn build_repo_changes_summary(args: &RepoChangesArgs) -> Result<RepoChangesSumma
     })
 }
 
-fn build_repo_snapshot(args: &RepoArgs, include_diff: bool, include_logs: Option<usize>) -> Result<RepoSnapshot> {
+fn build_repo_snapshot(
+    args: &RepoArgs,
+    include_diff: bool,
+    include_logs: Option<usize>,
+) -> Result<RepoSnapshot> {
     let cwd = env::current_dir().context("failed to resolve current directory")?;
-    let target_path = args.target.as_ref().map(|value| resolve_cli_path(&cwd, value));
+    let target_path = args
+        .target
+        .as_ref()
+        .map(|value| resolve_cli_path(&cwd, value));
     let (root, explicit_from_target) = resolve_scan_root(&cwd, target_path.as_deref())?;
     let explicit_from_stdin = if args.stdin {
         read_explicit_paths_from_stdin(&cwd, &root)?
@@ -627,7 +651,11 @@ fn build_repo_snapshot(args: &RepoArgs, include_diff: bool, include_logs: Option
         None
     };
     let git_log = if let Some(limit) = include_logs {
-        Some(run_git_log(git_root.as_deref().unwrap_or(&root), &root, limit)?)
+        Some(run_git_log(
+            git_root.as_deref().unwrap_or(&root),
+            &root,
+            limit,
+        )?)
     } else {
         None
     };
@@ -671,7 +699,10 @@ fn resolve_project_root(cwd: &Path, target: Option<&str>) -> Result<PathBuf> {
                 bail!("Path does not exist: {}", path.display());
             }
             if !path.is_dir() {
-                bail!("Repo target must be a directory or file: {}", path.display());
+                bail!(
+                    "Repo target must be a directory or file: {}",
+                    path.display()
+                );
             }
             Ok(path)
         }
@@ -702,7 +733,10 @@ fn resolve_repo_scope(cwd: &Path, target: Option<&str>) -> Result<RepoScope> {
                 bail!("Path does not exist: {}", path.display());
             }
             if !path.is_dir() {
-                bail!("Repo target must be a directory or file: {}", path.display());
+                bail!(
+                    "Repo target must be a directory or file: {}",
+                    path.display()
+                );
             }
             let git_root = find_repo_root(&path);
             Ok(RepoScope {
@@ -737,7 +771,10 @@ fn resolve_scan_root(cwd: &Path, target: Option<&Path>) -> Result<(PathBuf, Vec<
                 bail!("Path does not exist: {}", path.display());
             }
             if !path.is_dir() {
-                bail!("Repo target must be a directory or file: {}", path.display());
+                bail!(
+                    "Repo target must be a directory or file: {}",
+                    path.display()
+                );
             }
             Ok((path.to_path_buf(), Vec::new()))
         }
@@ -794,7 +831,10 @@ impl MatcherSet {
             Some(build_globset(include_patterns)?)
         };
 
-        let mut ignores = DEFAULT_IGNORES.iter().map(|item| item.to_string()).collect::<Vec<_>>();
+        let mut ignores = DEFAULT_IGNORES
+            .iter()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>();
         ignores.extend(read_ignore_file(&root.join(".sidekarignore"))?);
         ignores.extend(ignore_patterns.iter().cloned());
 
@@ -1150,7 +1190,9 @@ fn run_git_capture(git_root: &Path, args: &[&str]) -> Result<String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git command failed: {}", stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }
 
 fn empty_fallback<'a>(value: &'a str, fallback: &'a str) -> &'a str {
@@ -1171,7 +1213,11 @@ fn normalize_scope_display(scope_path: &Path, git_root: &Path) -> String {
 
 fn parse_porcelain_status_output(output: &str) -> Vec<ChangeEntry> {
     let mut entries = Vec::new();
-    for line in output.lines().map(str::trim_end).filter(|line| !line.is_empty()) {
+    for line in output
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+    {
         if line.len() < 3 {
             continue;
         }
@@ -1212,7 +1258,11 @@ fn classify_porcelain_status(status: &str) -> ChangeStatus {
 
 fn parse_name_status_output(output: &str) -> Vec<ChangeEntry> {
     let mut entries = Vec::new();
-    for line in output.lines().map(str::trim_end).filter(|line| !line.is_empty()) {
+    for line in output
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+    {
         let mut parts = line.split('\t');
         let status_part = match parts.next() {
             Some(value) => value,
@@ -1357,17 +1407,18 @@ fn discover_project_actions(root: &Path) -> Result<Vec<ProjectAction>> {
     let mut actions = Vec::new();
     let mut seen = BTreeSet::new();
 
-    let mut add_action = |id: &str, kind: &str, command: Vec<String>, source: &str, description: &str| {
-        if seen.insert(id.to_string()) {
-            actions.push(ProjectAction {
-                id: id.to_string(),
-                kind: kind.to_string(),
-                command,
-                source: source.to_string(),
-                description: description.to_string(),
-            });
-        }
-    };
+    let mut add_action =
+        |id: &str, kind: &str, command: Vec<String>, source: &str, description: &str| {
+            if seen.insert(id.to_string()) {
+                actions.push(ProjectAction {
+                    id: id.to_string(),
+                    kind: kind.to_string(),
+                    command,
+                    source: source.to_string(),
+                    description: description.to_string(),
+                });
+            }
+        };
 
     let package_json = root.join("package.json");
     if package_json.exists() {
@@ -1386,7 +1437,11 @@ fn discover_project_actions(root: &Path) -> Result<Vec<ProjectAction>> {
                         add_action(
                             &format!("npm:{script_name}"),
                             kind,
-                            vec!["npm".to_string(), "run".to_string(), script_name.to_string()],
+                            vec![
+                                "npm".to_string(),
+                                "run".to_string(),
+                                script_name.to_string(),
+                            ],
                             "package.json",
                             &format!("Run npm script '{script_name}'."),
                         );
@@ -1568,7 +1623,10 @@ fn truncate_output(value: &str, max_output_chars: usize) -> String {
         return value.to_string();
     }
     let omitted = value.len().saturating_sub(max_output_chars);
-    format!("{}\n... [truncated {omitted} chars]", &value[..max_output_chars])
+    format!(
+        "{}\n... [truncated {omitted} chars]",
+        &value[..max_output_chars]
+    )
 }
 
 fn summarize_command_output(
@@ -1654,7 +1712,11 @@ fn render_repo_changes_plain(summary: &RepoChangesSummary) -> String {
         } else {
             let _ = writeln!(out, "  symbols:");
             for symbol in &file.symbols {
-                let _ = writeln!(out, "    - {} {} @{}", symbol.kind, symbol.name, symbol.line);
+                let _ = writeln!(
+                    out,
+                    "    - {} {} @{}",
+                    symbol.kind, symbol.name, symbol.line
+                );
             }
         }
     }
@@ -1965,12 +2027,24 @@ mod tests {
             root.join("package.json"),
             r#"{"scripts":{"test":"vitest","lint":"eslint .","build":"next build"}}"#,
         )?;
-        fs::write(root.join("pyproject.toml"), "[tool.pytest.ini_options]\naddopts = \"-q\"\n[tool.ruff]\n")?;
-        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n")?;
-        fs::write(root.join("Makefile"), "test:\n\t@echo ok\nlint:\n\t@echo lint\n")?;
+        fs::write(
+            root.join("pyproject.toml"),
+            "[tool.pytest.ini_options]\naddopts = \"-q\"\n[tool.ruff]\n",
+        )?;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        fs::write(
+            root.join("Makefile"),
+            "test:\n\t@echo ok\nlint:\n\t@echo lint\n",
+        )?;
 
         let actions = discover_project_actions(&root)?;
-        let ids = actions.iter().map(|action| action.id.as_str()).collect::<Vec<_>>();
+        let ids = actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>();
         assert!(ids.contains(&"npm:test"));
         assert!(ids.contains(&"npm:lint"));
         assert!(ids.contains(&"npm:build"));

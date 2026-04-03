@@ -48,8 +48,13 @@ pub fn list_credentials() -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|e| {
             let name = e.key.strip_prefix("oauth:")?;
-            let provider = provider_type_for(name)
-                .unwrap_or(if name == "anthropic" { "anthropic" } else if name == "codex" { "codex" } else { "unknown" });
+            let provider = provider_type_for(name).unwrap_or(if name == "anthropic" {
+                "anthropic"
+            } else if name == "codex" {
+                "codex"
+            } else {
+                "unknown"
+            });
             Some((name.to_string(), provider.to_string()))
         })
         .collect()
@@ -81,7 +86,9 @@ impl OAuthCredentials {
 
 /// Get a valid Anthropic API token. If `nickname` is provided, use that credential set.
 pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
-    let kv_key = nickname.map(|n| kv_key_for(n)).unwrap_or_else(|| KV_KEY_ANTHROPIC.to_string());
+    let kv_key = nickname
+        .map(|n| kv_key_for(n))
+        .unwrap_or_else(|| KV_KEY_ANTHROPIC.to_string());
     get_token(
         &kv_key,
         "ANTHROPIC_API_KEY",
@@ -94,7 +101,9 @@ pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
 
 /// Get a valid Codex API token. If `nickname` is provided, use that credential set.
 pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)> {
-    let kv_key = nickname.map(|n| kv_key_for(n)).unwrap_or_else(|| KV_KEY_CODEX.to_string());
+    let kv_key = nickname
+        .map(|n| kv_key_for(n))
+        .unwrap_or_else(|| KV_KEY_CODEX.to_string());
     let token = get_token(
         &kv_key,
         "OPENAI_API_KEY",
@@ -106,7 +115,12 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
 
     // Extract account_id from stored metadata
     let account_id = load_credentials(&kv_key)?
-        .and_then(|c| c.metadata.get("account_id").and_then(|v| v.as_str()).map(String::from))
+        .and_then(|c| {
+            c.metadata
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
         .unwrap_or_default();
 
     Ok((token, account_id))
@@ -117,8 +131,14 @@ async fn get_token(
     kv_key: &str,
     env_var: &str,
     provider_name: &str,
-    login_fn: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>>,
-    refresh_fn: fn(&OAuthCredentials) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>>,
+    login_fn: fn() -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
+    >,
+    refresh_fn: fn(
+        &OAuthCredentials,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
+    >,
 ) -> Result<String> {
     // 1. Stored OAuth credentials
     if let Some(creds) = load_credentials(kv_key)? {
@@ -129,7 +149,9 @@ async fn get_token(
                     return Ok(new_creds.access_token);
                 }
                 Err(e) => {
-                    eprintln!("sidekar: {provider_name} OAuth refresh failed ({e}), re-authenticating...");
+                    eprintln!(
+                        "sidekar: {provider_name} OAuth refresh failed ({e}), re-authenticating..."
+                    );
                 }
             }
         } else {
@@ -155,7 +177,8 @@ async fn get_token(
 // Anthropic OAuth
 // ---------------------------------------------------------------------------
 
-fn anthropic_login() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
+fn anthropic_login()
+-> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
     Box::pin(async {
         let mut creds = pkce_login(
             ANTHROPIC_CLIENT_ID,
@@ -202,25 +225,38 @@ async fn fetch_anthropic_profile(access_token: &str) -> Option<AnthropicProfile>
     }
 
     let data: serde_json::Value = resp.json().await.ok()?;
-    let account_uuid = data.get("account")
+    let account_uuid = data
+        .get("account")
         .and_then(|a| a.get("uuid"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let organization_uuid = data.get("organization")
+    let organization_uuid = data
+        .get("organization")
         .and_then(|o| o.get("uuid"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    Some(AnthropicProfile { account_uuid, organization_uuid })
+    Some(AnthropicProfile {
+        account_uuid,
+        organization_uuid,
+    })
 }
 
-fn refresh_token_anthropic(creds: &OAuthCredentials) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
+fn refresh_token_anthropic(
+    creds: &OAuthCredentials,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
     let refresh_token = creds.refresh_token.clone();
     let metadata = creds.metadata.clone();
     Box::pin(async move {
-        refresh_token_generic(ANTHROPIC_CLIENT_ID, ANTHROPIC_TOKEN_URL, &refresh_token, metadata).await
+        refresh_token_generic(
+            ANTHROPIC_CLIENT_ID,
+            ANTHROPIC_TOKEN_URL,
+            &refresh_token,
+            metadata,
+        )
+        .await
     })
 }
 
@@ -228,7 +264,8 @@ fn refresh_token_anthropic(creds: &OAuthCredentials) -> std::pin::Pin<Box<dyn st
 // Codex OAuth
 // ---------------------------------------------------------------------------
 
-fn codex_login() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
+fn codex_login()
+-> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
     Box::pin(async {
         let extra_params = &[
             ("id_token_add_organizations", "true"),
@@ -255,11 +292,15 @@ fn codex_login() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OA
     })
 }
 
-fn refresh_token_codex(creds: &OAuthCredentials) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
+fn refresh_token_codex(
+    creds: &OAuthCredentials,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
     let refresh_token = creds.refresh_token.clone();
     let metadata = creds.metadata.clone();
     Box::pin(async move {
-        let mut new_creds = refresh_token_generic(CODEX_CLIENT_ID, CODEX_TOKEN_URL, &refresh_token, metadata).await?;
+        let mut new_creds =
+            refresh_token_generic(CODEX_CLIENT_ID, CODEX_TOKEN_URL, &refresh_token, metadata)
+                .await?;
         // Re-extract account_id from new token
         let account_id = extract_codex_account_id(&new_creds.access_token).unwrap_or_default();
         new_creds.metadata = serde_json::json!({ "account_id": account_id });
@@ -328,13 +369,10 @@ async fn pkce_login(
     eprintln!("If the browser doesn't open, visit:\n{auth_url}\n");
     let _ = open_browser(&auth_url);
 
-    let code = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        code_rx,
-    )
-    .await
-    .context("OAuth login timed out (120s)")?
-    .context("OAuth callback channel closed")?;
+    let code = tokio::time::timeout(std::time::Duration::from_secs(120), code_rx)
+        .await
+        .context("OAuth login timed out (120s)")?
+        .context("OAuth callback channel closed")?;
 
     server.abort();
 
@@ -479,7 +517,8 @@ async fn start_callback_server(
                 let body = "Authentication failed: invalid state or missing code.";
                 let resp = format!(
                     "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(), body
+                    body.len(),
+                    body
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 continue;
@@ -492,7 +531,8 @@ async fn start_callback_server(
                 </body></html>";
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(), body
+                body.len(),
+                body
             );
             let _ = stream.write_all(resp.as_bytes()).await;
 
@@ -529,7 +569,12 @@ fn sha256_simple(input: &[u8]) -> [u8; 32] {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("openssl required for OAuth PKCE");
-    child.stdin.as_mut().unwrap().write_all(input).expect("write to openssl");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input)
+        .expect("write to openssl");
     let output = child.wait_with_output().expect("openssl sha256");
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&output.stdout[..32]);

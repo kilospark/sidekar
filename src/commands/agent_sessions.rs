@@ -8,7 +8,9 @@ pub(super) fn cmd_agent_sessions(ctx: &mut AppContext, args: &[String]) -> Resul
         "show" => cmd_agent_sessions_show(ctx, &args[1..]),
         "rename" => cmd_agent_sessions_rename(ctx, &args[1..]),
         "note" => cmd_agent_sessions_note(ctx, &args[1..]),
-        other => bail!("Usage: sidekar agent-sessions [show|rename|note] ... [--limit=N] [--active] [--project=<name>|--all-projects] (unknown subcommand: {other})"),
+        other => bail!(
+            "Usage: sidekar agent-sessions [show|rename|note] ... [--limit=N] [--active] [--project=<name>|--all-projects] (unknown subcommand: {other})"
+        ),
     }
 }
 
@@ -43,10 +45,7 @@ fn cmd_agent_sessions_list(ctx: &mut AppContext, args: &[String]) -> Result<()> 
             ctx,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             session.id,
-            session
-                .display_name
-                .as_deref()
-                .unwrap_or("-"),
+            session.display_name.as_deref().unwrap_or("-"),
             session.agent_name,
             session.nick.as_deref().unwrap_or("-"),
             session.project,
@@ -86,7 +85,11 @@ fn cmd_agent_sessions_show(ctx: &mut AppContext, args: &[String]) -> Result<()> 
     );
     out!(ctx, "nick: {}", session.nick.as_deref().unwrap_or("-"));
     out!(ctx, "project: {}", session.project);
-    out!(ctx, "channel: {}", session.channel.as_deref().unwrap_or("-"));
+    out!(
+        ctx,
+        "channel: {}",
+        session.channel.as_deref().unwrap_or("-")
+    );
     out!(ctx, "cwd: {}", session.cwd.as_deref().unwrap_or("-"));
     out!(ctx, "started_at: {}", session.started_at);
     out!(

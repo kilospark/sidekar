@@ -7,7 +7,7 @@
     return fetch("/api/auth/session")
       .then(function (res) {
         if (res.status === 401) {
-          window.location.href = "/api/auth/github?redirect=/dashboard";
+          window.location.href = "/login?redirect=/dashboard";
           return null;
         }
         if (!res.ok) throw new Error("Auth check failed");
@@ -32,7 +32,7 @@
     return Promise.all([
       fetch("/api/auth/devices").then(function (res) {
         if (res.status === 401) {
-          window.location.href = "/api/auth/github?redirect=/dashboard";
+          window.location.href = "/login?redirect=/dashboard";
           return null;
         }
         if (!res.ok) throw new Error("devices");
@@ -40,7 +40,7 @@
       }),
       fetch("/api/sessions").then(function (res) {
         if (res.status === 401) {
-          window.location.href = "/api/auth/github?redirect=/dashboard";
+          window.location.href = "/login?redirect=/dashboard";
           return null;
         }
         if (!res.ok) throw new Error("sessions");

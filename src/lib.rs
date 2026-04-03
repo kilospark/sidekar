@@ -58,8 +58,6 @@ pub mod broker;
 pub mod bus;
 
 pub mod agent;
-pub mod providers;
-pub mod repl;
 pub mod cdp_proxy;
 pub mod cli;
 pub mod commands;
@@ -72,11 +70,13 @@ pub mod memory;
 pub mod message;
 pub mod pakt;
 pub mod poller;
+pub mod providers;
 pub mod pty;
+pub mod repl;
 pub mod repo;
 pub mod rtk;
-pub mod scripts;
 pub mod scope;
+pub mod scripts;
 pub mod session;
 pub mod skill;
 pub mod tasks;
@@ -278,14 +278,20 @@ impl AppContext {
             .truncate(true)
             .open(&lock_path)
             .ok()
-            .and_then(|f| { f.lock_shared().ok(); Some(f) });
+            .and_then(|f| {
+                f.lock_shared().ok();
+                Some(f)
+            });
         let mut state = if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("failed reading {}", path.display()))?;
             match serde_json::from_str::<SessionState>(&content) {
                 Ok(s) => s,
                 Err(e) => {
-                    wlog!("Corrupt session state at {}, resetting: {e}", path.display());
+                    wlog!(
+                        "Corrupt session state at {}, resetting: {e}",
+                        path.display()
+                    );
                     let _ = fs::remove_file(&path);
                     SessionState::default()
                 }
@@ -739,7 +745,10 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
     let before = state.tabs.len();
     state.tabs.retain(|id| live_ids.contains(id.as_str()));
     if state.tabs.len() < before {
-        wlog!("Pruned {} stale tab ID(s) from session state", before - state.tabs.len());
+        wlog!(
+            "Pruned {} stale tab ID(s) from session state",
+            before - state.tabs.len()
+        );
     }
 
     let mut tab = None;
@@ -819,10 +828,7 @@ async fn other_sessions_on_port(ctx: &AppContext, current_state: &SessionState) 
                     }
                     // Same port?
                     let port_matches = state.port.map_or(false, |p| p == ctx.cdp_port);
-                    let host_matches = state
-                        .host
-                        .as_deref()
-                        .map_or(true, |h| h == ctx.cdp_host);
+                    let host_matches = state.host.as_deref().map_or(true, |h| h == ctx.cdp_host);
                     if port_matches && host_matches && !state.tabs.is_empty() {
                         others.push(state.session_id);
                     }

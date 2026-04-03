@@ -563,7 +563,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON task_dependencies(depends_on_task_id, task_id);
         ",
     )?;
-    let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
+    let _ =
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
     let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN project TEXT");
     conn.execute_batch(
         "
@@ -950,8 +951,11 @@ pub fn expired_outbound_for_sender(
          WHERE sender_name = ?1 AND status = ?2 AND created_at <= ?3
          ORDER BY created_at ASC",
     )?;
-    let mut rows =
-        stmt.query(params![name, OUTBOUND_STATUS_OPEN, created_at_cutoff as i64])?;
+    let mut rows = stmt.query(params![
+        name,
+        OUTBOUND_STATUS_OPEN,
+        created_at_cutoff as i64
+    ])?;
     let mut requests = Vec::new();
     while let Some(row) = rows.next()? {
         requests.push(row_to_outbound(row)?);
@@ -1034,7 +1038,16 @@ pub fn create_agent_session(
             ended_at, last_active_at, request_count, reply_count, message_count,
             last_request_msg_id, last_reply_msg_id, notes
         ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, NULL, ?8, 0, 0, 0, NULL, NULL, NULL)",
-        params![id, agent_name, agent_type, nick, project, channel, cwd, started_at as i64],
+        params![
+            id,
+            agent_name,
+            agent_type,
+            nick,
+            project,
+            channel,
+            cwd,
+            started_at as i64
+        ],
     )?;
     Ok(())
 }
@@ -1090,7 +1103,11 @@ pub fn list_agent_sessions(
          ORDER BY last_active_at DESC, started_at DESC
          LIMIT ?3",
     )?;
-    let mut rows = stmt.query(params![if active_only { 1 } else { 0 }, project, limit.max(1) as i64])?;
+    let mut rows = stmt.query(params![
+        if active_only { 1 } else { 0 },
+        project,
+        limit.max(1) as i64
+    ])?;
     let mut sessions = Vec::new();
     while let Some(row) = rows.next()? {
         sessions.push(row_to_agent_session(row)?);
@@ -1417,7 +1434,11 @@ fn row_to_cron_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRecord> {
         error_count: row.get::<_, i64>(9)? as u64,
         last_error: row.get(10)?,
         active: row.get::<_, i64>(11)? != 0,
-        once: row.get::<_, Option<i64>>(12).unwrap_or(Some(0)).unwrap_or(0) != 0,
+        once: row
+            .get::<_, Option<i64>>(12)
+            .unwrap_or(Some(0))
+            .unwrap_or(0)
+            != 0,
     })
 }
 
@@ -2207,11 +2228,8 @@ mod tests {
             let open = outbound_for_sender("sender")?;
             assert!(open.is_empty());
 
-            let timed_out = list_outbound_requests_for_sender(
-                "sender",
-                Some(OUTBOUND_STATUS_TIMED_OUT),
-                10,
-            )?;
+            let timed_out =
+                list_outbound_requests_for_sender("sender", Some(OUTBOUND_STATUS_TIMED_OUT), 10)?;
             assert_eq!(timed_out.len(), 1);
             assert_eq!(timed_out[0].msg_id, envelope.id);
             assert_eq!(timed_out[0].timed_out_at, Some(envelope.created_at + 60));
@@ -2269,8 +2287,14 @@ mod tests {
             assert_eq!(session.request_count, 1);
             assert_eq!(session.reply_count, 1);
             assert_eq!(session.message_count, 2);
-            assert_eq!(session.last_request_msg_id.as_deref(), Some(envelope.id.as_str()));
-            assert_eq!(session.last_reply_msg_id.as_deref(), Some(reply.id.as_str()));
+            assert_eq!(
+                session.last_request_msg_id.as_deref(),
+                Some(envelope.id.as_str())
+            );
+            assert_eq!(
+                session.last_reply_msg_id.as_deref(),
+                Some(reply.id.as_str())
+            );
             assert_eq!(session.ended_at, Some(reply.created_at + 10));
 
             let fetched = get_agent_session("pty:123:1700000000")?.context("missing session")?;
@@ -2304,10 +2328,7 @@ mod tests {
 
             let session = get_agent_session("pty:321:1700000000")?.context("missing session")?;
             assert_eq!(session.display_name.as_deref(), Some("Review worker"));
-            assert_eq!(
-                session.notes.as_deref(),
-                Some("Owned the PR review thread")
-            );
+            assert_eq!(session.notes.as_deref(), Some("Owned the PR review thread"));
 
             assert!(set_agent_session_notes("pty:321:1700000000", None)?);
             let cleared = get_agent_session("pty:321:1700000000")?.context("missing session")?;

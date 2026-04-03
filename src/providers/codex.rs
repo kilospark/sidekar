@@ -80,10 +80,15 @@ fn build_request_body(
         match msg.role {
             Role::User => {
                 // User text messages
-                let text = msg.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let text = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 if !text.is_empty() {
                     input.push(json!({
@@ -95,7 +100,12 @@ fn build_request_body(
 
                 // Tool results
                 for block in &msg.content {
-                    if let ContentBlock::ToolResult { tool_use_id, content, .. } = block {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } = block
+                    {
                         let (call_id, _) = split_tool_call_ids(tool_use_id);
                         input.push(json!({
                             "type": "function_call_output",
@@ -107,10 +117,15 @@ fn build_request_body(
             }
             Role::Assistant => {
                 // Text output
-                let text = msg.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let text = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 if !text.is_empty() {
                     input.push(json!({
@@ -122,7 +137,12 @@ fn build_request_body(
 
                 // Tool calls
                 for block in &msg.content {
-                    if let ContentBlock::ToolCall { id, name, arguments } = block {
+                    if let ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } = block
+                    {
                         let (call_id, item_id) = split_tool_call_ids(id);
                         input.push(json!({
                             "type": "function_call",
@@ -139,12 +159,14 @@ fn build_request_body(
 
     let api_tools: Vec<Value> = tools
         .iter()
-        .map(|t| json!({
-            "type": "function",
-            "name": t.name,
-            "description": t.description,
-            "parameters": t.input_schema,
-        }))
+        .map(|t| {
+            json!({
+                "type": "function",
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema,
+            })
+        })
         .collect();
 
     let mut body = json!({
@@ -196,7 +218,8 @@ async fn parse_sse_stream(
 
             match event_type {
                 "response.created" => {
-                    model_id = data.get("response")
+                    model_id = data
+                        .get("response")
                         .and_then(|r| r.get("model"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
@@ -220,7 +243,11 @@ async fn parse_sse_stream(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let partial_json = item
                             .get("arguments")
                             .and_then(|v| v.as_str())
@@ -248,7 +275,9 @@ async fn parse_sse_stream(
                 "response.output_text.delta" => {
                     if let Some(delta) = data.get("delta").and_then(|v| v.as_str()) {
                         if !delta.is_empty() {
-                            let _ = tx.send(StreamEvent::TextDelta { delta: delta.to_string() });
+                            let _ = tx.send(StreamEvent::TextDelta {
+                                delta: delta.to_string(),
+                            });
                         }
                     }
                 }
@@ -283,7 +312,9 @@ async fn parse_sse_stream(
                 "response.output_text.done" => {
                     if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
                         if !text.is_empty() {
-                            content_blocks.push(ContentBlock::Text { text: text.to_string() });
+                            content_blocks.push(ContentBlock::Text {
+                                text: text.to_string(),
+                            });
                         }
                     }
                 }
@@ -340,8 +371,10 @@ async fn parse_sse_stream(
                 "response.completed" | "response.done" | "response.incomplete" => {
                     if let Some(resp) = data.get("response") {
                         if let Some(u) = resp.get("usage") {
-                            usage.input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                            usage.output_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            usage.input_tokens =
+                                u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            usage.output_tokens =
+                                u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         }
                         let m = resp.get("model").and_then(|v| v.as_str()).unwrap_or("");
                         if !m.is_empty() {
@@ -349,7 +382,11 @@ async fn parse_sse_stream(
                         }
                     }
 
-                    let stop = if has_tool_calls { StopReason::ToolUse } else { StopReason::Stop };
+                    let stop = if has_tool_calls {
+                        StopReason::ToolUse
+                    } else {
+                        StopReason::Stop
+                    };
                     let _ = tx.send(StreamEvent::Done {
                         message: AssistantResponse {
                             content: std::mem::take(&mut content_blocks),
@@ -361,17 +398,25 @@ async fn parse_sse_stream(
                 }
 
                 "response.failed" => {
-                    let msg = data.get("response")
+                    let msg = data
+                        .get("response")
                         .and_then(|r| r.get("error"))
                         .and_then(|e| e.get("message"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("Codex request failed");
-                    let _ = tx.send(StreamEvent::Error { message: msg.to_string() });
+                    let _ = tx.send(StreamEvent::Error {
+                        message: msg.to_string(),
+                    });
                 }
 
                 "error" => {
-                    let msg = data.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown Codex error");
-                    let _ = tx.send(StreamEvent::Error { message: msg.to_string() });
+                    let msg = data
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown Codex error");
+                    let _ = tx.send(StreamEvent::Error {
+                        message: msg.to_string(),
+                    });
                 }
 
                 _ => {} // Ignore other event types (ping, etc.)
