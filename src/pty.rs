@@ -10,107 +10,16 @@ use crate::message::AgentId;
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::path::Path;
 use std::sync::Arc;
 
-/// Shell-safe single-quote escaping: wraps in single quotes, escaping any
-/// embedded single quotes as `'\''`.
-fn shell_quote(s: &str) -> String {
-    if s.is_empty() {
-        return "''".into();
-    }
-    // If it's simple (no special chars), return as-is
-    if s.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/')
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+/// Known agent executables that sidekar can PTY-wrap.
+const KNOWN_AGENTS: &[&str] = &[
+    "claude", "codex", "agent", "opencode", "pi", "gemini", "aider", "goose",
+];
 
-fn extract_zsh_wrapper_prelude(shell: &str, agent: &str) -> Option<String> {
-    const ALIAS_START: &str = "__SIDEKAR_ALIAS_START__";
-    const ALIAS_END: &str = "__SIDEKAR_ALIAS_END__";
-    const FUNC_START: &str = "__SIDEKAR_FUNC_START__";
-    const FUNC_END: &str = "__SIDEKAR_FUNC_END__";
-
-    let agent_word = shell_quote(agent);
-    let dump_cmd = format!(
-        "print -r -- {alias_start}; \
-         alias -- {agent_word} 2>/dev/null || true; \
-         print -r -- {alias_end}; \
-         print -r -- {func_start}; \
-         typeset -pf -- {agent_word} 2>/dev/null || true; \
-         print -r -- {func_end}",
-        alias_start = shell_quote(ALIAS_START),
-        alias_end = shell_quote(ALIAS_END),
-        func_start = shell_quote(FUNC_START),
-        func_end = shell_quote(FUNC_END),
-    );
-
-    let out = std::process::Command::new(shell)
-        .args(["-ic", &dump_cmd])
-        .output()
-        .ok()?;
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-
-    fn between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
-        let (_, rest) = haystack.split_once(start)?;
-        let (body, _) = rest.split_once(end)?;
-        Some(body)
-    }
-
-    let alias_body = between(&stdout, ALIAS_START, ALIAS_END)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let func_body = between(&stdout, FUNC_START, FUNC_END)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    let mut prelude = String::new();
-    if let Some(alias_line) = alias_body {
-        prelude.push_str("setopt aliases; alias ");
-        prelude.push_str(alias_line);
-        prelude.push('\n');
-    }
-    if let Some(func_def) = func_body {
-        prelude.push_str(func_def);
-        prelude.push('\n');
-    }
-
-    if prelude.is_empty() {
-        None
-    } else {
-        Some(prelude)
-    }
-}
-
-fn shell_function_bootstrap(shell: &str, agent: &str) -> Option<(String, String)> {
-    let shell_name = Path::new(shell).file_name()?.to_str()?;
-    let home = dirs::home_dir()?;
-
-    match shell_name {
-        "zsh" => {
-            let rc = shell_quote(&home.join(".zshrc").to_string_lossy());
-            let prelude = extract_zsh_wrapper_prelude(shell, agent)
-                .unwrap_or_else(|| format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; "));
-            Some(("-c".into(), prelude))
-        }
-        "bash" => {
-            let rc = shell_quote(&home.join(".bashrc").to_string_lossy());
-            Some((
-                "-c".into(),
-                format!("[ -f {rc} ] && source {rc} >/dev/null 2>&1; shopt -s expand_aliases; "),
-            ))
-        }
-        _ => None,
-    }
-}
-
-/// Check if a command can be resolved as an external agent (binary, alias, or function).
+/// Check if a command is a known agent that sidekar should PTY-wrap.
 pub fn is_agent_command(command: &str) -> bool {
-    resolve_agent(command).is_ok()
+    KNOWN_AGENTS.contains(&command)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,18 +173,8 @@ fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<()> {
 // Agent resolution
 // ---------------------------------------------------------------------------
 
-/// Resolution result: either a direct binary path or a shell alias/function
-/// that must be exec'd via the user's shell.
-enum ResolvedAgent {
-    /// Direct binary path (from `which`).
-    Binary(String, std::ffi::CString),
-    /// Shell alias or function — must exec via `$SHELL -ic '<command> ...'`.
-    ShellAlias(String),
-}
-
-/// Resolve an agent name to its binary path, or detect that it's a shell alias/function.
-fn resolve_agent(agent: &str) -> Result<ResolvedAgent> {
-    // Try direct binary lookup first
+/// Resolve an agent name to its binary path via `which`.
+fn resolve_agent(agent: &str) -> Result<(String, std::ffi::CString)> {
     let output = std::process::Command::new("which")
         .arg(agent)
         .output()
@@ -283,21 +182,9 @@ fn resolve_agent(agent: &str) -> Result<ResolvedAgent> {
     if output.status.success() {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let c_path = std::ffi::CString::new(path.as_str()).context("invalid binary path")?;
-        return Ok(ResolvedAgent::Binary(path, c_path));
+        return Ok((path, c_path));
     }
-
-    // Not on PATH — check if the user's shell knows it (alias or function)
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let check = std::process::Command::new(&shell)
-        .args(["-ic", &format!("type {agent} 2>/dev/null")])
-        .output();
-    if let Ok(out) = check {
-        if out.status.success() {
-            return Ok(ResolvedAgent::ShellAlias(shell));
-        }
-    }
-
-    bail!("\"{agent}\" not found on PATH or as a shell alias/function. Is it installed?");
+    bail!("\"{agent}\" not found on PATH. Is it installed?");
 }
 
 /// Build CString args for execvp (must happen before fork).
@@ -433,37 +320,10 @@ const STARTUP_INJECT_DELAY_SECS: u64 = 5;
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>, proxy_override: Option<bool>) -> Result<()> {
-    let (bin_display, launch_mode, bin_c, c_args) = match resolve_agent(agent)? {
-        ResolvedAgent::Binary(path, c_path) => {
-            let c_args = prepare_args(&c_path, args)?;
-            (path, "binary", c_path, c_args)
-        }
-        ResolvedAgent::ShellAlias(shell) => {
-            // Build a single command string: "agent arg1 arg2 ..."
-            // Use single-quote escaping for safety.
-            let mut cmd_str = shell_quote(agent);
-            for arg in args {
-                cmd_str.push(' ');
-                cmd_str.push_str(&shell_quote(arg));
-            }
-
-            let (shell_flag, shell_prelude) = shell_function_bootstrap(&shell, agent)
-                .unwrap_or_else(|| ("-ic".into(), String::new()));
-            let full_cmd = format!("{shell_prelude}{cmd_str}");
-            let shell_c = std::ffi::CString::new(shell.as_str()).context("invalid shell path")?;
-            let c_args = vec![
-                shell_c.clone(),
-                std::ffi::CString::new(shell_flag.clone()).unwrap(),
-                std::ffi::CString::new(full_cmd.as_str()).context("invalid command string")?,
-            ];
-            (
-                format!("{shell} {shell_flag} '{agent} ...'"),
-                "shell",
-                shell_c,
-                c_args,
-            )
-        }
-    };
+    let (path, c_path) = resolve_agent(agent)?;
+    let c_args = prepare_args(&c_path, args)?;
+    let bin_display = path;
+    let bin_c = c_path;
 
     // Build identity before fork so env vars are inherited by child.
     let channel = detect_channel();
@@ -613,7 +473,7 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
             "pty",
             "agent_launch",
             Some(&format!(
-                "agent={agent} mode={launch_mode} command={} args={} relay_policy={}",
+                "agent={agent} command={} args={} relay_policy={}",
                 bin_display,
                 args.join(" "),
                 relay_policy_label(relay_override),
@@ -1278,52 +1138,6 @@ mod tests {
     use anyhow::Result;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn zsh_shell_bootstrap_uses_noninteractive_mode() {
-        let (flag, _prelude) =
-            shell_function_bootstrap("/bin/zsh", "claude-d").expect("zsh bootstrap");
-        assert_eq!(flag, "-c");
-    }
-
-    #[test]
-    fn zsh_function_launch_works_when_zshrc_returns_for_noninteractive_shells() -> Result<()> {
-        if Command::new("which").arg("zsh").output()?.status.success() == false {
-            return Ok(());
-        }
-
-        let _home_guard = crate::test_home_lock().lock().unwrap();
-        let tmp = std::env::temp_dir().join(format!(
-            "sidekar-pty-test-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-        ));
-        std::fs::create_dir_all(&tmp)?;
-        std::fs::write(
-            tmp.join(".zshrc"),
-            "[[ -o interactive ]] || return\nfoo-sidekar-test() { echo ok; }\n",
-        )?;
-
-        let old_home = std::env::var_os("HOME");
-        // Safety: test holds the process-global HOME mutex and restores HOME before returning.
-        unsafe { std::env::set_var("HOME", &tmp) };
-        let (flag, prelude) =
-            shell_function_bootstrap("/bin/zsh", "foo-sidekar-test").expect("zsh bootstrap");
-        let output = Command::new("/bin/zsh")
-            .arg(flag)
-            .arg(format!("{prelude}foo-sidekar-test"))
-            .env("HOME", &tmp)
-            .output()?;
-        match old_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
-        Ok(())
-    }
 
     #[test]
     fn rewrite_osc_titles_prepends_formatted_nick_prefix() {
