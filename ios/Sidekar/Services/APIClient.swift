@@ -38,4 +38,20 @@ enum APIClient {
         }
         return result.sessions
     }
+
+    static func fetchLinkedAccounts(jwt: String) async throws -> LinkedAccountsResponse {
+        var request = URLRequest(url: URL(string: "\(baseURL)/api/auth/session?linked")!)
+        request.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+        if status == 401 { throw APIError.unauthorized }
+        if status >= 400 { throw APIError.serverError(status) }
+
+        guard let result = try? JSONDecoder().decode(LinkedAccountsResponse.self, from: data) else {
+            throw APIError.decodingError
+        }
+        return result
+    }
 }

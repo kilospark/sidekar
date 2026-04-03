@@ -1,5 +1,5 @@
 import { getDb } from "../_db.js";
-import { signToken, setSessionCookie } from "../_auth.js";
+import { signToken, setSessionCookie, getUser, mergeUsers } from "../_auth.js";
 
 export default async function handler(req, res) {
   try {
@@ -77,6 +77,35 @@ async function handleCallback(req, res) {
   });
 
   const returnTo = req.query.state || "/dashboard";
+
+  // Account linking: user is already logged in and wants to link GitHub
+  if (returnTo === "link" || returnTo === "link-mobile") {
+    const currentUser = await getUser(req);
+    if (!currentUser && returnTo === "link") {
+      return res.redirect(302, "/settings?error=not_authenticated");
+    }
+    if (currentUser) {
+      const { ObjectId } = await import("mongodb");
+      const target = await db.collection("users").findOne({ _id: new ObjectId(currentUser.sub) });
+      if (target) {
+        // Check if this github_id is already on a different account
+        const existing = await db.collection("users").findOne({ github_id: ghUser.id });
+        if (existing && !existing._id.equals(target._id)) {
+          // Merge the existing GitHub account into the current account
+          await mergeUsers(db, target, existing);
+        }
+        // Link github_id to current user
+        await db.collection("users").updateOne(
+          { _id: target._id },
+          { $set: { github_id: ghUser.id, login: ghUser.login, avatar_url: ghUser.avatar_url || target.avatar_url } }
+        );
+      }
+    }
+    if (returnTo === "link-mobile") {
+      return res.redirect(302, "sidekar://auth/linked?provider=github");
+    }
+    return res.redirect(302, "/settings?linked=github");
+  }
 
   // Mobile app: redirect to custom URL scheme instead of setting cookie
   if (returnTo === "mobile") {

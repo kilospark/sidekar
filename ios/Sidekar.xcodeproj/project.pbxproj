@@ -19,6 +19,8 @@
 		C89A16EED560C7C7C057CA8D /* TerminalContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29930C607DE7D593B0A1F19 /* TerminalContainerView.swift */; };
 		CAAFCC3658A19676887AE1CB /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923B5DD634D11509F7D76FCA /* WebSocketManager.swift */; };
 		D1B1F4420EA923A4DCC6C4C8 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 9071AEBA5E876989442AD092 /* SwiftTerm */; };
+		D573751DB85F3CD95BB6004D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C5222FE9BBDCBA253022BB5 /* SettingsView.swift */; };
+		EFB9DED48412682D9193A32B /* LinkedAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0DDD363F1A0D06890D7B735 /* LinkedAccount.swift */; };
 		F0EDF7DEBCD01609E8AC72A3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1580210499183D6043C663C7 /* Assets.xcassets */; };
 		F86FB04C40AA184778C16BE9 /* AuthUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A7AE536C1C43F4781D223A /* AuthUser.swift */; };
 /* End PBXBuildFile section */
@@ -28,6 +30,7 @@
 		0A6DCD3EBB8523460311A949 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 		1580210499183D6043C663C7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		18A7AE536C1C43F4781D223A /* AuthUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthUser.swift; sourceTree = "<group>"; };
+		1C5222FE9BBDCBA253022BB5 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		21CC0E76540F563E94C731D2 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		2A80082C95EA3DBFBD8BE5AF /* Sidekar.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Sidekar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		349DE75928C57210AFDD2558 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
@@ -37,6 +40,7 @@
 		845857BD0CE76D8347D050AD /* SidekarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidekarApp.swift; sourceTree = "<group>"; };
 		923B5DD634D11509F7D76FCA /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
 		9926173BDB014D5C4DB1BDB8 /* SessionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCardView.swift; sourceTree = "<group>"; };
+		A0DDD363F1A0D06890D7B735 /* LinkedAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkedAccount.swift; sourceTree = "<group>"; };
 		D4127DBE05A05F74938BDDF1 /* TerminalViewWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewWrapper.swift; sourceTree = "<group>"; };
 		E29930C607DE7D593B0A1F19 /* TerminalContainerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContainerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -69,6 +73,7 @@
 				7D9F169BFD2CE40BA168E6E3 /* LoginView.swift */,
 				9926173BDB014D5C4DB1BDB8 /* SessionCardView.swift */,
 				3DD88EA403A50B8920EA333E /* SessionsListView.swift */,
+				1C5222FE9BBDCBA253022BB5 /* SettingsView.swift */,
 				E29930C607DE7D593B0A1F19 /* TerminalContainerView.swift */,
 				D4127DBE05A05F74938BDDF1 /* TerminalViewWrapper.swift */,
 			);
@@ -117,6 +122,7 @@
 			isa = PBXGroup;
 			children = (
 				18A7AE536C1C43F4781D223A /* AuthUser.swift */,
+				A0DDD363F1A0D06890D7B735 /* LinkedAccount.swift */,
 				0A6DCD3EBB8523460311A949 /* Session.swift */,
 			);
 			path = Models;
@@ -198,10 +204,12 @@
 				432240E46BB7DD7B474C670A /* AuthService.swift in Sources */,
 				F86FB04C40AA184778C16BE9 /* AuthUser.swift in Sources */,
 				8FDEF6888AA0C1EC92FA2A4C /* KeychainHelper.swift in Sources */,
+				EFB9DED48412682D9193A32B /* LinkedAccount.swift in Sources */,
 				53EA662C5D214E266DE546F7 /* LoginView.swift in Sources */,
 				972D73CC510AB5054452153B /* Session.swift in Sources */,
 				B0BB708719A57D5ACBD38C04 /* SessionCardView.swift in Sources */,
 				932299CA050CD6A3370EBBBE /* SessionsListView.swift in Sources */,
+				D573751DB85F3CD95BB6004D /* SettingsView.swift in Sources */,
 				5EB175503645642108BFD1E2 /* SidekarApp.swift in Sources */,
 				C89A16EED560C7C7C057CA8D /* TerminalContainerView.swift in Sources */,
 				193ED30910CC55D35E4F694E /* TerminalViewWrapper.swift in Sources */,

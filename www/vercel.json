@@ -8,6 +8,7 @@
     { "source": "/uninstall", "destination": "/api/script?name=uninstall" },
     { "source": "/uninstall.sh", "destination": "/api/script?name=uninstall" },
     { "source": "/login", "destination": "/login.html" },
+    { "source": "/settings", "destination": "/settings.html" },
     { "source": "/dashboard", "destination": "/dashboard.html" },
     { "source": "/sessions", "destination": "/sessions.html" },
     { "source": "/devices", "destination": "/devices.html" },
