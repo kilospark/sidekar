@@ -57,6 +57,8 @@ enum TunnelCommand {
     BusText(String),
     /// PTY control JSON (for example terminal resize updates).
     PtyText(String),
+    /// Structured agent events JSON (ch: "events").
+    EventText(String),
     /// Graceful shutdown.
     Shutdown,
 }
@@ -110,6 +112,11 @@ impl TunnelSender {
             "rows": rows,
         });
         let _ = self.tx.try_send(TunnelCommand::PtyText(json.to_string()));
+    }
+
+    /// Send a structured agent event (non-blocking, drops on full channel).
+    pub fn send_event(&self, json: String) {
+        let _ = self.tx.try_send(TunnelCommand::EventText(json));
     }
 
     /// Request graceful shutdown of the tunnel background task.
@@ -377,6 +384,11 @@ async fn io_loop(
                         }
                     }
                     Some(TunnelCommand::PtyText(json)) => {
+                        if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                            return false;
+                        }
+                    }
+                    Some(TunnelCommand::EventText(json)) => {
                         if ws_sink.send(Message::Text(json.into())).await.is_err() {
                             return false;
                         }

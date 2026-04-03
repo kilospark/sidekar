@@ -172,6 +172,11 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                     .await;
                                 continue;
                             }
+                            // Structured agent events: forward to all viewers as control frames
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("events") {
+                                state.registry.broadcast_control_to_viewers(&session_id, &text).await;
+                                continue;
+                            }
                         }
                         tracing::debug!(session_id = %session_id, "tunnel text (ignored): {text}");
                     }

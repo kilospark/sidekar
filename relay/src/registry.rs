@@ -495,6 +495,17 @@ impl Registry {
         }
     }
 
+    /// Forward a control/text frame to all viewers of a session (no scrollback).
+    pub async fn broadcast_control_to_viewers(&self, session_id: &str, text: &str) {
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
+            let viewers = session.viewers.read().await;
+            for viewer in viewers.iter() {
+                let _ = viewer.tx.send(ViewerMsg::Control(text.to_string()));
+            }
+        }
+    }
+
     pub async fn enqueue_bus_for_session(
         &self,
         user_id: &str,
