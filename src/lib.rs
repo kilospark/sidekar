@@ -72,6 +72,7 @@ pub mod message;
 pub mod pakt;
 pub mod poller;
 pub mod providers;
+pub mod proxy;
 pub mod pty;
 pub mod repl;
 pub mod repo;
@@ -2773,16 +2774,22 @@ sidekar feedback <rating> [comment]
     sidekar feedback 3 \"Need better help output for hidden commands\""
         }
 
-        "errors" => {
+        "event" => {
             "\
-sidekar errors [N]
+sidekar event <list|clear> [--level=error|debug|info] [N]
 
-  Show the most recent rows from the local error log stored in SQLite.
-  Defaults to 50 rows.
+  View or clear the local event log (SQLite). Defaults to 50 rows, all levels.
+
+  Subcommands:
+    list [--level=error|debug|info] [N]   Show recent events (newest first)
+    clear [--level=error|debug|info]      Delete events (all or by level)
 
   Examples:
-    sidekar errors
-    sidekar errors 100"
+    sidekar event list
+    sidekar event list --level=debug
+    sidekar event list --level=error 100
+    sidekar event clear
+    sidekar event clear --level=debug"
         }
 
         "daemon" => {

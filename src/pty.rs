@@ -432,7 +432,7 @@ const STARTUP_INJECT: &str =
 const STARTUP_INJECT_DELAY_SECS: u64 = 5;
 
 /// Launch an agent inside a sidekar-owned PTY.
-pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>) -> Result<()> {
+pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>, proxy_override: Option<bool>) -> Result<()> {
     let (bin_display, launch_mode, bin_c, c_args) = match resolve_agent(agent)? {
         ResolvedAgent::Binary(path, c_path) => {
             let c_args = prepare_args(&c_path, args)?;
@@ -475,24 +475,70 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     let start_time = std::time::Instant::now();
     let started_at = crate::message::epoch_secs();
 
-    // Set env vars before fork — child inherits them.
-    // These let CLI commands (sidekar navigate, etc.) recover bus identity.
+    // Optionally start MITM proxy before fork so the child inherits env vars.
+    let proxy_enabled = match proxy_override {
+        Some(v) => v,
+        None => std::env::var("SIDEKAR_PROXY").is_ok(),
+    };
+    let proxy_info = if proxy_enabled {
+        let verbose = std::env::var("SIDEKAR_VERBOSE").is_ok();
+        match crate::proxy::start(verbose).await {
+            Ok((port, ca_path)) => Some((port, ca_path)),
+            Err(e) => {
+                crate::broker::try_log_error("proxy", &format!("failed to start: {e:#}"), None);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Save, set, fork, restore env vars — child inherits them via fork.
     // Safety: no other threads are reading these env vars at this point.
+    let mut env_overrides: Vec<(&str, String)> = vec![
+        ("SIDEKAR_PTY", "1".into()),
+        ("SIDEKAR_AGENT_NAME", pre_fork_name.clone()),
+        ("SIDEKAR_CHANNEL", channel.clone()),
+    ];
+    if let Some((port, ref ca_path)) = proxy_info {
+        let base = format!("http://127.0.0.1:{port}");
+        let ca_str = ca_path.to_string_lossy().to_string();
+        for var in crate::proxy::PROXY_ENV_VARS {
+            let val = match *var {
+                "ANTHROPIC_BASE_URL" => base.clone(),
+                "HTTPS_PROXY" | "https_proxy" => base.clone(),
+                "NO_PROXY" | "no_proxy" => "127.0.0.1,localhost".into(),
+                _ => ca_str.clone(), // cert paths (NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, CODEX_CA_CERTIFICATE)
+            };
+            env_overrides.push((var, val));
+        }
+        // Inject ca-certificate into Codex config.toml (cleaned up on exit)
+        crate::proxy::inject_codex_ca(ca_path);
+    }
+
+    // Save originals, set overrides
+    let saved_env: Vec<(&str, Option<String>)> = env_overrides
+        .iter()
+        .map(|(k, _)| (*k, std::env::var(k).ok()))
+        .collect();
     unsafe {
-        std::env::set_var("SIDEKAR_PTY", "1");
-        std::env::set_var("SIDEKAR_AGENT_NAME", &pre_fork_name);
-        std::env::set_var("SIDEKAR_CHANNEL", &channel);
+        for (k, v) in &env_overrides {
+            std::env::set_var(k, v);
+        }
     }
 
     // Fork the child inside a PTY
     let (master, child_pid) = fork_pty(&bin_c, &c_args)?;
     let master_raw = master.as_raw_fd();
 
-    // Clear env vars in parent — they were only needed for the child.
+    // Restore parent env vars to their original state.
     unsafe {
-        std::env::remove_var("SIDEKAR_PTY");
-        std::env::remove_var("SIDEKAR_AGENT_NAME");
-        std::env::remove_var("SIDEKAR_CHANNEL");
+        for (k, original) in &saved_env {
+            match original {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
     }
 
     // From here, any setup failure must clean up the child + broker.
@@ -558,12 +604,13 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     let _ = crate::memory::start_agent_session(&identity.name, &cwd);
     if let Ok(brief) = crate::memory::startup_brief(3) {
         if !brief.trim().is_empty() && std::env::var("SIDEKAR_VERBOSE").is_ok() {
-            crate::broker::try_log_error_event("pty_info", "startup_memory_brief", Some(&brief));
+            crate::broker::try_log_event("debug", "pty", "startup_memory_brief", Some(&brief));
         }
     }
     if std::env::var("SIDEKAR_VERBOSE").is_ok() {
-        crate::broker::try_log_error_event(
-            "pty_info",
+        crate::broker::try_log_event(
+            "debug",
+            "pty",
             "agent_launch",
             Some(&format!(
                 "agent={agent} mode={launch_mode} command={} args={} relay_policy={}",
@@ -581,8 +628,9 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     let tunnel = match relay_policy {
         crate::config::RelayMode::Off | crate::config::RelayMode::Auto => {
             if std::env::var("SIDEKAR_VERBOSE").is_ok() {
-                crate::broker::try_log_error_event(
-                    "relay_tunnel",
+                crate::broker::try_log_event(
+                    "debug",
+                    "relay",
                     "disabled by policy",
                     Some(&relay_policy_text),
                 );
@@ -594,8 +642,8 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
                 match connect_relay_tunnel(&token, &identity.name, agent, &cwd, &nick).await {
                     Ok(t) => Some(t),
                     Err(e) => {
-                        crate::broker::try_log_error_event(
-                            "relay_tunnel",
+                        crate::broker::try_log_error(
+                            "relay",
                             &format!("{e:#}"),
                             Some(&relay_policy_text),
                         );
@@ -603,8 +651,8 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
                     }
                 }
             } else {
-                crate::broker::try_log_error_event(
-                    "relay_tunnel",
+                crate::broker::try_log_error(
+                    "relay",
                     "skipped: no device token; run: sidekar login",
                     Some(&relay_policy_text),
                 );
@@ -666,6 +714,11 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     )
     .await;
 
+    // Clean up proxy CA file
+    if let Some((_, ref ca_path)) = proxy_info {
+        crate::proxy::cleanup_ca_file(ca_path);
+    }
+
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
 
@@ -675,13 +728,19 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // Clean up Chrome resources owned by the child's session
     cleanup_chrome_session(&pre_fork_name).await;
 
+    // Remove injected proxy config from Codex config.toml
+    if proxy_info.is_some() {
+        crate::proxy::remove_codex_ca();
+    }
+
     let _ = crate::memory::finish_agent_session(&identity.name);
     let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
     let _ = broker::unregister_agent(&identity.name);
 
     if std::env::var("SIDEKAR_VERBOSE").is_ok() {
-        crate::broker::try_log_error_event(
-            "pty_info",
+        crate::broker::try_log_event(
+            "debug",
+            "pty",
             "agent_exit",
             Some(&format!(
                 "agent={} exit_code={} runtime_ms={}",
@@ -984,7 +1043,7 @@ async fn event_loop(
     let mut sigwinch = match signal(SignalKind::window_change()) {
         Ok(s) => Some(s),
         Err(e) => {
-            crate::broker::try_log_error_event(
+            crate::broker::try_log_error(
                 "signal",
                 &format!("SIGWINCH handler unavailable: {e}"),
                 None,
@@ -995,7 +1054,7 @@ async fn event_loop(
     let mut sigterm_sig = match signal(SignalKind::terminate()) {
         Ok(s) => Some(s),
         Err(e) => {
-            crate::broker::try_log_error_event(
+            crate::broker::try_log_error(
                 "signal",
                 &format!("SIGTERM handler unavailable: {e}"),
                 None,

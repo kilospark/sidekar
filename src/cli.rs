@@ -903,9 +903,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         ext_routable: false,
     },
     CommandSpec {
-        name: "errors",
-        usage: "[N]",
-        summary: "Show last N local error log rows (SQLite)",
+        name: "event",
+        usage: "<list|clear> [--level=error|debug|info] [N]",
+        summary: "View or clear the local event log",
         group: CommandGroup::System,
         aliases: &[],
         requires_session: false,
@@ -1075,6 +1075,14 @@ pub fn render_help(version: &str) -> String {
     }
 
     let _ = writeln!(out, "Global flags:");
+    let _ = writeln!(
+        out,
+        "  --proxy             Enable MITM proxy for sidekar <agent>"
+    );
+    let _ = writeln!(
+        out,
+        "  --no-proxy          Disable MITM proxy for sidekar <agent>"
+    );
     let _ = writeln!(
         out,
         "  --relay             Enable relay tunnel for sidekar <agent>"
