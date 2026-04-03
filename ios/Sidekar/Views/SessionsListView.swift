@@ -25,12 +25,20 @@ struct SessionsListView: View {
             }
             .navigationTitle("Sessions")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink(destination: SettingsView()) {
+                        Image(systemName: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if let user = authService.user {
                             Text(user.login)
                         }
-                        Button("Log Out", role: .destructive) {
+                        NavigationLink(destination: SettingsView()) {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                        Button("Sign Out", role: .destructive) {
                             authService.logout()
                         }
                     } label: {

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings: sidekar</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-dark.svg" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/sidekar-icon-light.svg" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/common.css">
+<script>
+(function() {
+  var stored = localStorage.getItem('theme');
+  if (stored === 'light') document.documentElement.classList.add('light');
+  else if (stored === 'dark') document.documentElement.classList.add('dark');
+})();
+</script>
+<style>
+main.container { padding: 32px 24px; }
+
+.settings-section {
+  margin-bottom: 32px;
+}
+
+.settings-section h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 16px;
+}
+
+.provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.provider-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.provider-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.provider-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.provider-detail {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+.provider-status {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+}
+
+.provider-status.linked {
+  color: var(--text-muted);
+}
+
+.btn-link-provider {
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn-link-provider:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-subtle);
+}
+
+.toast {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text);
+  z-index: 100;
+  display: none;
+}
+
+.toast.show { display: block; }
+</style>
+</head>
+<body>
+  <nav>
+    <div class="container">
+      <div class="nav-left">
+        <a href="/" class="nav-logo">
+          <img src="/sidekar-icon-dark.svg" alt="" class="nav-logo-icon dark">
+          <img src="/sidekar-icon-light.svg" alt="" class="nav-logo-icon light">
+          sidekar
+        </a>
+        <div class="nav-dash-links">
+          <a href="/dashboard" class="nav-dash-link">Dashboard</a>
+          <a href="/sessions" class="nav-dash-link">Sessions</a>
+          <a href="/devices" class="nav-dash-link">Devices</a>
+          <a href="/settings" class="nav-dash-link active">Settings</a>
+        </div>
+      </div>
+      <div class="nav-right">
+        <span class="user-info" id="user-info"></span>
+        <button class="btn-logout" id="logout-btn">Sign out</button>
+        <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
+          <svg class="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg class="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1>Settings</h1>
+    <div id="content"><div class="loading">Loading...</div></div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <footer>
+    <div class="container">
+      <div class="footer-left">&copy; 2026 Kilo Spark</div>
+      <ul class="footer-links">
+        <li><a href="/terms">Terms</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script>
+  var themeModes = ['light', 'system', 'dark'];
+  function setTheme(mode) {
+    var html = document.documentElement;
+    html.classList.remove('light', 'dark');
+    if (mode === 'light') html.classList.add('light');
+    else if (mode === 'dark') html.classList.add('dark');
+    if (mode === 'system') localStorage.removeItem('theme');
+    else localStorage.setItem('theme', mode);
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.setAttribute('data-mode', mode);
+  }
+  function cycleTheme() {
+    var current = localStorage.getItem('theme') || 'system';
+    var idx = themeModes.indexOf(current);
+    var next = themeModes[(idx + 1) % themeModes.length];
+    setTheme(next);
+  }
+  (function() {
+    var stored = localStorage.getItem('theme') || 'system';
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.setAttribute('data-mode', stored);
+  })();
+  </script>
+  <script>
+  (function() {
+    var content = document.getElementById("content");
+    var userInfo = document.getElementById("user-info");
+    var logoutBtn = document.getElementById("logout-btn");
+    var toast = document.getElementById("toast");
+
+    function escapeHtml(s) {
+      var d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add("show");
+      setTimeout(function() { toast.classList.remove("show"); }, 3000);
+    }
+
+    // Check for link success from URL params
+    var params = new URLSearchParams(window.location.search);
+    if (params.get("linked")) {
+      showToast(params.get("linked").charAt(0).toUpperCase() + params.get("linked").slice(1) + " account linked successfully");
+      window.history.replaceState({}, "", "/settings");
+    }
+    if (params.get("error")) {
+      showToast("Error: " + params.get("error"));
+      window.history.replaceState({}, "", "/settings");
+    }
+
+    function checkAuth() {
+      return fetch("/api/auth/session")
+        .then(function(res) {
+          if (res.status === 401) {
+            window.location.href = "/login?redirect=/settings";
+            return null;
+          }
+          if (!res.ok) throw new Error("Auth check failed");
+          return res.json();
+        })
+        .then(function(data) {
+          if (!data) return null;
+          var user = data.user;
+          userInfo.innerHTML = '<span class="username">' + escapeHtml(user.login || user.name || "user") + "</span>";
+          return user;
+        });
+    }
+
+    logoutBtn.addEventListener("click", function() {
+      fetch("/api/auth/session", { method: "POST" }).then(function() {
+        window.location.href = "/";
+      });
+    });
+
+    function loadSettings() {
+      return fetch("/api/auth/session?linked")
+        .then(function(res) {
+          if (res.status === 401) {
+            window.location.href = "/login?redirect=/settings";
+            return null;
+          }
+          if (!res.ok) throw new Error("Failed to load settings");
+          return res.json();
+        })
+        .then(function(data) {
+          if (!data) return;
+          renderSettings(data);
+        })
+        .catch(function() {
+          content.innerHTML = '<div class="empty-state"><h2>Failed to load settings</h2></div>';
+        });
+    }
+
+    function renderSettings(data) {
+      var html = '<div class="settings-section"><h2>Linked Accounts</h2>';
+
+      // Show linked providers
+      data.linked.forEach(function(p) {
+        var detail = p.login || p.email || "";
+        html += '<div class="provider-row">' +
+          '<div class="provider-info">' +
+          '<span class="provider-name">' + escapeHtml(p.name) + '</span>' +
+          (detail ? '<span class="provider-detail">' + escapeHtml(detail) + '</span>' : '') +
+          '</div>' +
+          '<span class="provider-status linked">Linked</span>' +
+          '</div>';
+      });
+
+      // Show available providers to link
+      data.available.forEach(function(p) {
+        html += '<div class="provider-row">' +
+          '<div class="provider-info">' +
+          '<span class="provider-name">' + escapeHtml(p.name) + '</span>' +
+          '</div>' +
+          '<a class="btn-link-provider" href="' + p.url + '?redirect=link">Link ' + escapeHtml(p.name) + '</a>' +
+          '</div>';
+      });
+
+      if (data.linked.length === 0 && data.available.length === 0) {
+        html += '<p style="color:var(--text-muted);font-size:14px;">No identity providers configured.</p>';
+      }
+
+      html += '</div>';
+
+      if (data.email) {
+        html += '<div class="settings-section"><h2>Account</h2>' +
+          '<div class="provider-row"><div class="provider-info">' +
+          '<span class="provider-name">Email</span>' +
+          '<span class="provider-detail">' + escapeHtml(data.email) + '</span>' +
+          '</div></div></div>';
+      }
+
+      content.innerHTML = html;
+    }
+
+    checkAuth().then(function(user) {
+      if (user) loadSettings();
+    });
+  })();
+  </script>
+</body>
+</html>

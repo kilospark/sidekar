@@ -62,6 +62,24 @@ class AuthService: NSObject, ObservableObject {
         session.start()
     }
 
+    func linkProvider(url: String) {
+        guard let url = URL(string: "\(Self.baseURL)\(url)?redirect=link-mobile") else { return }
+        let session = ASWebAuthenticationSession(
+            url: url,
+            callbackURLScheme: "sidekar"
+        ) { [weak self] callbackURL, error in
+            guard callbackURL != nil, error == nil else { return }
+            Task { @MainActor in
+                self?.onProviderLinked?()
+            }
+        }
+        session.presentationContextProvider = self
+        session.prefersEphemeralWebBrowserSession = false
+        session.start()
+    }
+
+    var onProviderLinked: (() -> Void)?
+
     func handleCallback(url: URL) {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let token = components.queryItems?.first(where: { $0.name == "token" })?.value else {
