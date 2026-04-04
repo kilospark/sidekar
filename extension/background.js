@@ -1,15 +1,16 @@
 // Sidekar Chrome Extension — Service Worker
-// Connects to the Sidekar native messaging host and executes commands in the user's browser.
+// Connects to sidekar daemon via localhost WebSocket (discovered through sidekar.dev API).
 
-const NATIVE_HOST_NAME = "dev.sidekar";
+const API_BASE = "https://sidekar.dev";
 const RECONNECT_DELAY_MS = 3000;
 
-let nativePort = null;
+let ws = null;
 let reconnectTimer = null;
 let authenticated = false;
 let lastConnectError = null;
 let cliLoggedIn = false;
 let creatingOffscreen = null;
+let awaitListeners = new Map(); // id → resolve callback
 
 function clearStoredExtToken() {
   return new Promise((resolve) => {
@@ -25,35 +26,32 @@ function getExtToken() {
   });
 }
 
-function sendNative(obj) {
-  if (!nativePort) return false;
+
+function sendWs(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
   try {
-    nativePort.postMessage(obj);
+    ws.send(JSON.stringify(obj));
     return true;
   } catch (e) {
-    console.error("[sidekar] Native postMessage failed", e);
+    console.error("[sidekar] WS send failed", e);
     return false;
   }
 }
 
 function sendNativeAwait(obj, timeoutMs = 10000) {
   return new Promise((resolve) => {
-    if (!nativePort || !authenticated) {
-      resolve({ error: "Native bridge not connected" });
+    if (!ws || ws.readyState !== WebSocket.OPEN || !authenticated) {
+      resolve({ error: "Not connected to daemon" });
       return;
     }
     const id = "cli_" + Math.random().toString(36).slice(2, 10);
-    const listener = (msg) => {
-      if (msg && msg.id === id) {
-        nativePort.onMessage.removeListener(listener);
-        resolve(msg);
-      }
-    };
-    nativePort.onMessage.addListener(listener);
-    nativePort.postMessage({ ...obj, id });
+    awaitListeners.set(id, resolve);
+    ws.send(JSON.stringify({ ...obj, id }));
     setTimeout(() => {
-      nativePort.onMessage.removeListener(listener);
-      resolve({ error: "Native command timed out" });
+      if (awaitListeners.has(id)) {
+        awaitListeners.delete(id);
+        resolve({ error: "Command timed out" });
+      }
     }, timeoutMs);
   });
 }
@@ -66,80 +64,150 @@ function scheduleReconnect() {
   }, RECONNECT_DELAY_MS);
 }
 
+/** Discover daemon ports via sidekar.dev API, then probe localhost. */
+async function discoverDaemonPort(extToken) {
+  const resp = await fetch(`${API_BASE}/api/sessions?discover`, {
+    headers: { Authorization: `Bearer ${extToken}` },
+  });
+  if (!resp.ok) return null;
+  const { ports } = await resp.json();
+  if (!ports || ports.length === 0) return null;
+
+  // Probe each port on localhost in parallel
+  const results = await Promise.allSettled(
+    ports.map(async (port) => {
+      const r = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (r.ok) {
+        const body = await r.json();
+        if (body.sidekar) return port;
+      }
+      throw new Error("not sidekar");
+    })
+  );
+  const found = results.find((r) => r.status === "fulfilled");
+  return found ? found.value : null;
+}
+
 async function connect() {
-  if (nativePort) return;
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  // Close stale socket
+  if (ws) {
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+
   const extToken = await getExtToken();
+  if (!extToken) {
+    lastConnectError = "Not signed in — sign in from the extension popup.";
+    // Don't schedule reconnect for auth issues — wait for token change
+    return;
+  }
+
+  let port;
   try {
-    nativePort = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+    port = await discoverDaemonPort(extToken);
   } catch (e) {
-    console.error("[sidekar] Failed to connect to native host:", e);
-    lastConnectError = "Native host not installed. Run: sidekar ext install-host";
+    lastConnectError = "Cannot reach sidekar.dev — check internet connection.";
     scheduleReconnect();
     return;
   }
 
-  nativePort.onMessage.addListener(async (msg) => {
-    // Handle ping from daemon - respond with pong
-    if (msg.type === "ping") {
-      sendNative({ type: "pong" });
+  if (!port) {
+    lastConnectError = "No sidekar daemon found. Is sidekar running?";
+    scheduleReconnect();
+    return;
+  }
+
+  try {
+    ws = new WebSocket(`ws://127.0.0.1:${port}/ext`);
+  } catch (e) {
+    lastConnectError = "WebSocket connection failed.";
+    ws = null;
+    scheduleReconnect();
+    return;
+  }
+
+  ws.onopen = () => {
+    console.log("[sidekar] WS connected to 127.0.0.1:" + port);
+    // Wait for welcome, then register
+  };
+
+  ws.onmessage = async (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    // Welcome message
+    if (msg.type === "welcome") {
+      sendWs({
+        type: "bridge_register",
+        version: chrome.runtime.getManifest().version,
+        token: extToken,
+      });
       return;
     }
+
     if (msg.type === "auth_ok") {
       authenticated = true;
       cliLoggedIn = msg.cli_logged_in === true;
       lastConnectError = null;
-      console.log("[sidekar] authenticated via native bridge");
+      console.log("[sidekar] authenticated via WebSocket bridge");
       return;
     }
+
     if (msg.type === "auth_fail") {
       authenticated = false;
       cliLoggedIn = msg.cli_logged_in === true;
-      const reason = msg.reason ||
-        "Authentication failed — try logging in again from the extension popup.";
+      const reason = msg.reason || "Authentication failed.";
       lastConnectError = reason;
-      if (reason.includes("invalid ext token")) {
+      if (reason.includes("invalid ext token") || reason.includes("expired")) {
         await clearStoredExtToken();
         lastConnectError = "Extension session expired — sign in again from the extension popup.";
       }
-      console.log("[sidekar] auth failed:", msg.reason || "check credentials");
+      console.log("[sidekar] auth failed:", reason);
       return;
     }
 
-    // cli_exec responses handled by sendNativeAwait listener, not here
-    if (msg.type === "cli_exec" || msg.id?.startsWith("cli_")) {
+    // Ping from daemon
+    if (msg.type === "ping") {
+      sendWs({ type: "pong" });
       return;
     }
 
+    // Response to sendNativeAwait
+    if (msg.id && awaitListeners.has(msg.id)) {
+      const resolve = awaitListeners.get(msg.id);
+      awaitListeners.delete(msg.id);
+      resolve(msg);
+      return;
+    }
+
+    // Command from daemon
     if (!authenticated || !msg || !msg.command) return;
-
     const result = await handleCommand(msg);
-    sendNative({ id: msg.id, ...result });
-  });
+    sendWs({ id: msg.id, ...result });
+  };
 
-  nativePort.onDisconnect.addListener(() => {
-    const err = chrome.runtime.lastError?.message || "Native host disconnected";
-    console.log("[sidekar] native host disconnected:", err);
-    nativePort = null;
+  ws.onclose = () => {
+    console.log("[sidekar] WS disconnected");
+    ws = null;
     authenticated = false;
     if (!lastConnectError) {
-      lastConnectError = err;
+      lastConnectError = "Daemon disconnected.";
     }
+    // Reject pending awaits
+    for (const [id, resolve] of awaitListeners) {
+      resolve({ error: "Disconnected" });
+    }
+    awaitListeners.clear();
     scheduleReconnect();
-  });
+  };
 
-  console.log("[sidekar] native bridge connected");
-  if (!sendNative({
-      type: "bridge_register",
-      version: chrome.runtime.getManifest().version,
-      token: extToken,
-    })) {
-    lastConnectError = "Failed to register native bridge";
-    try {
-      nativePort.disconnect();
-    } catch {}
-    nativePort = null;
-    scheduleReconnect();
-  }
+  ws.onerror = () => {
+    // onclose fires after onerror, so reconnect is handled there
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1679,7 +1747,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "status") {
     sendResponse({
-      connected: nativePort !== null,
+      connected: ws !== null && ws.readyState === WebSocket.OPEN,
       authenticated,
       lastError: lastConnectError,
       cliLoggedIn,
@@ -1687,10 +1755,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === "reconnect") {
-    if (nativePort) {
-      try { nativePort.disconnect(); } catch {}
+    if (ws) {
+      try { ws.close(); } catch {}
     }
-    nativePort = null;
+    ws = null;
     authenticated = false;
     lastConnectError = null;
     connect();
@@ -1700,10 +1768,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "setToken") {
     const extToken = String(msg.extToken || "").trim();
     chrome.storage.local.set({ extToken }, () => {
-      if (nativePort) {
-        try { nativePort.disconnect(); } catch {}
+      if (ws) {
+        try { ws.close(); } catch {}
       }
-      nativePort = null;
+      ws = null;
       authenticated = false;
       connect();
       sendResponse({ ok: true });
@@ -1765,10 +1833,10 @@ function startOAuthFlow() {
             if (token && token.length > 0) {
               console.log("[sidekar] Got token from callback page");
               chrome.storage.local.set({ extToken: token }, () => {
-                if (nativePort) {
-                  try { nativePort.disconnect(); } catch {}
+                if (ws) {
+                  try { ws.close(); } catch {}
                 }
-                nativePort = null;
+                ws = null;
                 authenticated = false;
                 connect();
               });
@@ -1841,7 +1909,7 @@ chrome.alarms.create("keepalive", { periodInMinutes: 0.4 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "keepalive") {
-    if (!nativePort) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
       connect();
     }
   }

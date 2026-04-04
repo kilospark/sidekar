@@ -376,6 +376,26 @@ pub async fn list_sessions() -> Result<Value> {
     resp.json().await.context("Invalid response")
 }
 
+/// Register this daemon's HTTP port with the discover API.
+pub async fn register_discover_port(port: u16) -> Result<()> {
+    let token = crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in"))?;
+    let url = format!("{}/api/sessions?discover", api_base());
+    let resp = HTTP_CLIENT_SHORT_TIMEOUT
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&json!({"port": port}))
+        .send()
+        .await
+        .context("discover register failed")?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        bail!("Session expired");
+    }
+    if !resp.status().is_success() {
+        bail!("discover register: HTTP {}", resp.status());
+    }
+    Ok(())
+}
+
 fn verify_signature(binary: &[u8], signature: &[u8]) -> Result<()> {
     use minisign_verify::{PublicKey, Signature};
 

@@ -11,8 +11,7 @@
     "debugger",
     "alarms",
     "storage",
-    "offscreen",
-    "nativeMessaging"
+    "offscreen"
   ],
   "background": {
     "service_worker": "background.js"

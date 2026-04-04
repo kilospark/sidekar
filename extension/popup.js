@@ -3,7 +3,9 @@ const extStatus = document.getElementById("ext-status");
 const detailEl = document.getElementById("detail");
 const loginBtn = document.getElementById("login-btn");
 const logoutBtn = document.getElementById("logout-btn");
-const retryBtn = document.getElementById("retry-btn");
+const retryTimer = document.getElementById("retry-timer");
+const retryCountdown = document.getElementById("retry-countdown");
+let countdownInterval = null;
 const authSection = document.getElementById("auth-section");
 const loggedInSection = document.getElementById("logged-in-section");
 
@@ -47,19 +49,42 @@ function renderCliLoginAction() {
   status.appendChild(wrapper);
 }
 
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+  retryTimer.style.display = "none";
+}
+
+function startCountdown() {
+  stopCountdown();
+  let secs = 3;
+  retryCountdown.textContent = secs;
+  retryTimer.style.display = "block";
+  countdownInterval = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      stopCountdown();
+    } else {
+      retryCountdown.textContent = secs;
+    }
+  }, 1000);
+}
+
 function applyStatus(res) {
   if (res && res.authenticated) {
     status.textContent = "Connected & authenticated";
     status.className = "connected";
     detailEl.textContent = "";
-    retryBtn.style.display = "none";
+    stopCountdown();
     return;
   }
   if (res && res.connected) {
     status.textContent = "Bridge connected, waiting for extension auth...";
     status.className = "pending";
     detailEl.textContent = "";
-    retryBtn.style.display = "none";
+    stopCountdown();
     return;
   }
   if (res && res.cliLoggedIn) {
@@ -68,28 +93,32 @@ function applyStatus(res) {
   } else {
     renderCliLoginAction();
   }
-  
+
   // Check if error is about needing to run sidekar login
   const needsLogin = res && res.lastError && (
-    res.lastError.includes("login") || 
+    res.lastError.includes("login") ||
     res.lastError.includes("token")
   );
-  
+
   if (needsLogin) {
     detailEl.style.color = "#666";
     detailEl.textContent = "";
+    stopCountdown();
   } else {
     detailEl.style.color = "#991b1b";
     detailEl.textContent = res && res.lastError ? res.lastError : "";
+    // Show retry countdown for connection errors (not auth issues)
+    const isAuthIssue = res && res.lastError && (
+      res.lastError.includes("login") ||
+      res.lastError.includes("token") ||
+      res.lastError.includes("Auth")
+    );
+    if (res && res.lastError && !isAuthIssue && !countdownInterval) {
+      startCountdown();
+    } else if (!res || !res.lastError || isAuthIssue) {
+      stopCountdown();
+    }
   }
-  
-  // Only show retry for connection errors, not auth/login issues
-  const isAuthIssue = res && res.lastError && (
-    res.lastError.includes("login") || 
-    res.lastError.includes("token") ||
-    res.lastError.includes("Auth")
-  );
-  retryBtn.style.display = (res && res.lastError && !isAuthIssue) ? "block" : "none";
 }
 
 function refreshStatus() {
@@ -134,20 +163,6 @@ chrome.storage.onChanged.addListener((changes) => {
     updateAuthUI();
     refreshStatus();
   }
-});
-
-// --- Retry connection ---
-
-retryBtn.addEventListener("click", () => {
-  retryBtn.disabled = true;
-  retryBtn.textContent = "Retrying...";
-  chrome.runtime.sendMessage({ type: "reconnect" }, () => {
-    setTimeout(() => {
-      retryBtn.disabled = false;
-      retryBtn.textContent = "Retry connection";
-      refreshStatus();
-    }, 1000);
-  });
 });
 
 // --- GitHub OAuth Login ---

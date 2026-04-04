@@ -67,13 +67,36 @@ export async function getDeviceUser(req) {
 }
 
 /**
- * Authenticate by JWT (cookie or Bearer) first, then fall back to device token.
+ * Authenticate a request by extension token (Bearer header → SHA-256 hash lookup in ext_tokens).
+ * Returns { user_id } (as string) or null.
+ */
+export async function getExtUser(req) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) return null;
+  const token = auth.slice(7).trim();
+  if (!token) return null;
+
+  const { createHash } = await import("crypto");
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+
+  const { getDb } = await import("./_db.js");
+  const db = await getDb();
+  const extToken = await db.collection("ext_tokens").findOne({ token_hash: tokenHash });
+  if (!extToken) return null;
+
+  return { user_id: extToken.user_id.toString() };
+}
+
+/**
+ * Authenticate by JWT (cookie or Bearer) first, then device token, then extension token.
  * Returns { user_id } (string) or null.
  */
 export async function getUserOrDevice(req) {
   const jwt = await getUser(req);
   if (jwt) return { user_id: jwt.sub || jwt.id };
-  return getDeviceUser(req);
+  const device = await getDeviceUser(req);
+  if (device) return device;
+  return getExtUser(req);
 }
 
 export function setSessionCookie(res, token) {

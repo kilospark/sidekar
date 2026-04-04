@@ -1,27 +1,21 @@
 //! Extension bridge for Chrome extension communication.
 //!
-//! The Chrome extension connects through native messaging, and the daemon
+//! The Chrome extension connects via localhost WebSocket, and the daemon
 //! routes `sidekar ext <command>` requests to the connected extension bridge.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::auth;
 use crate::message::epoch_secs;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
-const OFFICIAL_EXTENSION_ID: &str = "ieggclnoffcnljcjeadgogpfbnhogncc";
 
 /// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
 const TIMEOUT_SECS: u64 = 180;
-
-const KEEPALIVE_INTERVAL_SECS: u64 = 15;
-const CONNECTION_TIMEOUT_SECS: u64 = 30;
 
 /// Token verification cache to avoid network call on every extension connect
 struct TokenCache {
@@ -46,246 +40,41 @@ fn set_cached_user_id(user_id: String) {
     let _ = TOKEN_CACHE.set(TokenCache { user_id, expires_at });
 }
 
-fn data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".sidekar")
-}
-
-fn sidekar_profile_roots() -> Vec<PathBuf> {
-    let profiles_root = data_dir().join("profiles");
-    let entries = match std::fs::read_dir(&profiles_root) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.is_dir())
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
-// Shared state between server and extension connection
+// Shared state between server and extension connections
 // ---------------------------------------------------------------------------
 
-pub struct ExtState {
-    pub bridge_tx: Option<mpsc::UnboundedSender<String>>,
+/// A single extension bridge connection (one per Chrome profile).
+pub struct ExtConnection {
+    pub bridge_tx: mpsc::UnboundedSender<String>,
     pub pending: HashMap<String, oneshot::Sender<Value>>,
-    pub connected: bool,
-    pub authenticated: bool,
-    pub verified_user_id: Option<String>,
-    pub connection_id: u64,
+    pub verified_user_id: String,
     pub last_contact: u64,
     pub owner_agent_id: Option<String>,
+    pub profile: String,
+}
+
+pub struct ExtState {
+    pub connections: HashMap<u64, ExtConnection>,
+    pub next_connection_id: u64,
 }
 
 impl Default for ExtState {
     fn default() -> Self {
         Self {
-            bridge_tx: None,
-            pending: HashMap::new(),
-            connected: false,
-            authenticated: false,
-            verified_user_id: None,
-            connection_id: 0,
-            last_contact: 0,
-            owner_agent_id: None,
+            connections: HashMap::new(),
+            next_connection_id: 1,
         }
     }
 }
 
 pub type SharedExtState = Arc<Mutex<ExtState>>;
 
-fn is_sidekar_extension_entry(ext_id: &str, meta: &Value) -> bool {
-    if ext_id == OFFICIAL_EXTENSION_ID {
-        return true;
-    }
-
-    let manifest = meta.get("manifest").and_then(Value::as_object);
-    let name = manifest
-        .and_then(|m| m.get("name"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let description = manifest
-        .and_then(|m| m.get("description"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let path = meta.get("path").and_then(Value::as_str).unwrap_or_default();
-
-    name == "Sidekar"
-        || description == "Bridge between AI agents and your browser"
-        || path.ends_with("/extension")
-        || path.ends_with("\\extension")
-}
-
-#[cfg(target_os = "macos")]
-fn chrome_profile_root() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow!("Cannot find home directory"))?
-        .join("Library/Application Support/Google/Chrome"))
-}
-
-#[cfg(target_os = "linux")]
-fn chrome_profile_root() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow!("Cannot find home directory"))?
-        .join(".config/google-chrome"))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn chrome_profile_root() -> Result<PathBuf> {
-    bail!("Native messaging host installation not supported on this OS")
-}
-
-fn discover_sidekar_extension_ids() -> Result<BTreeSet<String>> {
-    let mut ids = BTreeSet::new();
-    let root = chrome_profile_root()?;
-    if !root.is_dir() {
-        return Ok(ids);
-    }
-
-    for entry in std::fs::read_dir(&root)? {
-        let entry = match entry {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let profile_dir = entry.path();
-        if !profile_dir.is_dir() {
-            continue;
-        }
-
-        for prefs_name in ["Preferences", "Secure Preferences"] {
-            let prefs_path = profile_dir.join(prefs_name);
-            if !prefs_path.is_file() {
-                continue;
-            }
-            let raw = match std::fs::read_to_string(&prefs_path) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let data: Value = match serde_json::from_str(&raw) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let settings = match data
-                .get("extensions")
-                .and_then(|v| v.get("settings"))
-                .and_then(Value::as_object)
-            {
-                Some(v) => v,
-                None => continue,
-            };
-            for (ext_id, meta) in settings {
-                if is_sidekar_extension_entry(ext_id, meta) {
-                    ids.insert(ext_id.clone());
-                }
-            }
-        }
-    }
-
-    Ok(ids)
-}
-
-fn read_existing_allowed_origins(manifest_path: &std::path::Path) -> BTreeSet<String> {
-    let raw = match std::fs::read_to_string(manifest_path) {
-        Ok(v) => v,
-        Err(_) => return BTreeSet::new(),
-    };
-    let value: Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return BTreeSet::new(),
-    };
-    value
-        .get("allowed_origins")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(target_os = "macos")]
-fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
-    let mut dirs = vec![
-        home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts"),
-        home.join("Library/Application Support/Google/ChromeForTesting/NativeMessagingHosts"),
-        home.join("Library/Application Support/Google/Chrome Canary/NativeMessagingHosts"),
-        home.join("Library/Application Support/Chromium/NativeMessagingHosts"),
-        home.join("Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
-        home.join("Library/Application Support/Microsoft Edge/NativeMessagingHosts"),
-    ];
-    dirs.extend(
-        sidekar_profile_roots()
-            .into_iter()
-            .map(|root| root.join("NativeMessagingHosts")),
-    );
-    Ok(dirs)
-}
-
-#[cfg(target_os = "linux")]
-fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot find home directory"))?;
-    let mut dirs = vec![
-        home.join(".config/google-chrome/NativeMessagingHosts"),
-        home.join(".config/google-chrome-beta/NativeMessagingHosts"),
-        home.join(".config/google-chrome-for-testing/NativeMessagingHosts"),
-        home.join(".config/chromium/NativeMessagingHosts"),
-        home.join(".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
-        home.join(".config/microsoft-edge/NativeMessagingHosts"),
-    ];
-    dirs.extend(
-        sidekar_profile_roots()
-            .into_iter()
-            .map(|root| root.join("NativeMessagingHosts")),
-    );
-    Ok(dirs)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn native_host_manifest_dirs() -> Result<Vec<PathBuf>> {
-    bail!("Native messaging host installation not supported on this OS")
-}
-
-fn native_host_allowed_origins(
-    manifest_paths: &[PathBuf],
-    extension_id: Option<&str>,
-) -> Result<Vec<String>> {
-    let mut ids = BTreeSet::new();
-    for manifest_path in manifest_paths {
-        for origin in read_existing_allowed_origins(manifest_path) {
-            if let Some(id) = origin
-                .strip_prefix("chrome-extension://")
-                .and_then(|s| s.strip_suffix('/'))
-            {
-                if !id.trim().is_empty() {
-                    ids.insert(id.to_string());
-                }
-            }
-        }
-    }
-
-    ids.insert(OFFICIAL_EXTENSION_ID.to_string());
-    if let Some(id) = extension_id.map(str::trim).filter(|s| !s.is_empty()) {
-        ids.insert(id.to_string());
-    }
-
-    ids.extend(discover_sidekar_extension_ids()?);
-
-    Ok(ids
-        .into_iter()
-        .map(|id| format!("chrome-extension://{id}/"))
-        .collect())
-}
-
 fn ext_api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
 }
 
-fn verify_ext_token_sync(ext_token: &str) -> Result<String> {
+pub fn verify_ext_token(ext_token: &str) -> Result<String> {
     // Try cache first
     if let Some(cached_user_id) = get_cached_user_id(ext_token) {
         return Ok(cached_user_id);
@@ -336,122 +125,78 @@ type SharedState = Arc<Mutex<ExtState>>;
 // Ext bridge for daemon
 // ---------------------------------------------------------------------------
 
+/// Disconnect a specific bridge connection by id.
+pub async fn disconnect_bridge_by_id(state: &SharedExtState, connection_id: u64) {
+    disconnect_bridge(state, connection_id).await;
+}
+
 async fn disconnect_bridge(state: &SharedState, connection_id: u64) {
     let pending = {
         let mut s = state.lock().await;
-        if s.connection_id != connection_id {
-            return;
+        match s.connections.remove(&connection_id) {
+            Some(conn) => conn.pending,
+            None => return,
         }
-        let pending = std::mem::take(&mut s.pending);
-        s.bridge_tx = None;
-        s.connected = false;
-        s.authenticated = false;
-        s.verified_user_id = None;
-        s.owner_agent_id = None;
-        pending
     };
     for (_id, tx) in pending {
         let _ = tx.send(json!({"error": "Extension disconnected"}));
     }
 }
 
-pub async fn register_bridge_connection(
-    state: SharedState,
-    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    mut writer: tokio::net::unix::OwnedWriteHalf,
+/// Register a new bridge connection and return the connection_id and bridge_rx.
+/// Used by the WebSocket path in daemon.rs.
+pub async fn register_bridge_ws(
+    state: &SharedExtState,
     user_id: String,
     agent_id: Option<String>,
-) -> Result<()> {
+) -> (u64, mpsc::UnboundedReceiver<String>, String) {
     let now = epoch_secs();
-    let (bridge_tx, _bridge_rx) = mpsc::unbounded_channel::<String>();
-    let (connection_id, replaced_pending) = {
-        let mut s = state.lock().await;
-        let replaced_pending = std::mem::take(&mut s.pending);
-        s.connection_id = s.connection_id.wrapping_add(1);
-        s.bridge_tx = Some(bridge_tx);
-        s.connected = true;
-        s.authenticated = true;
-        s.verified_user_id = Some(user_id);
-        s.last_contact = now;
-        s.owner_agent_id = agent_id;
-        (s.connection_id, replaced_pending)
-    };
-    for (_id, tx) in replaced_pending {
-        let _ = tx.send(json!({"error": "Extension bridge replaced by a new connection"}));
-    }
-
-    writer.write_all(b"{\"ok\":true}\n").await?;
-    writer.flush().await?;
-
-    let write_state = state.clone();
-    let read_state = state.clone();
-    let conn_id = connection_id;
-
-    // Keepalive ping task - sends pings and marks disconnected on timeout
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
-        loop {
-            interval.tick().await;
-            let now = epoch_secs();
-            let should_disconnect = {
-                let s = write_state.lock().await;
-                if s.connection_id != conn_id {
-                    break;
-                }
-                if !s.connected || s.bridge_tx.is_none() {
-                    break;
-                }
-                now - s.last_contact > CONNECTION_TIMEOUT_SECS
-            };
-            if should_disconnect {
-                eprintln!("[sidekar] Extension keepalive timeout, disconnecting");
-                disconnect_bridge(&write_state, conn_id).await;
-                break;
-            }
-            // Send ping to extension
-            let ping_msg = serde_json::to_string(&json!({"type":"ping"})).unwrap_or_default();
-            if let Some(ref tx) = write_state.lock().await.bridge_tx {
-                let _ = tx.send(ping_msg);
-            }
-        }
+    let (bridge_tx, bridge_rx) = mpsc::unbounded_channel::<String>();
+    let mut s = state.lock().await;
+    let cid = s.next_connection_id;
+    s.next_connection_id = cid.wrapping_add(1);
+    let profile = format!("profile-{cid}");
+    s.connections.insert(cid, ExtConnection {
+        bridge_tx,
+        pending: HashMap::new(),
+        verified_user_id: user_id,
+        last_contact: now,
+        owner_agent_id: agent_id,
+        profile: profile.clone(),
     });
+    (cid, bridge_rx, profile)
+}
 
-    // Read loop with ping/pong handling
-    let mut line = String::new();
-    while let Ok(n) = reader.read_line(&mut line).await {
-        if n == 0 {
-            break;
-        }
-        if let Ok(val) = serde_json::from_str::<Value>(line.trim()) {
-            // Update last_contact on any message (pong, responses)
-            {
-                let mut s = read_state.lock().await;
-                s.last_contact = epoch_secs();
-            }
-            // Handle pong response - don't forward as command response
-            if val.get("type").and_then(|v| v.as_str()) == Some("pong") {
-                line.clear();
-                continue;
-            }
-            // Handle command responses
-            if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
-                let mut s = read_state.lock().await;
-                if let Some(tx) = s.pending.remove(id) {
-                    let _ = tx.send(val);
-                }
-            }
-        }
-        line.clear();
+/// Update last_contact for a connection.
+pub async fn touch_connection(state: &SharedExtState, connection_id: u64) {
+    let mut s = state.lock().await;
+    if let Some(conn) = s.connections.get_mut(&connection_id) {
+        conn.last_contact = epoch_secs();
     }
+}
 
-    disconnect_bridge(&read_state, connection_id).await;
-    Ok(())
+/// Route an inbound response (by id) to the correct pending oneshot.
+pub async fn resolve_pending(state: &SharedExtState, connection_id: u64, val: Value) {
+    if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+        let mut s = state.lock().await;
+        if let Some(conn) = s.connections.get_mut(&connection_id) {
+            if let Some(tx) = conn.pending.remove(id) {
+                let _ = tx.send(val);
+            }
+        }
+    }
 }
 
 /// Send a command to the extension via the shared state.
 /// Used by daemon to forward ext commands from unix socket.
-pub async fn forward_command(state: &SharedExtState, command: Value, agent_id: Option<String>) -> Value {
-    match send_command(state, command, agent_id.as_deref()).await {
+pub async fn forward_command(
+    state: &SharedExtState,
+    command: Value,
+    agent_id: Option<String>,
+    target_conn: Option<u64>,
+    target_profile: Option<String>,
+) -> Value {
+    match send_command(state, command, agent_id.as_deref(), target_conn, target_profile.as_deref()).await {
         Ok(v) => v,
         Err(e) => json!({"error": e.to_string()}),
     }
@@ -460,14 +205,32 @@ pub async fn forward_command(state: &SharedExtState, command: Value, agent_id: O
 /// Get extension connection status.
 pub async fn get_status(state: &SharedExtState) -> Value {
     let s = state.lock().await;
+    let count = s.connections.len();
+    let connected = count > 0;
+    let details: Vec<Value> = s.connections.iter()
+        .map(|(id, c)| json!({
+            "id": id,
+            "profile": c.profile,
+            "user_id": c.verified_user_id,
+            "owner": c.owner_agent_id,
+        }))
+        .collect();
     json!({
-        "connected": s.connected,
-        "authenticated": s.authenticated,
-        "user_id": s.verified_user_id,
+        "connected": connected,
+        "authenticated": connected,
+        "connections": details,
     })
 }
 
-async fn send_command(state: &SharedState, command: Value, agent_id: Option<&str>) -> Result<Value> {
+/// Pick a connection and send a command.
+/// Priority: target_conn > target_profile > agent ownership > first available.
+async fn send_command(
+    state: &SharedState,
+    command: Value,
+    agent_id: Option<&str>,
+    target_conn: Option<u64>,
+    target_profile: Option<&str>,
+) -> Result<Value> {
     let id = format!("{:08x}", rand::random::<u32>());
     let mut msg = command;
     msg.as_object_mut().unwrap().insert("id".into(), json!(id));
@@ -476,27 +239,56 @@ async fn send_command(state: &SharedState, command: Value, agent_id: Option<&str
 
     {
         let mut s = state.lock().await;
-        if !s.connected || !s.authenticated || s.bridge_tx.is_none() {
+        if s.connections.is_empty() {
             bail!("Extension not connected. Is Chrome running with the Sidekar extension?");
         }
-        // Check ownership - only owner agent can send
-        if let Some(req_agent) = agent_id {
-            if let Some(ref owner) = s.owner_agent_id {
-                if owner != req_agent {
-                    bail!("Extension in use by another agent. Try again later.");
-                }
+
+        let conn_id = if let Some(cid) = target_conn {
+            // Explicit connection ID
+            if !s.connections.contains_key(&cid) {
+                bail!("Connection {cid} not found. Use `sidekar ext status` to list connections.");
+            }
+            cid
+        } else if let Some(profile) = target_profile {
+            // Match by profile name (case-insensitive substring)
+            let lp = profile.to_lowercase();
+            let found = s.connections.iter().find(|(_, c)| {
+                c.profile.to_lowercase().contains(&lp)
+            }).map(|(id, _)| *id);
+            match found {
+                Some(cid) => cid,
+                None => bail!("No connection matching profile '{profile}'. Use `sidekar ext status` to list."),
+            }
+        } else if let Some(req_agent) = agent_id {
+            // Find connection owned by this agent
+            let owned = s.connections.iter().find(|(_, c)| {
+                c.owner_agent_id.as_deref() == Some(req_agent)
+            }).map(|(id, _)| *id);
+            if let Some(cid) = owned {
+                cid
             } else {
-                // No owner yet, claim it
-                s.owner_agent_id = Some(req_agent.to_string());
+                let unowned = s.connections.iter().find(|(_, c)| {
+                    c.owner_agent_id.is_none()
+                }).map(|(id, _)| *id);
+                match unowned {
+                    Some(cid) => {
+                        s.connections.get_mut(&cid).unwrap().owner_agent_id =
+                            Some(req_agent.to_string());
+                        cid
+                    }
+                    None => *s.connections.keys().next().unwrap(),
+                }
             }
-        }
-        s.pending.insert(id.clone(), tx);
+        } else {
+            *s.connections.keys().next().unwrap()
+        };
+
+        let conn = s.connections.get_mut(&conn_id).unwrap();
+        conn.pending.insert(id.clone(), tx);
         let text = serde_json::to_string(&msg)?;
-        if let Some(ref bridge_tx) = s.bridge_tx {
-            if bridge_tx.send(text).is_err() {
-                s.pending.remove(&id);
-                bail!("Failed to send to extension bridge");
-            }
+        if conn.bridge_tx.send(text).is_err() {
+            conn.pending.remove(&id);
+            bail!("Failed to send to extension bridge");
         }
     }
 
@@ -504,7 +296,10 @@ async fn send_command(state: &SharedState, command: Value, agent_id: Option<&str
         Ok(Ok(val)) => Ok(val),
         Ok(Err(_)) => bail!("Extension response channel closed"),
         Err(_) => {
-            state.lock().await.pending.remove(&id);
+            let mut s = state.lock().await;
+            for conn in s.connections.values_mut() {
+                conn.pending.remove(&id);
+            }
             bail!("Extension command timed out ({TIMEOUT_SECS}s)")
         }
     }
@@ -549,9 +344,34 @@ pub async fn send_cli_command(
         return show_status();
     }
 
-    let msg = build_command(command, args, default_tab)?;
+    // Parse --conn and --profile from args
+    let mut filtered_args = Vec::new();
+    let mut target_conn: Option<u64> = None;
+    let mut target_profile: Option<String> = None;
+    let mut skip_next = false;
+    for (i, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--conn" {
+            if let Some(val) = args.get(i + 1) {
+                target_conn = Some(val.parse().context("--conn requires a numeric connection ID")?);
+                skip_next = true;
+            }
+        } else if arg == "--profile" {
+            if let Some(val) = args.get(i + 1) {
+                target_profile = Some(val.clone());
+                skip_next = true;
+            }
+        } else {
+            filtered_args.push(arg.clone());
+        }
+    }
+
+    let msg = build_command(command, &filtered_args, default_tab)?;
     crate::daemon::ensure_running()?;
-    
+
     let agent_id = std::env::var("SIDEKAR_AGENT_ID").ok();
     let mut cmd_json = json!({
         "type": "ext",
@@ -559,6 +379,12 @@ pub async fn send_cli_command(
     });
     if let Some(ref aid) = agent_id {
         cmd_json["agent_id"] = json!(aid);
+    }
+    if let Some(cid) = target_conn {
+        cmd_json["conn_id"] = json!(cid);
+    }
+    if let Some(ref p) = target_profile {
+        cmd_json["profile"] = json!(p);
     }
     let result = crate::daemon::send_command(&cmd_json)?;
 
@@ -577,27 +403,26 @@ fn show_status() -> Result<()> {
     }
 
     let status = crate::daemon::send_command(&json!({"type": "ext_status"}))?;
-    let connected = status
-        .get("connected")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let authenticated = status
-        .get("authenticated")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let conns = status.get("connections").and_then(|v| v.as_array());
 
-    println!(
-        "Extension bridge: {}",
-        if connected {
-            "connected"
-        } else {
-            "not connected"
+    match conns {
+        Some(list) if !list.is_empty() => {
+            println!("{} connection(s):", list.len());
+            for c in list {
+                let id = c.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let profile = c.get("profile").and_then(|v| v.as_str()).unwrap_or("?");
+                let owner = c.get("owner").and_then(|v| v.as_str());
+                print!("  [{id}] {profile}");
+                if let Some(o) = owner {
+                    print!(" (owner: {o})");
+                }
+                println!();
+            }
         }
-    );
-    println!(
-        "Authenticated: {}",
-        if authenticated { "yes" } else { "no" }
-    );
+        _ => {
+            println!("No extension connections");
+        }
+    }
     Ok(())
 }
 
@@ -974,377 +799,3 @@ fn print_result(command: &str, result: &Value) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Native Messaging Host
-// ---------------------------------------------------------------------------
-
-const NATIVE_HOST_NAME: &str = "dev.sidekar";
-
-/// Run as a native messaging host. Reads JSON messages from stdin (length-prefixed),
-/// processes commands, and writes responses to stdout (length-prefixed).
-pub fn run_native_host() -> Result<()> {
-    use std::io::{BufRead, Read, Write};
-    use std::os::unix::net::UnixStream as StdUnixStream;
-    use std::sync::{Arc, Mutex as StdMutex};
-
-    fn write_native_message(stdout: &Arc<StdMutex<std::io::Stdout>>, value: &Value) -> Result<()> {
-        let bytes = serde_json::to_vec(value)?;
-        let len = (bytes.len() as u32).to_le_bytes();
-        let mut stdout = stdout.lock().map_err(|_| anyhow!("stdout lock poisoned"))?;
-        stdout.write_all(&len)?;
-        stdout.write_all(&bytes)?;
-        stdout.flush()?;
-        Ok(())
-    }
-
-    let mut stdin = std::io::stdin().lock();
-    let stdout = Arc::new(StdMutex::new(std::io::stdout()));
-    let mut daemon_writer: Option<StdUnixStream> = None;
-
-    loop {
-        let mut len_buf = [0u8; 4];
-        if stdin.read_exact(&mut len_buf).is_err() {
-            break;
-        }
-        let len = u32::from_le_bytes(len_buf) as usize;
-        if len == 0 || len > 1024 * 1024 {
-            break;
-        }
-        let mut msg_buf = vec![0u8; len];
-        if stdin.read_exact(&mut msg_buf).is_err() {
-            break;
-        }
-
-        let msg = match serde_json::from_slice::<Value>(&msg_buf) {
-            Ok(msg) => msg,
-            Err(e) => {
-                let _ =
-                    write_native_message(&stdout, &json!({"error": format!("Invalid JSON: {e}")}));
-                continue;
-            }
-        };
-
-        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if msg_type == "bridge_register" {
-            let cli_logged_in = crate::auth::auth_token().is_some();
-            if !cli_logged_in {
-                let _ = write_native_message(
-                    &stdout,
-                    &json!({
-                        "type": "auth_fail",
-                        "reason": "Run `sidekar login`",
-                        "cli_logged_in": false
-                    }),
-                );
-                continue;
-            }
-
-            let ext_token = msg
-                .get("token")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            if ext_token.is_empty() {
-                let _ = write_native_message(
-                    &stdout,
-                    &json!({
-                        "type": "auth_fail",
-                        "reason": "No token provided — log in from the extension popup",
-                        "cli_logged_in": true
-                    }),
-                );
-                continue;
-            }
-
-            let user_id = match verify_ext_token_sync(ext_token) {
-                Ok(user_id) => user_id,
-                Err(e) => {
-                    let _ = write_native_message(
-                        &stdout,
-                        &json!({
-                            "type": "auth_fail",
-                            "reason": format!("{e:#}"),
-                            "cli_logged_in": true
-                        }),
-                    );
-                    continue;
-                }
-            };
-
-            if let Err(e) = crate::daemon::ensure_running() {
-                let _ = write_native_message(
-                    &stdout,
-                    &json!({
-                        "type": "auth_fail",
-                        "reason": format!("Failed to start daemon: {e:#}"),
-                        "cli_logged_in": true
-                    }),
-                );
-                continue;
-            }
-
-            let mut stream = match StdUnixStream::connect(crate::daemon::socket_path()) {
-                Ok(stream) => stream,
-                Err(e) => {
-                    let _ = write_native_message(
-                        &stdout,
-                        &json!({
-                            "type": "auth_fail",
-                            "reason": format!("Cannot connect to daemon: {e}"),
-                            "cli_logged_in": true
-                        }),
-                    );
-                    continue;
-                }
-            };
-
-            let register = json!({
-                "type": "ext_bridge_register",
-                "user_id": user_id,
-                "version": msg.get("version").cloned().unwrap_or(json!("?"))
-            });
-            let mut line = serde_json::to_string(&register)?;
-            line.push('\n');
-            if stream.write_all(line.as_bytes()).is_err() || stream.flush().is_err() {
-                let _ = write_native_message(
-                    &stdout,
-                    &json!({
-                        "type": "auth_fail",
-                        "reason": "Failed to register extension bridge with daemon",
-                        "cli_logged_in": true
-                    }),
-                );
-                continue;
-            }
-
-            let reader_stream = match stream.try_clone() {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = write_native_message(
-                        &stdout,
-                        &json!({
-                            "type": "auth_fail",
-                            "reason": format!("Failed to clone daemon stream: {e}"),
-                            "cli_logged_in": true
-                        }),
-                    );
-                    continue;
-                }
-            };
-
-            let mut ack = String::new();
-            let mut ack_reader = std::io::BufReader::new(reader_stream);
-            match ack_reader.read_line(&mut ack) {
-                Ok(0) | Err(_) => {
-                    let _ = write_native_message(
-                        &stdout,
-                        &json!({
-                            "type": "auth_fail",
-                            "reason": "Daemon did not acknowledge extension bridge registration",
-                            "cli_logged_in": true
-                        }),
-                    );
-                    continue;
-                }
-                Ok(_) => {}
-            }
-            if serde_json::from_str::<Value>(ack.trim()).is_err() {
-                let _ = write_native_message(
-                    &stdout,
-                    &json!({
-                        "type": "auth_fail",
-                        "reason": "Daemon returned invalid extension bridge registration ack",
-                        "cli_logged_in": true
-                    }),
-                );
-                continue;
-            }
-
-            let bridge_reader = ack_reader.into_inner();
-            let bridge_stdout = stdout.clone();
-            std::thread::spawn(move || {
-                let mut reader = std::io::BufReader::new(bridge_reader);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
-                                let _ = write_native_message(&bridge_stdout, &value);
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                std::process::exit(0);
-            });
-
-            daemon_writer = Some(stream);
-            let _ =
-                write_native_message(&stdout, &json!({"type": "auth_ok", "cli_logged_in": true}));
-            continue;
-        }
-
-        if msg_type == "ping" {
-            let _ = write_native_message(&stdout, &json!({"pong": true}));
-            continue;
-        }
-
-        // cli_exec: spawn CLI for insert-text/keyboard (one hop, like ping)
-        if msg_type == "cli_exec" {
-            let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            let id = msg.get("id").cloned();
-
-            let result = match command {
-                "inserttext" => {
-                    let exe = std::env::current_exe().unwrap_or_default();
-                    let output = std::process::Command::new(exe)
-                        .arg("insert-text")
-                        .arg(text)
-                        .output();
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            json!({ "ok": true, "mode": "cli-insertText" })
-                        }
-                        Ok(o) => {
-                            json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) })
-                        }
-                        Err(e) => json!({ "ok": false, "error": e.to_string() }),
-                    }
-                }
-                "keyboard" => {
-                    let exe = std::env::current_exe().unwrap_or_default();
-                    let output = std::process::Command::new(exe)
-                        .arg("keyboard")
-                        .arg(text)
-                        .output();
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            json!({ "ok": true, "mode": "cli-keyboard" })
-                        }
-                        Ok(o) => {
-                            json!({ "ok": false, "error": String::from_utf8_lossy(&o.stderr) })
-                        }
-                        Err(e) => json!({ "ok": false, "error": e.to_string() }),
-                    }
-                }
-                _ => json!({ "ok": false, "error": format!("Unknown cli_exec: {}", command) }),
-            };
-
-            let mut response = result;
-            if let Some(msg_id) = id {
-                response
-                    .as_object_mut()
-                    .map(|m| m.insert("id".to_string(), msg_id));
-            }
-            let _ = write_native_message(&stdout, &response);
-            continue;
-        }
-
-        if let Some(stream) = daemon_writer.as_mut() {
-            let mut line = serde_json::to_string(&msg)?;
-            line.push('\n');
-            if stream.write_all(line.as_bytes()).is_err() || stream.flush().is_err() {
-                break;
-            }
-        } else {
-            let _ = write_native_message(
-                &stdout,
-                &json!({"error": "Extension bridge not registered"}),
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn write_native_host_manifests(
-    manifest_dirs: &[PathBuf],
-    extension_id: Option<&str>,
-    verbose: bool,
-) -> Result<()> {
-    let exe_path = std::env::current_exe().context("Cannot determine sidekar executable path")?;
-
-    // Create a wrapper script that calls sidekar with the native-messaging-host command
-    let wrapper_path = exe_path
-        .parent()
-        .unwrap_or(std::path::Path::new("/usr/local/bin"))
-        .join("sidekar-native-host");
-
-    let wrapper_script = format!(
-        "#!/bin/bash\nexec \"{}\" native-messaging-host \"$@\"\n",
-        exe_path.display()
-    );
-    std::fs::write(&wrapper_path, &wrapper_script).with_context(|| {
-        format!(
-            "Failed to write wrapper script to {}",
-            wrapper_path.display()
-        )
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    let manifest_paths: Vec<PathBuf> = manifest_dirs
-        .iter()
-        .map(|dir| dir.join(format!("{NATIVE_HOST_NAME}.json")))
-        .collect();
-    let allowed_origins = native_host_allowed_origins(&manifest_paths, extension_id)?;
-    let manifest = json!({
-        "name": NATIVE_HOST_NAME,
-        "description": "Sidekar native messaging host",
-        "path": wrapper_path.to_string_lossy(),
-        "type": "stdio",
-        "allowed_origins": allowed_origins
-    });
-    let manifest_json = serde_json::to_string_pretty(&manifest)?;
-
-    for manifest_dir in manifest_dirs {
-        std::fs::create_dir_all(manifest_dir).with_context(|| {
-            format!(
-                "Failed to create NativeMessagingHosts directory {}",
-                manifest_dir.display()
-            )
-        })?;
-    }
-    for manifest_path in &manifest_paths {
-        std::fs::write(manifest_path, &manifest_json)
-            .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
-    }
-
-    if verbose {
-        println!("Installed native messaging host manifests:");
-        for manifest_path in &manifest_paths {
-            println!("  {}", manifest_path.display());
-        }
-        println!();
-        println!("Manifest contents:");
-        println!("{manifest_json}");
-    }
-
-    Ok(())
-}
-
-/// Install the native messaging host manifest for Chrome.
-fn install_native_host_impl(extension_id: Option<&str>, verbose: bool) -> Result<()> {
-    let manifest_dirs = native_host_manifest_dirs()?;
-    write_native_host_manifests(&manifest_dirs, extension_id, verbose)
-}
-
-pub fn install_native_host(extension_id: Option<&str>) -> Result<()> {
-    install_native_host_impl(extension_id, true)
-}
-
-pub(crate) fn install_native_host_quiet(extension_id: Option<&str>) -> Result<()> {
-    install_native_host_impl(extension_id, false)
-}
-
-pub(crate) fn install_native_host_for_profile_dir(profile_dir: &std::path::Path) -> Result<()> {
-    let manifest_dir = profile_dir.join("NativeMessagingHosts");
-    write_native_host_manifests(&[manifest_dir], None, false)
-}
