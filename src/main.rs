@@ -548,10 +548,37 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let sub = args.first().cloned().unwrap_or_default();
         if sub.is_empty() {
             eprintln!("Usage: sidekar ext <subcommand> [args...]");
-            eprintln!("Subcommands: tabs, read, screenshot, click, type, paste, set-value,");
-            eprintln!(
-                "  ax-tree, eval, eval-page, navigate, new-tab, close, scroll, status, stop"
-            );
+            eprintln!();
+            eprintln!("Browser:");
+            eprintln!("  tabs                         List open tabs");
+            eprintln!("  read [tab_id]                Read page text");
+            eprintln!("  screenshot [tab_id]          Capture visible tab");
+            eprintln!("  click <selector|text:..>     Click element");
+            eprintln!("  type <selector> <text>       Type into field");
+            eprintln!("  paste [--html H] [--text T]  Paste content");
+            eprintln!("  set-value <selector> <text>  Set field value");
+            eprintln!("  ax-tree [tab_id]             Accessibility tree");
+            eprintln!("  eval <js>                    Run JS (isolated)");
+            eprintln!("  eval-page <js>               Run JS (page world)");
+            eprintln!("  navigate <url>               Navigate tab");
+            eprintln!("  new-tab [url]                Open new tab");
+            eprintln!("  close [tab_id]               Close tab");
+            eprintln!("  scroll <up|down|top|bottom>  Scroll page");
+            eprintln!();
+            eprintln!("History & Context:");
+            eprintln!("  history <query>              Search browsing history");
+            eprintln!("  context                      Current browser context");
+            eprintln!();
+            eprintln!("Watchers (events delivered via bus):");
+            eprintln!("  watch <selector>             Watch element, stream changes to bus");
+            eprintln!("  unwatch [watchId]            Remove watcher(s)");
+            eprintln!("  watchers                     List active watchers");
+            eprintln!();
+            eprintln!("Management:");
+            eprintln!("  status                       Connection status");
+            eprintln!("  stop                         Stop daemon");
+            eprintln!();
+            eprintln!("Flags: --conn <id>, --profile <name>, --tab <id>");
             std::process::exit(1);
         }
         let sub_args = if args.len() > 1 {
