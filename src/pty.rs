@@ -310,22 +310,77 @@ async fn connect_relay_tunnel(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// First message injected into the agent's stdin after startup.
+/// Starter prompt passed to the wrapped agent via its native initial-prompt flag.
 /// Compact directive: load sidekar, set behavioral ground rules.
 const STARTUP_INJECT: &str =
     "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
 
-/// How long the agent must be quiet (no output) before we inject the startup message.
-const STARTUP_INJECT_QUIET_MS: u64 = 1500;
-/// Minimum time before injection — don't inject during early boot.
-const STARTUP_INJECT_MIN_SECS: u64 = 5;
-/// If idle detection hasn't fired by this point, inject anyway (TUI apps may never go quiet).
-const STARTUP_INJECT_FALLBACK_SECS: u64 = 15;
+/// Build the starter string: the base directive plus any project memory brief.
+fn build_startup_prompt() -> String {
+    let mut msg = STARTUP_INJECT.to_string();
+    if let Ok(brief) = crate::memory::startup_brief(3) {
+        let brief = brief.trim();
+        if !brief.is_empty() {
+            msg.push_str("\n\n[memory context]\n");
+            msg.push_str(brief);
+        }
+    }
+    msg
+}
+
+/// Extend the user-supplied args with a native initial-prompt flag for agents
+/// that support one. Unknown agents get no starter — the PTY stdin-injection
+/// fallback was unreliable and has been removed.
+///
+/// Flag map (verified against each agent's `--help`):
+/// - claude / codex / cursor-agent / cursor → positional prompt
+/// - gemini → `-i <str>` (NOT `-p`, which is headless)
+/// - opencode → `--prompt <str>`
+fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
+    let has_positional = user_args.iter().any(|a| !a.starts_with('-'));
+    let has_flag = |flags: &[&str]| -> bool {
+        user_args.iter().any(|a| {
+            flags
+                .iter()
+                .any(|f| a == f || a.starts_with(&format!("{f}=")))
+        })
+    };
+
+    let mut out: Vec<String> = user_args.to_vec();
+    match agent {
+        "claude" | "codex" | "cursor-agent" | "cursor" => {
+            if !has_positional {
+                out.push(build_startup_prompt());
+            }
+        }
+        "gemini" => {
+            // `-p` / `--prompt` would run gemini headless; use `-i` to stay interactive.
+            if !has_positional
+                && !has_flag(&["-i", "--prompt-interactive", "-p", "--prompt"])
+            {
+                out.push("-i".into());
+                out.push(build_startup_prompt());
+            }
+        }
+        "opencode" => {
+            // opencode's positional is [project], not a prompt — only skip on --prompt.
+            if !has_flag(&["--prompt"]) {
+                out.push("--prompt".into());
+                out.push(build_startup_prompt());
+            }
+        }
+        _ => {
+            // Unknown agent — skip injection rather than fall back to flaky PTY stdin.
+        }
+    }
+    out
+}
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>, proxy_override: Option<bool>) -> Result<()> {
     let (path, c_path) = resolve_agent(agent)?;
-    let c_args = prepare_args(&c_path, args)?;
+    let enriched_args = enrich_args_with_startup(agent, args);
+    let c_args = prepare_args(&c_path, &enriched_args)?;
     let bin_display = path;
     let bin_c = c_path;
 
@@ -530,51 +585,6 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // When the child calls `sidekar launch` or `sidekar connect`, the
     // last-session file is updated. We read it and update the cron context.
     let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
-
-    // Build startup message: directives + memory context
-    let startup_msg = {
-        let mut msg = STARTUP_INJECT.to_string();
-        if let Ok(brief) = crate::memory::startup_brief(3) {
-            let brief = brief.trim();
-            if !brief.is_empty() {
-                msg.push_str("\n\n[memory context]\n");
-                msg.push_str(brief);
-            }
-        }
-        msg
-    };
-
-    // Inject startup message once the agent is idle (produced output then went quiet).
-    // Skipped if the user types anything first.
-    {
-        let inject_fd = master_arc.clone();
-        let inject_input = input_state.clone();
-        tokio::spawn(async move {
-            let start = tokio::time::Instant::now();
-            let min_wait = std::time::Duration::from_secs(STARTUP_INJECT_MIN_SECS);
-            let fallback = start + std::time::Duration::from_secs(STARTUP_INJECT_FALLBACK_SECS);
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                if inject_input.has_ever_had_input() || inject_input.has_pending_line() {
-                    return; // user typed first — skip
-                }
-                let elapsed = start.elapsed();
-                if elapsed >= min_wait && inject_input.agent_idle_for(STARTUP_INJECT_QUIET_MS) {
-                    break; // agent booted and went quiet — ready
-                }
-                if tokio::time::Instant::now() >= fallback {
-                    break; // fallback for TUI apps that never go fully quiet
-                }
-            }
-            // Flatten to single line — multiline pastes confuse some TUI editors
-            let flat = startup_msg.replace('\n', " ");
-            let fd = inject_fd.as_raw_fd();
-            let _ = write_all_fd(fd, flat.as_bytes());
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            // Send both CR and LF — different TUI frameworks use different submit keys
-            let _ = write_all_fd(fd, b"\r\n");
-        });
-    }
 
     // Enter raw mode (must happen after eprintln messages)
     let raw_guard = RawModeGuard::enter()?;
@@ -1085,7 +1095,6 @@ async fn event_loop(
                             }
                         }) {
                             Ok(Ok(n)) => {
-                                input_state.mark_agent_output();
                                 let raw = &buf_out[..n];
                                 // Preserve terminal transparency except for OSC window-title
                                 // sequences, where we prefix the agent nickname.
