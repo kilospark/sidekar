@@ -1719,7 +1719,8 @@ pub struct KvEntry {
 pub fn kv_set(key: &str, value: &str) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
-    let uid = current_user_id();
+    // Use empty string instead of NULL so UNIQUE constraint and ON CONFLICT work
+    let uid = current_user_id().unwrap_or_default();
 
     let value_to_store = if get_encryption_key().is_some() {
         match encrypt(value) {
@@ -1748,11 +1749,12 @@ pub fn kv_set(key: &str, value: &str) -> Result<()> {
 /// Get a KV value, scoped to current user.
 pub fn kv_get(key: &str) -> Result<Option<KvEntry>> {
     let conn = open()?;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
 
     let mut stmt = conn.prepare(
         "SELECT id, key, value, created_at, updated_at FROM kv_store \
-         WHERE user_id IS ?1 AND key = ?2",
+         WHERE (user_id = ?1 OR user_id IS NULL) AND key = ?2 \
+         ORDER BY id DESC LIMIT 1",
     )?;
     stmt.query_row(params![uid, key], |row| {
         let value: String = row.get(2)?;
@@ -1776,11 +1778,12 @@ pub fn kv_get(key: &str) -> Result<Option<KvEntry>> {
 /// List all KV entries for current user.
 pub fn kv_list() -> Result<Vec<KvEntry>> {
     let conn = open()?;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
 
     let mut stmt = conn.prepare(
         "SELECT id, key, value, created_at, updated_at FROM kv_store \
-         WHERE user_id IS ?1 ORDER BY key",
+         WHERE (user_id = ?1 OR user_id IS NULL) \
+         GROUP BY key HAVING id = MAX(id) ORDER BY key",
     )?;
     let mut out = Vec::new();
     let mut rows = stmt.query(params![uid])?;
@@ -1805,9 +1808,10 @@ pub fn kv_list() -> Result<Vec<KvEntry>> {
 /// Delete a KV entry, scoped to current user.
 pub fn kv_delete(key: &str) -> Result<()> {
     let conn = open()?;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
+    // Delete both new (user_id='') and legacy (user_id IS NULL) rows
     conn.execute(
-        "DELETE FROM kv_store WHERE user_id IS ?1 AND key = ?2",
+        "DELETE FROM kv_store WHERE (user_id = ?1 OR user_id IS NULL) AND key = ?2",
         params![uid, key],
     )?;
     Ok(())

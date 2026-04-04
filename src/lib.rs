@@ -2887,7 +2887,7 @@ sidekar ext <subcommand> [args...]
   Subcommands: tabs, read [tab_id], screenshot [tab_id], click <target>, type <sel> <text>,
   paste [--html <html>] [--text <text>] [--selector <sel>], set-value <sel> <text>,
   ax-tree [tab_id], eval <js>, eval-page <js>, navigate <url> [tab_id], new-tab [url],
-  close [tab_id], scroll [direction], status, stop, install-host [extension_id]
+  close [tab_id], scroll [direction], status, stop
 
   Examples:
     sidekar ext tabs
@@ -2895,28 +2895,22 @@ sidekar ext <subcommand> [args...]
     sidekar --tab 3 ext screenshot
     sidekar ext click \"#search-btn\"
     sidekar ext paste --html \"<h1>Title</h1>\" --text \"Title\"
-    sidekar ext eval-page \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\"
-    sidekar ext install-host"
+    sidekar ext eval-page \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\""
         }
 
         "repl" => {
             "\
-sidekar repl [-r <credential>] [-m <model>] [-p <prompt>] [--resume] [--verbose]
+sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--verbose]
 
   Interactive LLM agent with streaming, tool calling, and session persistence.
-  Requires explicit provider credentials (-r) and model (-m), or SIDEKAR_MODEL env.
+  Requires explicit provider credentials (-c) and model (-m), or SIDEKAR_MODEL env.
 
   Options:
-    -r <credential>  Named credential (claude, codex, or-personal, claude-work, etc.)
+    -c <credential>  Named credential (claude, codex, or-personal, claude-work, etc.)
     -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
     -p <prompt>      Initial prompt (skip interactive input for first turn)
-    --resume         Resume a previous session
+    -r [session_id]  Resume a session (picker if no ID; prefix match)
     --verbose        Show raw API request/response logging
-
-  Credential Management:
-    sidekar repl login <provider>       Store OAuth/API credentials
-    sidekar repl logout [name|all]      Remove stored credentials
-    sidekar repl credentials            List stored credentials
 
   Providers:
     claude     Claude (Anthropic) — OAuth device flow
@@ -2933,12 +2927,22 @@ sidekar repl [-r <credential>] [-m <model>] [-p <prompt>] [--resume] [--verbose]
     ANTHROPIC_API_KEY          Fallback for claude credentials
     OPENROUTER_API_KEY         Fallback for or credentials
 
+  Subcommands:
+    sidekar repl login <provider>       Store OAuth/API credentials
+    sidekar repl logout [name|all]      Remove stored credentials
+    sidekar repl credentials            List stored credentials
+    sidekar repl models -c <credential> List available models for a provider
+    sidekar repl sessions               List sessions in this directory
+
   Examples:
     sidekar repl login claude
     sidekar repl login or
-    sidekar repl -r claude -m claude-sonnet-4-5-20250514
-    sidekar repl -r or -m x-ai/grok-3 -p \"explain quantum computing\"
-    sidekar repl -r codex -m o3 --resume
+    sidekar repl models -c claude-1
+    sidekar repl sessions
+    sidekar repl -c claude-1 -m claude-sonnet-4-20250514
+    sidekar repl -c or -m x-ai/grok-3 -p \"explain quantum computing\"
+    sidekar repl -c codex -m o3 -r
+    sidekar repl -c claude-1 -r a63dcdc6
     sidekar repl credentials"
         }
 

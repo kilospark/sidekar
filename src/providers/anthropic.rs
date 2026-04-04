@@ -242,7 +242,7 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
                 arguments,
             } => json!({
                 "type": "tool_use",
-                "id": id,
+                "id": super::sanitize_id_anthropic(id),
                 "name": if oauth { to_claude_code_tool_name(name) } else { name.clone() },
                 "input": arguments,
             }),
@@ -252,7 +252,7 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
                 is_error,
             } => json!({
                 "type": "tool_result",
-                "tool_use_id": tool_use_id,
+                "tool_use_id": super::sanitize_id_anthropic(tool_use_id),
                 "content": content,
                 "is_error": is_error,
             }),

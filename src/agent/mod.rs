@@ -8,8 +8,6 @@ use crate::providers::{
     AssistantResponse, ChatMessage, ContentBlock, Provider, Role, StopReason, StreamEvent, ToolDef,
 };
 
-const MAX_ITERATIONS: usize = 25;
-
 /// Callback for streaming events to the REPL.
 pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send>;
 
@@ -28,8 +26,6 @@ pub async fn run(
     on_event: StreamCallback,
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), anyhow::Error> {
-    let mut iteration = 0;
-
     let context_window = crate::providers::fetch_context_window(model, provider).await;
 
     loop {
@@ -39,17 +35,8 @@ pub async fn run(
             }
         }
 
-        if iteration >= MAX_ITERATIONS {
-            eprintln!(
-                "\nsidekar: reached max iterations ({}), stopping",
-                MAX_ITERATIONS
-            );
-            break;
-        }
-        iteration += 1;
-
         // Auto-compact if context is getting large
-        compaction::maybe_compact(provider, model, history, context_window).await;
+        compaction::maybe_compact(provider, model, history, context_window, &on_event).await;
 
         // Signal UI to show waiting indicator
         on_event(&StreamEvent::Waiting);

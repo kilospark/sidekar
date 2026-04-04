@@ -187,16 +187,18 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                     }
                 };
                 let provider_type = sidekar::providers::oauth::provider_type_for(nickname)
-                    .unwrap_or(if nickname == "anthropic" {
-                        "anthropic"
-                    } else if nickname == "codex" || nickname == "openai" {
-                        "codex"
-                    } else if nickname == "openrouter" {
-                        "openrouter"
-                    } else {
-                        eprintln!("Unknown provider: '{nickname}'.");
-                        eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or or-<name> for OpenRouter.");
-                        std::process::exit(1);
+                    .unwrap_or_else(|| {
+                        if nickname == "anthropic" {
+                            "anthropic"
+                        } else if nickname == "codex" || nickname == "openai" {
+                            "codex"
+                        } else if nickname == "openrouter" {
+                            "openrouter"
+                        } else {
+                            eprintln!("Unknown provider: '{nickname}'.");
+                            eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or or-<name> for OpenRouter.");
+                            std::process::exit(1);
+                        }
                     });
                 // Clear existing creds for this nickname before login
                 let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
@@ -204,7 +206,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                 match provider_type {
                     "anthropic" => {
                         let token =
-                            sidekar::providers::oauth::get_anthropic_token(Some(nickname)).await?;
+                            sidekar::providers::oauth::login_anthropic(Some(nickname)).await?;
                         if token.contains("sk-ant-oat") {
                             println!("Logged in as '{nickname}' (Claude OAuth).");
                         } else {
@@ -213,7 +215,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                     }
                     "codex" => {
                         let (_, account_id) =
-                            sidekar::providers::oauth::get_codex_token(Some(nickname)).await?;
+                            sidekar::providers::oauth::login_codex(Some(nickname)).await?;
                         println!(
                             "Logged in as '{nickname}' (Codex, account: {}).",
                             if account_id.is_empty() {
@@ -269,12 +271,125 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                 }
                 return Ok(());
             }
+            "models" => {
+                // sidekar repl models -r <credential>
+                let mut credential: Option<String> = None;
+                let mut i = 1;
+                while i < args.len() {
+                    if matches!(args[i].as_str(), "-c" | "--credential") && i + 1 < args.len() {
+                        credential = Some(args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                let cred = match credential {
+                    Some(c) => c,
+                    None => {
+                        eprintln!("Usage: sidekar repl models -c <credential>");
+                        eprintln!();
+                        eprintln!("Example: sidekar repl models -c claude");
+                        std::process::exit(1);
+                    }
+                };
+                let provider_type = sidekar::providers::oauth::provider_type_for(&cred)
+                    .unwrap_or_else(|| {
+                        if cred == "anthropic" {
+                            "anthropic"
+                        } else if cred == "codex" || cred == "openai" {
+                            "codex"
+                        } else if cred == "openrouter" {
+                            "openrouter"
+                        } else {
+                            eprintln!("Unknown provider for '{cred}'.");
+                            std::process::exit(1);
+                        }
+                    });
+                // Get token silently (don't trigger login)
+                let api_key = match provider_type {
+                    "anthropic" => sidekar::providers::oauth::get_anthropic_token(Some(&cred)).await,
+                    "codex" => sidekar::providers::oauth::get_codex_token(Some(&cred)).await.map(|(t, _)| t),
+                    "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
+                    _ => anyhow::bail!("Unknown provider"),
+                };
+                let api_key = match api_key {
+                    Ok(k) => k,
+                    Err(e) => {
+                        eprintln!("Failed to get credentials for '{cred}': {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let models = sidekar::providers::fetch_model_list(provider_type, &api_key).await;
+                if models.is_empty() {
+                    println!("No models found.");
+                } else {
+                    println!("Models for \x1b[1m{cred}\x1b[0m ({provider_type}):\n");
+                    for m in &models {
+                        let ctx = if m.context_window > 0 {
+                            format!("{}k ctx", m.context_window / 1000)
+                        } else {
+                            String::new()
+                        };
+                        println!(
+                            "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
+                            m.id,
+                            m.display_name,
+                            if ctx.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", {ctx}")
+                            }
+                        );
+                    }
+                    println!("\n\x1b[2m{} models\x1b[0m", models.len());
+                }
+                return Ok(());
+            }
+            "sessions" => {
+                // Prune empty sessions from disk
+                let pruned = sidekar::session::prune_empty_sessions().unwrap_or(0);
+                if pruned > 0 {
+                    eprintln!("\x1b[2mPruned {pruned} empty sessions.\x1b[0m");
+                }
+
+                let all = args.iter().any(|a| a == "--all");
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                let sessions = if all {
+                    sidekar::session::list_all_sessions(20)?
+                } else {
+                    sidekar::session::list_sessions(&cwd, 20)?
+                };
+                if sessions.is_empty() {
+                    println!("No sessions found.");
+                } else {
+                    println!("Sessions (most recent first):\n");
+                    for s in &sessions {
+                        let msgs = sidekar::session::message_count(&s.id).unwrap_or(0);
+                        let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
+                        let model = if s.model.is_empty() { "?" } else { &s.model };
+                        let age = format_age(s.updated_at);
+                        if all {
+                            let dir = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);
+                            println!(
+                                "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}  \x1b[2m{dir}\x1b[0m",
+                            );
+                        } else {
+                            println!(
+                                "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}",
+                            );
+                        }
+                    }
+                }
+                return Ok(());
+            }
             _ => {
                 let mut prompt: Option<String> = None;
                 let mut model: Option<String> = None;
                 let mut credential: Option<String> = None;
                 let mut verbose = false;
-                let mut resume = false;
+                let mut resume: Option<Option<String>> = None;
                 let mut i = 0;
                 while i < args.len() {
                     match args[i].as_str() {
@@ -286,7 +401,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             model = Some(args[i + 1].clone());
                             i += 2;
                         }
-                        "-r" if i + 1 < args.len() => {
+                        "-c" | "--credential" if i + 1 < args.len() => {
                             credential = Some(args[i + 1].clone());
                             i += 2;
                         }
@@ -295,7 +410,15 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             i += 1;
                         }
                         "--resume" => {
-                            resume = true;
+                            resume = Some(None);
+                            i += 1;
+                        }
+                        "-r" | "--resume-session" if i + 1 < args.len() => {
+                            resume = Some(Some(args[i + 1].clone()));
+                            i += 2;
+                        }
+                        "-r" | "--resume-session" => {
+                            resume = Some(None);
                             i += 1;
                         }
                         _ => {
@@ -435,14 +558,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             eprintln!("Usage: sidekar ext <subcommand> [args...]");
             eprintln!("Subcommands: tabs, read, screenshot, click, type, paste, set-value,");
             eprintln!(
-                "  ax-tree, eval, eval-page, navigate, new-tab, close, scroll, status, stop, install-host [extension_id]"
+                "  ax-tree, eval, eval-page, navigate, new-tab, close, scroll, status, stop"
             );
             std::process::exit(1);
-        }
-        // Handle install-host subcommand
-        if sub == "install-host" {
-            let ext_id = args.get(1).map(|s| s.as_str());
-            return sidekar::ext::install_native_host(ext_id);
         }
         let sub_args = if args.len() > 1 {
             args[1..].to_vec()
@@ -646,4 +764,21 @@ async fn run_command_file(ctx: &mut AppContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn format_age(timestamp: f64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let secs = (now - timestamp).max(0.0) as u64;
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }

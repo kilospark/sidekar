@@ -198,7 +198,7 @@ fn render_markdown(source: &str) -> Vec<String> {
                         push_line(&mut lines, &mut current_line);
                     }
                     for code_line in code_block_buf.lines() {
-                        current_line.push_str(&format!("{DIM}│ {code_line}{RESET}"));
+                        current_line.push_str(&format!("{DIM}│{RESET} {code_line}"));
                         push_line(&mut lines, &mut current_line);
                     }
                     if !code_block_lang.is_empty() {
