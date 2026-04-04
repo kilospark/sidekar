@@ -11,7 +11,8 @@
     "debugger",
     "alarms",
     "storage",
-    "offscreen"
+    "offscreen",
+    "history"
   ],
   "background": {
     "service_worker": "background.js"

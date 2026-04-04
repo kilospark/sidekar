@@ -217,6 +217,12 @@ async function connect() {
 // Ref map: tab_id -> { ref_num -> css_path }
 const refMaps = new Map();
 
+// Watch state: watchId -> { tabId, selector }
+const activeWatchers = new Map();
+// Watch events buffer (capped)
+const watchEvents = [];
+const MAX_WATCH_EVENTS = 200;
+
 /** Safe unwrap of chrome.scripting.executeScript results (empty array / missing result). */
 function firstInjectionResult(exec) {
   if (!exec || exec.length === 0) {
@@ -263,6 +269,18 @@ async function handleCommand(msg) {
         return await cmdClose(msg);
       case "scroll":
         return await cmdScroll(msg);
+      case "history":
+        return await cmdHistory(msg);
+      case "watch":
+        return await cmdWatch(msg);
+      case "unwatch":
+        return await cmdUnwatch(msg);
+      case "watchers":
+        return await cmdWatchers();
+      case "watchevents":
+        return await cmdWatchEvents(msg);
+      case "context":
+        return await cmdContext();
       default:
         return { error: `Unknown command: ${msg.command}` };
     }
@@ -1723,6 +1741,210 @@ async function cmdEvalPage(msg) {
 }
 
 // ---------------------------------------------------------------------------
+// History, Watch, Context commands
+// ---------------------------------------------------------------------------
+
+async function cmdHistory(msg) {
+  const query = msg.query || "";
+  const maxResults = msg.maxResults || 25;
+  const results = await chrome.history.search({
+    text: query,
+    maxResults,
+    startTime: 0,
+  });
+  return {
+    entries: results.map((item) => ({
+      url: item.url,
+      title: item.title || "",
+      lastVisitTime: item.lastVisitTime,
+      visitCount: item.visitCount || 0,
+    })),
+  };
+}
+
+async function cmdWatch(msg) {
+  const tabId = msg.tabId || (await getActiveTabId());
+  const selector = msg.selector;
+  if (!selector) return { error: "Usage: sidekar ext watch <selector>" };
+  const watchId = msg.watchId || `w_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const result = await executeScriptResult(
+    tabId,
+    (selector, watchId, tabId) => {
+      const el = document.querySelector(selector);
+      if (!el) return { error: `Element not found: ${selector}` };
+
+      // Store watchers globally in isolated world
+      if (!globalThis.__sidekar_watchers) globalThis.__sidekar_watchers = new Map();
+
+      // Remove existing watcher for this ID
+      if (globalThis.__sidekar_watchers.has(watchId)) {
+        globalThis.__sidekar_watchers.get(watchId).disconnect();
+      }
+
+      const initialState = el.innerText?.substring(0, 5000) || "";
+      let lastState = initialState;
+      let debounceTimer = null;
+
+      const observer = new MutationObserver(() => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          const newState = el.innerText?.substring(0, 5000) || "";
+          if (newState !== lastState) {
+            const prev = lastState;
+            lastState = newState;
+            chrome.runtime.sendMessage({
+              type: "watch_event",
+              watchId,
+              selector,
+              tabId,
+              previous: prev.substring(0, 2000),
+              current: newState.substring(0, 2000),
+              timestamp: Date.now(),
+            });
+          }
+        }, 500);
+      });
+
+      observer.observe(el, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+      });
+      globalThis.__sidekar_watchers.set(watchId, observer);
+
+      return {
+        ok: true,
+        watchId,
+        selector,
+        initialState: initialState.substring(0, 2000),
+        element: {
+          tag: el.tagName,
+          id: el.id || "",
+          className: typeof el.className === "string" ? el.className : "",
+        },
+      };
+    },
+    [selector, watchId, tabId]
+  );
+
+  if (result && result.ok) {
+    activeWatchers.set(watchId, { tabId, selector });
+  }
+  return result;
+}
+
+async function cmdUnwatch(msg) {
+  const watchId = msg.watchId;
+
+  if (!watchId) {
+    // Remove all watchers
+    const removed = [];
+    for (const [wid, info] of activeWatchers) {
+      try {
+        await executeScriptResult(info.tabId, (wid) => {
+          if (globalThis.__sidekar_watchers && globalThis.__sidekar_watchers.has(wid)) {
+            globalThis.__sidekar_watchers.get(wid).disconnect();
+            globalThis.__sidekar_watchers.delete(wid);
+          }
+          return { ok: true };
+        }, [wid]);
+      } catch {}
+      removed.push(wid);
+    }
+    activeWatchers.clear();
+    return { ok: true, removed, count: removed.length };
+  }
+
+  const info = activeWatchers.get(watchId);
+  if (!info) return { error: `Watch ${watchId} not found` };
+
+  try {
+    await executeScriptResult(info.tabId, (wid) => {
+      if (globalThis.__sidekar_watchers && globalThis.__sidekar_watchers.has(wid)) {
+        globalThis.__sidekar_watchers.get(wid).disconnect();
+        globalThis.__sidekar_watchers.delete(wid);
+      }
+      return { ok: true };
+    }, [watchId]);
+  } catch {}
+
+  activeWatchers.delete(watchId);
+  return { ok: true, watchId };
+}
+
+async function cmdWatchers() {
+  const watchers = [];
+  for (const [watchId, info] of activeWatchers) {
+    watchers.push({ watchId, tabId: info.tabId, selector: info.selector });
+  }
+  return { watchers };
+}
+
+async function cmdWatchEvents(msg) {
+  const clear = msg.clear === true;
+  const events = [...watchEvents];
+  if (clear) {
+    watchEvents.length = 0;
+  }
+  return { events, count: events.length };
+}
+
+async function cmdContext() {
+  // Gather active tab
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+
+  // Gather all tabs grouped by window
+  const allTabs = await chrome.tabs.query({});
+  const windows = {};
+  for (const tab of allTabs) {
+    const wid = tab.windowId;
+    if (!windows[wid]) windows[wid] = [];
+    windows[wid].push({
+      id: tab.id,
+      url: tab.url || "",
+      title: tab.title || "",
+      active: tab.active,
+    });
+  }
+
+  // Recent history (last 15 entries from the past hour)
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  let recentHistory = [];
+  try {
+    const history = await chrome.history.search({
+      text: "",
+      maxResults: 15,
+      startTime: oneHourAgo,
+    });
+    recentHistory = history.map((item) => ({
+      url: item.url,
+      title: item.title || "",
+      lastVisitTime: item.lastVisitTime,
+    }));
+  } catch {}
+
+  // Active watchers summary
+  const watchers = [];
+  for (const [watchId, info] of activeWatchers) {
+    watchers.push({ watchId, tabId: info.tabId, selector: info.selector });
+  }
+
+  return {
+    active_tab: activeTab
+      ? { id: activeTab.id, url: activeTab.url, title: activeTab.title }
+      : null,
+    windows,
+    tab_count: allTabs.length,
+    window_count: Object.keys(windows).length,
+    recent_history: recentHistory,
+    watchers,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1741,6 +1963,24 @@ function sleep(ms) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Watch events from content scripts (injected MutationObservers)
+  if (msg.type === "watch_event") {
+    const event = {
+      watchId: msg.watchId,
+      selector: msg.selector,
+      tabId: msg.tabId,
+      previous: msg.previous,
+      current: msg.current,
+      timestamp: msg.timestamp || Date.now(),
+    };
+    watchEvents.push(event);
+    if (watchEvents.length > MAX_WATCH_EVENTS) {
+      watchEvents.splice(0, watchEvents.length - MAX_WATCH_EVENTS);
+    }
+    // Also push to daemon if connected
+    sendWs({ type: "watch_event", ...event });
+    return false;
+  }
   if (msg.type === "colorScheme") {
     setIconForScheme(msg.dark);
     return false;
