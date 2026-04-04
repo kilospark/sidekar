@@ -1025,12 +1025,22 @@ pub fn is_ext_routable_command(name: &str) -> bool {
 }
 
 pub fn render_help(version: &str) -> String {
+    // ANSI
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const CYAN: &str = "\x1b[36m";
+    const YELLOW: &str = "\x1b[33m";
+    const GREEN: &str = "\x1b[32m";
+    const RST: &str = "\x1b[0m";
+
     let mut out = String::new();
-    let _ = writeln!(out, "sidekar v{version}");
+    let _ = writeln!(out, "{BOLD}sidekar{RST} {DIM}v{version}{RST}");
     let _ = writeln!(out);
-    let _ = writeln!(out, "Usage: sidekar <command> [args]");
+    let _ = writeln!(out, "{BOLD}Usage:{RST} sidekar <command> [args]");
+    let _ = writeln!(out, "       sidekar repl {DIM}[-r cred] [-m model]{RST}");
+    let _ = writeln!(out, "       sidekar <agent>  {DIM}(wrap agent in PTY){RST}");
+    let _ = writeln!(out, "       sidekar help <command>");
     let _ = writeln!(out);
-    let _ = writeln!(out, "Commands:");
 
     let groups = [
         CommandGroup::Browser,
@@ -1045,9 +1055,10 @@ pub fn render_help(version: &str) -> String {
     ];
 
     let visible_specs: Vec<&CommandSpec> = COMMAND_SPECS.iter().collect();
-    let max_usage = visible_specs
+    // Compute column width from just the command name (not usage) for tighter layout
+    let name_width = visible_specs
         .iter()
-        .map(|spec| display_name(spec).len())
+        .map(|spec| spec.name.len())
         .max()
         .unwrap_or(0);
 
@@ -1060,53 +1071,44 @@ pub fn render_help(version: &str) -> String {
         if specs.is_empty() {
             continue;
         }
-        let _ = writeln!(out, "  {}:", group.title());
+        let _ = writeln!(out, "{YELLOW}{BOLD}{}{RST}", group.title());
         for spec in specs {
-            let usage = display_name(spec);
             let _ = writeln!(
                 out,
-                "    {:<width$}  {}",
-                usage,
+                "  {CYAN}{:<width$}{RST}  {DIM}{}{RST}",
+                spec.name,
                 spec.summary,
-                width = max_usage
+                width = name_width
             );
         }
         let _ = writeln!(out);
     }
 
-    let _ = writeln!(out, "Global flags:");
+    let _ = writeln!(out, "{YELLOW}{BOLD}Global Flags{RST}");
     let _ = writeln!(
         out,
-        "  --proxy             Enable MITM proxy for sidekar <agent>"
+        "  {GREEN}--proxy{RST}             {DIM}Enable MITM proxy for sidekar <agent>{RST}"
     );
     let _ = writeln!(
         out,
-        "  --no-proxy          Disable MITM proxy for sidekar <agent>"
+        "  {GREEN}--no-proxy{RST}          {DIM}Disable MITM proxy for sidekar <agent>{RST}"
     );
     let _ = writeln!(
         out,
-        "  --relay             Enable relay tunnel for sidekar <agent>"
+        "  {GREEN}--relay{RST}             {DIM}Enable relay tunnel for sidekar <agent>{RST}"
     );
     let _ = writeln!(
         out,
-        "  --no-relay          Disable relay tunnel for sidekar <agent>"
+        "  {GREEN}--no-relay{RST}          {DIM}Disable relay tunnel for sidekar <agent>{RST}"
     );
     let _ = writeln!(
         out,
-        "  --tab <id>          Target a specific tab (bypasses session; applies to sidekar ext)"
+        "  {GREEN}--tab <id>{RST}          {DIM}Target a specific tab (bypasses session){RST}"
     );
-    let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Use 'sidekar help <command>' for detailed help on any command."
+        "  {GREEN}--{RST}                  {DIM}End sidekar flags; pass remaining args to agent{RST}"
     );
     out
 }
 
-fn display_name(spec: &CommandSpec) -> String {
-    if spec.usage.is_empty() {
-        spec.name.to_string()
-    } else {
-        format!("{} {}", spec.name, spec.usage)
-    }
-}

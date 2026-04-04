@@ -577,7 +577,10 @@ fn build_system_prompt() -> String {
 
     format!(
         "You are a capable coding and automation assistant.\n\
-         You have a bash tool for running shell commands.\n\n\
+         You have a bash tool for running shell commands.\n\
+         You have access to `sidekar` CLI tools for browser automation, desktop automation, \
+         web research, agent coordination, secrets management, and more. \
+         Call the `sidekar_skill` tool to see what's available.\n\n\
          ## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
          - Do not guess file contents — read them first.\n\

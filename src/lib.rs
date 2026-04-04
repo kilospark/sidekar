@@ -2899,6 +2899,49 @@ sidekar ext <subcommand> [args...]
     sidekar ext install-host"
         }
 
+        "repl" => {
+            "\
+sidekar repl [-r <credential>] [-m <model>] [-p <prompt>] [--resume] [--verbose]
+
+  Interactive LLM agent with streaming, tool calling, and session persistence.
+  Requires explicit provider credentials (-r) and model (-m), or SIDEKAR_MODEL env.
+
+  Options:
+    -r <credential>  Named credential (claude, codex, or-personal, claude-work, etc.)
+    -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
+    -p <prompt>      Initial prompt (skip interactive input for first turn)
+    --resume         Resume a previous session
+    --verbose        Show raw API request/response logging
+
+  Credential Management:
+    sidekar repl login <provider>       Store OAuth/API credentials
+    sidekar repl logout [name|all]      Remove stored credentials
+    sidekar repl credentials            List stored credentials
+
+  Providers:
+    claude     Claude (Anthropic) — OAuth device flow
+    codex      Codex (OpenAI) — OAuth device flow
+    or         OpenRouter — API key
+
+  Named credentials use prefix to determine provider:
+    claude-work, claude-2     → Anthropic
+    codex-ci, codex-fast      → OpenAI/Codex
+    or-personal, or-grok      → OpenRouter
+
+  Environment:
+    SIDEKAR_MODEL              Default model (overridden by -m)
+    ANTHROPIC_API_KEY          Fallback for claude credentials
+    OPENROUTER_API_KEY         Fallback for or credentials
+
+  Examples:
+    sidekar repl login claude
+    sidekar repl login or
+    sidekar repl -r claude -m claude-sonnet-4-5-20250514
+    sidekar repl -r or -m x-ai/grok-3 -p \"explain quantum computing\"
+    sidekar repl -r codex -m o3 --resume
+    sidekar repl credentials"
+        }
+
         _ => {
             println!(
                 "Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands."
@@ -2906,7 +2949,112 @@ sidekar ext <subcommand> [args...]
             return;
         }
     };
-    println!("{help}");
+    println!("{}", colorize_command_help(help));
+}
+
+/// Colorize per-command help text with ANSI codes.
+fn colorize_command_help(help: &str) -> String {
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const CYAN: &str = "\x1b[36m";
+    const GREEN: &str = "\x1b[32m";
+    const YELLOW: &str = "\x1b[33m";
+    const RST: &str = "\x1b[0m";
+
+    let mut out = String::new();
+    let mut in_examples = false;
+
+    for (i, line) in help.lines().enumerate() {
+        if i == 0 {
+            // First line: usage — bold the command, dim the args
+            if let Some(rest) = line.strip_prefix("sidekar ") {
+                // Find first space after the command name to split command from args
+                let (cmd, args) = match rest.find(|c: char| c == ' ' || c == '<' || c == '[') {
+                    Some(pos) => (&rest[..pos], &rest[pos..]),
+                    None => (rest, ""),
+                };
+                out.push_str(&format!("{BOLD}sidekar {cmd}{RST}{DIM}{args}{RST}\n"));
+            } else {
+                out.push_str(&format!("{BOLD}{line}{RST}\n"));
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+
+        // Section headers (Options:, Examples:, Modes:, etc.)
+        if trimmed.ends_with(':')
+            && !trimmed.starts_with("sidekar")
+            && !trimmed.starts_with("--")
+            && !trimmed.starts_with('-')
+            && !trimmed.contains("  ")
+        {
+            in_examples = trimmed == "Examples:" || trimmed == "Example:";
+            out.push_str(&format!(
+                "{}{YELLOW}{BOLD}{trimmed}{RST}\n",
+                &line[..line.len() - trimmed.len()]
+            ));
+            continue;
+        }
+
+        // Example lines (indented, starting with "sidekar")
+        if in_examples && trimmed.starts_with("sidekar ") {
+            out.push_str(&format!("{}{CYAN}{trimmed}{RST}\n", &line[..line.len() - trimmed.len()]));
+            continue;
+        }
+        // Also handle inline examples like "Example: sidekar foo"
+        if trimmed.starts_with("Example: sidekar ") || trimmed.starts_with("Example:  sidekar ") {
+            let rest = trimmed.strip_prefix("Example:").unwrap().trim();
+            out.push_str(&format!("{}{YELLOW}{BOLD}Example:{RST} {CYAN}{rest}{RST}\n", &line[..line.len() - trimmed.len()]));
+            continue;
+        }
+
+        // Flag lines: --flag or -f
+        if trimmed.starts_with("--") || (trimmed.starts_with('-') && trimmed.len() > 1 && trimmed.as_bytes()[1].is_ascii_alphabetic()) {
+            // Split at first two-space gap or end of flag
+            if let Some(pos) = trimmed.find("  ") {
+                let flag = &trimmed[..pos];
+                let desc = trimmed[pos..].trim();
+                out.push_str(&format!(
+                    "{}{GREEN}{flag}{RST}  {DIM}{desc}{RST}\n",
+                    &line[..line.len() - trimmed.len()]
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{}{GREEN}{trimmed}{RST}\n",
+                    &line[..line.len() - trimmed.len()]
+                ));
+            }
+            continue;
+        }
+
+        // Subcommand lists: "    name    description" pattern
+        // Detect: starts with a word (no sidekar prefix), followed by 2+ spaces and description
+        if !trimmed.is_empty() && !trimmed.starts_with("sidekar") && !in_examples {
+            if let Some(pos) = trimmed.find("  ") {
+                let left = &trimmed[..pos];
+                let right = trimmed[pos..].trim();
+                // Only colorize if left side looks like a subcommand/value (short, no sentences)
+                if !left.is_empty() && left.len() < 40 && !left.contains('.') && !right.is_empty() {
+                    out.push_str(&format!(
+                        "{}{CYAN}{left}{RST}  {DIM}{right}{RST}\n",
+                        &line[..line.len() - trimmed.len()]
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        // Default: print as-is
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    // Remove trailing newline to match original println behavior
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 pub fn print_help() {
