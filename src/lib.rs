@@ -2884,16 +2884,39 @@ sidekar ext <subcommand> [args...]
   Use `sidekar --tab <id> ext …` to set tab id when the subcommand omits it; an explicit
   tab id in the subcommand args wins.
 
-  Subcommands: tabs, read [tab_id], screenshot [tab_id], click <target>, type <sel> <text>,
-  paste [--html <html>] [--text <text>] [--selector <sel>], set-value <sel> <text>,
-  ax-tree [tab_id], eval <js>, eval-page <js>, navigate <url> [tab_id], new-tab [url],
-  close [tab_id], scroll [direction], status, stop
+  Browser:
+    tabs                              List open tabs
+    read [tab_id]                     Read page text
+    screenshot [tab_id]               Capture visible tab
+    click <selector|text:...>         Click element
+    type <selector> <text>            Type into field
+    paste [--html H] [--text T]       Paste content (smart fallbacks)
+    set-value <selector> <text>       Set field value
+    ax-tree [tab_id]                  Accessibility tree with refs
+    eval <js>                         Run JS (isolated world)
+    eval-page <js>                    Run JS (page world)
+    navigate <url> [tab_id]           Navigate tab
+    new-tab [url]                     Open new tab
+    close [tab_id]                    Close tab
+    scroll <up|down|top|bottom>       Scroll page
+
+  History & Context (no CDP equivalent):
+    history <query>                   Search browsing history
+    context                           Active tab + windows + recent activity
+
+  Watchers (events delivered via bus):
+    watch <selector>                  Watch element, stream changes to bus
+    unwatch [watchId]                 Remove watcher(s)
+    watchers                          List active watchers
+
+  Flags: --conn <id>, --profile <name>, --tab <id>
+  Management: status, stop
 
   Examples:
     sidekar ext tabs
-    sidekar ext read 3
-    sidekar --tab 3 ext screenshot
-    sidekar ext click \"#search-btn\"
+    sidekar ext history \"terraform vpc\"
+    sidekar ext context
+    sidekar ext watch \"span.notification-count\"
     sidekar ext paste --html \"<h1>Title</h1>\" --text \"Title\"
     sidekar ext eval-page \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\""
         }

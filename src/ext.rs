@@ -54,9 +54,20 @@ pub struct ExtConnection {
     pub profile: String,
 }
 
+/// A registered DOM watcher. Watch events are delivered via broker to `deliver_to`.
+pub struct WatchRecord {
+    pub watch_id: String,
+    pub selector: String,
+    pub deliver_to: String,
+    pub conn_id: u64,
+    pub profile: String,
+    pub created_at: u64,
+}
+
 pub struct ExtState {
     pub connections: HashMap<u64, ExtConnection>,
     pub next_connection_id: u64,
+    pub watches: HashMap<String, WatchRecord>,
 }
 
 impl Default for ExtState {
@@ -64,6 +75,7 @@ impl Default for ExtState {
         Self {
             connections: HashMap::new(),
             next_connection_id: 1,
+            watches: HashMap::new(),
         }
     }
 }
@@ -133,6 +145,8 @@ pub async fn disconnect_bridge_by_id(state: &SharedExtState, connection_id: u64)
 async fn disconnect_bridge(state: &SharedState, connection_id: u64) {
     let pending = {
         let mut s = state.lock().await;
+        // Remove watches owned by this connection
+        s.watches.retain(|_, w| w.conn_id != connection_id);
         match s.connections.remove(&connection_id) {
             Some(conn) => conn.pending,
             None => return,
@@ -141,6 +155,93 @@ async fn disconnect_bridge(state: &SharedState, connection_id: u64) {
     for (_id, tx) in pending {
         let _ = tx.send(json!({"error": "Extension disconnected"}));
     }
+}
+
+/// Register a watch record after the extension confirms setup.
+pub async fn register_watch(
+    state: &SharedExtState,
+    watch_id: String,
+    selector: String,
+    deliver_to: String,
+    conn_id: u64,
+    profile: String,
+) {
+    let mut s = state.lock().await;
+    s.watches.insert(
+        watch_id.clone(),
+        WatchRecord {
+            watch_id,
+            selector,
+            deliver_to,
+            conn_id,
+            profile,
+            created_at: epoch_secs(),
+        },
+    );
+}
+
+/// Remove a watch record (called on unwatch or connection drop).
+pub async fn remove_watch(state: &SharedExtState, watch_id: &str) -> Option<WatchRecord> {
+    let mut s = state.lock().await;
+    s.watches.remove(watch_id)
+}
+
+/// Look up delivery target for a watch event.
+pub async fn find_watch_target(state: &SharedExtState, watch_id: &str) -> Option<(String, String)> {
+    let s = state.lock().await;
+    s.watches
+        .get(watch_id)
+        .map(|w| (w.deliver_to.clone(), w.selector.clone()))
+}
+
+/// Get all active watches for status display.
+pub async fn list_watches(state: &SharedExtState) -> Vec<Value> {
+    let s = state.lock().await;
+    s.watches
+        .values()
+        .map(|w| {
+            json!({
+                "watchId": w.watch_id,
+                "selector": w.selector,
+                "deliverTo": w.deliver_to,
+                "profile": w.profile,
+                "createdAt": w.created_at,
+            })
+        })
+        .collect()
+}
+
+/// Deliver a watch event via the broker to the registered agent.
+pub async fn deliver_watch_event(
+    state: &SharedExtState,
+    watch_id: &str,
+    current: &str,
+    previous: &str,
+    url: Option<&str>,
+) -> Result<()> {
+    let (deliver_to, selector) = match find_watch_target(state, watch_id).await {
+        Some(v) => v,
+        None => return Ok(()), // watch was removed; drop event
+    };
+
+    let mut message = format!("Element changed on {selector}");
+    if let Some(u) = url {
+        if !u.is_empty() {
+            message.push_str(&format!("\nURL: {u}"));
+        }
+    }
+    if !previous.is_empty() {
+        let prev_trim = if previous.len() > 500 { &previous[..500] } else { previous };
+        message.push_str(&format!("\nBefore: {prev_trim}"));
+    }
+    if !current.is_empty() {
+        let cur_trim = if current.len() > 500 { &current[..500] } else { current };
+        message.push_str(&format!("\nAfter: {cur_trim}"));
+    }
+
+    let formatted = format!("[from sidekar-ext-watch]: {message}");
+    crate::broker::enqueue_message("sidekar-ext-watch", &deliver_to, &formatted)?;
+    Ok(())
 }
 
 /// Register a new bridge connection and return the connection_id and bridge_rx.
@@ -386,6 +487,20 @@ pub async fn send_cli_command(
     if let Some(ref p) = target_profile {
         cmd_json["profile"] = json!(p);
     }
+
+    // For `watch`, resolve the caller's broker agent so the daemon can deliver
+    // watch events back via the bus.
+    if command == "watch" {
+        if let Some(agent) = crate::bus::inherit_pty_registration() {
+            cmd_json["deliver_to"] = json!(agent.name);
+        } else {
+            bail!(
+                "sidekar ext watch must be run inside a sidekar-wrapped agent session \
+                 (sidekar claude, sidekar codex, etc.) so events can be delivered to the bus."
+            );
+        }
+    }
+
     let result = crate::daemon::send_command(&cmd_json)?;
 
     if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
@@ -673,13 +788,9 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             Ok(cmd)
         }
         "watchers" => Ok(json!({"command": "watchers"})),
-        "watch-events" => {
-            let clear = args.iter().any(|a| a == "--clear");
-            Ok(json!({"command": "watchevents", "clear": clear}))
-        }
         "context" => Ok(json!({"command": "context"})),
         _ => bail!(
-            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, watch-events, context, status, stop"
+            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, context, status, stop"
         ),
     }
 }
@@ -865,6 +976,9 @@ fn print_result(command: &str, result: &Value) {
                 let selector = result.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 println!("Watching: {selector}");
                 println!("Watch ID: {watch_id}");
+                if let Some(deliver) = result.get("deliverTo").and_then(|v| v.as_str()) {
+                    println!("Events will be delivered to: {deliver}");
+                }
                 if let Some(state) = result.get("initialState").and_then(|v| v.as_str()) {
                     if !state.is_empty() {
                         let preview = if state.len() > 200 { &state[..200] } else { state };
@@ -892,26 +1006,6 @@ fn print_result(command: &str, result: &Value) {
                         println!("[{wid}] tab:{tab} {sel}");
                     }
                     println!("\n{} watcher(s)", watchers.len());
-                }
-            }
-        }
-        "watch-events" => {
-            if let Some(events) = result.get("events").and_then(|v| v.as_array()) {
-                if events.is_empty() {
-                    println!("No watch events");
-                } else {
-                    for ev in events {
-                        let wid = ev.get("watchId").and_then(|v| v.as_str()).unwrap_or("?");
-                        let sel = ev.get("selector").and_then(|v| v.as_str()).unwrap_or("?");
-                        let ts = ev.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let ago = format_time_ago(ts);
-                        let current = ev.get("current").and_then(|v| v.as_str()).unwrap_or("");
-                        let preview = if current.len() > 120 { &current[..120] } else { current };
-                        println!("[{wid}] {sel} ({ago})");
-                        println!("  {preview}");
-                        println!();
-                    }
-                    println!("{} event(s)", events.len());
                 }
             }
         }

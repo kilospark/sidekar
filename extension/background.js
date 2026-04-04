@@ -217,11 +217,8 @@ async function connect() {
 // Ref map: tab_id -> { ref_num -> css_path }
 const refMaps = new Map();
 
-// Watch state: watchId -> { tabId, selector }
+// Watch state: watchId -> { tabId, selector } — used for re-injection on navigation
 const activeWatchers = new Map();
-// Watch events buffer (capped)
-const watchEvents = [];
-const MAX_WATCH_EVENTS = 200;
 
 /** Safe unwrap of chrome.scripting.executeScript results (empty array / missing result). */
 function firstInjectionResult(exec) {
@@ -277,8 +274,6 @@ async function handleCommand(msg) {
         return await cmdUnwatch(msg);
       case "watchers":
         return await cmdWatchers();
-      case "watchevents":
-        return await cmdWatchEvents(msg);
       case "context":
         return await cmdContext();
       default:
@@ -1762,13 +1757,9 @@ async function cmdHistory(msg) {
   };
 }
 
-async function cmdWatch(msg) {
-  const tabId = msg.tabId || (await getActiveTabId());
-  const selector = msg.selector;
-  if (!selector) return { error: "Usage: sidekar ext watch <selector>" };
-  const watchId = msg.watchId || `w_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-  const result = await executeScriptResult(
+// Injection helper shared by initial watch setup and navigation re-injection.
+async function injectWatchObserver(tabId, selector, watchId) {
+  return await executeScriptResult(
     tabId,
     (selector, watchId, tabId) => {
       const el = document.querySelector(selector);
@@ -1779,7 +1770,7 @@ async function cmdWatch(msg) {
 
       // Remove existing watcher for this ID
       if (globalThis.__sidekar_watchers.has(watchId)) {
-        globalThis.__sidekar_watchers.get(watchId).disconnect();
+        try { globalThis.__sidekar_watchers.get(watchId).disconnect(); } catch {}
       }
 
       const initialState = el.innerText?.substring(0, 5000) || "";
@@ -1799,6 +1790,7 @@ async function cmdWatch(msg) {
               watchId,
               selector,
               tabId,
+              url: location.href,
               previous: prev.substring(0, 2000),
               current: newState.substring(0, 2000),
               timestamp: Date.now(),
@@ -1819,6 +1811,7 @@ async function cmdWatch(msg) {
         ok: true,
         watchId,
         selector,
+        url: location.href,
         initialState: initialState.substring(0, 2000),
         element: {
           tag: el.tagName,
@@ -1829,9 +1822,21 @@ async function cmdWatch(msg) {
     },
     [selector, watchId, tabId]
   );
+}
+
+async function cmdWatch(msg) {
+  const tabId = msg.tabId || (await getActiveTabId());
+  const selector = msg.selector;
+  if (!selector) return { error: "Usage: sidekar ext watch <selector>" };
+  const watchId = msg.watchId || `w_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const result = await injectWatchObserver(tabId, selector, watchId);
 
   if (result && result.ok) {
-    activeWatchers.set(watchId, { tabId, selector });
+    const tabUrl = result.url || "";
+    let origin = "";
+    try { origin = new URL(tabUrl).origin; } catch {}
+    activeWatchers.set(watchId, { tabId, selector, origin });
   }
   return result;
 }
@@ -1878,19 +1883,46 @@ async function cmdUnwatch(msg) {
 async function cmdWatchers() {
   const watchers = [];
   for (const [watchId, info] of activeWatchers) {
-    watchers.push({ watchId, tabId: info.tabId, selector: info.selector });
+    watchers.push({ watchId, tabId: info.tabId, selector: info.selector, origin: info.origin || "" });
   }
   return { watchers };
 }
 
-async function cmdWatchEvents(msg) {
-  const clear = msg.clear === true;
-  const events = [...watchEvents];
-  if (clear) {
-    watchEvents.length = 0;
+// Re-inject observers after a watched tab navigates. Only re-inject when the
+// new URL stays on the same origin — otherwise the watcher silently unbinds.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  if (activeWatchers.size === 0) return;
+
+  const relevant = [];
+  for (const [wid, info] of activeWatchers) {
+    if (info.tabId === tabId) relevant.push({ wid, info });
   }
-  return { events, count: events.length };
-}
+  if (relevant.length === 0) return;
+
+  let newOrigin = "";
+  try { newOrigin = new URL(tab.url || "").origin; } catch {}
+
+  for (const { wid, info } of relevant) {
+    if (info.origin && newOrigin && info.origin !== newOrigin) {
+      // Cross-origin navigation — drop the watcher.
+      activeWatchers.delete(wid);
+      continue;
+    }
+    try {
+      await injectWatchObserver(tabId, info.selector, wid);
+    } catch (e) {
+      console.warn("[sidekar] watch re-inject failed", wid, e?.message || e);
+    }
+  }
+});
+
+// Tab closed — drop its watchers.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [wid, info] of activeWatchers) {
+    if (info.tabId === tabId) activeWatchers.delete(wid);
+  }
+});
 
 async function cmdContext() {
   // Gather active tab
@@ -1963,22 +1995,18 @@ function sleep(ms) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Watch events from content scripts (injected MutationObservers)
+  // Watch events from content scripts (injected MutationObservers) — forward to daemon for bus delivery.
   if (msg.type === "watch_event") {
-    const event = {
+    sendWs({
+      type: "watch_event",
       watchId: msg.watchId,
       selector: msg.selector,
       tabId: msg.tabId,
+      url: msg.url || "",
       previous: msg.previous,
       current: msg.current,
       timestamp: msg.timestamp || Date.now(),
-    };
-    watchEvents.push(event);
-    if (watchEvents.length > MAX_WATCH_EVENTS) {
-      watchEvents.splice(0, watchEvents.length - MAX_WATCH_EVENTS);
-    }
-    // Also push to daemon if connected
-    sendWs({ type: "watch_event", ...event });
+    });
     return false;
   }
   if (msg.type === "colorScheme") {

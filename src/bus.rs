@@ -36,7 +36,7 @@ pub fn set_terminal_title(title: &str) {
 /// Check if a parent process registered a PTY session in the broker.
 /// Walks the process tree looking for a parent PID that matches a
 /// `pty-<pid>` entry in the broker's agents table.
-fn inherit_pty_registration() -> Option<AgentId> {
+pub fn inherit_pty_registration() -> Option<AgentId> {
     let mut pid = std::process::id();
     loop {
         if pid <= 1 {

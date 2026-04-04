@@ -712,6 +712,22 @@ async fn handle_ext_websocket(
                             if msg_type == "pong" {
                                 continue;
                             }
+                            if msg_type == "watch_event" {
+                                let wid = val.get("watchId").and_then(|v| v.as_str()).unwrap_or("");
+                                let current = val.get("current").and_then(|v| v.as_str()).unwrap_or("");
+                                let previous = val.get("previous").and_then(|v| v.as_str()).unwrap_or("");
+                                let url = val.get("url").and_then(|v| v.as_str());
+                                if !wid.is_empty() {
+                                    if let Err(e) = crate::ext::deliver_watch_event(
+                                        &ext_state, wid, current, previous, url,
+                                    )
+                                    .await
+                                    {
+                                        eprintln!("[sidekar] watch event delivery failed: {e}");
+                                    }
+                                }
+                                continue;
+                            }
                             crate::ext::resolve_pending(&ext_state, conn_id, val).await;
                         }
                     }
@@ -772,8 +788,102 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
             let agent_id = cmd.get("agent_id").and_then(|v| v.as_str()).map(String::from);
             let target_conn = cmd.get("conn_id").and_then(|v| v.as_u64());
             let target_profile = cmd.get("profile").and_then(|v| v.as_str()).map(String::from);
-            let s = state.lock().await;
-            crate::ext::forward_command(&s.ext_state, ext_cmd, agent_id, target_conn, target_profile).await
+            let deliver_to = cmd.get("deliver_to").and_then(|v| v.as_str()).map(String::from);
+
+            // Capture the inner command name before forwarding for bookkeeping.
+            let inner_cmd = ext_cmd
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let inner_selector = ext_cmd
+                .get("selector")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let inner_watch_id = ext_cmd
+                .get("watchId")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
+            let ext_state = {
+                let s = state.lock().await;
+                s.ext_state.clone()
+            };
+            let result = crate::ext::forward_command(
+                &ext_state,
+                ext_cmd,
+                agent_id,
+                target_conn,
+                target_profile,
+            )
+            .await;
+
+            // Post-process: maintain watch registry.
+            if inner_cmd == "watch" && result.get("error").is_none() {
+                if let (Some(wid), Some(sel), Some(dest)) = (
+                    result.get("watchId").and_then(|v| v.as_str()).map(String::from),
+                    result.get("selector").and_then(|v| v.as_str()).map(String::from).or(inner_selector),
+                    deliver_to,
+                ) {
+                    // Find which connection ended up servicing this watch.
+                    let (conn_id, profile) = {
+                        let s = ext_state.lock().await;
+                        if let Some(cid) = target_conn {
+                            let profile = s
+                                .connections
+                                .get(&cid)
+                                .map(|c| c.profile.clone())
+                                .unwrap_or_default();
+                            (cid, profile)
+                        } else {
+                            s.connections
+                                .iter()
+                                .next()
+                                .map(|(k, c)| (*k, c.profile.clone()))
+                                .unwrap_or((0, String::new()))
+                        }
+                    };
+                    crate::ext::register_watch(
+                        &ext_state,
+                        wid,
+                        sel,
+                        dest,
+                        conn_id,
+                        profile,
+                    )
+                    .await;
+                }
+            } else if inner_cmd == "unwatch" && result.get("error").is_none() {
+                if let Some(wid) = inner_watch_id {
+                    crate::ext::remove_watch(&ext_state, &wid).await;
+                } else {
+                    // Bulk unwatch — the extension removed everything; clear our map.
+                    let mut s = ext_state.lock().await;
+                    s.watches.clear();
+                }
+            }
+
+            // Annotate the response with deliver_to so the CLI can display it.
+            let mut final_result = result;
+            if inner_cmd == "watch" && final_result.is_object() {
+                if let Some(dest) = final_result.get("watchId").and_then(|v| v.as_str()).map(String::from) {
+                    let _ = dest; // just checking existence
+                    if let Some(obj) = final_result.as_object_mut() {
+                        // Look up deliver_to from the just-registered watch (if any).
+                        let deliver = {
+                            let s = ext_state.lock().await;
+                            obj.get("watchId")
+                                .and_then(|v| v.as_str())
+                                .and_then(|wid| s.watches.get(wid).map(|w| w.deliver_to.clone()))
+                        };
+                        if let Some(d) = deliver {
+                            obj.insert("deliverTo".into(), json!(d));
+                        }
+                    }
+                }
+            }
+
+            final_result
         }
 
         "ext_status" => {
