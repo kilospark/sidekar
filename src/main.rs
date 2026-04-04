@@ -157,15 +157,32 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         match sub {
             "login" => {
                 // sidekar repl login <nickname>
-                // nickname determines provider: claude-* → anthropic, codex-* → openai
-                let nickname = args.get(1).map(|s| s.as_str()).unwrap_or("claude");
+                // nickname determines provider: claude-* → anthropic, codex-* → openai, or-* → openrouter
+                let nickname = match args.get(1).map(|s| s.as_str()) {
+                    Some(n) => n,
+                    None => {
+                        eprintln!("Usage: sidekar repl login <provider>");
+                        eprintln!();
+                        eprintln!("Providers:");
+                        eprintln!("  claude     Claude (Anthropic) — OAuth");
+                        eprintln!("  codex      Codex (OpenAI) — OAuth");
+                        eprintln!("  or         OpenRouter — API key");
+                        eprintln!();
+                        eprintln!("Named credentials: claude-work, codex-2, or-personal, etc.");
+                        std::process::exit(1);
+                    }
+                };
                 let provider_type = sidekar::providers::oauth::provider_type_for(nickname)
                     .unwrap_or(if nickname == "anthropic" {
                         "anthropic"
                     } else if nickname == "codex" || nickname == "openai" {
                         "codex"
+                    } else if nickname == "openrouter" {
+                        "openrouter"
                     } else {
-                        "anthropic"
+                        eprintln!("Unknown provider: '{nickname}'.");
+                        eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or or-<name> for OpenRouter.");
+                        std::process::exit(1);
                     });
                 // Clear existing creds for this nickname before login
                 let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
@@ -192,9 +209,14 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             }
                         );
                     }
+                    "openrouter" => {
+                        let _ =
+                            sidekar::providers::oauth::get_openrouter_token(Some(nickname)).await?;
+                        println!("Logged in as '{nickname}' (OpenRouter).");
+                    }
                     _ => {
                         eprintln!("Unknown provider type for nickname '{nickname}'.");
-                        eprintln!("Use claude-<name> for Claude or codex-<name> for Codex.");
+                        eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or or-<name> for OpenRouter.");
                         std::process::exit(1);
                     }
                 }

@@ -24,18 +24,21 @@ const CODEX_SCOPES: &str = "openid profile email offline_access";
 
 pub const KV_KEY_ANTHROPIC: &str = "oauth:anthropic";
 pub const KV_KEY_CODEX: &str = "oauth:codex";
+pub const KV_KEY_OPENROUTER: &str = "oauth:openrouter";
 
 /// KV key for a named credential. e.g., "claude-1" → "oauth:claude-1"
 pub fn kv_key_for(nickname: &str) -> String {
     format!("oauth:{nickname}")
 }
 
-/// Provider type for a nickname. "claude-*" → Anthropic, "codex-*" → Codex.
+/// Provider type for a nickname. "claude-*" → Anthropic, "codex-*" → Codex, "or-*"/"openrouter-*" → OpenRouter.
 pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
     if nickname.starts_with("claude") {
         Some("anthropic")
     } else if nickname.starts_with("codex") {
         Some("codex")
+    } else if nickname.starts_with("or") {
+        Some("openrouter")
     } else {
         None
     }
@@ -52,6 +55,8 @@ pub fn list_credentials() -> Vec<(String, String)> {
                 "anthropic"
             } else if name == "codex" {
                 "codex"
+            } else if name == "openrouter" {
+                "openrouter"
             } else {
                 "unknown"
             });
@@ -124,6 +129,51 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
         .unwrap_or_default();
 
     Ok((token, account_id))
+}
+
+/// Get a valid OpenRouter API key. No OAuth — uses stored key or OPENROUTER_API_KEY env var.
+pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
+    let kv_key = nickname
+        .map(|n| kv_key_for(n))
+        .unwrap_or_else(|| KV_KEY_OPENROUTER.to_string());
+
+    // 1. Stored credentials
+    if let Some(creds) = load_credentials(&kv_key)? {
+        return Ok(creds.access_token);
+    }
+
+    // 2. Environment variable
+    if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+
+    // 3. Interactive prompt
+    eprintln!("No OpenRouter credentials found.");
+    eprintln!("Get an API key from https://openrouter.ai/keys");
+    eprint!("API key: ");
+    let _ = std::io::stderr().flush();
+    let mut key = String::new();
+    std::io::stdin()
+        .read_line(&mut key)
+        .context("failed to read API key")?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        bail!("No API key provided");
+    }
+
+    // Store as OAuthCredentials for consistency
+    let creds = OAuthCredentials {
+        access_token: key.clone(),
+        refresh_token: String::new(),
+        expires_at: u64::MAX,
+        metadata: serde_json::json!({}),
+    };
+    save_credentials(&kv_key, &creds)?;
+    eprintln!("OpenRouter API key saved.");
+
+    Ok(key)
 }
 
 /// Generic token retrieval: stored creds → env var → interactive login.
