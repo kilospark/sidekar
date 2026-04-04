@@ -341,11 +341,7 @@ fn generic_compact(output: &str) -> String {
         .lines()
         .map(|line| line.trim_end().to_string())
         .collect();
-    let mut lines = normalize_blank_lines(dedupe_repeated_lines(lines));
-    if lines.len() > 80 {
-        lines.truncate(80);
-        lines.push("... (truncated to 80 lines)".to_string());
-    }
+    let lines = normalize_blank_lines(dedupe_repeated_lines(lines));
     lines.join("\n")
 }
 

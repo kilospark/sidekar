@@ -31,6 +31,27 @@ pub fn kv_key_for(nickname: &str) -> String {
     format!("oauth:{nickname}")
 }
 
+/// Resolve which KV key to use: try the nickname key first, fall back to default.
+/// e.g., `-r claude` → tries "oauth:claude", if missing falls back to "oauth:anthropic".
+fn resolve_kv_key(nickname: Option<&str>, default_key: &str) -> String {
+    match nickname {
+        Some(n) => {
+            let key = kv_key_for(n);
+            // If the nickname key has stored creds, use it
+            if crate::broker::kv_get(&key).ok().flatten().is_some() {
+                return key;
+            }
+            // Otherwise fall back to the default provider key
+            if crate::broker::kv_get(default_key).ok().flatten().is_some() {
+                return default_key.to_string();
+            }
+            // Neither exists — use nickname key (will trigger login)
+            key
+        }
+        None => default_key.to_string(),
+    }
+}
+
 /// Provider type for a nickname. "claude-*" → Anthropic, "codex-*" → Codex, "or-*"/"openrouter-*" → OpenRouter.
 pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
     if nickname.starts_with("claude") {
@@ -91,9 +112,7 @@ impl OAuthCredentials {
 
 /// Get a valid Anthropic API token. If `nickname` is provided, use that credential set.
 pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
-    let kv_key = nickname
-        .map(|n| kv_key_for(n))
-        .unwrap_or_else(|| KV_KEY_ANTHROPIC.to_string());
+    let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
     get_token(
         &kv_key,
         "ANTHROPIC_API_KEY",
@@ -106,9 +125,7 @@ pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
 
 /// Get a valid Codex API token. If `nickname` is provided, use that credential set.
 pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)> {
-    let kv_key = nickname
-        .map(|n| kv_key_for(n))
-        .unwrap_or_else(|| KV_KEY_CODEX.to_string());
+    let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
     let token = get_token(
         &kv_key,
         "OPENAI_API_KEY",
@@ -133,9 +150,7 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
 
 /// Get a valid OpenRouter API key. No OAuth — uses stored key or OPENROUTER_API_KEY env var.
 pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
-    let kv_key = nickname
-        .map(|n| kv_key_for(n))
-        .unwrap_or_else(|| KV_KEY_OPENROUTER.to_string());
+    let kv_key = resolve_kv_key(nickname, KV_KEY_OPENROUTER);
 
     // 1. Stored credentials
     if let Some(creds) = load_credentials(&kv_key)? {

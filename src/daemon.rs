@@ -342,9 +342,10 @@ async fn handle_connection(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let agent_id = first.get("agent_id").and_then(|v| v.as_str()).map(String::from);
         let ext_state = state.lock().await.ext_state.clone();
         if let Err(e) =
-            crate::ext::register_bridge_connection(ext_state, reader, writer, user_id).await
+            crate::ext::register_bridge_connection(ext_state, reader, writer, user_id, agent_id).await
         {
             eprintln!("Extension bridge registration failed: {e:#}");
         }
@@ -533,8 +534,9 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
         // Extension commands - forward to ext-bridge
         "ext" => {
             let ext_cmd = cmd.get("command").cloned().unwrap_or(json!({}));
+            let agent_id = cmd.get("agent_id").and_then(|v| v.as_str()).map(String::from);
             let s = state.lock().await;
-            crate::ext::forward_command(&s.ext_state, ext_cmd).await
+            crate::ext::forward_command(&s.ext_state, ext_cmd, agent_id).await
         }
 
         "ext_status" => {

@@ -13,7 +13,12 @@ const MAX_ITERATIONS: usize = 25;
 /// Callback for streaming events to the REPL.
 pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send>;
 
+/// Returned when the user cancels via Escape.
+#[derive(Debug)]
+pub struct Cancelled;
+
 /// Run the agent loop: stream LLM response, execute tool calls, repeat.
+/// If `cancel` is provided and set to true, the loop aborts early.
 pub async fn run(
     provider: &Provider,
     model: &str,
@@ -21,14 +26,19 @@ pub async fn run(
     history: &mut Vec<ChatMessage>,
     tool_defs: &[ToolDef],
     on_event: StreamCallback,
-) -> Result<()> {
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<(), anyhow::Error> {
     let mut iteration = 0;
 
-    let context_window = crate::providers::model_info(model)
-        .map(|m| m.context_window)
-        .unwrap_or(200_000);
+    let context_window = crate::providers::fetch_context_window(model, provider).await;
 
     loop {
+        if let Some(c) = cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(Cancelled.into());
+            }
+        }
+
         if iteration >= MAX_ITERATIONS {
             eprintln!(
                 "\nsidekar: reached max iterations ({}), stopping",
@@ -41,12 +51,19 @@ pub async fn run(
         // Auto-compact if context is getting large
         compaction::maybe_compact(provider, model, history, context_window).await;
 
+        // Signal UI to show waiting indicator
+        on_event(&StreamEvent::Waiting);
+
         // Stream LLM response
         let mut rx = provider
             .stream(model, system_prompt, history, tool_defs)
             .await?;
 
-        let response = consume_stream(&mut rx, &on_event).await?;
+        let response = match consume_stream(&mut rx, &on_event, cancel).await {
+            Ok(r) => r,
+            Err(e) if e.is::<Cancelled>() => return Err(e),
+            Err(e) => return Err(e),
+        };
 
         // Add assistant message to history
         history.push(ChatMessage {
@@ -75,10 +92,14 @@ pub async fn run(
         // Execute tool calls, build tool_result content blocks
         let mut result_blocks: Vec<ContentBlock> = Vec::new();
         for (id, name, arguments) in &tool_calls {
+            on_event(&StreamEvent::ToolExec { name: name.clone() });
             let result = tools::execute(name, arguments).await;
             let (content, is_error) = match result {
                 Ok(output) => (truncate_tool_output(&output, 50_000), false),
-                Err(e) => (format!("Error: {e:#}"), true),
+                Err(e) => {
+                    crate::broker::try_log_error("repl", &format!("tool {name} failed"), Some(&format!("{e:#}")));
+                    (format!("Error: {e:#}"), true)
+                }
             };
             result_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
@@ -97,15 +118,35 @@ pub async fn run(
     Ok(())
 }
 
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cancelled")
+    }
+}
+impl std::error::Error for Cancelled {}
+
 /// Consume all events from the stream, forwarding to the callback.
 async fn consume_stream(
     rx: &mut mpsc::UnboundedReceiver<StreamEvent>,
     on_event: &StreamCallback,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<AssistantResponse> {
     let mut final_response: Option<AssistantResponse> = None;
     let mut last_error: Option<String> = None;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        // Check cancel flag between events
+        if let Some(c) = cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(Cancelled.into());
+            }
+        }
+
+        let event = match rx.recv().await {
+            Some(e) => e,
+            None => break,
+        };
+
         match &event {
             StreamEvent::Done { message } => {
                 on_event(&event);
@@ -124,8 +165,10 @@ async fn consume_stream(
     if let Some(response) = final_response {
         Ok(response)
     } else if let Some(err) = last_error {
+        crate::broker::try_log_error("repl", "LLM stream error", Some(&err));
         bail!("LLM stream error: {}", err)
     } else {
+        crate::broker::try_log_error("repl", "LLM stream ended without a response", None);
         bail!("LLM stream ended without a response")
     }
 }

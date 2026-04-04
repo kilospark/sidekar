@@ -79,6 +79,11 @@ async function connect() {
   }
 
   nativePort.onMessage.addListener(async (msg) => {
+    // Handle ping from daemon - respond with pong
+    if (msg.type === "ping") {
+      sendNative({ type: "pong" });
+      return;
+    }
     if (msg.type === "auth_ok") {
       authenticated = true;
       cliLoggedIn = msg.cli_logged_in === true;
