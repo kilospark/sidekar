@@ -252,7 +252,7 @@ async fn cron_cell() -> &'static Mutex<Option<CronState>> {
 // ---------------------------------------------------------------------------
 
 /// Convenience wrapper: start the cron loop with default CDP settings.
-pub(crate) async fn start_default_cron_loop(agent_name: String) {
+pub(crate) async fn start_default_cron_loop(agent_name: String, project: String) {
     let ctx = CronContext {
         cdp_port: crate::DEFAULT_CDP_PORT,
         cdp_host: crate::DEFAULT_CDP_HOST.to_string(),
@@ -260,6 +260,7 @@ pub(crate) async fn start_default_cron_loop(agent_name: String) {
         current_profile: "default".to_string(),
         headless: false,
         agent_name: Some(agent_name),
+        project,
     };
     start_cron_loop(ctx).await;
 }
@@ -273,6 +274,7 @@ pub(crate) struct CronContext {
     pub current_profile: String,
     pub headless: bool,
     pub agent_name: Option<String>,
+    pub project: String,
 }
 
 impl CronContext {
@@ -319,8 +321,8 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
     let running = Arc::new(AtomicBool::new(true));
     let jobs = Arc::new(Mutex::new(Vec::new()));
 
-    // Load persisted jobs (all scopes — the agent runs jobs from any project)
-    if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "") {
+    // Load persisted jobs scoped to this agent's project
+    if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::Project, &cron_ctx.project) {
         let mut loaded = jobs.lock().await;
         for rec in records {
             if !job_belongs_to_agent(&rec.target, &rec.created_by, cron_ctx.agent_name.as_deref()) {
@@ -728,8 +730,16 @@ async fn cron_loop(
         }
 
         // Reload jobs from broker to pick up externally-created jobs
-        if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "") {
+        if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::Project, &cron_ctx.project) {
             let mut mem_jobs = jobs.lock().await;
+            // Collect IDs of jobs that belong to this agent for pruning deleted ones
+            let mut broker_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for rec in &records {
+                if !job_belongs_to_agent(&rec.target, &rec.created_by, owner_name.as_deref()) {
+                    continue;
+                }
+                broker_ids.insert(rec.id.clone());
+            }
             for rec in records {
                 if !job_belongs_to_agent(&rec.target, &rec.created_by, owner_name.as_deref()) {
                     continue;
@@ -762,16 +772,6 @@ async fn cron_loop(
                 }
             }
             // Remove jobs that were deleted from broker
-            let broker_ids: std::collections::HashSet<String> = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "")
-                .map(|recs| {
-                    recs.into_iter()
-                        .filter(|r| {
-                            job_belongs_to_agent(&r.target, &r.created_by, owner_name.as_deref())
-                        })
-                        .map(|r| r.id)
-                        .collect()
-                })
-                .unwrap_or_default();
             mem_jobs.retain(|j| broker_ids.contains(&j.id));
         }
 
@@ -1028,7 +1028,11 @@ fn job_belongs_to_agent(target: &str, created_by: &str, agent_name: Option<&str>
     let Some(agent_name) = agent_name else {
         return false;
     };
-    normalize_loaded_target(target, created_by) == agent_name
+    // A job belongs to the agent that created it.  The target field only
+    // controls where *results* are delivered and may differ from the creator
+    // (cross-agent cron).  Fall back to target match for legacy jobs where
+    // created_by was "cli" and target carried the owner name.
+    created_by == agent_name || normalize_loaded_target(target, created_by) == agent_name
 }
 
 /// Map cron action args (JSON object) to CLI arg vector for dispatch.

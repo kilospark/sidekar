@@ -2674,7 +2674,7 @@ sidekar agent-sessions [show|rename|note] [args] [--limit=N] [--active] [--proje
 sidekar cron <create|list|show|delete> [args...]
 
   Scheduled job subcommands:
-    create <schedule> <action_json|--bash=CMD|--prompt=TEXT> [--target=T] [--name=N] [--once]
+    create <schedule> <action_json|--prompt=TEXT|--bash=CMD> [--target=T] [--name=N] [--once]
     list
     show <job-id>
     delete <job-id>
@@ -2682,18 +2682,18 @@ sidekar cron <create|list|show|delete> [args...]
   Action types:
     {\"tool\":\"screenshot\"}          Run a sidekar tool
     {\"batch\":[...]}                 Run a sequence of tools
-    {\"command\":\"echo hello\"}       Run a bash command
     {\"prompt\":\"check status\"}      Inject a prompt into the agent
-    --bash=\"echo hello\"             Shorthand for command action
     --prompt=\"check status\"         Shorthand for prompt action
+    {\"command\":\"echo hello\"}       Run a bash command
+    --bash=\"echo hello\"             Shorthand for command action
 
   Examples:
     sidekar cron list
     sidekar cron show c727227a
     sidekar cron create \"*/5 * * * *\" '{\"tool\":\"screenshot\"}'
-    sidekar cron create \"*/2 * * * *\" --bash=\"df -h\"
     sidekar cron create \"0 9 * * *\" --prompt=\"check deployment status\"
     sidekar cron create \"0 9 * * *\" --prompt=\"remind me to review PR\" --once
+    sidekar cron create \"*/2 * * * *\" --bash=\"df -h\"
     sidekar cron delete 123abc"
         }
 
