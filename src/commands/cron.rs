@@ -251,6 +251,19 @@ async fn cron_cell() -> &'static Mutex<Option<CronState>> {
 // Cron context — minimal subset of AppContext for executing tools
 // ---------------------------------------------------------------------------
 
+/// Convenience wrapper: start the cron loop with default CDP settings.
+pub(crate) async fn start_default_cron_loop(agent_name: String) {
+    let ctx = CronContext {
+        cdp_port: crate::DEFAULT_CDP_PORT,
+        cdp_host: crate::DEFAULT_CDP_HOST.to_string(),
+        current_session_id: None,
+        current_profile: "default".to_string(),
+        headless: false,
+        agent_name: Some(agent_name),
+    };
+    start_cron_loop(ctx).await;
+}
+
 /// Enough state to create an AppContext for cron tool execution.
 #[derive(Clone)]
 pub(crate) struct CronContext {

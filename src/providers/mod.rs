@@ -206,15 +206,15 @@ pub enum StopReason {
 // ---------------------------------------------------------------------------
 
 /// Sanitize a tool call ID for Anthropic (must match `^[a-zA-Z0-9_-]+$`).
-pub(crate) fn sanitize_id_anthropic(id: &str) -> String {
+/// Returns a borrowed reference when the input is already valid.
+pub(crate) fn sanitize_id_anthropic(id: &str) -> std::borrow::Cow<'_, str> {
+    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return std::borrow::Cow::Borrowed(id);
+    }
     let sanitized: String = id.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            c
-        } else {
-            '_'
-        }
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }
     }).collect();
-    if sanitized.is_empty() { "id_0".to_string() } else { sanitized }
+    std::borrow::Cow::Owned(if sanitized.is_empty() { "id_0".to_string() } else { sanitized })
 }
 
 /// Sanitize a tool call ID for OpenAI-compatible APIs (must start with `call_`).
@@ -286,149 +286,6 @@ pub struct AssistantResponse {
     pub model: String,
 }
 
-// ---------------------------------------------------------------------------
-// Model metadata
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct ModelInfo {
-    pub id: &'static str,
-    pub display_name: &'static str,
-    pub provider: ProviderKind,
-    pub context_window: u32,
-    pub max_output: u32,
-    pub supports_thinking: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ProviderKind {
-    Anthropic,
-    Codex,
-    OpenRouter,
-}
-
-pub static MODELS: &[ModelInfo] = &[
-    // Anthropic (Claude subscription)
-    ModelInfo {
-        id: "claude-opus-4-20250514",
-        display_name: "Claude Opus 4",
-        provider: ProviderKind::Anthropic,
-        context_window: 200_000,
-        max_output: 32_000,
-        supports_thinking: true,
-    },
-    ModelInfo {
-        id: "claude-sonnet-4-20250514",
-        display_name: "Claude Sonnet 4",
-        provider: ProviderKind::Anthropic,
-        context_window: 200_000,
-        max_output: 16_000,
-        supports_thinking: true,
-    },
-    ModelInfo {
-        id: "claude-sonnet-4-6-20250514",
-        display_name: "Claude Sonnet 4.6",
-        provider: ProviderKind::Anthropic,
-        context_window: 200_000,
-        max_output: 16_000,
-        supports_thinking: true,
-    },
-    ModelInfo {
-        id: "claude-haiku-4-5-20251001",
-        display_name: "Claude Haiku 4.5",
-        provider: ProviderKind::Anthropic,
-        context_window: 200_000,
-        max_output: 8_192,
-        supports_thinking: false,
-    },
-    // OpenAI Codex (ChatGPT subscription)
-    ModelInfo {
-        id: "gpt-5.1-codex-mini",
-        display_name: "GPT-5.1 Codex Mini",
-        provider: ProviderKind::Codex,
-        context_window: 272_000,
-        max_output: 128_000,
-        supports_thinking: true,
-    },
-    ModelInfo {
-        id: "gpt-5.2-codex",
-        display_name: "GPT-5.2 Codex",
-        provider: ProviderKind::Codex,
-        context_window: 272_000,
-        max_output: 128_000,
-        supports_thinking: true,
-    },
-    ModelInfo {
-        id: "gpt-5.3-codex",
-        display_name: "GPT-5.3 Codex",
-        provider: ProviderKind::Codex,
-        context_window: 272_000,
-        max_output: 128_000,
-        supports_thinking: true,
-    },
-    ModelInfo {
-        id: "gpt-5.4-mini",
-        display_name: "GPT-5.4 Mini",
-        provider: ProviderKind::Codex,
-        context_window: 272_000,
-        max_output: 128_000,
-        supports_thinking: true,
-    },
-    // OpenRouter
-    ModelInfo {
-        id: "x-ai/grok-3",
-        display_name: "Grok 3",
-        provider: ProviderKind::OpenRouter,
-        context_window: 131_072,
-        max_output: 16_384,
-        supports_thinking: false,
-    },
-    ModelInfo {
-        id: "google/gemini-2.5-pro",
-        display_name: "Gemini 2.5 Pro",
-        provider: ProviderKind::OpenRouter,
-        context_window: 1_048_576,
-        max_output: 65_536,
-        supports_thinking: false,
-    },
-    ModelInfo {
-        id: "deepseek/deepseek-r1",
-        display_name: "DeepSeek R1",
-        provider: ProviderKind::OpenRouter,
-        context_window: 163_840,
-        max_output: 16_384,
-        supports_thinking: false,
-    },
-];
-
-/// OpenRouter fallback for models not in the registry (any `provider/model` format).
-static OPENROUTER_FALLBACK: ModelInfo = ModelInfo {
-    id: "openrouter",
-    display_name: "OpenRouter",
-    provider: ProviderKind::OpenRouter,
-    context_window: 128_000,
-    max_output: 16_384,
-    supports_thinking: false,
-};
-
-pub fn model_info(id: &str) -> Option<&'static ModelInfo> {
-    MODELS
-        .iter()
-        .find(|m| m.id == id)
-        .or_else(|| {
-            // Any "provider/model" string is treated as OpenRouter
-            if id.contains('/') {
-                Some(&OPENROUTER_FALLBACK)
-            } else {
-                None
-            }
-        })
-}
-
-pub fn default_model() -> &'static str {
-    "claude-sonnet-4-20250514"
-}
-
 /// Cached model metadata fetched from provider APIs.
 static MODEL_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (u32, u32)>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -447,7 +304,7 @@ pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
         return ctx;
     }
 
-    model_info(model).map(|m| m.context_window).unwrap_or(128_000)
+    128_000 // safe default
 }
 
 /// Fetch max output tokens for a model from the provider API.
@@ -463,7 +320,7 @@ pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
         return max_out;
     }
 
-    model_info(model).map(|m| m.max_output).unwrap_or(16_384)
+    16_384 // safe default
 }
 
 /// Fetch (context_window, max_output) from the provider's models API.
@@ -565,7 +422,7 @@ pub struct RemoteModel {
 pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteModel> {
     match provider_type {
         "anthropic" => fetch_anthropic_model_list(api_key).await,
-        "codex" => fetch_codex_model_list(),
+        "codex" => fetch_codex_model_list(api_key).await,
         "openrouter" => fetch_openrouter_model_list(api_key).await,
         _ => Vec::new(),
     }
@@ -578,25 +435,39 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
         .build()
     {
         Ok(c) => c,
-        Err(_) => return static_models_for(ProviderKind::Anthropic),
+        Err(_) => return Vec::new(),
     };
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(url).header("anthropic-version", "2023-06-01");
     if is_oauth {
-        req = req.header("authorization", format!("Bearer {api_key}"));
+        // OAuth: use the /v1/models endpoint with bearer token + beta header
+        req = req
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("anthropic-beta", "oauth-2025-04-20");
     } else {
         req = req.header("x-api-key", api_key);
     }
 
     let resp = match req.send().await {
-        Ok(r) if r.status().is_success() => r,
-        _ => return static_models_for(ProviderKind::Anthropic),
+        Ok(r) => {
+            if !r.status().is_success() {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                eprintln!("\x1b[2m[models API {status}: {text}]\x1b[0m");
+                return Vec::new();
+            }
+            r
+        }
+        Err(e) => {
+            eprintln!("\x1b[2m[models API error: {e}]\x1b[0m");
+            return Vec::new();
+        }
     };
 
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return static_models_for(ProviderKind::Anthropic),
+        Err(_) => return Vec::new(),
     };
 
     let mut models = Vec::new();
@@ -621,14 +492,70 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
         }
     }
     if models.is_empty() {
-        return static_models_for(ProviderKind::Anthropic);
+        return Vec::new();
     }
     models
 }
 
-fn fetch_codex_model_list() -> Vec<RemoteModel> {
-    // OpenAI /v1/models doesn't return useful context info; use static list
-    static_models_for(ProviderKind::Codex)
+async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
+    let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let resp = match client
+        .get(url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("originator", "sidekar")
+        .send()
+        .await
+    {
+        Ok(r) => {
+            if !r.status().is_success() {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                eprintln!("\x1b[2m[models API {status}: {text}]\x1b[0m");
+                return Vec::new();
+            }
+            r
+        }
+        Err(e) => {
+            eprintln!("\x1b[2m[models API error: {e}]\x1b[0m");
+            return Vec::new();
+        }
+    };
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut models = Vec::new();
+    let arr = body.get("models").and_then(|d| d.as_array())
+        .or_else(|| body.get("data").and_then(|d| d.as_array()));
+    if let Some(data) = arr {
+        for m in data {
+            let id = m.get("slug")
+                .or_else(|| m.get("model"))
+                .or_else(|| m.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let name = m.get("display_name").and_then(|v| v.as_str()).unwrap_or(id);
+            let hidden = m.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !id.is_empty() && !hidden {
+                models.push(RemoteModel {
+                    id: id.to_string(),
+                    display_name: name.to_string(),
+                    context_window: 0,
+                });
+            }
+        }
+    }
+    models
 }
 
 async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
@@ -638,7 +565,7 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
         .build()
     {
         Ok(c) => c,
-        Err(_) => return static_models_for(ProviderKind::OpenRouter),
+        Err(_) => return Vec::new(),
     };
 
     let resp = match client
@@ -648,12 +575,12 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => return static_models_for(ProviderKind::OpenRouter),
+        _ => return Vec::new(),
     };
 
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return static_models_for(ProviderKind::OpenRouter),
+        Err(_) => return Vec::new(),
     };
 
     let mut models = Vec::new();
@@ -675,21 +602,9 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
         }
     }
     if models.is_empty() {
-        return static_models_for(ProviderKind::OpenRouter);
+        return Vec::new();
     }
     models
-}
-
-fn static_models_for(kind: ProviderKind) -> Vec<RemoteModel> {
-    MODELS
-        .iter()
-        .filter(|m| m.provider == kind)
-        .map(|m| RemoteModel {
-            id: m.id.to_string(),
-            display_name: m.display_name.to_string(),
-            context_window: m.context_window,
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------

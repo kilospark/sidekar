@@ -16,7 +16,7 @@ pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send>;
 pub struct Cancelled;
 
 /// Run the agent loop: stream LLM response, execute tool calls, repeat.
-/// If `cancel` is provided and set to true, the loop aborts early.
+/// Returns `Ok(true)` if history was compacted during the loop.
 pub async fn run(
     provider: &Provider,
     model: &str,
@@ -25,18 +25,20 @@ pub async fn run(
     tool_defs: &[ToolDef],
     on_event: StreamCallback,
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     let context_window = crate::providers::fetch_context_window(model, provider).await;
+    let mut did_compact = false;
 
     loop {
-        if let Some(c) = cancel {
-            if c.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(Cancelled.into());
-            }
+        if let Some(c) = cancel
+            && c.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(Cancelled.into());
         }
 
         // Auto-compact if context is getting large
-        compaction::maybe_compact(provider, model, history, context_window, &on_event).await;
+        did_compact |=
+            compaction::maybe_compact(provider, model, history, context_window, &on_event).await;
 
         // Signal UI to show waiting indicator
         on_event(&StreamEvent::Waiting);
@@ -102,7 +104,7 @@ pub async fn run(
         });
     }
 
-    Ok(())
+    Ok(did_compact)
 }
 
 impl std::fmt::Display for Cancelled {
@@ -123,10 +125,10 @@ async fn consume_stream(
 
     loop {
         // Check cancel flag between events
-        if let Some(c) = cancel {
-            if c.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(Cancelled.into());
-            }
+        if let Some(c) = cancel
+            && c.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(Cancelled.into());
         }
 
         let event = match rx.recv().await {

@@ -189,20 +189,19 @@ fn render_markdown(source: &str) -> Vec<String> {
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
-                    // Render code block
                     if !code_block_lang.is_empty() {
                         push_line(&mut lines, &mut current_line);
-                        current_line.push_str(&format!("{DIM}┌─ {code_block_lang}{RESET}"));
+                        current_line.push_str(&format!("  ┌─ {code_block_lang}"));
                         push_line(&mut lines, &mut current_line);
                     } else {
                         push_line(&mut lines, &mut current_line);
                     }
                     for code_line in code_block_buf.lines() {
-                        current_line.push_str(&format!("{DIM}│{RESET} {code_line}"));
+                        current_line.push_str(&format!("  │ {code_line}"));
                         push_line(&mut lines, &mut current_line);
                     }
                     if !code_block_lang.is_empty() {
-                        current_line.push_str(&format!("{DIM}└─{RESET}"));
+                        current_line.push_str("  └─");
                         push_line(&mut lines, &mut current_line);
                     }
                     code_block_buf.clear();
