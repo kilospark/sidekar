@@ -5,30 +5,41 @@ use crate::providers::ToolDef;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDef> {
-    vec![ToolDef {
-        name: "bash".into(),
-        description: "Execute a bash command and return its output.".into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The bash command to execute"
+    vec![
+        ToolDef {
+            name: "bash".into(),
+            description: "Execute a bash command and return its output.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The bash command to execute"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 120)"
+                    }
                 },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds (default: 120)"
-                }
-            },
-            "required": ["command"]
-        }),
-    }]
+                "required": ["command"]
+            }),
+        },
+        ToolDef {
+            name: "sidekar_skill".into(),
+            description: "Read the sidekar SKILL.md reference. Returns the full tool catalog with usage, examples, and workflows for all sidekar commands (browser automation, desktop automation, web research, agent bus, etc.). Call this when you need to use sidekar tools or the user asks about sidekar capabilities.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+            }),
+        },
+    ]
 }
 
 /// Execute a tool call and return the output string.
 pub async fn execute(name: &str, arguments: &Value) -> Result<String> {
     match name {
         "bash" | "Bash" => exec_bash(arguments).await,
+        "sidekar_skill" => Ok(crate::skill::skill_text().to_string()),
         _ => bail!("Unknown tool: {name}"),
     }
 }

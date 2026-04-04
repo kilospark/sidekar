@@ -23,6 +23,15 @@ fn main() {
 }
 
 async fn run(mut args: Vec<String>) -> Result<()> {
+    // Split at "--": everything before is sidekar flags, everything after passes
+    // through verbatim to the command/agent.
+    let passthrough = if let Some(sep) = args.iter().position(|a| a == "--") {
+        let after: Vec<String> = args.drain(sep..).skip(1).collect(); // skip the "--" itself
+        Some(after)
+    } else {
+        None
+    };
+
     // Parse global --verbose flag
     if let Some(pos) = args.iter().position(|a| a == "--verbose") {
         args.remove(pos);
@@ -76,6 +85,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     } else {
         None
     };
+
+    // Append passthrough args after sidekar flags have been consumed
+    if let Some(mut pt) = passthrough {
+        args.append(&mut pt);
+    }
 
     if args.is_empty() {
         print_help();

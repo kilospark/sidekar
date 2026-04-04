@@ -29,50 +29,8 @@ which sidekar || curl -fsSL https://sidekar.dev/install | sh
 
 ## Capabilities
 
-**Bus (multi-agent)** — Discover agents, send requests, hand off work, track replies.
-Entry: `sidekar bus who`. Explore: `sidekar help bus`
-
-**Secrets (KV)** — Encrypted local key-value store for tokens, API keys, credentials.
-Entry: `sidekar kv list`, `sidekar kv get <key>`. Explore: `sidekar help kv`
-
-**TOTP** — Store TOTP secrets, generate current codes for automated login flows.
-Entry: `sidekar totp list`, `sidekar totp get <service> <account>`. Explore: `sidekar help totp`
-
-**Memory** — Durable local memory scoped to project or global. Write conventions, search context, compact related memories, rate and review.
-Entry: `sidekar memory context`, `sidekar memory search <query>`. Explore: `sidekar help memory`
-
-**Tasks** — Local task list with priority and dependency edges.
-Entry: `sidekar tasks list`, `sidekar tasks add "<title>"`. Explore: `sidekar help tasks`
-
-**Agent sessions** — Inspect session history, add notes, rename sessions.
-Entry: `sidekar agent-sessions`. Explore: `sidekar help agent-sessions`
-
-**Scheduled jobs** — Cron expressions or simple intervals. Run tools, bash, or inject prompts.
-Entry: `sidekar cron list`, `sidekar loop 5m "check status"`. Explore: `sidekar help cron`, `sidekar help loop`
-
-**Repo context** — Pack repos, summarize changes, discover and run project actions.
-Entry: `sidekar repo tree`, `sidekar repo changes`. Explore: `sidekar help repo`
-
-**Context shaping** — Compact noisy output for agents. Pack/unpack structured data.
-Entry: `sidekar compact run <cmd>`, `sidekar pack <file>`. Explore: `sidekar help compact`, `sidekar help pack`
-
-**Browser automation** — Navigate, read, click, type, screenshot in a real Chrome session.
-Entry: `sidekar navigate <url>`, `sidekar read`. Explore: `sidekar help navigate`
-- *Perception*: `read` → `ax-tree -i` / `observe` → `text` → `dom` → `search` / `read-urls` → `screenshot`
-- *Interaction*: `click`, `fill`, `type`, `keyboard`, `scroll`, `drag`, `upload`, `wait-for`
-- *Inspection*: `console`, `network`, `cookies`, `storage`, `service-workers`
-
-**Extension automation** — Automate the user's normal Chrome profile via the Sidekar extension.
-Entry: `sidekar ext tabs`. Explore: `sidekar help ext`
-
-**Desktop automation** — Native macOS UI: find elements, click, type, screenshot, launch/quit apps.
-Entry: `sidekar desktop apps`. Explore: `sidekar help desktop`
-
-**Monitor** — Watch browser tabs for background changes.
-Entry: `sidekar monitor status`. Explore: `sidekar help monitor`
-
-**Account** — Login, logout, devices, sessions, config, daemon.
-Entry: `sidekar login`, `sidekar help config`
+Run `sidekar help` to see all commands grouped by category.
+Run `sidekar help <command>` for detailed usage, options, and examples on any command.
 
 ## Operating Rules
 

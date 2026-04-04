@@ -10,6 +10,11 @@ use std::process::{Command, Stdio};
 
 const SKILL_MD: &str = include_str!("../SKILL.md");
 
+/// Return the embedded SKILL.md content.
+pub fn skill_text() -> &'static str {
+    SKILL_MD
+}
+
 /// Install sidekar skill file for all detected agent CLIs.
 pub fn install_skill() {
     println!();
