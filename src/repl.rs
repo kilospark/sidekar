@@ -25,24 +25,40 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     if let Some(name) = cred {
         if providers::oauth::provider_type_for(name).is_none() {
             anyhow::bail!(
-                "Unknown credential: '{name}'. Credential names must start with 'claude' or 'codex'.\n\
-                 Examples: claude, claude-1, codex, codex-work\n\
+                "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', or 'or'.\n\
+                 Examples: claude, claude-1, codex, codex-work, or, or-personal\n\
                  Login with: sidekar repl login {name}"
             );
         }
     }
 
-    // Infer default model from credential provider
+    // Infer default model from credential or env
     let default_model = match cred.and_then(providers::oauth::provider_type_for) {
-        Some("codex") => "gpt-5.1-codex-mini",
-        Some("anthropic") => providers::default_model(),
-        _ => providers::default_model(),
+        Some("codex") => Some("gpt-5.1-codex-mini"),
+        Some("openrouter") => Some("x-ai/grok-3"),
+        Some("anthropic") => Some(providers::default_model()),
+        _ => None,
     };
 
     let model = opts
         .model
         .or_else(|| std::env::var("SIDEKAR_MODEL").ok())
-        .unwrap_or_else(|| default_model.to_string());
+        .or_else(|| default_model.map(String::from));
+
+    let model = match model {
+        Some(m) => m,
+        None => {
+            anyhow::bail!(
+                "No model specified. Use one of:\n\
+                 \n\
+                 \x1b[1mOption 1:\x1b[0m Pass a credential:  sidekar repl -r claude\n\
+                 \x1b[1mOption 2:\x1b[0m Pass a model:       sidekar repl -m grok-3\n\
+                 \x1b[1mOption 3:\x1b[0m Set env var:        SIDEKAR_MODEL=grok-3\n\
+                 \n\
+                 Login first:  sidekar repl login <claude|codex|or>"
+            );
+        }
+    };
 
     // Validate model name
     let provider_kind = providers::model_info(&model)
@@ -62,6 +78,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let model_provider = match provider_kind {
             providers::ProviderKind::Anthropic => "anthropic",
             providers::ProviderKind::Codex => "codex",
+            providers::ProviderKind::OpenRouter => "openrouter",
         };
         if cred_provider != model_provider {
             anyhow::bail!(
@@ -79,6 +96,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         providers::ProviderKind::Codex => {
             let (api_key, account_id) = providers::oauth::get_codex_token(cred).await?;
             Provider::codex(api_key, account_id)
+        }
+        providers::ProviderKind::OpenRouter => {
+            let api_key = providers::oauth::get_openrouter_token(cred).await?;
+            Provider::openrouter(api_key)
         }
     };
     let prompt = opts.prompt;
@@ -445,6 +466,27 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
             {
                 eprintln!("  {} ({})", m.id, m.display_name);
             }
+
+            let has_openrouter = broker::kv_get(providers::oauth::KV_KEY_OPENROUTER)
+                .ok()
+                .flatten()
+                .is_some()
+                || std::env::var("OPENROUTER_API_KEY").is_ok();
+
+            eprintln!(
+                "\nOpenRouter {}:",
+                if has_openrouter {
+                    "\x1b[32m✓\x1b[0m"
+                } else {
+                    "\x1b[2mnot logged in\x1b[0m"
+                }
+            );
+            for m in providers::MODELS
+                .iter()
+                .filter(|m| m.provider == providers::ProviderKind::OpenRouter)
+            {
+                eprintln!("  {} ({})", m.id, m.display_name);
+            }
             SlashResult::Continue
         }
         "/help" => {
@@ -505,3 +547,4 @@ fn print_banner(model: &str) {
     eprintln!("\x1b[1msidekar repl\x1b[0m v{version} — {model}");
     eprintln!("Type /help for commands, /quit to exit\n");
 }
+

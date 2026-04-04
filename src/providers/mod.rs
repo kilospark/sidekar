@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod codex;
 pub mod oauth;
+pub mod openrouter;
 
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
@@ -269,6 +270,7 @@ pub struct ModelInfo {
 pub enum ProviderKind {
     Anthropic,
     Codex,
+    OpenRouter,
 }
 
 pub static MODELS: &[ModelInfo] = &[
@@ -338,10 +340,55 @@ pub static MODELS: &[ModelInfo] = &[
         max_output: 128_000,
         supports_thinking: true,
     },
+    // OpenRouter
+    ModelInfo {
+        id: "x-ai/grok-3",
+        display_name: "Grok 3",
+        provider: ProviderKind::OpenRouter,
+        context_window: 131_072,
+        max_output: 16_384,
+        supports_thinking: false,
+    },
+    ModelInfo {
+        id: "google/gemini-2.5-pro",
+        display_name: "Gemini 2.5 Pro",
+        provider: ProviderKind::OpenRouter,
+        context_window: 1_048_576,
+        max_output: 65_536,
+        supports_thinking: false,
+    },
+    ModelInfo {
+        id: "deepseek/deepseek-r1",
+        display_name: "DeepSeek R1",
+        provider: ProviderKind::OpenRouter,
+        context_window: 163_840,
+        max_output: 16_384,
+        supports_thinking: false,
+    },
 ];
 
+/// OpenRouter fallback for models not in the registry (any `provider/model` format).
+static OPENROUTER_FALLBACK: ModelInfo = ModelInfo {
+    id: "openrouter",
+    display_name: "OpenRouter",
+    provider: ProviderKind::OpenRouter,
+    context_window: 128_000,
+    max_output: 16_384,
+    supports_thinking: false,
+};
+
 pub fn model_info(id: &str) -> Option<&'static ModelInfo> {
-    MODELS.iter().find(|m| m.id == id)
+    MODELS
+        .iter()
+        .find(|m| m.id == id)
+        .or_else(|| {
+            // Any "provider/model" string is treated as OpenRouter
+            if id.contains('/') {
+                Some(&OPENROUTER_FALLBACK)
+            } else {
+                None
+            }
+        })
 }
 
 pub fn default_model() -> &'static str {
@@ -349,7 +396,7 @@ pub fn default_model() -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Provider — enum dispatch (no trait, 2 variants)
+// Provider — enum dispatch (no trait, 3 variants)
 // ---------------------------------------------------------------------------
 
 pub enum Provider {
@@ -361,6 +408,10 @@ pub enum Provider {
     Codex {
         api_key: String,
         account_id: String,
+        base_url: String,
+    },
+    OpenRouter {
+        api_key: String,
         base_url: String,
     },
 }
@@ -378,6 +429,13 @@ impl Provider {
             api_key,
             account_id,
             base_url: "https://chatgpt.com/backend-api".to_string(),
+        }
+    }
+
+    pub fn openrouter(api_key: String) -> Self {
+        Provider::OpenRouter {
+            api_key,
+            base_url: "https://openrouter.ai/api".to_string(),
         }
     }
 
@@ -407,6 +465,9 @@ impl Provider {
                     tools,
                 )
                 .await
+            }
+            Provider::OpenRouter { api_key, base_url } => {
+                openrouter::stream(api_key, base_url, model, system_prompt, messages, tools).await
             }
         }
     }
