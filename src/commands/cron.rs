@@ -119,6 +119,30 @@ fn parse_field(field: &str, min: u32, max: u32) -> Result<Vec<u32>> {
 
 /// Parse a human interval like "5m", "1h", "30s" into a cron expression.
 /// Minimum granularity is 1 minute. Intervals < 1m are clamped to 1m.
+/// Parse an interval string (e.g. "5m", "1h", "120s") into seconds.
+pub(crate) fn interval_to_secs(interval: &str) -> Result<u64> {
+    let interval = interval.trim().to_lowercase();
+    let (num_str, unit) = if let Some(n) = interval.strip_suffix('m') {
+        (n, 'm')
+    } else if let Some(n) = interval.strip_suffix('h') {
+        (n, 'h')
+    } else if let Some(n) = interval.strip_suffix('s') {
+        (n, 's')
+    } else {
+        (interval.as_str(), 'm')
+    };
+    let num: u64 = num_str.parse().context("Invalid interval number")?;
+    if num == 0 {
+        bail!("Interval must be > 0");
+    }
+    match unit {
+        's' => Ok(num.max(60)), // minimum 60 seconds
+        'm' => Ok(num * 60),
+        'h' => Ok(num * 3600),
+        _ => bail!("Unknown interval unit. Use s, m, or h"),
+    }
+}
+
 pub(crate) fn interval_to_cron(interval: &str) -> Result<String> {
     let interval = interval.trim().to_lowercase();
     let (num_str, unit) = if let Some(n) = interval.strip_suffix('m') {
@@ -193,8 +217,10 @@ struct CronJob {
     target: String,
     created_by: String,
     last_run_at: Option<u64>,
+    last_finished_at: Option<u64>,
     once: bool,
-    running: Arc<AtomicBool>, // true while this job is executing (skip pileup)
+    loop_interval_secs: Option<u64>, // if set, uses loop semantics (wait for completion + interval)
+    running: Arc<AtomicBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,8 +305,8 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
     let running = Arc::new(AtomicBool::new(true));
     let jobs = Arc::new(Mutex::new(Vec::new()));
 
-    // Load persisted jobs
-    if let Ok(records) = broker::list_cron_jobs(true) {
+    // Load persisted jobs (all scopes — the agent runs jobs from any project)
+    if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "") {
         let mut loaded = jobs.lock().await;
         for rec in records {
             if !job_belongs_to_agent(&rec.target, &rec.created_by, cron_ctx.agent_name.as_deref()) {
@@ -303,7 +329,9 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
                         target: normalize_loaded_target(&rec.target, &rec.created_by),
                         created_by: rec.created_by,
                         last_run_at: rec.last_run_at,
+                        last_finished_at: None,
                         once: rec.once,
+                        loop_interval_secs: rec.loop_interval_secs,
                         running: Arc::new(AtomicBool::new(false)),
                     });
                 }
@@ -333,6 +361,8 @@ pub(crate) async fn cmd_cron_create(
     name: Option<&str>,
     created_by: &str,
     once: bool,
+    project: Option<&str>,
+    loop_interval_secs: Option<u64>,
 ) -> Result<String> {
     // Validate schedule
     let schedule = CronSchedule::parse(schedule_expr)?;
@@ -375,7 +405,7 @@ pub(crate) async fn cmd_cron_create(
 
     // Check job limit (use broker as source of truth — works with or without cron loop)
     let max_jobs = crate::config::load_config().max_cron_jobs;
-    let current_count = broker::list_cron_jobs(true)
+    let current_count = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "")
         .map(|jobs| jobs.len())
         .unwrap_or(0);
     if current_count >= max_jobs {
@@ -397,6 +427,8 @@ pub(crate) async fn cmd_cron_create(
         &effective_target,
         created_by,
         once,
+        project,
+        loop_interval_secs,
     )?;
 
     // Add to in-memory state if cron loop is running
@@ -412,7 +444,9 @@ pub(crate) async fn cmd_cron_create(
             target: effective_target.clone(),
             created_by: created_by.to_string(),
             last_run_at: None,
+            last_finished_at: None,
             once,
+            loop_interval_secs,
             running: Arc::new(AtomicBool::new(false)),
         });
     }
@@ -430,8 +464,9 @@ pub(crate) async fn cmd_cron_create(
     Ok(id)
 }
 
-/// List all active cron jobs.
-pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
+/// List cron jobs scoped to the current project (default), global, or all.
+pub(crate) async fn cmd_cron_list(ctx: &mut AppContext, scope: crate::scope::ScopeView) -> Result<()> {
+    let current_project = crate::scope::resolve_project_name(None);
     let cell = cron_cell().await;
     let guard = cell.lock().await;
 
@@ -503,7 +538,7 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
                 }
             }
             // Also show stats from broker
-            if let Ok(records) = broker::list_cron_jobs(true) {
+            if let Ok(records) = broker::list_cron_jobs(true, scope, &current_project) {
                 for rec in &records {
                     if rec.run_count > 0 || rec.error_count > 0 {
                         let err_str = if rec.error_count > 0 {
@@ -527,7 +562,7 @@ pub(crate) async fn cmd_cron_list(ctx: &mut AppContext) -> Result<()> {
         }
         None => {
             // Cron loop not started — check broker for persisted jobs
-            if let Ok(records) = broker::list_cron_jobs(true) {
+            if let Ok(records) = broker::list_cron_jobs(true, scope, &current_project) {
                 if records.is_empty() {
                     out!(ctx, "No active cron jobs.");
                 } else {
@@ -679,7 +714,7 @@ async fn cron_loop(
         }
 
         // Reload jobs from broker to pick up externally-created jobs
-        if let Ok(records) = broker::list_cron_jobs(true) {
+        if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "") {
             let mut mem_jobs = jobs.lock().await;
             for rec in records {
                 if !job_belongs_to_agent(&rec.target, &rec.created_by, owner_name.as_deref()) {
@@ -703,7 +738,9 @@ async fn cron_loop(
                             target: normalize_loaded_target(&rec.target, &rec.created_by),
                             created_by: rec.created_by,
                             last_run_at: rec.last_run_at,
+                            last_finished_at: None,
                             once: rec.once,
+                            loop_interval_secs: rec.loop_interval_secs,
                             running: Arc::new(AtomicBool::new(false)),
                         });
                     }
@@ -711,7 +748,7 @@ async fn cron_loop(
                 }
             }
             // Remove jobs that were deleted from broker
-            let broker_ids: std::collections::HashSet<String> = broker::list_cron_jobs(true)
+            let broker_ids: std::collections::HashSet<String> = broker::list_cron_jobs(true, crate::scope::ScopeView::All, "")
                 .map(|recs| {
                     recs.into_iter()
                         .filter(|r| {
@@ -726,41 +763,70 @@ async fn cron_loop(
 
         // Get current local time components
         let (min, hour, dom, month, dow) = local_time_components();
+        let now = epoch_now();
 
-        // Check which jobs match
+        // Collect jobs to execute
         let jobs_guard = jobs.lock().await;
-        let matching: Vec<(String, CronAction, String, bool, Arc<AtomicBool>)> = jobs_guard
-            .iter()
-            .filter(|j| j.schedule.matches(min, hour, dom, month, dow))
-            .filter(|j| !j.running.load(Ordering::Relaxed)) // skip if still running
-            .map(|j| {
-                (
-                    j.id.clone(),
-                    j.action.clone(),
-                    j.target.clone(),
-                    j.once,
-                    j.running.clone(),
-                )
-            })
-            .collect();
+        let mut to_execute: Vec<(String, CronAction, String, bool, Arc<AtomicBool>)> = Vec::new();
+
+        for j in jobs_guard.iter() {
+            if j.running.load(Ordering::Relaxed) {
+                continue;
+            }
+            if let Some(interval) = j.loop_interval_secs {
+                // Loop job: fire if interval has elapsed since last completion
+                let since = j.last_finished_at.unwrap_or(0);
+                if now.saturating_sub(since) >= interval {
+                    to_execute.push((
+                        j.id.clone(),
+                        j.action.clone(),
+                        j.target.clone(),
+                        j.once,
+                        j.running.clone(),
+                    ));
+                }
+            } else {
+                // Cron job: fire on schedule match
+                if j.schedule.matches(min, hour, dom, month, dow) {
+                    to_execute.push((
+                        j.id.clone(),
+                        j.action.clone(),
+                        j.target.clone(),
+                        j.once,
+                        j.running.clone(),
+                    ));
+                }
+            }
+        }
         drop(jobs_guard);
 
         // Collect one-shot job IDs for removal after execution
-        let once_ids: Vec<String> = matching
+        let once_ids: Vec<String> = to_execute
             .iter()
             .filter(|(_, _, _, is_once, _)| *is_once)
             .map(|(id, _, _, _, _)| id.clone())
             .collect();
 
         // Execute matching jobs
-        for (job_id, action, target, is_once, job_running) in matching {
+        let jobs_for_update = jobs.clone();
+        for (job_id, action, target, is_once, job_running) in to_execute {
             let ctx_clone = cron_ctx.clone();
             let jid = job_id.clone();
+            let jobs_ref = jobs_for_update.clone();
             job_running.store(true, Ordering::Relaxed);
 
             tokio::spawn(async move {
                 let result = execute_cron_job(&ctx_clone, &jid, &action, &target).await;
                 job_running.store(false, Ordering::Relaxed);
+
+                // Update last_finished_at for loop jobs
+                let finished_at = epoch_now();
+                {
+                    let mut guard = jobs_ref.lock().await;
+                    if let Some(job) = guard.iter_mut().find(|j| j.id == jid) {
+                        job.last_finished_at = Some(finished_at);
+                    }
+                }
 
                 // Update broker stats
                 match &result {

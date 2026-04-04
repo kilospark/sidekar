@@ -2498,8 +2498,11 @@ sidekar bus <who|requests|replies|show|send|done> [args...]
     requests [--status=open|answered|timed-out|cancelled|all] [--limit=N]
     replies [--msg-id=<request_id>] [--limit=N]
     show <msg_id>
-    send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]
-    done <next> <summary> <request> [--reply-to=<msg_id>]
+    send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]
+    done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]
+
+  Use --file to avoid shell quoting issues — write the message to a temp file
+  and pass the path instead.
 
   Examples:
     sidekar bus who
@@ -2507,7 +2510,8 @@ sidekar bus <who|requests|replies|show|send|done> [args...]
     sidekar bus replies --msg-id=msg_123
     sidekar bus show msg_123
     sidekar bus send claude-2 \"Please review the PR\"
-    sidekar bus done claude-2 \"Done\" \"Please take over\""
+    sidekar bus send claude-2 --file=/tmp/sidekar-msg.txt
+    sidekar bus done claude-2 \"Done\" --file=/tmp/sidekar-handoff.txt"
         }
 
         "compact" => {
