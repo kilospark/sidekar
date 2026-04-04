@@ -132,7 +132,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
 
-    crate::commands::cron::start_default_cron_loop(bus_name.clone()).await;
+    let cron_project = crate::scope::resolve_project_name(None);
+    crate::commands::cron::start_default_cron_loop(bus_name.clone(), cron_project).await;
 
     // Single-prompt mode: fresh session, one turn, exit
     if let Some(input) = prompt {
@@ -205,33 +206,40 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     print_banner(&model);
 
-    while let Some(input) = read_input() {
+    loop {
+        let input = match read_input_or_bus(&bus_name) {
+            InputEvent::User(s) => Some(s),
+            InputEvent::Bus => None, // no user text — bus messages trigger the agent
+            InputEvent::Eof => break,
+        };
 
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+        if let Some(ref text) = input {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-        // Slash commands
-        if trimmed.starts_with('/') {
-            match handle_slash_command(trimmed, &cwd, &model, &session_id) {
-                SlashResult::Continue => continue,
-                SlashResult::Quit => break,
-                SlashResult::SwitchSession(new_id) => {
-                    history = session::load_history(&new_id)?;
-                    let count = history.len();
-                    if count > 0 {
-                        eprintln!("\x1b[2mSwitched to session ({count} messages).\x1b[0m");
-                    } else {
-                        eprintln!("New session started.");
+            // Slash commands
+            if trimmed.starts_with('/') {
+                match handle_slash_command(trimmed, &cwd, &model, &session_id) {
+                    SlashResult::Continue => continue,
+                    SlashResult::Quit => break,
+                    SlashResult::SwitchSession(new_id) => {
+                        history = session::load_history(&new_id)?;
+                        let count = history.len();
+                        if count > 0 {
+                            eprintln!("\x1b[2mSwitched to session ({count} messages).\x1b[0m");
+                        } else {
+                            eprintln!("New session started.");
+                        }
+                        session_id = new_id;
+                        continue;
                     }
-                    session_id = new_id;
-                    continue;
-                }
-                SlashResult::NotFound => {
-                    eprintln!("Unknown command: {trimmed}");
-                    eprintln!("Available: /new /resume /sessions /model /quit /help");
-                    continue;
+                    SlashResult::NotFound => {
+                        eprintln!("Unknown command: {trimmed}");
+                        eprintln!("Available: /new /resume /sessions /model /quit /help");
+                        continue;
+                    }
                 }
             }
         }
@@ -239,15 +247,15 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         // Inject pending bus messages as steering
         inject_bus_messages(&bus_name, &mut history, &session_id);
 
-        // Add user message
-        let user_msg = ChatMessage {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: input.clone(),
-            }],
-        };
-        let _ = session::append_message(&session_id, &user_msg);
-        history.push(user_msg);
+        // Add user message (if any)
+        if let Some(text) = input {
+            let user_msg = ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text }],
+            };
+            let _ = session::append_message(&session_id, &user_msg);
+            history.push(user_msg);
+        }
 
         // Run agent loop
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -342,11 +350,6 @@ impl EventRenderer {
         }
     }
 
-    fn start_spinner(&mut self) {
-        self.stop_spinner();
-        self.spinner = Some(Spinner::start_with_cancel(self.cancel.clone()));
-    }
-
     fn flush_md_lines(&mut self) {
         for line in self.md.commit_complete_lines() {
             println!("{line}");
@@ -356,7 +359,11 @@ impl EventRenderer {
     fn render(&mut self, event: &StreamEvent) {
         match event {
             StreamEvent::Waiting => {
-                self.start_spinner();
+                self.stop_spinner();
+                self.spinner = Some(Spinner::start_with_label(
+                    self.cancel.clone(),
+                    "thinking".to_string(),
+                ));
             }
             StreamEvent::Compacting => {
                 self.stop_spinner();
@@ -399,7 +406,11 @@ impl EventRenderer {
                     eprintln!("\n\x1b[2m> {name}: {detail}\x1b[0m");
                 }
                 // Restart spinner while tool executes and next API call happens
-                self.start_spinner();
+                self.stop_spinner();
+                self.spinner = Some(Spinner::start_with_label(
+                    self.cancel.clone(),
+                    "working".to_string(),
+                ));
             }
             StreamEvent::Done { message } => {
                 self.stop_spinner();
@@ -440,12 +451,6 @@ const ANIMATIONS: &[&[&str]] = &[
 ];
 
 impl Spinner {
-    fn start_with_cancel(
-        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
-        Self::start_with_label(cancel, String::new())
-    }
-
     fn start_with_label(
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         label: String,
@@ -559,11 +564,15 @@ fn poll_stdin_byte(timeout_ms: i32) -> Option<u8> {
 fn extract_tool_summary(name: &str, args_json: &str) -> String {
     let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
     match name {
-        "bash" | "Bash" => args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or(args_json)
-            .to_string(),
+        "bash" | "Bash" => {
+            let cmd = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or(args_json);
+            // Show only the first line to keep multi-line scripts readable
+            let first_line = cmd.lines().next().unwrap_or(cmd);
+            truncate_display(first_line, 120)
+        }
         _ => {
             // For other tools, show first string field or truncated args
             if let Some(obj) = args.as_object()
@@ -788,15 +797,57 @@ fn inject_bus_messages(bus_name: &str, history: &mut Vec<ChatMessage>, session_i
 // Input / Output
 // ---------------------------------------------------------------------------
 
-fn read_input() -> Option<String> {
+/// What `read_input_or_bus` returned.
+enum InputEvent {
+    /// User typed a line.
+    User(String),
+    /// One or more bus messages arrived while idle.
+    Bus,
+    /// EOF / error.
+    Eof,
+}
+
+/// Block for user input **or** a bus message, whichever comes first.
+///
+/// Uses non-blocking stdin polling (500 ms cycles) interleaved with
+/// bus queue checks so that cron prompts are picked up without
+/// requiring the user to press Enter.
+fn read_input_or_bus(bus_name: &str) -> InputEvent {
     print!("\n\x1b[1m> \x1b[0m");
     let _ = io::stdout().flush();
 
-    let mut input = String::new();
-    match io::stdin().lock().read_line(&mut input) {
-        Ok(0) => None,
-        Ok(_) => Some(input.trim_end_matches('\n').to_string()),
-        Err(_) => None,
+    let mut line_buf = String::new();
+
+    loop {
+        // Check for pending bus messages (non-destructive peek)
+        if broker::has_pending_messages(bus_name) {
+            return InputEvent::Bus;
+        }
+
+        // Poll stdin with a short timeout so we cycle back to bus check
+        unsafe {
+            let mut fds = libc::pollfd {
+                fd: 0,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = libc::poll(&mut fds, 1, 500); // 500 ms
+            if ready > 0 && (fds.revents & libc::POLLIN) != 0 {
+                // Data available on stdin — read a full line
+                match io::stdin().lock().read_line(&mut line_buf) {
+                    Ok(0) => return InputEvent::Eof,
+                    Ok(_) => {
+                        return InputEvent::User(
+                            line_buf.trim_end_matches('\n').to_string(),
+                        );
+                    }
+                    Err(_) => return InputEvent::Eof,
+                }
+            } else if ready < 0 {
+                // poll error (e.g. EINTR from signal) — just retry
+                continue;
+            }
+        }
     }
 }
 

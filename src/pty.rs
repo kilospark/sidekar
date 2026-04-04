@@ -523,7 +523,8 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // Ensure the Chrome extension bridge / daemon is running
     let _ = crate::daemon::ensure_running();
 
-    crate::commands::cron::start_default_cron_loop(identity.name.clone()).await;
+    let pty_project = crate::scope::resolve_project_name(None);
+    crate::commands::cron::start_default_cron_loop(identity.name.clone(), pty_project).await;
 
     // Start a background task to watch for the child's Chrome session.
     // When the child calls `sidekar launch` or `sidekar connect`, the
@@ -683,6 +684,7 @@ async fn watch_session_file(agent_name: String) {
                         .to_string(),
                     headless: false,
                     agent_name: Some(agent_name.clone()),
+                    project: crate::scope::resolve_project_name(None),
                 };
                 crate::commands::cron::update_cron_context(cron_ctx).await;
                 // silent — don't print to the pty terminal

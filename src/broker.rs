@@ -1520,6 +1520,17 @@ pub fn enqueue_message(sender: &str, recipient: &str, body: &str) -> Result<()> 
 
 /// Poll for messages addressed to `recipient`. Returns all pending messages
 /// and deletes them from the queue (atomic read-and-delete).
+/// Check if there are pending bus messages without consuming them.
+pub fn has_pending_messages(recipient: &str) -> bool {
+    let Ok(conn) = open() else { return false };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE recipient = ?1)",
+        params![recipient],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
 pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
     let conn = open()?;
     let tx = conn.unchecked_transaction()?;
