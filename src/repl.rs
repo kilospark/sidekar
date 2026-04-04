@@ -23,98 +23,69 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let cred = opts.credential.as_deref();
 
     // Validate credential name if provided
-    if let Some(name) = cred {
-        if providers::oauth::provider_type_for(name).is_none() {
-            anyhow::bail!(
-                "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', or 'or'.\n\
-                 Examples: claude, claude-1, codex, codex-work, or, or-personal\n\
-                 Login with: sidekar repl login {name}"
-            );
-        }
+    if let Some(name) = cred
+        && providers::oauth::provider_type_for(name).is_none()
+    {
+        anyhow::bail!(
+            "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', or 'or'.\n\
+             Examples: claude, claude-1, codex, codex-work, or, or-personal\n\
+             Login with: sidekar repl login {name}"
+        );
     }
 
-    // Infer default model from credential or env
-    let default_model = match cred.and_then(providers::oauth::provider_type_for) {
-        Some("codex") => Some("gpt-5.1-codex-mini"),
-        Some("openrouter") => Some("x-ai/grok-3"),
-        Some("anthropic") => Some(providers::default_model()),
-        _ => None,
-    };
-
-    let model = opts
-        .model
-        .or_else(|| std::env::var("SIDEKAR_MODEL").ok())
-        .or_else(|| default_model.map(String::from));
-
-    let model = match model {
-        Some(m) => m,
+    // Require credential — provider is derived from it
+    let cred_name = match cred {
+        Some(name) => name,
         None => {
             anyhow::bail!(
-                "No model specified. Use one of:\n\
+                "No credential specified. Use -c to provide one.\n\
                  \n\
-                 \x1b[1mOption 1:\x1b[0m Pass a credential:  sidekar repl -c claude\n\
-                 \x1b[1mOption 2:\x1b[0m Pass a model:       sidekar repl -m grok-3\n\
-                 \x1b[1mOption 3:\x1b[0m Set env var:        SIDEKAR_MODEL=grok-3\n\
+                 Example: sidekar repl -c claude -m claude-sonnet-4-20250514\n\
                  \n\
                  Login first:  sidekar repl login <claude|codex|or>"
             );
         }
     };
 
-    // Validate model name
-    let provider_kind = providers::model_info(&model)
-        .map(|m| m.provider)
+    let provider_type = providers::oauth::provider_type_for(cred_name)
         .ok_or_else(|| {
-            let available = providers::MODELS
-                .iter()
-                .map(|m| m.id)
-                .collect::<Vec<_>>()
-                .join(", ");
-            anyhow::anyhow!("Unknown model: '{model}'. Available: {available}")
+            anyhow::anyhow!(
+                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', or 'or'."
+            )
         })?;
 
-    // Require credential
-    if cred.is_none() {
-        let provider_name = match provider_kind {
-            providers::ProviderKind::Anthropic => "claude",
-            providers::ProviderKind::Codex => "codex",
-            providers::ProviderKind::OpenRouter => "or",
-        };
-        anyhow::bail!(
-            "No credential specified. Use -c to provide one.\n\
-             \n\
-             Example: sidekar repl -c {provider_name} -m {model}"
-        );
-    }
+    let model = opts
+        .model
+        .or_else(|| std::env::var("SIDEKAR_MODEL").ok());
 
-    // Validate credential and model match the same provider
-    if let Some(name) = cred {
-        let cred_provider = providers::oauth::provider_type_for(name).unwrap_or("");
-        let model_provider = match provider_kind {
-            providers::ProviderKind::Anthropic => "anthropic",
-            providers::ProviderKind::Codex => "codex",
-            providers::ProviderKind::OpenRouter => "openrouter",
-        };
-        if cred_provider != model_provider {
+    let model = match model {
+        Some(m) => m,
+        None => {
             anyhow::bail!(
-                "Mismatch: credential '{name}' is {cred_provider} but model '{model}' is {model_provider}.\n\
-                 Use a matching model or credential."
+                "No model specified. Use -m to provide one.\n\
+                 \n\
+                 Example: sidekar repl -c {cred_name} -m <model>\n\
+                 \n\
+                 List models: sidekar repl models -c {cred_name}"
             );
         }
-    }
+    };
 
-    let provider = match provider_kind {
-        providers::ProviderKind::Anthropic => {
-            let api_key = providers::oauth::get_anthropic_token(cred).await?;
+    let provider = match provider_type {
+        "anthropic" => {
+            let api_key = providers::oauth::get_anthropic_token(Some(cred_name)).await?;
             Provider::anthropic(api_key)
         }
-        providers::ProviderKind::Codex => {
-            let (api_key, account_id) = providers::oauth::get_codex_token(cred).await?;
+        "codex" => {
+            let (api_key, account_id) = providers::oauth::get_codex_token(Some(cred_name)).await?;
             Provider::codex(api_key, account_id)
         }
-        providers::ProviderKind::OpenRouter => {
-            let api_key = providers::oauth::get_openrouter_token(cred).await?;
+        "openrouter" => {
+            let api_key = providers::oauth::get_openrouter_token(Some(cred_name)).await?;
             Provider::openrouter(api_key)
+        }
+        _ => {
+            anyhow::bail!("Unknown provider type: {provider_type}");
         }
     };
     let prompt = opts.prompt;
@@ -158,6 +129,11 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     crate::bus::set_terminal_title(&format!("{nick} ({bus_name}) — sidekar repl"));
 
+    // SAFETY: called once during serial startup, before spawning async tasks.
+    unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
+
+    crate::commands::cron::start_default_cron_loop(bus_name.clone()).await;
+
     // Single-prompt mode: fresh session, one turn, exit
     if let Some(input) = prompt {
         let session_id = session::create_session(&cwd, &model, "oneshot")?;
@@ -175,7 +151,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
         let pre_len = history.len();
-        crate::agent::run(
+        let did_compact = crate::agent::run(
             &provider,
             &model,
             &system_prompt,
@@ -186,7 +162,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         )
         .await?;
 
-        if pre_len <= history.len() {
+        if did_compact {
+            let _ = session::replace_history(&session_id, &history);
+        } else if pre_len < history.len() {
             for msg in &history[pre_len..] {
                 let _ = session::append_message(&session_id, msg);
             }
@@ -227,11 +205,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     print_banner(&model);
 
-    loop {
-        let input = match read_input() {
-            Some(text) => text,
-            None => break,
-        };
+    while let Some(input) = read_input() {
 
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -282,7 +256,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
         let pre_len = history.len();
-        match crate::agent::run(
+        let did_compact = match crate::agent::run(
             &provider,
             &model,
             &system_prompt,
@@ -293,25 +267,30 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         )
         .await
         {
-            Ok(()) => {}
+            Ok(c) => c,
             Err(e) if e.is::<crate::agent::Cancelled>() => {
                 // Truncate any partial messages added during cancelled run
                 history.truncate(pre_len);
                 eprintln!("\x1b[33m[cancelled]\x1b[0m");
+                false
             }
             Err(e) => {
                 eprintln!("\x1b[31mError: {e:#}\x1b[0m");
+                false
             }
-        }
+        };
 
-        // Persist new messages from the agent loop
-        if pre_len <= history.len() {
+        // Persist: full replace only after compaction, otherwise just append new messages
+        if did_compact {
+            let _ = session::replace_history(&session_id, &history);
+        } else if pre_len < history.len() {
             for msg in &history[pre_len..] {
                 let _ = session::append_message(&session_id, msg);
             }
         }
     }
 
+    eprintln!();
     let _ = broker::unregister_agent(&bus_name);
     Ok(())
 }
@@ -587,12 +566,11 @@ fn extract_tool_summary(name: &str, args_json: &str) -> String {
             .to_string(),
         _ => {
             // For other tools, show first string field or truncated args
-            if let Some(obj) = args.as_object() {
-                if let Some((_, v)) = obj.iter().next() {
-                    if let Some(s) = v.as_str() {
-                        return truncate_display(s, 120);
-                    }
-                }
+            if let Some(obj) = args.as_object()
+                && let Some((_, v)) = obj.iter().next()
+                && let Some(s) = v.as_str()
+            {
+                return truncate_display(s, 120);
             }
             truncate_display(args_json, 120)
         }
@@ -752,12 +730,11 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
                     eprint!("Enter number: ");
                     let _ = io::stderr().flush();
                     let mut line = String::new();
-                    if io::stdin().lock().read_line(&mut line).is_ok() {
-                        if let Ok(idx) = line.trim().parse::<usize>() {
-                            if let Some(s) = sessions.get(idx) {
-                                return SlashResult::SwitchSession(s.id.clone());
-                            }
-                        }
+                    if io::stdin().lock().read_line(&mut line).is_ok()
+                        && let Ok(idx) = line.trim().parse::<usize>()
+                        && let Some(s) = sessions.get(idx)
+                    {
+                        return SlashResult::SwitchSession(s.id.clone());
                     }
                     eprintln!("Invalid selection.");
                 }
@@ -766,54 +743,8 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
             SlashResult::Continue
         }
         "/model" => {
-            eprintln!(
-                "Current model: {}",
-                std::env::var("SIDEKAR_MODEL")
-                    .unwrap_or_else(|_| providers::default_model().to_string())
-            );
-            eprintln!("Set with: SIDEKAR_MODEL=<model-id>\n");
-
-            let has_claude = broker::kv_get(providers::oauth::KV_KEY_ANTHROPIC)
-                .ok()
-                .flatten()
-                .is_some()
-                || std::env::var("ANTHROPIC_API_KEY").is_ok();
-
-            eprintln!(
-                "Claude (Anthropic) {}:",
-                if has_claude {
-                    "\x1b[32m✓\x1b[0m"
-                } else {
-                    "\x1b[2mnot logged in\x1b[0m"
-                }
-            );
-            for m in providers::MODELS
-                .iter()
-                .filter(|m| m.provider == providers::ProviderKind::Anthropic)
-            {
-                eprintln!("  {} ({})", m.id, m.display_name);
-            }
-
-            let has_openrouter = broker::kv_get(providers::oauth::KV_KEY_OPENROUTER)
-                .ok()
-                .flatten()
-                .is_some()
-                || std::env::var("OPENROUTER_API_KEY").is_ok();
-
-            eprintln!(
-                "\nOpenRouter {}:",
-                if has_openrouter {
-                    "\x1b[32m✓\x1b[0m"
-                } else {
-                    "\x1b[2mnot logged in\x1b[0m"
-                }
-            );
-            for m in providers::MODELS
-                .iter()
-                .filter(|m| m.provider == providers::ProviderKind::OpenRouter)
-            {
-                eprintln!("  {} ({})", m.id, m.display_name);
-            }
+            eprintln!("Current model: {model}");
+            eprintln!("\nList available models: sidekar repl models -c <credential>");
             SlashResult::Continue
         }
         "/help" => {

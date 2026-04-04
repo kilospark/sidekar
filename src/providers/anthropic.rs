@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -26,9 +28,7 @@ pub async fn stream(
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let is_oauth = api_key.contains("sk-ant-oat");
 
-    let max_tokens = super::model_info(model)
-        .map(|m| m.max_output)
-        .unwrap_or(16_000);
+    let max_tokens = 16_000u32;
 
     let body = build_request_body(model, system_prompt, messages, tools, max_tokens, is_oauth);
     let mut body_json = serde_json::to_string(&body)?;
@@ -43,31 +43,20 @@ pub async fn stream(
     headers.insert("anthropic-version", "2023-06-01".parse()?);
     headers.insert("anthropic-dangerous-direct-browser-access", "true".parse()?);
 
-    let needs_interleaved_beta =
-        !(model.contains("opus-4") || (model.contains("sonnet-4") && model.contains("4-6")));
-
     if is_oauth {
-        let mut beta_features = vec!["fine-grained-tool-streaming-2025-05-14"];
-        if needs_interleaved_beta {
-            beta_features.push("interleaved-thinking-2025-05-14");
-        }
         headers.insert(
             "anthropic-beta",
-            format!(
-                "claude-code-20250219,oauth-2025-04-20,{}",
-                beta_features.join(",")
-            )
-            .parse()?,
+            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14"
+                .parse()?,
         );
         headers.insert("authorization", format!("Bearer {api_key}").parse()?);
         headers.insert("user-agent", "claude-cli/2.1.87".parse()?);
         headers.insert("x-app", "cli".parse()?);
     } else {
-        let mut beta_features = vec!["fine-grained-tool-streaming-2025-05-14"];
-        if needs_interleaved_beta {
-            beta_features.push("interleaved-thinking-2025-05-14");
-        }
-        headers.insert("anthropic-beta", beta_features.join(",").parse()?);
+        headers.insert(
+            "anthropic-beta",
+            "fine-grained-tool-streaming-2025-05-14".parse()?,
+        );
         headers.insert("x-api-key", api_key.parse()?);
     }
 
@@ -119,6 +108,18 @@ fn build_request_body(
     max_tokens: u32,
     is_oauth: bool,
 ) -> AnthropicRequest {
+    // Collect all tool_use IDs from assistant messages so we can drop orphaned tool_results
+    let mut tool_use_ids = HashSet::new();
+    for msg in messages {
+        if matches!(msg.role, Role::Assistant) {
+            for block in &msg.content {
+                if let ContentBlock::ToolCall { id, .. } = block {
+                    tool_use_ids.insert(super::sanitize_id_anthropic(id));
+                }
+            }
+        }
+    }
+
     let mut api_messages: Vec<Value> = Vec::new();
 
     for msg in messages {
@@ -127,10 +128,28 @@ fn build_request_body(
             Role::Assistant => "assistant",
         };
 
+        // Filter out orphaned tool_result blocks
+        let filtered: Vec<ContentBlock> = msg
+            .content
+            .iter()
+            .filter(|b| {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                    tool_use_ids.contains(&super::sanitize_id_anthropic(tool_use_id))
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            continue;
+        }
+
         let content = if is_oauth {
-            serialize_oauth_content(&msg.content)
+            serialize_oauth_content(&filtered)
         } else {
-            json!(serialize_content_blocks(&msg.content, false))
+            json!(serialize_content_blocks(&filtered, false))
         };
 
         api_messages.push(json!({ "role": role, "content": content }));
@@ -147,13 +166,6 @@ fn build_request_body(
         })
         .collect();
 
-    // Thinking config
-    let supports_thinking = super::model_info(model)
-        .map(|m| m.supports_thinking)
-        .unwrap_or(false);
-
-    let is_adaptive =
-        model.contains("opus-4") || (model.contains("sonnet-4") && model.contains("4-6"));
     let metadata = if is_oauth {
         Some(json!({
             "user_id": serde_json::to_string(&json!({
@@ -166,16 +178,6 @@ fn build_request_body(
         None
     };
 
-    let thinking = if supports_thinking {
-        Some(if is_adaptive {
-            json!({ "type": "adaptive" })
-        } else {
-            json!({ "type": "enabled", "budget_tokens": 10000 })
-        })
-    } else {
-        None
-    };
-    let temperature = if supports_thinking { None } else { Some(1.0) };
     let tools = if api_tools.is_empty() {
         None
     } else {
@@ -186,8 +188,6 @@ fn build_request_body(
         system: build_system_blocks(system_prompt, messages, is_oauth),
         model: model.to_string(),
         max_tokens,
-        thinking,
-        temperature,
         metadata,
         messages: api_messages,
         stream: true,
@@ -281,10 +281,6 @@ struct AnthropicRequest {
     system: Vec<Value>,
     model: String,
     max_tokens: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<Value>,
     messages: Vec<Value>,
@@ -515,10 +511,10 @@ async fn parse_sse_stream(
                             _ => StopReason::Error,
                         };
                     }
-                    if let Some(u) = data.get("usage") {
-                        if let Some(v) = u.get("output_tokens").and_then(|v| v.as_u64()) {
-                            usage.output_tokens = v as u32;
-                        }
+                    if let Some(u) = data.get("usage")
+                        && let Some(v) = u.get("output_tokens").and_then(|v| v.as_u64())
+                    {
+                        usage.output_tokens = v as u32;
                     }
                 }
 

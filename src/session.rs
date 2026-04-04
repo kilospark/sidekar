@@ -239,6 +239,36 @@ pub fn load_history(session_id: &str) -> Result<Vec<ChatMessage>> {
     Ok(messages)
 }
 
+/// Replace all messages in a session (used after compaction).
+pub fn replace_history(session_id: &str, messages: &[ChatMessage]) -> Result<()> {
+    let conn = crate::broker::open()?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM repl_entries WHERE session_id = ?1 AND entry_type = 'message'",
+        rusqlite::params![session_id],
+    )?;
+    let now = epoch_secs();
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        let content_json = serde_json::to_string(&msg.content).unwrap_or_else(|_| "[]".into());
+        let id = generate_id();
+        tx.execute(
+            "INSERT INTO repl_entries (id, session_id, entry_type, role, content, created_at)
+             VALUES (?1, ?2, 'message', ?3, ?4, ?5)",
+            rusqlite::params![id, session_id, role, content_json, now],
+        )?;
+    }
+    tx.execute(
+        "UPDATE repl_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Count messages in a session.
 pub fn message_count(session_id: &str) -> Result<usize> {
     let conn = crate::broker::open()?;

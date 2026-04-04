@@ -36,7 +36,7 @@ pub async fn maybe_compact(
     context_window: u32,
     on_event: &StreamCallback,
 ) -> bool {
-    let threshold = (context_window as usize) / 2;
+    let threshold = (context_window as usize) * 3 / 4;
     let current = estimate_tokens(history);
 
     if current < threshold {
@@ -76,7 +76,7 @@ pub async fn maybe_compact(
 
 /// Phase 1: Replace old tool result markers and thinking blocks with "[Cleared]".
 /// Keeps the last `keep_recent` messages intact.
-fn phase1_clear_old_results(history: &mut Vec<ChatMessage>) -> usize {
+fn phase1_clear_old_results(history: &mut [ChatMessage]) -> usize {
     let keep_recent = 10;
     let cutoff = history.len().saturating_sub(keep_recent);
     let mut cleared = 0;
@@ -114,7 +114,7 @@ async fn phase2_summarize(
     let mut tail_tokens = 0;
     let mut split = history.len();
     for (i, msg) in history.iter().enumerate().rev() {
-        let msg_tokens = estimate_tokens(&[msg.clone()]);
+        let msg_tokens = estimate_tokens(std::slice::from_ref(msg));
         tail_tokens += msg_tokens;
         if tail_tokens > protect_tail_tokens {
             split = i + 1;
