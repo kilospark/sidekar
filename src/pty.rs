@@ -523,18 +523,7 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // Ensure the Chrome extension bridge / daemon is running
     let _ = crate::daemon::ensure_running();
 
-    // Start the cron background loop (will pick up Chrome session when available)
-    {
-        let cron_ctx = crate::commands::cron::CronContext {
-            cdp_port: crate::DEFAULT_CDP_PORT,
-            cdp_host: crate::DEFAULT_CDP_HOST.to_string(),
-            current_session_id: None,
-            current_profile: "default".to_string(),
-            headless: false,
-            agent_name: Some(identity.name.clone()),
-        };
-        crate::commands::cron::start_cron_loop(cron_ctx).await;
-    }
+    crate::commands::cron::start_default_cron_loop(identity.name.clone()).await;
 
     // Start a background task to watch for the child's Chrome session.
     // When the child calls `sidekar launch` or `sidekar connect`, the
