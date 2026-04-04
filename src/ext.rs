@@ -645,9 +645,63 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             }
             Ok(cmd)
         }
+        "history" => {
+            let query = args.join(" ");
+            let max_results = 25u64; // default
+            Ok(json!({"command": "history", "query": query, "maxResults": max_results}))
+        }
+        "watch" => {
+            let selector = args
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow!("Usage: sidekar ext watch <selector> [--tab <id>]"))?;
+            let mut cmd = json!({"command": "watch", "selector": selector});
+            if let Some(id) = default_tab {
+                cmd.as_object_mut()
+                    .unwrap()
+                    .insert("tabId".into(), json!(id));
+            }
+            Ok(cmd)
+        }
+        "unwatch" => {
+            let mut cmd = json!({"command": "unwatch"});
+            if let Some(watch_id) = args.first() {
+                cmd.as_object_mut()
+                    .unwrap()
+                    .insert("watchId".into(), json!(watch_id));
+            }
+            Ok(cmd)
+        }
+        "watchers" => Ok(json!({"command": "watchers"})),
+        "watch-events" => {
+            let clear = args.iter().any(|a| a == "--clear");
+            Ok(json!({"command": "watchevents", "clear": clear}))
+        }
+        "context" => Ok(json!({"command": "context"})),
         _ => bail!(
-            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, status, stop"
+            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, watch-events, context, status, stop"
         ),
+    }
+}
+
+/// Format a JS timestamp (milliseconds since epoch) as a relative time string.
+fn format_time_ago(ts_ms: f64) -> String {
+    if ts_ms <= 0.0 {
+        return "unknown".to_string();
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as f64;
+    let diff_secs = ((now_ms - ts_ms) / 1000.0).max(0.0) as u64;
+    if diff_secs < 60 {
+        format!("{diff_secs}s ago")
+    } else if diff_secs < 3600 {
+        format!("{}m ago", diff_secs / 60)
+    } else if diff_secs < 86400 {
+        format!("{}h ago", diff_secs / 3600)
+    } else {
+        format!("{}d ago", diff_secs / 86400)
     }
 }
 
@@ -788,6 +842,136 @@ fn print_result(command: &str, result: &Value) {
                     "{}",
                     serde_json::to_string_pretty(result).unwrap_or_default()
                 );
+            }
+        }
+        "history" => {
+            if let Some(entries) = result.get("entries").and_then(|v| v.as_array()) {
+                for entry in entries {
+                    let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let visits = entry.get("visitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let ts = entry.get("lastVisitTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let ago = format_time_ago(ts);
+                    println!("{title}");
+                    println!("  {url}");
+                    println!("  {ago} | {visits} visit(s)");
+                    println!();
+                }
+                println!("{} result(s)", entries.len());
+            }
+        }
+        "watch" => {
+            if let Some(watch_id) = result.get("watchId").and_then(|v| v.as_str()) {
+                let selector = result.get("selector").and_then(|v| v.as_str()).unwrap_or("");
+                println!("Watching: {selector}");
+                println!("Watch ID: {watch_id}");
+                if let Some(state) = result.get("initialState").and_then(|v| v.as_str()) {
+                    if !state.is_empty() {
+                        let preview = if state.len() > 200 { &state[..200] } else { state };
+                        println!("Current state: {preview}");
+                    }
+                }
+            }
+        }
+        "unwatch" => {
+            if let Some(count) = result.get("count").and_then(|v| v.as_u64()) {
+                println!("Removed {count} watcher(s)");
+            } else if let Some(wid) = result.get("watchId").and_then(|v| v.as_str()) {
+                println!("Removed watcher: {wid}");
+            }
+        }
+        "watchers" => {
+            if let Some(watchers) = result.get("watchers").and_then(|v| v.as_array()) {
+                if watchers.is_empty() {
+                    println!("No active watchers");
+                } else {
+                    for w in watchers {
+                        let wid = w.get("watchId").and_then(|v| v.as_str()).unwrap_or("?");
+                        let sel = w.get("selector").and_then(|v| v.as_str()).unwrap_or("?");
+                        let tab = w.get("tabId").and_then(|v| v.as_u64()).unwrap_or(0);
+                        println!("[{wid}] tab:{tab} {sel}");
+                    }
+                    println!("\n{} watcher(s)", watchers.len());
+                }
+            }
+        }
+        "watch-events" => {
+            if let Some(events) = result.get("events").and_then(|v| v.as_array()) {
+                if events.is_empty() {
+                    println!("No watch events");
+                } else {
+                    for ev in events {
+                        let wid = ev.get("watchId").and_then(|v| v.as_str()).unwrap_or("?");
+                        let sel = ev.get("selector").and_then(|v| v.as_str()).unwrap_or("?");
+                        let ts = ev.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let ago = format_time_ago(ts);
+                        let current = ev.get("current").and_then(|v| v.as_str()).unwrap_or("");
+                        let preview = if current.len() > 120 { &current[..120] } else { current };
+                        println!("[{wid}] {sel} ({ago})");
+                        println!("  {preview}");
+                        println!();
+                    }
+                    println!("{} event(s)", events.len());
+                }
+            }
+        }
+        "context" => {
+            // Active tab
+            if let Some(tab) = result.get("active_tab") {
+                let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let url = tab.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                println!("Active: {title}");
+                println!("  {url}\n");
+            }
+
+            // Windows + tabs
+            if let Some(windows) = result.get("windows").and_then(|v| v.as_object()) {
+                let tab_count = result.get("tab_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let win_count = result.get("window_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                println!("{tab_count} tab(s) across {win_count} window(s):");
+                for (wid, tabs) in windows {
+                    if let Some(tabs) = tabs.as_array() {
+                        println!("  Window {wid}:");
+                        for t in tabs {
+                            let id = t.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                            let active = t.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let marker = if active { " *" } else { "" };
+                            let short_title = if title.len() > 60 { &title[..60] } else { title };
+                            println!("    [{id}]{marker} {short_title}");
+                        }
+                    }
+                }
+            }
+
+            // Recent history
+            if let Some(history) = result.get("recent_history").and_then(|v| v.as_array()) {
+                if !history.is_empty() {
+                    println!("\nRecent activity:");
+                    for h in history.iter().take(10) {
+                        let title = h.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let url = h.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                        let ts = h.get("lastVisitTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let ago = format_time_ago(ts);
+                        let short_title = if title.len() > 50 { &title[..50] } else { title };
+                        // Extract domain from URL
+                        let domain = url
+                            .strip_prefix("https://")
+                            .or_else(|| url.strip_prefix("http://"))
+                            .unwrap_or(url)
+                            .split('/')
+                            .next()
+                            .unwrap_or("");
+                        println!("  {ago} | {domain} | {short_title}");
+                    }
+                }
+            }
+
+            // Watchers
+            if let Some(watchers) = result.get("watchers").and_then(|v| v.as_array()) {
+                if !watchers.is_empty() {
+                    println!("\n{} active watcher(s)", watchers.len());
+                }
             }
         }
         _ => {
