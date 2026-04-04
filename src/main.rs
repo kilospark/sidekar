@@ -3,14 +3,6 @@ use sidekar::*;
 fn main() {
     let raw_args: Vec<String> = env::args().skip(1).collect();
 
-    if raw_args.first().map(|s| s.as_str()) == Some("native-messaging-host") {
-        if let Err(err) = sidekar::ext::run_native_host() {
-            eprintln!("Error: {err:#}");
-            std::process::exit(1);
-        }
-        return;
-    }
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
