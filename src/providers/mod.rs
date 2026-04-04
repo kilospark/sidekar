@@ -202,6 +202,34 @@ pub enum StopReason {
 }
 
 // ---------------------------------------------------------------------------
+// Tool ID sanitization for cross-provider session resumption
+// ---------------------------------------------------------------------------
+
+/// Sanitize a tool call ID for Anthropic (must match `^[a-zA-Z0-9_-]+$`).
+pub(crate) fn sanitize_id_anthropic(id: &str) -> String {
+    let sanitized: String = id.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            c
+        } else {
+            '_'
+        }
+    }).collect();
+    if sanitized.is_empty() { "id_0".to_string() } else { sanitized }
+}
+
+/// Sanitize a tool call ID for OpenAI-compatible APIs (must start with `call_`).
+pub(crate) fn sanitize_id_openai(id: &str) -> String {
+    // Strip pipe-separated item ID if present (Codex format)
+    let base = id.split_once('|').map(|(call, _)| call).unwrap_or(id);
+    let sanitized: String = base.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    if sanitized.starts_with("call_") {
+        sanitized
+    } else {
+        format!("call_{sanitized}")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions sent to the LLM
 // ---------------------------------------------------------------------------
 
@@ -222,6 +250,8 @@ pub enum StreamEvent {
     Waiting,
     /// Emitted before a tool executes so the UI can show progress.
     ToolExec { name: String },
+    /// Emitted when context compaction (LLM summarization) is in progress.
+    Compacting,
     TextDelta {
         delta: String,
     },
@@ -521,6 +551,145 @@ async fn fetch_openrouter_model_limits(api_key: &str, base_url: &str, model: &st
     }
 
     None
+}
+
+/// A model entry returned by a provider's list endpoint.
+#[derive(Debug, Clone)]
+pub struct RemoteModel {
+    pub id: String,
+    pub display_name: String,
+    pub context_window: u32,
+}
+
+/// Fetch available models from a provider's API.
+pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteModel> {
+    match provider_type {
+        "anthropic" => fetch_anthropic_model_list(api_key).await,
+        "codex" => fetch_codex_model_list(),
+        "openrouter" => fetch_openrouter_model_list(api_key).await,
+        _ => Vec::new(),
+    }
+}
+
+async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
+    let url = "https://api.anthropic.com/v1/models";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return static_models_for(ProviderKind::Anthropic),
+    };
+
+    let is_oauth = api_key.contains("sk-ant-oat");
+    let mut req = client.get(url).header("anthropic-version", "2023-06-01");
+    if is_oauth {
+        req = req.header("authorization", format!("Bearer {api_key}"));
+    } else {
+        req = req.header("x-api-key", api_key);
+    }
+
+    let resp = match req.send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return static_models_for(ProviderKind::Anthropic),
+    };
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return static_models_for(ProviderKind::Anthropic),
+    };
+
+    let mut models = Vec::new();
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        for m in data {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = m
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id);
+            let ctx = m
+                .get("max_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            if !id.is_empty() {
+                models.push(RemoteModel {
+                    id: id.to_string(),
+                    display_name: name.to_string(),
+                    context_window: ctx,
+                });
+            }
+        }
+    }
+    if models.is_empty() {
+        return static_models_for(ProviderKind::Anthropic);
+    }
+    models
+}
+
+fn fetch_codex_model_list() -> Vec<RemoteModel> {
+    // OpenAI /v1/models doesn't return useful context info; use static list
+    static_models_for(ProviderKind::Codex)
+}
+
+async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
+    let url = "https://openrouter.ai/api/v1/models";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return static_models_for(ProviderKind::OpenRouter),
+    };
+
+    let resp = match client
+        .get(url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return static_models_for(ProviderKind::OpenRouter),
+    };
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return static_models_for(ProviderKind::OpenRouter),
+    };
+
+    let mut models = Vec::new();
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        for m in data {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            let ctx = m
+                .get("context_length")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            if !id.is_empty() {
+                models.push(RemoteModel {
+                    id: id.to_string(),
+                    display_name: name.to_string(),
+                    context_window: ctx,
+                });
+            }
+        }
+    }
+    if models.is_empty() {
+        return static_models_for(ProviderKind::OpenRouter);
+    }
+    models
+}
+
+fn static_models_for(kind: ProviderKind) -> Vec<RemoteModel> {
+    MODELS
+        .iter()
+        .filter(|m| m.provider == kind)
+        .map(|m| RemoteModel {
+            id: m.id.to_string(),
+            display_name: m.display_name.to_string(),
+            context_window: m.context_window,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

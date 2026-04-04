@@ -1,6 +1,7 @@
 //! Session persistence — SQLite-backed conversation history with tree structure.
 
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::providers::{ChatMessage, ContentBlock, Role};
@@ -120,6 +121,58 @@ pub fn list_sessions(cwd: &str, limit: usize) -> Result<Vec<Session>> {
     Ok(sessions)
 }
 
+/// List sessions across all directories.
+pub fn list_all_sessions(limit: usize) -> Result<Vec<Session>> {
+    ensure_tables()?;
+    let conn = crate::broker::open()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, cwd, model, provider, name, created_at, updated_at
+         FROM repl_sessions
+         ORDER BY updated_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit], |row| {
+        Ok(Session {
+            id: row.get(0)?,
+            cwd: row.get(1)?,
+            model: row.get(2)?,
+            provider: row.get(3)?,
+            name: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row?);
+    }
+    Ok(sessions)
+}
+
+/// Find a session by ID prefix match (across all cwds).
+pub fn find_session_by_prefix(prefix: &str) -> Result<Option<Session>> {
+    ensure_tables()?;
+    let conn = crate::broker::open()?;
+    let pattern = format!("{prefix}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, cwd, model, provider, name, created_at, updated_at
+         FROM repl_sessions WHERE id LIKE ?1
+         ORDER BY updated_at DESC LIMIT 1",
+    )?;
+    stmt.query_row(rusqlite::params![pattern], |row| {
+        Ok(Session {
+            id: row.get(0)?,
+            cwd: row.get(1)?,
+            model: row.get(2)?,
+            provider: row.get(3)?,
+            name: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Get the most recent session for the current cwd.
 pub fn latest_session(cwd: &str) -> Result<Option<Session>> {
     let sessions = list_sessions(cwd, 1)?;
@@ -195,6 +248,49 @@ pub fn message_count(session_id: &str) -> Result<usize> {
         |row| row.get(0),
     )?;
     Ok(count as usize)
+}
+
+/// Delete a session and its entries.
+pub fn delete_session(session_id: &str) -> Result<()> {
+    let conn = crate::broker::open()?;
+    conn.execute(
+        "DELETE FROM repl_entries WHERE session_id = ?1",
+        rusqlite::params![session_id],
+    )?;
+    conn.execute(
+        "DELETE FROM repl_sessions WHERE id = ?1",
+        rusqlite::params![session_id],
+    )?;
+    Ok(())
+}
+
+/// Delete all sessions with zero messages. Returns count of pruned sessions.
+pub fn prune_empty_sessions() -> Result<usize> {
+    let conn = crate::broker::open()?;
+    // Find empty sessions (no message entries)
+    let mut stmt = conn.prepare(
+        "SELECT s.id FROM repl_sessions s
+         WHERE NOT EXISTS (
+             SELECT 1 FROM repl_entries e
+             WHERE e.session_id = s.id AND e.entry_type = 'message'
+         )",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let count = ids.len();
+    for id in &ids {
+        let _ = conn.execute(
+            "DELETE FROM repl_entries WHERE session_id = ?1",
+            rusqlite::params![id],
+        );
+        let _ = conn.execute(
+            "DELETE FROM repl_sessions WHERE id = ?1",
+            rusqlite::params![id],
+        );
+    }
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------

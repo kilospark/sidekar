@@ -119,6 +119,21 @@ pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
         "Anthropic",
         anthropic_login,
         refresh_token_anthropic,
+        false,
+    )
+    .await
+}
+
+/// Get a valid Anthropic API token, with interactive login if needed.
+pub async fn login_anthropic(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
+    get_token(
+        &kv_key,
+        "ANTHROPIC_API_KEY",
+        "Anthropic",
+        anthropic_login,
+        refresh_token_anthropic,
+        true,
     )
     .await
 }
@@ -132,10 +147,36 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
         "Codex",
         codex_login,
         refresh_token_codex,
+        false,
     )
     .await?;
 
     // Extract account_id from stored metadata
+    let account_id = load_credentials(&kv_key)?
+        .and_then(|c| {
+            c.metadata
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+
+    Ok((token, account_id))
+}
+
+/// Get a valid Codex API token, with interactive login if needed.
+pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
+    let token = get_token(
+        &kv_key,
+        "OPENAI_API_KEY",
+        "Codex",
+        codex_login,
+        refresh_token_codex,
+        true,
+    )
+    .await?;
+
     let account_id = load_credentials(&kv_key)?
         .and_then(|c| {
             c.metadata
@@ -191,7 +232,7 @@ pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
     Ok(key)
 }
 
-/// Generic token retrieval: stored creds → env var → interactive login.
+/// Generic token retrieval: stored creds → env var → error (or interactive login if `interactive`).
 async fn get_token(
     kv_key: &str,
     env_var: &str,
@@ -204,6 +245,7 @@ async fn get_token(
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
     >,
+    interactive: bool,
 ) -> Result<String> {
     // 1. Stored OAuth credentials
     if let Some(creds) = load_credentials(kv_key)? {
@@ -231,11 +273,19 @@ async fn get_token(
         }
     }
 
-    // 3. Interactive login
-    eprintln!("No {provider_name} credentials found. Starting OAuth login...");
-    let creds = login_fn().await?;
-    save_credentials(kv_key, &creds)?;
-    Ok(creds.access_token)
+    // 3. Interactive login (only during `repl login`) or fail
+    if interactive {
+        eprintln!("No {provider_name} credentials found. Starting OAuth login...");
+        let creds = login_fn().await?;
+        save_credentials(kv_key, &creds)?;
+        Ok(creds.access_token)
+    } else {
+        bail!(
+            "No {provider_name} credentials found for '{}'.\n\
+             Run: sidekar repl login <credential>",
+            kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

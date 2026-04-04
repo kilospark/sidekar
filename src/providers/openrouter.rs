@@ -107,7 +107,7 @@ fn build_request_body(
                     {
                         api_messages.push(json!({
                             "role": "tool",
-                            "tool_call_id": tool_use_id,
+                            "tool_call_id": super::sanitize_id_openai(tool_use_id),
                             "content": content,
                         }));
                     }
@@ -133,7 +133,7 @@ fn build_request_body(
                             name,
                             arguments,
                         } => Some(json!({
-                            "id": id,
+                            "id": super::sanitize_id_openai(id),
                             "type": "function",
                             "function": {
                                 "name": name,

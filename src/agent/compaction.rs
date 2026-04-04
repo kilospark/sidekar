@@ -5,6 +5,8 @@
 
 use crate::providers::{ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 
+use super::StreamCallback;
+
 /// Rough token estimate: ~4 chars per token.
 fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     messages
@@ -32,6 +34,7 @@ pub async fn maybe_compact(
     model: &str,
     history: &mut Vec<ChatMessage>,
     context_window: u32,
+    on_event: &StreamCallback,
 ) -> bool {
     let threshold = (context_window as usize) / 2;
     let current = estimate_tokens(history);
@@ -57,6 +60,7 @@ pub async fn maybe_compact(
 
     // Phase 2: LLM summarization
     eprintln!("\x1b[2m[Compaction phase 2: summarizing old context...]\x1b[0m");
+    on_event(&StreamEvent::Compacting);
     match phase2_summarize(provider, model, history).await {
         Ok(()) => {
             let after = estimate_tokens(history);

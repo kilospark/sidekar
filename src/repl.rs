@@ -12,7 +12,8 @@ pub struct ReplOptions {
     pub model: Option<String>,
     pub credential: Option<String>,
     pub verbose: bool,
-    pub resume: bool,
+    /// None = fresh session, Some(None) = interactive picker, Some(Some(id)) = resume specific session
+    pub resume: Option<Option<String>>,
 }
 
 /// Entry point for the REPL.
@@ -51,7 +52,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             anyhow::bail!(
                 "No model specified. Use one of:\n\
                  \n\
-                 \x1b[1mOption 1:\x1b[0m Pass a credential:  sidekar repl -r claude\n\
+                 \x1b[1mOption 1:\x1b[0m Pass a credential:  sidekar repl -c claude\n\
                  \x1b[1mOption 2:\x1b[0m Pass a model:       sidekar repl -m grok-3\n\
                  \x1b[1mOption 3:\x1b[0m Set env var:        SIDEKAR_MODEL=grok-3\n\
                  \n\
@@ -71,6 +72,20 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 .join(", ");
             anyhow::anyhow!("Unknown model: '{model}'. Available: {available}")
         })?;
+
+    // Require credential
+    if cred.is_none() {
+        let provider_name = match provider_kind {
+            providers::ProviderKind::Anthropic => "claude",
+            providers::ProviderKind::Codex => "codex",
+            providers::ProviderKind::OpenRouter => "or",
+        };
+        anyhow::bail!(
+            "No credential specified. Use -c to provide one.\n\
+             \n\
+             Example: sidekar repl -c {provider_name} -m {model}"
+        );
+    }
 
     // Validate credential and model match the same provider
     if let Some(name) = cred {
@@ -181,12 +196,33 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         return Ok(());
     }
 
-    // Default: fresh session. --resume to continue a previous one.
-    let (mut session_id, mut history) = if opts.resume {
-        init_session(&cwd, &model)?
-    } else {
-        let id = session::create_session(&cwd, &model, "repl")?;
-        (id, Vec::new())
+    // Default: fresh session. -r to resume.
+    let (mut session_id, mut history) = match &opts.resume {
+        Some(Some(sid)) => {
+            // Resume specific session by ID (prefix match)
+            match session::find_session_by_prefix(sid)? {
+                Some(s) => {
+                    let hist = session::load_history(&s.id)?;
+                    eprintln!(
+                        "\x1b[2mResumed session {} ({} messages).\x1b[0m",
+                        &s.id[..s.id.len().min(8)],
+                        hist.len()
+                    );
+                    (s.id, hist)
+                }
+                None => {
+                    anyhow::bail!("No session matching '{sid}'");
+                }
+            }
+        }
+        Some(None) => {
+            // Interactive picker
+            init_session(&cwd, &model)?
+        }
+        None => {
+            let id = session::create_session(&cwd, &model, "repl")?;
+            (id, Vec::new())
+        }
     };
 
     print_banner(&model);
@@ -342,6 +378,13 @@ impl EventRenderer {
         match event {
             StreamEvent::Waiting => {
                 self.start_spinner();
+            }
+            StreamEvent::Compacting => {
+                self.stop_spinner();
+                self.spinner = Some(Spinner::start_with_label(
+                    self.cancel.clone(),
+                    "compacting context".to_string(),
+                ));
             }
             StreamEvent::ToolExec { name } => {
                 self.stop_spinner();
