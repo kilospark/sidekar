@@ -696,20 +696,28 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                         "request"
                     }
                 });
+            let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
             let filtered: Vec<&str> = args
                 .iter()
-                .filter(|a| !a.starts_with("--kind=") && !a.starts_with("--reply-to="))
+                .filter(|a| {
+                    !a.starts_with("--kind=")
+                        && !a.starts_with("--reply-to=")
+                        && !a.starts_with("--file=")
+                })
                 .map(String::as_str)
                 .collect();
             let to = filtered.first().copied().unwrap_or_default();
-            let message = if filtered.len() > 1 {
+            let message = if let Some(path) = file_path {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("failed to read --file={path}"))?
+            } else if filtered.len() > 1 {
                 filtered[1..].join(" ")
             } else {
                 String::new()
             };
             if to.is_empty() || message.is_empty() {
                 bail!(
-                    "Usage: sidekar bus send <to> <message> [--kind=request|fyi|response] [--reply-to=<msg_id>]"
+                    "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]"
                 );
             }
             let mut bus_state = recovered_bus_state();
@@ -723,21 +731,32 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 );
             }
             let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
+            let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
             let filtered: Vec<&str> = args
                 .iter()
-                .filter(|a| !a.starts_with("--reply-to="))
+                .filter(|a| {
+                    !a.starts_with("--reply-to=") && !a.starts_with("--file=")
+                })
                 .map(String::as_str)
                 .collect();
-            if filtered.len() < 3 {
-                bail!("Usage: sidekar bus done <next> <summary> <request> [--reply-to=<msg_id>]");
+            // With --file: <next> <summary> (request body from file)
+            // Without: <next> <summary> <request>
+            if filtered.len() < 2 || (filtered.len() < 3 && file_path.is_none()) {
+                bail!("Usage: sidekar bus done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]");
             }
+            let request_body = if let Some(path) = file_path {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("failed to read --file={path}"))?
+            } else {
+                filtered[2..].join(" ")
+            };
             let mut bus_state = recovered_bus_state();
             crate::bus::cmd_signal_done(
                 &mut bus_state,
                 ctx,
                 filtered[0],
                 filtered[1],
-                filtered[2],
+                &request_body,
                 reply_to,
             )?;
             Ok(())
@@ -786,13 +805,23 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .unwrap_or("self");
             let name = args.iter().find_map(|a| a.strip_prefix("--name="));
             let once = args.iter().any(|a| a == "--once");
+            let scope = args.iter().find_map(|a| a.strip_prefix("--scope="));
+            let project_name = crate::scope::resolve_project_name(None);
+            let project = match scope {
+                Some("global") => Some("global"),
+                _ => Some(project_name.as_str()),
+            };
             let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
-            let id = cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by, once)
+            let id = cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by, once, project, None)
                 .await?;
             let _ = id; // printed by cmd_cron_create
             Ok(())
         }
-        "cron-list" => cron::cmd_cron_list(ctx).await,
+        "cron-list" => {
+            let scope = args.iter().find_map(|a| a.strip_prefix("--scope="));
+            let scope = crate::scope::ScopeView::parse(scope)?;
+            cron::cmd_cron_list(ctx, scope).await
+        }
         "cron-show" => {
             let id = args.first().map(String::as_str).unwrap_or_default();
             if id.is_empty() {
@@ -821,18 +850,23 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
-            let schedule = cron::interval_to_cron(interval)?;
+            let interval_secs = cron::interval_to_secs(interval)?;
+            // Dummy schedule — loop jobs use interval_secs, not cron matching
+            let schedule = "* * * * *";
             let action = json!({"prompt": prompt_text});
             let name_str = format!("loop-{interval}");
             let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
+            let loop_project = crate::scope::resolve_project_name(None);
             let id = cron::cmd_cron_create(
                 ctx,
-                &schedule,
+                schedule,
                 &action,
                 "self",
                 Some(&name_str),
                 &created_by,
                 once,
+                Some(&loop_project),
+                Some(interval_secs),
             )
             .await?;
             let _ = id;

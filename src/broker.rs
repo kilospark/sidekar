@@ -295,6 +295,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
     // Migration: add once column to cron_jobs
     let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN once INTEGER NOT NULL DEFAULT 0");
+    // Migration: add project column to cron_jobs (scoping)
+    let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN project TEXT");
+    // Migration: add loop_interval_secs for loop-style jobs (sequential execution)
+    let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN loop_interval_secs INTEGER");
 
     // TOTP secrets table
     conn.execute_batch(
@@ -1353,6 +1357,8 @@ pub struct CronJobRecord {
     pub last_error: Option<String>,
     pub active: bool,
     pub once: bool,
+    pub project: Option<String>,
+    pub loop_interval_secs: Option<u64>,
 }
 
 pub fn create_cron_job(
@@ -1363,30 +1369,59 @@ pub fn create_cron_job(
     target: &str,
     created_by: &str,
     once: bool,
+    project: Option<&str>,
+    loop_interval_secs: Option<u64>,
 ) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
     conn.execute(
-        "INSERT INTO cron_jobs (id, name, schedule, action_json, target, created_by, created_at, active, once)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
-        params![id, name, schedule, action_json, target, created_by, now, once as i64],
+        "INSERT INTO cron_jobs (id, name, schedule, action_json, target, created_by, created_at, active, once, project, loop_interval_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10)",
+        params![id, name, schedule, action_json, target, created_by, now, once as i64, project, loop_interval_secs.map(|v| v as i64)],
     )?;
     Ok(())
 }
 
-pub fn list_cron_jobs(active_only: bool) -> Result<Vec<CronJobRecord>> {
+pub fn list_cron_jobs(
+    active_only: bool,
+    scope: crate::scope::ScopeView,
+    current_project: &str,
+) -> Result<Vec<CronJobRecord>> {
     let conn = open()?;
-    let sql = if active_only {
-        "SELECT id, name, schedule, action_json, target, created_by, created_at,
-                last_run_at, run_count, error_count, last_error, active, once
-         FROM cron_jobs WHERE active = 1 ORDER BY created_at ASC"
-    } else {
-        "SELECT id, name, schedule, action_json, target, created_by, created_at,
-                last_run_at, run_count, error_count, last_error, active, once
-         FROM cron_jobs ORDER BY created_at ASC"
+    let (where_clause, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = {
+        let mut clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if active_only {
+            clauses.push("active = 1".to_string());
+        }
+
+        match scope {
+            crate::scope::ScopeView::Project => {
+                clauses.push(format!("(project = ?{} OR project IS NULL)", params.len() + 1));
+                params.push(Box::new(current_project.to_string()));
+            }
+            crate::scope::ScopeView::Global => {
+                clauses.push("project = 'global'".to_string());
+            }
+            crate::scope::ScopeView::All => {} // no filter
+        }
+
+        let where_str = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        (where_str, params)
     };
-    let mut stmt = conn.prepare(sql)?;
-    let mut rows = stmt.query([])?;
+
+    let sql = format!(
+        "SELECT id, name, schedule, action_json, target, created_by, created_at,
+                last_run_at, run_count, error_count, last_error, active, once, project, loop_interval_secs
+         FROM cron_jobs{where_clause} ORDER BY created_at ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(params_vec.iter()))?;
     let mut jobs = Vec::new();
     while let Some(row) = rows.next()? {
         jobs.push(row_to_cron_job(row)?);
@@ -1398,7 +1433,7 @@ pub fn get_cron_job(id: &str) -> Result<Option<CronJobRecord>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
         "SELECT id, name, schedule, action_json, target, created_by, created_at,
-                last_run_at, run_count, error_count, last_error, active, once
+                last_run_at, run_count, error_count, last_error, active, once, project, loop_interval_secs
          FROM cron_jobs WHERE id = ?1 LIMIT 1",
     )?;
     stmt.query_row(params![id], row_to_cron_job)
@@ -1453,6 +1488,8 @@ fn row_to_cron_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRecord> {
             .unwrap_or(Some(0))
             .unwrap_or(0)
             != 0,
+        project: row.get::<_, Option<String>>(13).unwrap_or(None),
+        loop_interval_secs: row.get::<_, Option<i64>>(14).unwrap_or(None).map(|v| v as u64),
     })
 }
 
