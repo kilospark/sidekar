@@ -315,8 +315,12 @@ async fn connect_relay_tunnel(
 const STARTUP_INJECT: &str =
     "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
 
-/// Seconds to wait before injecting — lets the agent finish startup output.
-const STARTUP_INJECT_DELAY_SECS: u64 = 5;
+/// How long the agent must be quiet (no output) before we inject the startup message.
+const STARTUP_INJECT_QUIET_MS: u64 = 1500;
+/// Minimum time before injection — don't inject during early boot.
+const STARTUP_INJECT_MIN_SECS: u64 = 5;
+/// If idle detection hasn't fired by this point, inject anyway (TUI apps may never go quiet).
+const STARTUP_INJECT_FALLBACK_SECS: u64 = 15;
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>, proxy_override: Option<bool>) -> Result<()> {
@@ -462,11 +466,6 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     };
 
     let _ = crate::memory::start_agent_session(&identity.name, &cwd);
-    if let Ok(brief) = crate::memory::startup_brief(3) {
-        if !brief.trim().is_empty() && std::env::var("SIDEKAR_VERBOSE").is_ok() {
-            crate::broker::try_log_event("debug", "pty", "startup_memory_brief", Some(&brief));
-        }
-    }
     if std::env::var("SIDEKAR_VERBOSE").is_ok() {
         crate::broker::try_log_event(
             "debug",
@@ -542,21 +541,48 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
     // last-session file is updated. We read it and update the cron context.
     let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
 
-    // Inject startup message after agent initializes.
-    // Skipped if the user types anything before the delay elapses.
+    // Build startup message: directives + memory context
+    let startup_msg = {
+        let mut msg = STARTUP_INJECT.to_string();
+        if let Ok(brief) = crate::memory::startup_brief(3) {
+            let brief = brief.trim();
+            if !brief.is_empty() {
+                msg.push_str("\n\n[memory context]\n");
+                msg.push_str(brief);
+            }
+        }
+        msg
+    };
+
+    // Inject startup message once the agent is idle (produced output then went quiet).
+    // Skipped if the user types anything first.
     {
         let inject_fd = master_arc.clone();
         let inject_input = input_state.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(STARTUP_INJECT_DELAY_SECS)).await;
-            // Don't inject if user already started interacting
-            if inject_input.has_ever_had_input() || inject_input.has_pending_line() {
-                return;
+            let start = tokio::time::Instant::now();
+            let min_wait = std::time::Duration::from_secs(STARTUP_INJECT_MIN_SECS);
+            let fallback = start + std::time::Duration::from_secs(STARTUP_INJECT_FALLBACK_SECS);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if inject_input.has_ever_had_input() || inject_input.has_pending_line() {
+                    return; // user typed first — skip
+                }
+                let elapsed = start.elapsed();
+                if elapsed >= min_wait && inject_input.agent_idle_for(STARTUP_INJECT_QUIET_MS) {
+                    break; // agent booted and went quiet — ready
+                }
+                if tokio::time::Instant::now() >= fallback {
+                    break; // fallback for TUI apps that never go fully quiet
+                }
             }
+            // Flatten to single line — multiline pastes confuse some TUI editors
+            let flat = startup_msg.replace('\n', " ");
             let fd = inject_fd.as_raw_fd();
-            let _ = write_all_fd(fd, STARTUP_INJECT.as_bytes());
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            let _ = write_all_fd(fd, b"\r");
+            let _ = write_all_fd(fd, flat.as_bytes());
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // Send both CR and LF — different TUI frameworks use different submit keys
+            let _ = write_all_fd(fd, b"\r\n");
         });
     }
 
@@ -1018,16 +1044,19 @@ async fn event_loop(
                 match result {
                     Ok(0) | Err(_) => break, // stdin closed
                     Ok(n) => {
-                        input_state.mark_activity();
                         let chunk = &buf_in[..n];
 
                         // For local PTY sessions, pass terminal control replies through unchanged.
                         // Codex probes the terminal on startup and expects the real terminal's
                         // responses back on stdin. Swallowing those breaks its renderer.
+                        // Don't mark as user activity — these are terminal auto-replies,
+                        // not real user input.
                         if chunk.contains(&0x1b) {
                             let _ = write_all_fd(master_fd, chunk);
                             continue;
                         }
+
+                        input_state.mark_activity();
 
                         for &byte in chunk {
                             if byte == b'\r' || byte == b'\n' {
@@ -1065,6 +1094,7 @@ async fn event_loop(
                             }
                         }) {
                             Ok(Ok(n)) => {
+                                input_state.mark_agent_output();
                                 let raw = &buf_out[..n];
                                 // Preserve terminal transparency except for OSC window-title
                                 // sequences, where we prefix the agent nickname.
