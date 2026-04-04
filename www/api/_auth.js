@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
+import { ObjectId } from "mongodb";
 
 const JWT_SECRET = new TextEncoder().encode((process.env.JWT_SECRET || "dev-secret-change-me").trim());
 const COOKIE_NAME = "sidekar_session";
@@ -112,29 +113,26 @@ export function clearSessionCookie(res) {
  * Returns the updated target user document.
  */
 export async function mergeUsers(db, targetUser, sourceUser) {
-  const { ObjectId } = await import("mongodb");
   const targetId = targetUser._id instanceof ObjectId ? targetUser._id : new ObjectId(targetUser._id);
   const sourceId = sourceUser._id instanceof ObjectId ? sourceUser._id : new ObjectId(sourceUser._id);
 
   if (targetId.equals(sourceId)) return targetUser;
 
-  // Move devices from source to target
-  await db.collection("devices").updateMany(
-    { user_id: sourceId },
-    { $set: { user_id: targetId } }
-  );
-
-  // Move sessions (relay uses string user_id)
-  await db.collection("sessions").updateMany(
-    { user_id: sourceId.toString() },
-    { $set: { user_id: targetId.toString() } }
-  );
-
-  // Move ext_tokens
-  await db.collection("ext_tokens").updateMany(
-    { user_id: sourceId.toString() },
-    { $set: { user_id: targetId.toString() } }
-  );
+  // Move devices, sessions, and ext_tokens in parallel (independent collections)
+  await Promise.all([
+    db.collection("devices").updateMany(
+      { user_id: sourceId },
+      { $set: { user_id: targetId } }
+    ),
+    db.collection("sessions").updateMany(
+      { user_id: sourceId.toString() },
+      { $set: { user_id: targetId.toString() } }
+    ),
+    db.collection("ext_tokens").updateMany(
+      { user_id: sourceId.toString() },
+      { $set: { user_id: targetId.toString() } }
+    ),
+  ]);
 
   // Copy provider IDs and fields from source to target
   const updates = {};
@@ -153,4 +151,34 @@ export async function mergeUsers(db, targetUser, sourceUser) {
 
   // Return updated target
   return db.collection("users").findOne({ _id: targetId });
+}
+
+/**
+ * Link an OAuth provider to the currently logged-in user.
+ * If the provider ID belongs to a different account, merge that account first.
+ * Returns { redirect } on success, or { error } if not authenticated.
+ */
+export async function linkProvider(db, req, { providerIdField, providerUserId, updateFields, providerName, isMobile }) {
+  const currentUser = await getUser(req);
+  if (!currentUser) {
+    return isMobile
+      ? { redirect: `sidekar://auth/error?reason=not_authenticated` }
+      : { redirect: "/settings?error=not_authenticated" };
+  }
+
+  const target = await db.collection("users").findOne({ _id: new ObjectId(currentUser.sub) });
+  if (target) {
+    const existing = await db.collection("users").findOne({ [providerIdField]: providerUserId });
+    if (existing && !existing._id.equals(target._id)) {
+      await mergeUsers(db, target, existing);
+    }
+    await db.collection("users").updateOne(
+      { _id: target._id },
+      { $set: { [providerIdField]: providerUserId, ...updateFields } }
+    );
+  }
+
+  return isMobile
+    ? { redirect: `sidekar://auth/linked?provider=${providerName}` }
+    : { redirect: `/settings?linked=${providerName}` };
 }
