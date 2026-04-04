@@ -21,7 +21,7 @@ const DEFAULT_BUS_LIST_LIMIT: usize = 20;
 /// Write an OSC 0 escape sequence to set the terminal title.
 /// Tries `/dev/tty` first (works even when stderr is redirected, e.g. in PTY
 /// mode), then falls back to stderr.
-fn set_terminal_title(title: &str) {
+pub fn set_terminal_title(title: &str) {
     let seq = format!("\x1b]0;{title}\x07");
     if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
         let _ = tty.write_all(seq.as_bytes());
@@ -131,7 +131,7 @@ fn detect_agent_type() -> String {
 
 /// Detect the project name from the pane's working directory.
 /// Uses the full path for consistency with KV store.
-fn detect_project_name() -> String {
+pub fn detect_project_name() -> String {
     std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".into())

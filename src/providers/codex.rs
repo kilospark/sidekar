@@ -353,6 +353,7 @@ async fn parse_sse_stream(
                             .or_else(|| pending.as_ref().map(|call| call.partial_json.clone()))
                             .unwrap_or_else(|| "{}".to_string());
                         let arguments: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
+                        // Always store both IDs so we can reconstruct the request
                         let stored_id = if item_id.is_empty() || item_id == call_id {
                             call_id.clone()
                         } else {
@@ -467,9 +468,16 @@ fn split_tool_call_ids(stored_id: &str) -> (String, String) {
         return (call_id.to_string(), item_id.to_string());
     }
 
-    if stored_id.starts_with("call_") {
-        return (stored_id.to_string(), stored_id.to_string());
+    // Native Codex format
+    if let Some(suffix) = stored_id.strip_prefix("call_") {
+        return (stored_id.to_string(), format!("fc_{suffix}"));
+    }
+    if let Some(suffix) = stored_id.strip_prefix("fc_") {
+        return (format!("call_{suffix}"), stored_id.to_string());
     }
 
-    (stored_id.to_string(), stored_id.to_string())
+    // Foreign ID (e.g. Anthropic's toolu_*) — generate Codex-compatible IDs
+    let hash = format!("{:x}", xxhash_rust::xxh64::xxh64(stored_id.as_bytes(), 0));
+    let short = &hash[..hash.len().min(12)];
+    (format!("call_{short}"), format!("fc_{short}"))
 }

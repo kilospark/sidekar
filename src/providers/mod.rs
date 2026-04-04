@@ -218,6 +218,10 @@ pub struct ToolDef {
 
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
+    /// Emitted before each API call so the UI can show a waiting indicator.
+    Waiting,
+    /// Emitted before a tool executes so the UI can show progress.
+    ToolExec { name: String },
     TextDelta {
         delta: String,
     },
@@ -395,6 +399,130 @@ pub fn default_model() -> &'static str {
     "claude-sonnet-4-20250514"
 }
 
+/// Cached model metadata fetched from provider APIs.
+static MODEL_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (u32, u32)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Fetch context window for a model from the provider API.
+/// Tries the provider's models endpoint first, falls back to static registry.
+pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
+    if let Some(&(ctx, _)) = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied()).as_ref() {
+        return ctx;
+    }
+
+    if let Some((ctx, max_out)) = fetch_model_limits(model, provider).await {
+        if let Ok(mut cache) = MODEL_CACHE.lock() {
+            cache.insert(model.to_string(), (ctx, max_out));
+        }
+        return ctx;
+    }
+
+    model_info(model).map(|m| m.context_window).unwrap_or(128_000)
+}
+
+/// Fetch max output tokens for a model from the provider API.
+pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
+    if let Some(&(_, max_out)) = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied()).as_ref() {
+        return max_out;
+    }
+
+    if let Some((ctx, max_out)) = fetch_model_limits(model, provider).await {
+        if let Ok(mut cache) = MODEL_CACHE.lock() {
+            cache.insert(model.to_string(), (ctx, max_out));
+        }
+        return max_out;
+    }
+
+    model_info(model).map(|m| m.max_output).unwrap_or(16_384)
+}
+
+/// Fetch (context_window, max_output) from the provider's models API.
+async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u32)> {
+    match provider {
+        Provider::Anthropic { api_key, base_url } => {
+            fetch_anthropic_model_limits(api_key, base_url, model).await
+        }
+        Provider::OpenRouter { api_key, base_url } => {
+            fetch_openrouter_model_limits(api_key, base_url, model).await
+        }
+        Provider::Codex { .. } => None, // OpenAI /v1/models doesn't return context info
+    }
+}
+
+/// Anthropic: GET /v1/models → max_input_tokens, max_tokens
+async fn fetch_anthropic_model_limits(api_key: &str, base_url: &str, model: &str) -> Option<(u32, u32)> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let is_oauth = api_key.contains("sk-ant-oat");
+    let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
+    if is_oauth {
+        req = req.header("authorization", format!("Bearer {api_key}"));
+    } else {
+        req = req.header("x-api-key", api_key);
+    }
+
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let models = body.get("data").and_then(|d| d.as_array())?;
+
+    for m in models {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == model {
+            let ctx = m.get("max_input_tokens").and_then(|v| v.as_u64()).unwrap_or(200_000) as u32;
+            let max_out = m.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(16_000) as u32;
+            return Some((ctx, max_out));
+        }
+    }
+
+    None
+}
+
+/// OpenRouter: GET /v1/models → context_length, top_provider.max_completion_tokens
+async fn fetch_openrouter_model_limits(api_key: &str, base_url: &str, model: &str) -> Option<(u32, u32)> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let models = body.get("data").and_then(|d| d.as_array())?;
+
+    for m in models {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == model {
+            let ctx = m.get("context_length").and_then(|v| v.as_u64()).unwrap_or(128_000) as u32;
+            let max_out = m
+                .get("top_provider")
+                .and_then(|tp| tp.get("max_completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16_384) as u32;
+            return Some((ctx, max_out));
+        }
+    }
+
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Provider — enum dispatch (no trait, 3 variants)
 // ---------------------------------------------------------------------------
@@ -446,6 +574,42 @@ impl Provider {
         messages: &[ChatMessage],
         tools: &[ToolDef],
     ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
+        let max_retries = 3u32;
+        let mut attempt = 0u32;
+
+        loop {
+            let result = self.stream_once(model, system_prompt, messages, tools).await;
+
+            match &result {
+                Err(e) if attempt < max_retries && is_retryable_error(e) => {
+                    attempt += 1;
+                    let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                    eprintln!(
+                        "\x1b[33m[error: {e:#}]\x1b[0m"
+                    );
+                    eprintln!(
+                        "\x1b[33m[retrying {attempt}/{max_retries} in {:.1}s...]\x1b[0m",
+                        delay.as_secs_f32()
+                    );
+                    crate::broker::try_log_error(
+                        "repl",
+                        &format!("retrying ({attempt}/{max_retries})"),
+                        Some(&format!("{e:#}")),
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                _ => return result,
+            }
+        }
+    }
+
+    async fn stream_once(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolDef],
+    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
         match self {
             Provider::Anthropic { api_key, base_url } => {
                 anthropic::stream(api_key, base_url, model, system_prompt, messages, tools).await
@@ -471,4 +635,26 @@ impl Provider {
             }
         }
     }
+}
+
+/// Check if an error is retryable (5xx, 429 rate limit, or connection failure).
+fn is_retryable_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    // 5xx server errors
+    if msg.contains("(500)") || msg.contains("(502)") || msg.contains("(503)")
+        || msg.contains("(504)") || msg.contains("(529)")
+    {
+        return true;
+    }
+    // 429 rate limit
+    if msg.contains("(429)") {
+        return true;
+    }
+    // Connection failures
+    if msg.contains("failed to connect") || msg.contains("connection reset")
+        || msg.contains("timed out")
+    {
+        return true;
+    }
+    false
 }

@@ -110,19 +110,38 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string());
 
-    // Register on the bus
-    let bus_name = format!("sidekar-repl-{}", std::process::id());
+    // Register on the bus (same pattern as PTY/bus do_register)
+    let project = crate::bus::detect_project_name();
+    let nick = crate::bus::pick_nickname_for_project(Some(&project));
+    let pane_id = format!("repl-{}", std::process::id());
+
+    let existing_names: std::collections::HashSet<String> = broker::list_agents(None)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| a.id.name)
+        .collect();
+    let mut n = 1u32;
+    let bus_name = loop {
+        let candidate = format!("sidekar-repl-{project}-{n}");
+        if !existing_names.contains(&candidate) {
+            break candidate;
+        }
+        n += 1;
+    };
+
     let identity = AgentId {
         name: bus_name.clone(),
-        nick: Some("self".to_string()),
+        nick: Some(nick.clone()),
         session: Some(cwd.clone()),
-        pane: None,
-        agent_type: Some("sidekar".to_string()),
+        pane: Some(pane_id.clone()),
+        agent_type: Some("sidekar-repl".to_string()),
     };
-    let pane_id = format!("repl-{}", std::process::id());
+
     if let Err(e) = broker::register_agent(&identity, Some(&pane_id)) {
         eprintln!("\x1b[2m[bus registration failed: {e}]\x1b[0m");
     }
+
+    crate::bus::set_terminal_title(&format!("{nick} ({bus_name}) — sidekar repl"));
 
     // Single-prompt mode: fresh session, one turn, exit
     if let Some(input) = prompt {
@@ -135,8 +154,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let _ = session::append_message(&session_id, &user_msg);
         history.push(user_msg);
 
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
         let on_event: crate::agent::StreamCallback =
-            Box::new(|event: &StreamEvent| render_event(event));
+            Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
         let pre_len = history.len();
         crate::agent::run(
@@ -146,11 +167,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             &mut history,
             &tool_defs,
             on_event,
+            Some(&cancel),
         )
         .await?;
 
-        for msg in &history[pre_len..] {
-            let _ = session::append_message(&session_id, msg);
+        if pre_len <= history.len() {
+            for msg in &history[pre_len..] {
+                let _ = session::append_message(&session_id, msg);
+            }
         }
 
         let _ = broker::unregister_agent(&bus_name);
@@ -216,26 +240,39 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         history.push(user_msg);
 
         // Run agent loop
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
         let on_event: crate::agent::StreamCallback =
-            Box::new(|event: &StreamEvent| render_event(event));
+            Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
         let pre_len = history.len();
-        if let Err(e) = crate::agent::run(
+        match crate::agent::run(
             &provider,
             &model,
             &system_prompt,
             &mut history,
             &tool_defs,
             on_event,
+            Some(&cancel),
         )
         .await
         {
-            eprintln!("\x1b[31mError: {e:#}\x1b[0m");
+            Ok(()) => {}
+            Err(e) if e.is::<crate::agent::Cancelled>() => {
+                // Truncate any partial messages added during cancelled run
+                history.truncate(pre_len);
+                eprintln!("\x1b[33m[cancelled]\x1b[0m");
+            }
+            Err(e) => {
+                eprintln!("\x1b[31mError: {e:#}\x1b[0m");
+            }
         }
 
         // Persist new messages from the agent loop
-        for msg in &history[pre_len..] {
-            let _ = session::append_message(&session_id, msg);
+        if pre_len <= history.len() {
+            for msg in &history[pre_len..] {
+                let _ = session::append_message(&session_id, msg);
+            }
         }
     }
 
@@ -266,28 +303,264 @@ fn init_session(cwd: &str, model: &str) -> Result<(String, Vec<ChatMessage>)> {
 // Stream event rendering
 // ---------------------------------------------------------------------------
 
-fn render_event(event: &StreamEvent) {
-    match event {
-        StreamEvent::TextDelta { delta } => {
-            print!("{delta}");
-            let _ = io::stdout().flush();
+/// Stateful renderer with streaming markdown support, tool call display, and spinner.
+struct EventRenderer {
+    md: crate::md::MarkdownStream,
+    tool_args: std::collections::HashMap<usize, (String, String)>,
+    spinner: Option<Spinner>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EventRenderer {
+    fn new(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            md: crate::md::MarkdownStream::new(),
+            tool_args: std::collections::HashMap::new(),
+            spinner: None,
+            cancel,
         }
-        StreamEvent::ThinkingDelta { .. } => {}
-        StreamEvent::ToolCallStart { name, .. } => {
-            eprintln!("\n\x1b[2m> {name}\x1b[0m");
+    }
+
+    fn stop_spinner(&mut self) {
+        if let Some(mut s) = self.spinner.take() {
+            s.stop();
         }
-        StreamEvent::ToolCallEnd { .. } | StreamEvent::ToolCallDelta { .. } => {}
-        StreamEvent::Done { message } => {
-            println!();
-            let u = &message.usage;
-            eprintln!(
-                "\x1b[2m[{} in / {} out tokens]\x1b[0m",
-                u.input_tokens, u.output_tokens
-            );
+    }
+
+    fn start_spinner(&mut self) {
+        self.stop_spinner();
+        self.spinner = Some(Spinner::start_with_cancel(self.cancel.clone()));
+    }
+
+    fn flush_md_lines(&mut self) {
+        for line in self.md.commit_complete_lines() {
+            println!("{line}");
         }
-        StreamEvent::Error { message } => {
-            eprintln!("\n\x1b[31mError: {message}\x1b[0m");
+    }
+
+    fn render(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::Waiting => {
+                self.start_spinner();
+            }
+            StreamEvent::ToolExec { name } => {
+                self.stop_spinner();
+                self.spinner = Some(Spinner::start_with_label(
+                    self.cancel.clone(),
+                    format!("running {name}"),
+                ));
+            }
+            StreamEvent::TextDelta { delta } => {
+                self.stop_spinner();
+                self.md.push(delta);
+                self.flush_md_lines();
+            }
+            StreamEvent::ThinkingDelta { .. } => {
+                self.stop_spinner();
+            }
+            StreamEvent::ToolCallStart { index, name, .. } => {
+                self.stop_spinner();
+                for line in self.md.finalize() {
+                    println!("{line}");
+                }
+                self.tool_args
+                    .insert(*index, (name.clone(), String::new()));
+            }
+            StreamEvent::ToolCallDelta { index, delta } => {
+                if let Some((_, args)) = self.tool_args.get_mut(index) {
+                    args.push_str(delta);
+                }
+            }
+            StreamEvent::ToolCallEnd { index } => {
+                if let Some((name, args_json)) = self.tool_args.remove(index) {
+                    let detail = extract_tool_summary(&name, &args_json);
+                    eprintln!("\n\x1b[2m> {name}: {detail}\x1b[0m");
+                }
+                // Restart spinner while tool executes and next API call happens
+                self.start_spinner();
+            }
+            StreamEvent::Done { message } => {
+                self.stop_spinner();
+                for line in self.md.finalize() {
+                    println!("{line}");
+                }
+                println!();
+                let u = &message.usage;
+                eprintln!(
+                    "\x1b[2m[{} in / {} out tokens]\x1b[0m",
+                    u.input_tokens, u.output_tokens
+                );
+            }
+            StreamEvent::Error { message } => {
+                self.stop_spinner();
+                eprintln!("\n\x1b[31mError: {message}\x1b[0m");
+            }
         }
+    }
+}
+
+struct Spinner {
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+const ANIMATIONS: &[&[&str]] = &[
+    &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+    &["░", "▒", "▓", "█", "▓", "▒"],
+    &["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"],
+    &["▖", "▘", "▝", "▗"],
+    &["∙", "○", "●", "○"],
+    &["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],
+    &["◐", "◓", "◑", "◒"],
+    &["▹▹▹", "▸▹▹", "▹▸▹", "▹▹▸"],
+    &["⊶", "⊷"],
+    &["◇", "◈", "◆", "◈"],
+];
+
+impl Spinner {
+    fn start_with_cancel(
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self::start_with_label(cancel, String::new())
+    }
+
+    fn start_with_label(
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        label: String,
+    ) -> Self {
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r = running.clone();
+        let anim_idx = rand::random::<u32>() as usize % ANIMATIONS.len();
+        let color_offset = rand::random::<u32>() as usize;
+        let handle = std::thread::spawn(move || {
+            let orig_termios = enter_raw_mode();
+            let frames = ANIMATIONS[anim_idx];
+            let colors = [
+                "\x1b[33m", // yellow
+                "\x1b[36m", // cyan
+                "\x1b[35m", // magenta
+                "\x1b[32m", // green
+                "\x1b[34m", // blue
+                "\x1b[31m", // red
+            ];
+            let started = std::time::Instant::now();
+            let label_part = if label.is_empty() {
+                String::new()
+            } else {
+                format!(" \x1b[36m{label}\x1b[0m")
+            };
+            let mut i = 0;
+            while r.load(std::sync::atomic::Ordering::Relaxed) {
+                let elapsed = started.elapsed().as_secs_f32();
+                let color = colors[(i + color_offset) % colors.len()];
+                eprint!(
+                    "\r{color}{}\x1b[0m \x1b[2m{:.1}s\x1b[0m{label_part} \x1b[2m(esc to cancel)\x1b[0m\x1b[K",
+                    frames[i % frames.len()],
+                    elapsed,
+                );
+                let _ = io::stderr().flush();
+                i += 1;
+
+                if poll_stdin_byte(80) == Some(0x1b) {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    r.store(false, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+            }
+            eprint!("\r\x1b[K");
+            let _ = io::stderr().flush();
+            if let Some(t) = orig_termios {
+                restore_termios(t);
+            }
+        });
+        Self {
+            running,
+            handle: Some(handle),
+        }
+    }
+
+    fn stop(&mut self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn enter_raw_mode() -> Option<libc::termios> {
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(0, &mut termios) != 0 {
+            return None;
+        }
+        let orig = termios;
+        // Disable canonical mode and echo
+        termios.c_lflag &= !(libc::ICANON | libc::ECHO);
+        // Set minimum chars to 0, timeout to 0 (non-blocking)
+        termios.c_cc[libc::VMIN] = 0;
+        termios.c_cc[libc::VTIME] = 0;
+        if libc::tcsetattr(0, libc::TCSANOW, &termios) != 0 {
+            return None;
+        }
+        Some(orig)
+    }
+}
+
+fn restore_termios(termios: libc::termios) {
+    unsafe {
+        libc::tcsetattr(0, libc::TCSANOW, &termios);
+    }
+}
+
+/// Poll stdin for a single byte with a timeout in milliseconds.
+/// Returns the byte if available, None if timeout or error.
+fn poll_stdin_byte(timeout_ms: i32) -> Option<u8> {
+    unsafe {
+        let mut fds = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = libc::poll(&mut fds, 1, timeout_ms);
+        if ready > 0 && (fds.revents & libc::POLLIN) != 0 {
+            let mut buf = [0u8; 1];
+            let n = libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, 1);
+            if n == 1 {
+                return Some(buf[0]);
+            }
+        }
+    }
+    None
+}
+
+fn extract_tool_summary(name: &str, args_json: &str) -> String {
+    let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
+    match name {
+        "bash" | "Bash" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or(args_json)
+            .to_string(),
+        _ => {
+            // For other tools, show first string field or truncated args
+            if let Some(obj) = args.as_object() {
+                if let Some((_, v)) = obj.iter().next() {
+                    if let Some(s) = v.as_str() {
+                        return truncate_display(s, 120);
+                    }
+                }
+            }
+            truncate_display(args_json, 120)
+        }
+    }
+}
+
+fn truncate_display(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..s.floor_char_boundary(max)])
     }
 }
 
@@ -407,6 +680,14 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
         "/resume" => {
             match session::list_sessions(cwd, 10) {
                 Ok(sessions) => {
+                    // Filter out empty sessions (except current)
+                    let sessions: Vec<_> = sessions
+                        .into_iter()
+                        .filter(|s| {
+                            s.id == current_session
+                                || session::message_count(&s.id).unwrap_or(0) > 0
+                        })
+                        .collect();
                     if sessions.len() <= 1 {
                         eprintln!("No other sessions to resume.");
                         return SlashResult::Continue;

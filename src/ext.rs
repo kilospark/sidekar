@@ -12,12 +12,39 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::auth;
+use crate::message::epoch_secs;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
 const OFFICIAL_EXTENSION_ID: &str = "ieggclnoffcnljcjeadgogpfbnhogncc";
 
 /// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
 const TIMEOUT_SECS: u64 = 180;
+
+const KEEPALIVE_INTERVAL_SECS: u64 = 15;
+const CONNECTION_TIMEOUT_SECS: u64 = 30;
+
+/// Token verification cache to avoid network call on every extension connect
+struct TokenCache {
+    user_id: String,
+    expires_at: u64,
+}
+
+static TOKEN_CACHE: std::sync::OnceLock<TokenCache> = std::sync::OnceLock::new();
+
+fn get_cached_user_id(_ext_token: &str) -> Option<String> {
+    TOKEN_CACHE.get().and_then(|cache| {
+        if cache.expires_at > epoch_secs() {
+            Some(cache.user_id.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn set_cached_user_id(user_id: String) {
+    let expires_at = epoch_secs() + 300; // 5 minute TTL
+    let _ = TOKEN_CACHE.set(TokenCache { user_id, expires_at });
+}
 
 fn data_dir() -> PathBuf {
     dirs::home_dir()
@@ -48,6 +75,8 @@ pub struct ExtState {
     pub authenticated: bool,
     pub verified_user_id: Option<String>,
     pub connection_id: u64,
+    pub last_contact: u64,
+    pub owner_agent_id: Option<String>,
 }
 
 impl Default for ExtState {
@@ -59,6 +88,8 @@ impl Default for ExtState {
             authenticated: false,
             verified_user_id: None,
             connection_id: 0,
+            last_contact: 0,
+            owner_agent_id: None,
         }
     }
 }
@@ -255,6 +286,11 @@ fn ext_api_base() -> String {
 }
 
 fn verify_ext_token_sync(ext_token: &str) -> Result<String> {
+    // Try cache first
+    if let Some(cached_user_id) = get_cached_user_id(ext_token) {
+        return Ok(cached_user_id);
+    }
+    
     let device_token = auth::auth_token().ok_or_else(|| anyhow!("Run `sidekar login`"))?;
 
     let client = reqwest::blocking::Client::builder()
@@ -282,10 +318,16 @@ fn verify_ext_token_sync(ext_token: &str) -> Result<String> {
         bail!("Extension token and CLI token belong to different users");
     }
 
-    data.get("user_id")
+    let user_id = data
+        .get("user_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("No user_id in verification response"))
+        .ok_or_else(|| anyhow!("No user_id in verification response"))?;
+    
+    // Cache the result
+    set_cached_user_id(user_id.clone());
+    
+    Ok(user_id)
 }
 
 type SharedState = Arc<Mutex<ExtState>>;
@@ -305,6 +347,7 @@ async fn disconnect_bridge(state: &SharedState, connection_id: u64) {
         s.connected = false;
         s.authenticated = false;
         s.verified_user_id = None;
+        s.owner_agent_id = None;
         pending
     };
     for (_id, tx) in pending {
@@ -317,8 +360,10 @@ pub async fn register_bridge_connection(
     mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     mut writer: tokio::net::unix::OwnedWriteHalf,
     user_id: String,
+    agent_id: Option<String>,
 ) -> Result<()> {
-    let (bridge_tx, mut bridge_rx) = mpsc::unbounded_channel::<String>();
+    let now = epoch_secs();
+    let (bridge_tx, _bridge_rx) = mpsc::unbounded_channel::<String>();
     let (connection_id, replaced_pending) = {
         let mut s = state.lock().await;
         let replaced_pending = std::mem::take(&mut s.pending);
@@ -327,6 +372,8 @@ pub async fn register_bridge_connection(
         s.connected = true;
         s.authenticated = true;
         s.verified_user_id = Some(user_id);
+        s.last_contact = now;
+        s.owner_agent_id = agent_id;
         (s.connection_id, replaced_pending)
     };
     for (_id, tx) in replaced_pending {
@@ -337,29 +384,58 @@ pub async fn register_bridge_connection(
     writer.flush().await?;
 
     let write_state = state.clone();
+    let read_state = state.clone();
+    let conn_id = connection_id;
+
+    // Keepalive ping task - sends pings and marks disconnected on timeout
     tokio::spawn(async move {
-        while let Some(msg) = bridge_rx.recv().await {
-            if writer.write_all(msg.as_bytes()).await.is_err() {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            let now = epoch_secs();
+            let should_disconnect = {
+                let s = write_state.lock().await;
+                if s.connection_id != conn_id {
+                    break;
+                }
+                if !s.connected || s.bridge_tx.is_none() {
+                    break;
+                }
+                now - s.last_contact > CONNECTION_TIMEOUT_SECS
+            };
+            if should_disconnect {
+                eprintln!("[sidekar] Extension keepalive timeout, disconnecting");
+                disconnect_bridge(&write_state, conn_id).await;
                 break;
             }
-            if writer.write_all(b"\n").await.is_err() {
-                break;
-            }
-            if writer.flush().await.is_err() {
-                break;
+            // Send ping to extension
+            let ping_msg = serde_json::to_string(&json!({"type":"ping"})).unwrap_or_default();
+            if let Some(ref tx) = write_state.lock().await.bridge_tx {
+                let _ = tx.send(ping_msg);
             }
         }
-        disconnect_bridge(&write_state, connection_id).await;
     });
 
+    // Read loop with ping/pong handling
     let mut line = String::new();
     while let Ok(n) = reader.read_line(&mut line).await {
         if n == 0 {
             break;
         }
         if let Ok(val) = serde_json::from_str::<Value>(line.trim()) {
+            // Update last_contact on any message (pong, responses)
+            {
+                let mut s = read_state.lock().await;
+                s.last_contact = epoch_secs();
+            }
+            // Handle pong response - don't forward as command response
+            if val.get("type").and_then(|v| v.as_str()) == Some("pong") {
+                line.clear();
+                continue;
+            }
+            // Handle command responses
             if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
-                let mut s = state.lock().await;
+                let mut s = read_state.lock().await;
                 if let Some(tx) = s.pending.remove(id) {
                     let _ = tx.send(val);
                 }
@@ -368,14 +444,14 @@ pub async fn register_bridge_connection(
         line.clear();
     }
 
-    disconnect_bridge(&state, connection_id).await;
+    disconnect_bridge(&read_state, connection_id).await;
     Ok(())
 }
 
 /// Send a command to the extension via the shared state.
 /// Used by daemon to forward ext commands from unix socket.
-pub async fn forward_command(state: &SharedExtState, command: Value) -> Value {
-    match send_command(state, command).await {
+pub async fn forward_command(state: &SharedExtState, command: Value, agent_id: Option<String>) -> Value {
+    match send_command(state, command, agent_id.as_deref()).await {
         Ok(v) => v,
         Err(e) => json!({"error": e.to_string()}),
     }
@@ -391,7 +467,7 @@ pub async fn get_status(state: &SharedExtState) -> Value {
     })
 }
 
-async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
+async fn send_command(state: &SharedState, command: Value, agent_id: Option<&str>) -> Result<Value> {
     let id = format!("{:08x}", rand::random::<u32>());
     let mut msg = command;
     msg.as_object_mut().unwrap().insert("id".into(), json!(id));
@@ -402,6 +478,17 @@ async fn send_command(state: &SharedState, command: Value) -> Result<Value> {
         let mut s = state.lock().await;
         if !s.connected || !s.authenticated || s.bridge_tx.is_none() {
             bail!("Extension not connected. Is Chrome running with the Sidekar extension?");
+        }
+        // Check ownership - only owner agent can send
+        if let Some(req_agent) = agent_id {
+            if let Some(ref owner) = s.owner_agent_id {
+                if owner != req_agent {
+                    bail!("Extension in use by another agent. Try again later.");
+                }
+            } else {
+                // No owner yet, claim it
+                s.owner_agent_id = Some(req_agent.to_string());
+            }
         }
         s.pending.insert(id.clone(), tx);
         let text = serde_json::to_string(&msg)?;
@@ -464,10 +551,16 @@ pub async fn send_cli_command(
 
     let msg = build_command(command, args, default_tab)?;
     crate::daemon::ensure_running()?;
-    let result = crate::daemon::send_command(&json!({
+    
+    let agent_id = std::env::var("SIDEKAR_AGENT_ID").ok();
+    let mut cmd_json = json!({
         "type": "ext",
         "command": msg,
-    }))?;
+    });
+    if let Some(ref aid) = agent_id {
+        cmd_json["agent_id"] = json!(aid);
+    }
+    let result = crate::daemon::send_command(&cmd_json)?;
 
     if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
         bail!("{err}");
