@@ -1,15 +1,14 @@
 import { getUser, parseCookie, clearSessionCookie } from "../_auth.js";
 import { getDb } from "../_db.js";
+import { ObjectId } from "mongodb";
 
 export default async function handler(req, res) {
   if (req.method === "GET") {
-    // Authenticated: return linked providers for current user
     if (req.query.linked !== undefined) {
       const jwt = await getUser(req);
       if (!jwt) return res.status(401).json({ error: "not authenticated" });
 
       const db = await getDb();
-      const { ObjectId } = await import("mongodb");
       const user = await db.collection("users").findOne({ _id: new ObjectId(jwt.sub) });
       if (!user) return res.status(404).json({ error: "user not found" });
 

@@ -1,5 +1,5 @@
 import { getDb } from "../_db.js";
-import { signToken, setSessionCookie, getUser, mergeUsers } from "../_auth.js";
+import { signToken, setSessionCookie, linkProvider } from "../_auth.js";
 
 export default async function handler(req, res) {
   try {
@@ -108,33 +108,15 @@ async function handleCallback(req, res) {
 
     const returnTo = req.query.state || "/dashboard";
 
-    // Account linking: user is already logged in and wants to link Google
     if (returnTo === "link" || returnTo === "link-mobile") {
-      const currentUser = await getUser(req);
-      if (!currentUser && returnTo === "link") {
-        return res.redirect(302, "/settings?error=not_authenticated");
-      }
-      if (currentUser) {
-        const { ObjectId } = await import("mongodb");
-        const target = await db.collection("users").findOne({ _id: new ObjectId(currentUser.sub) });
-        if (target) {
-          // Check if this google_id is already on a different account
-          const existing = await db.collection("users").findOne({ google_id: gUser.id });
-          if (existing && !existing._id.equals(target._id)) {
-            // Merge the existing Google account into the current account
-            await mergeUsers(db, target, existing);
-          }
-          // Link google_id to current user
-          await db.collection("users").updateOne(
-            { _id: target._id },
-            { $set: { google_id: gUser.id, email: email || target.email, avatar_url: gUser.picture || target.avatar_url } }
-          );
-        }
-      }
-      if (returnTo === "link-mobile") {
-        return res.redirect(302, "sidekar://auth/linked?provider=google");
-      }
-      return res.redirect(302, "/settings?linked=google");
+      const result = await linkProvider(db, req, {
+        providerIdField: "google_id",
+        providerUserId: gUser.id,
+        updateFields: { email: email || undefined, avatar_url: gUser.picture || undefined },
+        providerName: "google",
+        isMobile: returnTo === "link-mobile",
+      });
+      return res.redirect(302, result.redirect);
     }
 
     // Mobile app: redirect to custom URL scheme instead of setting cookie

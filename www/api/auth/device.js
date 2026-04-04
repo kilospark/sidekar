@@ -1,4 +1,5 @@
 import { randomBytes, createHash } from "crypto";
+import { ObjectId } from "mongodb";
 import { getDb } from "../_db.js";
 import { getUser } from "../_auth.js";
 
@@ -77,7 +78,6 @@ async function handleApprove(req, res) {
   const token = randomBytes(32).toString("hex");
   const tokenHash = createHash("sha256").update(token).digest("hex");
 
-  const { ObjectId } = await import("mongodb");
   await db.collection("devices").insertOne({
     user_id: new ObjectId(user.sub),
     token_hash: tokenHash,

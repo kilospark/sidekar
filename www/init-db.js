@@ -25,9 +25,10 @@ await db.collection("feedback").createIndex({ status: 1 });
 console.log("  feedback: created_at, rating, status");
 
 // Users indexes
-await db.collection("users").createIndex({ github_id: 1 }, { unique: true });
+await db.collection("users").createIndex({ github_id: 1 }, { unique: true, sparse: true });
+await db.collection("users").createIndex({ google_id: 1 }, { unique: true, sparse: true });
 await db.collection("users").createIndex({ login: 1 });
-console.log("  users: github_id (unique), login");
+console.log("  users: github_id (unique sparse), google_id (unique sparse), login");
 
 // Devices indexes
 await db.collection("devices").createIndex({ user_id: 1 });
