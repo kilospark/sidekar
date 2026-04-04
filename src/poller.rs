@@ -22,6 +22,8 @@ const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct UserInputState {
     last_user_input_at_ms: std::sync::atomic::AtomicU64,
+    last_agent_output_at_ms: std::sync::atomic::AtomicU64,
+    has_agent_output: std::sync::atomic::AtomicBool,
     pending_line: Mutex<Vec<u8>>,
 }
 
@@ -29,8 +31,25 @@ impl UserInputState {
     pub fn new() -> Self {
         Self {
             last_user_input_at_ms: std::sync::atomic::AtomicU64::new(0),
+            last_agent_output_at_ms: std::sync::atomic::AtomicU64::new(0),
+            has_agent_output: std::sync::atomic::AtomicBool::new(false),
             pending_line: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Mark that the agent produced output.
+    pub fn mark_agent_output(&self) {
+        self.last_agent_output_at_ms.store(epoch_millis(), Ordering::Relaxed);
+        self.has_agent_output.store(true, Ordering::Relaxed);
+    }
+
+    /// True if the agent has produced output and then gone quiet for `ms` milliseconds.
+    pub fn agent_idle_for(&self, ms: u64) -> bool {
+        if !self.has_agent_output.load(Ordering::Relaxed) {
+            return false;
+        }
+        let last = self.last_agent_output_at_ms.load(Ordering::Relaxed);
+        epoch_millis().saturating_sub(last) >= ms
     }
 
     pub fn mark_activity(&self) {

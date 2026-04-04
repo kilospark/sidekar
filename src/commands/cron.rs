@@ -143,7 +143,8 @@ pub(crate) fn interval_to_secs(interval: &str) -> Result<u64> {
     }
 }
 
-pub(crate) fn interval_to_cron(interval: &str) -> Result<String> {
+#[cfg(test)]
+fn interval_to_cron(interval: &str) -> Result<String> {
     let interval = interval.trim().to_lowercase();
     let (num_str, unit) = if let Some(n) = interval.strip_suffix('m') {
         (n, 'm')

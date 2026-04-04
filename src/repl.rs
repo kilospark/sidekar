@@ -294,34 +294,6 @@ fn build_system_prompt() -> String {
     )
 }
 
-fn load_context_files(cwd: &str) -> String {
-    let names = ["AGENTS.md", "CLAUDE.md"];
-    let mut result = String::new();
-    let mut dir = std::path::PathBuf::from(cwd);
-    let mut depth = 0;
-    loop {
-        for name in &names {
-            let path = dir.join(name);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if !content.is_empty() {
-                    if !result.is_empty() {
-                        result.push_str("\n---\n\n");
-                    }
-                    result.push_str(&format!(
-                        "Contents of {}:\n\n{}",
-                        path.display(),
-                        content.trim()
-                    ));
-                }
-            }
-        }
-        if !dir.pop() || depth > 5 {
-            break;
-        }
-        depth += 1;
-    }
-    result
-}
 
 fn chrono_lite_today() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

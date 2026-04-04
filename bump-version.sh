@@ -30,6 +30,9 @@ sed -i '' "s/\"version\": *\"$CURRENT\"/\"version\": \"$NEW\"/g" \
 # Update Cargo.toml version
 sed -i '' "s/^version = \".*\"/version = \"$NEW\"/" "$DIR/Cargo.toml"
 
+# Update SKILL.md version
+sed -i '' "s/^version: .*/version: $NEW/" "$DIR/SKILL.md"
+
 # Update www/version.txt for Vercel deployment
 echo "$NEW" > "$DIR/www/version.txt"
 
