@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sidekar Docs</title>
-<meta name="description" content="Sidekar docs: browser automation, desktop automation, agent coordination, background jobs, repl mode, account features, system commands, and the Chrome extension.">
+<meta name="description" content="Sidekar documentation: getting started, PTY vs REPL, browser commands, extension commands, desktop automation, bus, memory, tasks, jobs, account, and system commands.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -33,7 +33,7 @@
   --page-panel: #111111;
   --page-panel-strong: #171717;
   --page-accent: #f5f5f5;
-  --page-accent-2: #d4d4d4;
+  --page-accent-ink: #18231e;
 }
 
 html.light {
@@ -44,7 +44,7 @@ html.light {
   --page-panel: #f5f5f5;
   --page-panel-strong: #ebebeb;
   --page-accent: #111111;
-  --page-accent-2: #737373;
+  --page-accent-ink: #ffffff;
 }
 
 @media (prefers-color-scheme: light) {
@@ -56,13 +56,19 @@ html.light {
     --page-panel: #f5f5f5;
     --page-panel-strong: #ebebeb;
     --page-accent: #111111;
-    --page-accent-2: #737373;
+    --page-accent-ink: #ffffff;
   }
 }
 
 body {
   background: var(--page-bg);
   color: var(--page-ink);
+  --nav-link-color: var(--page-muted);
+  --nav-link-hover-color: var(--page-ink);
+  --nav-link-active-color: var(--page-ink);
+  --nav-link-border: var(--page-line);
+  --nav-link-hover-bg: var(--page-panel);
+  --nav-link-active-bg: transparent;
 }
 
 nav {
@@ -74,265 +80,133 @@ nav {
 }
 
 .page {
-  padding: 124px 0 80px;
+  padding: 120px 0 80px;
 }
 
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
-  gap: 20px;
-  margin-bottom: 30px;
-}
-
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--page-line);
-  background: var(--page-panel);
-  padding: 8px 13px;
-  font: 12px/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--page-muted);
+.page-head {
   margin-bottom: 22px;
 }
 
-.eyebrow::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  background: var(--page-accent);
-}
-
-h1 {
-  font-size: clamp(3rem, 7vw, 5.8rem);
-  line-height: 0.94;
-  letter-spacing: -0.055em;
+.page-head h1 {
+  font-size: clamp(2.4rem, 5vw, 4rem);
+  line-height: 0.95;
+  letter-spacing: -0.05em;
   color: var(--page-ink);
-  max-width: 9.5ch;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
 
-.hero p,
-.section-head p,
-.doc-card p,
-.mini-card p,
-.toc p,
-.stack-card p,
-.command-grid li,
-.bullet-list li {
+.page-head p {
+  max-width: 64ch;
   color: var(--page-muted);
   line-height: 1.72;
 }
 
-.hero-actions {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-top: 28px;
-}
-
-.primary-cta,
-.secondary-cta {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 48px;
-  padding: 0 18px;
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 600;
-  border: 1px solid var(--page-line);
-  border-radius: 0;
-}
-
-.primary-cta {
-  color: #18231e;
-  background: var(--page-accent);
-  border-color: var(--page-accent);
-}
-
-html.light .primary-cta {
-  color: #ffffff;
-}
-
-.secondary-cta {
-  color: var(--page-ink);
-  background: var(--page-panel);
-}
-
-.hero-notes {
-  display: flex;
-  flex-wrap: wrap;
+.page-shell {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
   gap: 18px;
-  margin-top: 18px;
-  color: var(--page-muted);
-  font-size: 13px;
 }
 
-.hero-notes span::before {
-  content: "";
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 8px;
-  background: var(--page-accent-2);
-}
-
-.hero-card,
 .toc,
-.section-shell,
-.doc-card,
-.mini-card,
-.stack-card,
-.command-panel {
+.section,
+.callout,
+.mini-grid article {
   border: 1px solid var(--page-line);
   background: var(--page-panel);
-}
-
-.hero-card {
-  padding: 24px;
-}
-
-.hero-card h2,
-.section-head h2,
-.doc-card h3,
-.stack-card h3,
-.command-panel h3 {
-  color: var(--page-ink);
-}
-
-.hero-card h2 {
-  font-size: 28px;
-  letter-spacing: -0.04em;
-  margin-bottom: 12px;
-}
-
-.hero-grid {
-  display: grid;
-  gap: 12px;
-  margin-top: 20px;
-}
-
-.mini-card {
-  padding: 14px;
-  background: var(--page-panel-strong);
-}
-
-.mini-card strong,
-.doc-card h3,
-.stack-card h3,
-.command-panel h3 {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 15px;
-}
-
-.layout {
-  display: grid;
-  grid-template-columns: 250px minmax(0, 1fr);
-  gap: 18px;
 }
 
 .toc {
   position: sticky;
-  top: 74px;
+  top: 72px;
   align-self: start;
-  padding: 22px;
+  padding: 16px;
+}
+
+.toc h2,
+.section h2,
+.callout h2 {
+  color: var(--page-ink);
 }
 
 .toc h2 {
-  font-size: 15px;
-  color: var(--page-ink);
-  margin-bottom: 12px;
+  font-size: 14px;
+  margin-bottom: 10px;
 }
 
 .toc ul {
   list-style: none;
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 8px;
 }
 
-.toc a,
-.footer-links a,
-.nav-auth,
-.nav-cta {
-  color: var(--page-muted);
+.toc a {
+  display: block;
   text-decoration: none;
+  color: var(--page-muted);
+  padding: 7px 9px;
+  border: 1px solid var(--page-line);
+  background: var(--page-panel-strong);
+  font-size: 13px;
 }
 
-.toc a:hover,
-.footer-links a:hover,
-.nav-auth:hover,
-.nav-cta:hover {
+.toc a:hover {
   color: var(--page-ink);
 }
 
-.doc-flow {
+.content {
   display: grid;
   gap: 18px;
 }
 
-.section-shell {
-  padding: 26px;
+.section {
+  padding: 22px;
 }
 
-.section-head {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 18px;
-  align-items: start;
-  margin-bottom: 20px;
+.section h2 {
+  font-size: 26px;
+  letter-spacing: -0.04em;
+  margin-bottom: 8px;
 }
 
-.label {
-  font: 12px/1.2 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.section > p,
+.section li,
+.callout p {
   color: var(--page-muted);
+  line-height: 1.72;
 }
 
-.section-head h2 {
-  font-size: clamp(2rem, 4vw, 3.1rem);
-  line-height: 0.98;
-  letter-spacing: -0.05em;
-  max-width: 12ch;
+.section > p {
+  margin-bottom: 14px;
 }
 
-.card-grid {
+.mini-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 12px;
 }
 
-.doc-card {
-  padding: 18px;
+.mini-grid article {
+  padding: 16px;
 }
 
-.doc-card code,
-.mini-card code,
-.command-panel code,
-.stack-card code {
-  font: 12px/1.6 var(--mono);
-  background: var(--page-bg);
-  border: 1px solid var(--page-line);
-  padding: 2px 6px;
+.mini-grid h3,
+.callout h2,
+.section h3 {
   color: var(--page-ink);
 }
 
-.command-layout {
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 14px;
+.mini-grid h3,
+.section h3 {
+  font-size: 15px;
+  margin-bottom: 8px;
 }
 
-.command-panel {
-  padding: 20px;
+.section h3 {
+  margin-top: 18px;
 }
 
-.command-grid,
+.command-list,
+.compare-list,
 .bullet-list {
   list-style: none;
   display: grid;
@@ -340,13 +214,15 @@ html.light .primary-cta {
   margin-top: 12px;
 }
 
-.command-grid li,
+.command-list li,
+.compare-list li,
 .bullet-list li {
   padding-left: 18px;
   position: relative;
 }
 
-.command-grid li::before,
+.command-list li::before,
+.compare-list li::before,
 .bullet-list li::before {
   content: "";
   position: absolute;
@@ -354,64 +230,53 @@ html.light .primary-cta {
   top: 0.8em;
   width: 7px;
   height: 7px;
-  background: var(--page-accent-2);
+  background: var(--page-muted);
 }
 
-.stack-card {
-  padding: 20px;
+pre {
+  overflow-x: auto;
+  background: var(--page-bg);
+  border: 1px solid var(--page-line);
+  padding: 14px;
+  color: var(--page-ink);
+  font: 12px/1.6 var(--mono);
+  margin: 12px 0 0;
 }
 
-.stack-card h3 {
-  font-size: 24px;
-  letter-spacing: -0.04em;
+code {
+  font: 12px/1.6 var(--mono);
+  background: var(--page-bg);
+  border: 1px solid var(--page-line);
+  padding: 2px 6px;
+  color: var(--page-ink);
 }
 
-.cta-band {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
-  align-items: start;
+.callout {
+  padding: 18px;
 }
 
-.nav-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.nav-auth,
-.nav-cta {
-  font-size: 13px;
-  font-weight: 500;
-  padding: 7px 12px;
-  border: 1px solid transparent;
-}
-
-.nav-cta {
-  border-color: var(--page-line);
-}
-
-.nav-auth:hover,
-.nav-cta:hover {
-  border-color: var(--page-line);
-  background: var(--page-panel);
+.callout h2 {
+  font-size: 18px;
+  margin-bottom: 8px;
 }
 
 footer {
   border-top-color: var(--page-line);
 }
 
-@media (max-width: 980px) {
-  .hero,
-  .layout,
-  .section-head,
-  .command-layout,
-  .cta-band {
+@media (max-width: 1080px) {
+  .page-shell,
+  .mini-grid {
     grid-template-columns: 1fr;
   }
 
   .toc {
     position: static;
+  }
+
+  .toc ul {
+    display: flex;
+    flex-wrap: wrap;
   }
 }
 
@@ -420,8 +285,9 @@ footer {
     padding-top: 108px;
   }
 
-  .card-grid {
-    grid-template-columns: 1fr;
+  .section,
+  .callout {
+    padding: 18px;
   }
 }
 </style>
@@ -435,6 +301,7 @@ footer {
       sidekar
     </a>
     <div class="nav-right">
+      <a class="nav-auth" href="/">Home</a>
       <a class="nav-cta" href="/docs">Docs</a>
       <a class="nav-auth" href="/extension">Extension</a>
       <a class="nav-auth" href="/privacy">Privacy</a>
@@ -450,280 +317,198 @@ footer {
 
 <main class="page">
   <div class="container">
-    <section class="hero">
-      <div>
-        <div class="eyebrow">Docs</div>
-        <h1>Understand the whole Sidekar surface.</h1>
-        <p>Sidekar has one binary, four product pillars, and a wider CLI surface around them. This page is the structured map: what exists, why it exists, and which commands belong to which part of the product.</p>
-        <div class="hero-actions">
-          <a href="#getting-started" class="primary-cta">Start with setup</a>
-          <a href="#browser" class="secondary-cta">Jump to browser docs</a>
-        </div>
-        <div class="hero-notes">
-          <span>Verified against current <code>sidekar help</code></span>
-          <span>Product pillars and CLI groups are not the same thing</span>
-          <span><code>repl</code> is an access mode, not a pillar</span>
-        </div>
-      </div>
-      <aside class="hero-card">
-        <h2>Docs map</h2>
-        <p>Think about Sidekar on two layers. Product framing explains the main capabilities. Command-group framing helps you find the exact CLI surface.</p>
-        <div class="hero-grid">
-          <div class="mini-card"><strong>Browser</strong><p>Browser, Page, Interact, Data, plus the optional extension bridge.</p></div>
-          <div class="mini-card"><strong>Desktop</strong><p>Native macOS automation for apps, windows, screenshots, input, and app control.</p></div>
-          <div class="mini-card"><strong>Agent</strong><p>Bus, memory, tasks, repo actions, agent sessions, and output compaction.</p></div>
-          <div class="mini-card"><strong>Background</strong><p><code>monitor</code>, <code>cron</code>, and <code>loop</code> for long-running or reactive work.</p></div>
-          <div class="mini-card"><strong>Supporting layer</strong><p><code>repl</code>, device login, sessions, KV, TOTP, daemon, config, events, install, update, and skill.</p></div>
-        </div>
-      </aside>
-    </section>
+    <div class="page-head">
+      <h1>Docs</h1>
+      <p>This page is a practical index to the current Sidekar surface. It is organized by task and command group, not by product copy.</p>
+    </div>
 
-    <div class="layout">
+    <div class="page-shell">
       <aside class="toc">
-        <h2>On this page</h2>
-        <p>This first pass is a docs landing page, not yet a full per-command reference.</p>
+        <h2>Sections</h2>
         <ul>
-          <li><a href="#getting-started">Getting started</a></li>
-          <li><a href="#overview">Capability overview</a></li>
-          <li><a href="#browser">Browser</a></li>
+          <li><a href="#quickstart">Quickstart</a></li>
+          <li><a href="#pty-vs-repl">PTY vs REPL</a></li>
+          <li><a href="#browser">Browser automation</a></li>
+          <li><a href="#extension">Extension</a></li>
           <li><a href="#desktop">Desktop</a></li>
-          <li><a href="#agent">Agent</a></li>
-          <li><a href="#background">Background</a></li>
-          <li><a href="#repl">REPL</a></li>
-          <li><a href="#account-system">Account and system</a></li>
-          <li><a href="#extension-docs">Extension</a></li>
+          <li><a href="#agent">Bus, memory, tasks, repo</a></li>
+          <li><a href="#background">Background jobs</a></li>
+          <li><a href="#account">Account and secrets</a></li>
+          <li><a href="#system">System</a></li>
         </ul>
       </aside>
 
-      <div class="doc-flow">
-        <section class="section-shell" id="getting-started">
-          <div class="section-head">
-            <div class="label">Getting started</div>
-            <div>
-              <h2>Choose the right entrypoint.</h2>
-              <p>There are two main ways to use Sidekar. Wrap an existing agent CLI in a PTY, or run Sidekar directly in standalone REPL mode.</p>
-            </div>
-          </div>
-          <div class="card-grid">
-            <article class="doc-card">
-              <h3>1. Install the binary and skill</h3>
-              <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>. This installs the binary and runs <code>sidekar install</code> so the bundled skill is copied into detected agent skill directories.</p>
+      <div class="content">
+        <section class="section" id="quickstart">
+          <h2>Quickstart</h2>
+          <p>Use these if you just want the shortest path to something useful.</p>
+          <div class="mini-grid">
+            <article>
+              <h3>Install</h3>
+              <pre><code>curl -fsSL https://sidekar.dev/install | sh</code></pre>
             </article>
-            <article class="doc-card">
-              <h3>2. Device login is optional</h3>
-              <p>Run <code>sidekar device login</code> only when you need relay-backed features such as the web terminal, account session management, or account-backed encryption state.</p>
+            <article>
+              <h3>Optional device auth</h3>
+              <pre><code>sidekar device login</code></pre>
             </article>
-            <article class="doc-card">
-              <h3>3. PTY wrapper mode</h3>
-              <p>Use <code>sidekar &lt;agent&gt; [args]</code> to wrap Claude Code, Codex, Gemini CLI, or another agent CLI. This is the path that gives you bus registration, relay, and browser isolation around the external agent process.</p>
+            <article>
+              <h3>Wrap an existing agent</h3>
+              <pre><code>sidekar claude
+sidekar codex</code></pre>
             </article>
-            <article class="doc-card">
-              <h3>4. REPL mode</h3>
-              <p>Use <code>sidekar repl -c &lt;credential&gt; -m &lt;model&gt;</code> to run Sidekar as the agent. This path has session persistence, slash commands, model credentials, and a single <code>bash</code> execution tool.</p>
+            <article>
+              <h3>Run Sidekar directly</h3>
+              <pre><code>sidekar repl -c claude -m claude-sonnet-4-20250514</code></pre>
             </article>
           </div>
         </section>
 
-        <section class="section-shell" id="overview">
-          <div class="section-head">
-            <div class="label">Overview</div>
-            <div>
-              <h2>Product pillars vs command groups.</h2>
-              <p>Sidekar’s public framing is four pillars. The CLI is more granular because discoverability matters at the command level.</p>
-            </div>
-          </div>
-          <div class="command-layout">
-            <div class="command-panel">
-              <h3>Product-level framing</h3>
-              <ul class="bullet-list">
-                <li><strong>Browser</strong>: one surface covering launch/connect, page reading, interaction, and data capture.</li>
-                <li><strong>Desktop</strong>: native macOS automation outside the browser.</li>
-                <li><strong>Agent</strong>: coordination, continuity, and local context.</li>
-                <li><strong>Background</strong>: reactive monitors and scheduled jobs.</li>
-              </ul>
-            </div>
-            <div class="stack-card">
-              <h3>Current CLI groups</h3>
-              <ul class="command-grid">
-                <li><strong>Browser, Page, Interact, Data</strong> for the browser surface</li>
-                <li><strong>Desktop</strong> for native app automation</li>
-                <li><strong>Agent</strong> for bus, memory, tasks, repo, compact, monitor</li>
-                <li><strong>Jobs</strong> for <code>cron</code> and <code>loop</code></li>
-                <li><strong>Account</strong> for device, session, KV, TOTP</li>
-                <li><strong>System</strong> for daemon, config, feedback, event, install, uninstall, update, skill, ext</li>
-              </ul>
-            </div>
-          </div>
+        <section class="section" id="pty-vs-repl">
+          <h2>PTY vs REPL</h2>
+          <p>These are different entrypoints.</p>
+          <ul class="compare-list">
+            <li><strong>PTY wrapper:</strong> <code>sidekar &lt;agent&gt; [args]</code>. Use this when you already use Claude Code, Codex, Gemini CLI, or another agent CLI and want Sidekar around it.</li>
+            <li><strong>REPL:</strong> <code>sidekar repl</code>. Use this when you want Sidekar itself to be the agent.</li>
+          </ul>
+          <h3>Use PTY mode when</h3>
+          <ul class="bullet-list">
+            <li>You want bus registration and browser integration around an external agent process.</li>
+            <li>You want relay/web-terminal support around that wrapped process.</li>
+          </ul>
+          <h3>Use REPL mode when</h3>
+          <ul class="bullet-list">
+            <li>You want a standalone Sidekar agent loop with session persistence.</li>
+            <li>You want slash commands like <code>/model</code>, <code>/sessions</code>, <code>/resume</code>, and <code>/compact</code>.</li>
+          </ul>
         </section>
 
-        <section class="section-shell" id="browser">
-          <div class="section-head">
-            <div class="label">Browser</div>
-            <div>
-              <h2>Launch, read, interact, inspect.</h2>
-              <p>The browser pillar spans four CLI groups: Browser, Page, Interact, and Data. That split is for command discoverability, not product marketing.</p>
-            </div>
-          </div>
-          <div class="card-grid">
-            <article class="doc-card">
-              <h3>Browser commands</h3>
-              <p>Use <code>launch</code>, <code>connect</code>, <code>navigate</code>, <code>tabs</code>, <code>tab</code>, <code>new-tab</code>, <code>close</code>, <code>frames</code>, and <code>frame</code> to manage sessions, tabs, and navigation.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Page commands</h3>
-              <p>Use <code>read</code>, <code>text</code>, <code>dom</code>, <code>ax-tree</code>, <code>observe</code>, <code>find</code>, <code>resolve</code>, <code>screenshot</code>, <code>pdf</code>, <code>search</code>, and <code>read-urls</code> to perceive page state.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Interact commands</h3>
-              <p>Use <code>click</code>, <code>type</code>, <code>fill</code>, <code>press</code>, <code>scroll</code>, <code>upload</code>, <code>drag</code>, <code>wait-for</code>, <code>wait-for-nav</code>, and <code>eval</code> to drive actual UI flows.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Data commands</h3>
-              <p>Use <code>cookies</code>, <code>console</code>, <code>network</code>, <code>block</code>, <code>viewport</code>, <code>download</code>, <code>storage</code>, <code>service-workers</code>, and <code>security</code> to inspect and control runtime state.</p>
-            </article>
-          </div>
+        <section class="section" id="browser">
+          <h2>Browser automation</h2>
+          <p>Browser work is split across four CLI groups: <code>Browser</code>, <code>Page</code>, <code>Interact</code>, and <code>Data</code>.</p>
+
+          <h3>Start or attach</h3>
+          <pre><code>sidekar launch
+sidekar connect
+sidekar navigate https://example.com
+sidekar tabs
+sidekar new-tab https://news.ycombinator.com</code></pre>
+
+          <h3>Choose the right read surface</h3>
+          <ul class="compare-list">
+            <li><strong><code>sidekar read</code>:</strong> best for articles, docs, and search results. Reader-mode extraction.</li>
+            <li><strong><code>sidekar text</code>:</strong> best when you need both content and interaction targets in one output.</li>
+            <li><strong><code>sidekar observe</code>:</strong> best when you mainly want actionable elements rendered as commands.</li>
+            <li><strong><code>sidekar ax-tree -i</code>:</strong> best when you want a flat interactive list with ref numbers.</li>
+            <li><strong><code>sidekar dom</code>:</strong> best when you need HTML structure, not reader text.</li>
+          </ul>
+
+          <h3>Common interaction flow</h3>
+          <pre><code>sidekar text
+sidekar click 12
+sidekar type "#email" "me@example.com"
+sidekar fill "#email" "me@example.com" "#password" "secret"
+sidekar wait-for "button[type=submit]"
+sidekar screenshot --full</code></pre>
+
+          <h3>Inspect state</h3>
+          <pre><code>sidekar console
+sidekar network capture 10
+sidekar cookies
+sidekar storage get
+sidekar viewport desktop</code></pre>
+
+          <h3>Research shortcuts</h3>
+          <pre><code>sidekar search "rust async programming"
+sidekar read-urls https://example.com https://example.org</code></pre>
         </section>
 
-        <section class="section-shell" id="desktop">
-          <div class="section-head">
-            <div class="label">Desktop</div>
-            <div>
-              <h2>Work outside the browser.</h2>
-              <p>Desktop automation is for the parts of real workflows that CDP cannot touch: native app windows, OS dialogs, screenshots, app switching, and local UI interaction.</p>
-            </div>
-          </div>
-          <div class="card-grid">
-            <article class="doc-card">
-              <h3>Capabilities</h3>
-              <p>Use the <code>desktop</code> subcommands to inspect apps and windows, click elements, type, paste, press keys, take screenshots, launch apps, activate them, and quit them.</p>
-            </article>
-            <article class="doc-card">
-              <h3>When it matters</h3>
-              <p>Use desktop automation when the work crosses browser boundaries: login dialogs, Finder interactions, app-specific prompts, or native tooling around browser-based workflows.</p>
-            </article>
-          </div>
+        <section class="section" id="extension">
+          <h2>Extension</h2>
+          <p>Use the extension when you need your everyday Chrome profile or when an in-page bridge works better than plain CDP.</p>
+          <ul class="bullet-list">
+            <li><strong>Use CDP first</strong> for normal browser automation.</li>
+            <li><strong>Use <code>sidekar ext</code></strong> when the site benefits from the extension bridge or you need history/context/watchers that do not exist in the CDP path.</li>
+          </ul>
+          <pre><code>sidekar ext tabs
+sidekar ext read
+sidekar ext context
+sidekar ext history "terraform vpc"
+sidekar ext watch "span.notification-count"</code></pre>
+          <p>For install and trust-model details, see the dedicated <a href="/extension">extension page</a>.</p>
         </section>
 
-        <section class="section-shell" id="agent">
-          <div class="section-head">
-            <div class="label">Agent</div>
-            <div>
-              <h2>Keep coordination and context local.</h2>
-              <p>The agent pillar is where Sidekar stops being “just browser automation.” This is the local coordination and continuity layer around agent work.</p>
-            </div>
-          </div>
-          <div class="card-grid">
-            <article class="doc-card">
-              <h3>Bus</h3>
-              <p><code>bus</code> gives you local agent discovery, directed messages, replies, handoffs, and request tracking on the local SQLite-backed broker.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Memory and tasks</h3>
-              <p><code>memory</code> stores durable project-scoped facts. <code>tasks</code> stores local task dependencies so the next unblocked work is queryable instead of living only in the chat transcript.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Repo and compaction</h3>
-              <p><code>repo</code> packs repository context, summarizes changes, and discovers project actions. <code>compact</code> reduces noisy command output for agent use.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Agent sessions and monitor</h3>
-              <p><code>agent-sessions</code> gives local session history. <code>monitor</code> watches tabs for background changes and routes notifications back through the bus.</p>
-            </article>
-          </div>
+        <section class="section" id="desktop">
+          <h2>Desktop</h2>
+          <p>Desktop automation is macOS-only and uses Accessibility APIs for native UI work outside the browser.</p>
+          <pre><code>sidekar desktop apps
+sidekar desktop screenshot --app Safari
+sidekar desktop click --app Finder "New Folder"
+sidekar desktop press Meta+Space
+sidekar desktop type "hello world"</code></pre>
         </section>
 
-        <section class="section-shell" id="background">
-          <div class="section-head">
-            <div class="label">Background</div>
-            <div>
-              <h2>Keep work running after the prompt.</h2>
-              <p>Background automation covers reactive monitoring and scheduled work. The important boundary is that these are host-owned runtime features, not just prompt conventions.</p>
-            </div>
-          </div>
-          <div class="command-layout">
-            <div class="command-panel">
-              <h3>Reactive work</h3>
-              <ul class="bullet-list">
-                <li><code>monitor</code> watches tabs for title or favicon changes and reports back on the bus.</li>
-                <li>Use it when a long-lived browser state matters more than one immediate page read.</li>
-              </ul>
-            </div>
-            <div class="command-panel">
-              <h3>Scheduled work</h3>
-              <ul class="bullet-list">
-                <li><code>cron</code> manages scheduled jobs.</li>
-                <li><code>loop</code> is the recurring prompt shortcut.</li>
-                <li>Use them for periodic checks, recurring prompts, or background tool runs.</li>
-              </ul>
-            </div>
-          </div>
+        <section class="section" id="agent">
+          <h2>Bus, memory, tasks, repo</h2>
+          <p>This is the local coordination layer around agent work.</p>
+
+          <h3>Bus</h3>
+          <pre><code>sidekar bus who
+sidekar bus send claude-2 "Please review the PR"
+sidekar bus requests --status=open
+sidekar bus replies --msg-id=msg_123</code></pre>
+
+          <h3>Memory</h3>
+          <pre><code>sidekar memory write convention "Use Readability.js before scraping article text"
+sidekar memory search readability
+sidekar memory context</code></pre>
+
+          <h3>Tasks</h3>
+          <pre><code>sidekar tasks add "Ship task graph" --priority=2
+sidekar tasks list --ready
+sidekar tasks depend 12 8
+sidekar tasks show 12</code></pre>
+
+          <h3>Repo</h3>
+          <pre><code>sidekar repo tree
+sidekar repo changes --since=origin/main
+sidekar repo actions
+sidekar repo actions run cargo:check</code></pre>
         </section>
 
-        <section class="section-shell" id="repl">
-          <div class="section-head">
-            <div class="label">REPL</div>
-            <div>
-              <h2>Run Sidekar as the agent.</h2>
-              <p><code>sidekar repl</code> is not a product pillar. It is a top-level access mode with its own provider setup, session persistence, slash commands, and standalone agent loop.</p>
-            </div>
-          </div>
-          <div class="card-grid">
-            <article class="doc-card">
-              <h3>Credentials and models</h3>
-              <p>Use <code>sidekar repl login &lt;provider&gt;</code>, <code>sidekar repl credentials</code>, and <code>sidekar repl models -c &lt;credential&gt;</code> to manage provider access. Credential prefixes determine provider family.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Interactive workflow</h3>
-              <p>Use <code>/credential</code>, <code>/model</code>, <code>/sessions</code>, <code>/resume</code>, and <code>/compact</code> inside the REPL. Session history and mini-line history are persisted in SQLite.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Tool surface</h3>
-              <p>The model-visible tool surface is intentionally minimal. The current REPL exposes one tool: <code>bash</code>. Sidekar capabilities are reached by running the CLI from that tool.</p>
-            </article>
-            <article class="doc-card">
-              <h3>Prompt boundary</h3>
-              <p>The REPL builds its own system prompt with capability guidance, environment context, memory brief injection, and explicit safety rules against prompt injection, secrets exfiltration, and destructive actions.</p>
-            </article>
-          </div>
+        <section class="section" id="background">
+          <h2>Background jobs</h2>
+          <p>Use these when work should continue after the current prompt.</p>
+          <pre><code>sidekar monitor start all
+sidekar cron list
+sidekar cron create "0 9 * * *" --prompt="check deployment status"
+sidekar loop 10m "summarize recent errors" --once</code></pre>
         </section>
 
-        <section class="section-shell" id="account-system">
-          <div class="section-head">
-            <div class="label">Account and system</div>
-            <div>
-              <h2>The supporting runtime layer.</h2>
-              <p>These commands are not separate product pillars, but they make the rest of Sidekar usable as a local runtime.</p>
-            </div>
-          </div>
-          <div class="card-grid">
-            <article class="doc-card">
-              <h3>Account</h3>
-              <p>Use <code>device</code> for machine authentication, <code>session</code> for active account sessions, <code>kv</code> for encrypted key-value storage, and <code>totp</code> for stored one-time-password secrets.</p>
-            </article>
-            <article class="doc-card">
-              <h3>System</h3>
-              <p>Use <code>daemon</code>, <code>config</code>, <code>event</code>, <code>update</code>, <code>install</code>, <code>uninstall</code>, <code>skill</code>, and <code>ext</code> to manage the host runtime and supporting surfaces.</p>
-            </article>
-          </div>
+        <section class="section" id="account">
+          <h2>Account and secrets</h2>
+          <p>These commands support auth, relay-backed features, and local secrets storage.</p>
+          <pre><code>sidekar device login
+sidekar session list
+sidekar kv set github_token abc123
+sidekar kv get github_token
+sidekar totp list
+sidekar totp get github alice</code></pre>
         </section>
 
-        <section class="section-shell" id="extension-docs">
-          <div class="section-head">
-            <div class="label">Extension</div>
-            <div>
-              <h2>One browser access surface, not a fifth product pillar.</h2>
-              <p>The Chrome extension is for the harder browser cases and for access to the user’s everyday Chrome profile. It complements CDP; it does not replace the browser pillar.</p>
-            </div>
-          </div>
-          <div class="cta-band">
-            <div>
-              <p>Use the extension when you need your signed-in browser state or when an in-page bridge is more reliable on complex SPAs. Skip it when plain CDP is enough. The detailed install, permission, and trust model lives on the dedicated extension page.</p>
-            </div>
-            <div class="hero-actions">
-              <a href="/extension" class="primary-cta">Open extension docs</a>
-              <a href="/" class="secondary-cta">Back to homepage</a>
-            </div>
-          </div>
+        <section class="section" id="system">
+          <h2>System</h2>
+          <p>Use these to manage the host runtime and inspect Sidekar itself.</p>
+          <pre><code>sidekar daemon status
+sidekar config
+sidekar event list --level=error 100
+sidekar skill
+sidekar install
+sidekar update</code></pre>
+        </section>
+
+        <section class="callout">
+          <h2>What this page is for</h2>
+          <p>This is a practical index page. It should help you choose the right entrypoint and command family quickly. It is not meant to replace detailed per-command help, which still lives in <code>sidekar help</code> and <code>sidekar help &lt;command&gt;</code>.</p>
         </section>
       </div>
     </div>

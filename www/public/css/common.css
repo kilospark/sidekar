@@ -132,6 +132,32 @@ html.dark .nav-logo-icon.light { display: none; }
   gap: 16px;
 }
 
+.nav-auth,
+.nav-cta {
+  color: var(--nav-link-color, var(--text-muted));
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 0;
+  border: 1px solid transparent;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.nav-auth:hover,
+.nav-cta:hover {
+  color: var(--nav-link-hover-color, var(--text));
+  border-color: var(--nav-link-border, var(--border));
+  background: var(--nav-link-hover-bg, var(--bg-subtle));
+}
+
+.nav-cta,
+.nav-auth.active {
+  color: var(--nav-link-active-color, var(--text));
+  border-color: var(--nav-link-border, var(--border));
+  background: var(--nav-link-active-bg, transparent);
+}
+
 .nav-dash-links {
   display: flex;
   align-items: center;
