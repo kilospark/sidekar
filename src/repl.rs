@@ -610,7 +610,7 @@ fn build_system_prompt() -> String {
          You have a bash tool for running shell commands.\n\
          You have access to `sidekar` CLI tools for browser automation, desktop automation, \
          web research, agent coordination, secrets management, and more. \
-         Call the `sidekar_skill` tool to see what's available.\n\n\
+         Run `sidekar skill` with the bash tool to see what's available.\n\n\
          ## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
          - Do not guess file contents — read them first.\n\
@@ -870,4 +870,3 @@ fn print_banner(model: &str) {
     eprintln!("\x1b[1msidekar repl\x1b[0m v{version} — {model}");
     eprintln!("Type /help for commands, /quit to exit\n");
 }
-
