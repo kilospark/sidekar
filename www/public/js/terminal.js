@@ -42,7 +42,7 @@
     var vp = term.element && term.element.querySelector(".xterm-viewport");
     if (!vp) return;
     var touchY = null;
-    var BOOST = 2;
+    var BOOST = 10;
     vp.addEventListener("touchstart", function (e) {
       touchY = e.touches.length === 1 ? e.touches[0].clientY : null;
     }, { passive: true });
