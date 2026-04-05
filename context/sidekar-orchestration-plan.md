@@ -353,8 +353,6 @@ Testing should be split into:
 - editor/app test matrix
 
 Existing notes:
-- [terminal-agent-test-template.md](/Users/karthik/src/sidekar/context/terminal-agent-test-template.md)
-- [editor-agent-test-template.md](/Users/karthik/src/sidekar/context/editor-agent-test-template.md)
 
 ## Short-Term Priorities
 

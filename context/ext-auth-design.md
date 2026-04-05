@@ -15,7 +15,7 @@ Without authentication, an attacker could:
 ### How authentication prevents this
 
 1. Extension obtains `ext_token` via GitHub OAuth (popup → sidekar.dev)
-2. CLI has `device_token` from `sidekar login`
+2. CLI has `device_token` from `sidekar device login`
 3. On native bridge registration, extension sends `bridge_register` with `ext_token`
 4. Native host calls `sidekar.dev/api/auth/ext-token?verify=1` with both tokens
 5. Server verifies: `ext_token.user_id == device_token.user_id`

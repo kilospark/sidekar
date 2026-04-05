@@ -18,6 +18,9 @@ All persistent state lives in `~/.sidekar/sidekar.sqlite3`.
 | `bus_queue` | Direct agent-to-agent messages | No |
 | `events` | Append-only event log | No |
 | `encryption_meta` | Encryption key markers | No |
+| `repl_sessions` | REPL session metadata | No |
+| `repl_entries` | REPL message history and non-message entries | No |
+| `repl_input_history` | Project-scoped REPL line-edit history | No |
 
 ## Config table namespaces
 
@@ -27,10 +30,16 @@ The `config` table uses key prefixes for different categories:
 - No prefix - User-configurable settings (telemetry, browser, etc.)
 
 Example keys:
-- `auth:token` - Device token from `sidekar login`
+- `auth:token` - Device token from `sidekar device login`
 - `auth:created_at` - When device token was issued
 - `telemetry` - Whether to send anonymous usage counts
 - `browser` - Preferred browser for CDP sessions
+
+## REPL tables
+
+- `repl_sessions` stores session id, cwd, model, provider label, optional name, and timestamps.
+- `repl_entries` stores persisted REPL history. `entry_type = 'message'` is the chat transcript; other entry types are reserved for non-message session metadata.
+- `repl_input_history` stores submitted mini-line input history, scoped by canonical project root so up/down history survives REPL restarts for the same project.
 
 ## Bus table triad
 
