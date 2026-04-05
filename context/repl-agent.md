@@ -1,122 +1,116 @@
-# sidekar repl — Standalone LLM Agent Mode
+# sidekar repl
 
 ## Overview
 
-`sidekar repl` turns sidekar into a standalone LLM agent. It uses sidekar's own CLI tools through a bash tool + SKILL.md — the same way Claude Code or Codex would use sidekar, but without needing an external agent harness.
+`sidekar repl` runs Sidekar as a standalone LLM agent. It owns the input loop, session persistence, streaming renderer, bus registration, and slash-command UX, while the model gets a single execution tool: `bash`.
 
-## Modules
+The REPL system prompt is built in `src/repl.rs` by `build_system_prompt()`. It includes:
+
+- a concise coding-and-automation identity
+- `bash` tool guidance
+- Sidekar CLI capability guidance, including `sidekar skill`
+- explicit rules against secrets exfiltration, destructive actions, and prompt-injection compliance
+- current working directory and date
+- optional startup memory from `crate::memory::startup_brief(5)`
+
+## Main modules
 
 ```
+src/repl.rs
+  REPL entry point, system prompt builder, line editor, slash commands,
+  bus registration, relay hookup, and stream rendering
+
+src/agent/mod.rs
+  Main agent loop: stream → handle tool calls → append results → continue
+
+src/agent/tools.rs
+  Model-visible tool definitions and execution
+
+src/agent/compaction.rs
+  Auto-compaction and manual compaction used by /compact
+
 src/providers/
-  mod.rs          — Provider enum (Anthropic/Codex), message types, model registry, verbose flag
-  anthropic.rs    — Anthropic Messages API, SSE streaming, OAuth header handling, tool name casing
-  codex.rs        — OpenAI Codex Responses API, SSE streaming
-  oauth.rs        — PKCE OAuth for both providers, named credentials, local callback server, KV persistence
+  Provider abstraction plus Anthropic, Codex, and OpenRouter backends
 
-src/agent/
-  mod.rs          — Agent loop: stream → extract tool calls → execute → repeat (max 25 iterations)
-  tools.rs        — 6 tool definitions: bash, read, write, edit, glob, grep
-  compaction.rs   — Two-phase context compaction (cheap clear + LLM summarization)
+src/providers/oauth.rs
+  Credential storage, provider detection, OAuth flows, and OpenRouter key entry
 
-src/repl.rs       — REPL entry point, system prompt builder, slash commands, bus integration
-src/session.rs    — SQLite session persistence (repl_sessions + repl_entries tables)
+src/session.rs
+  REPL session persistence and project-scoped input-history persistence
 ```
 
-## CLI
+## Invocation
 
 ```
-sidekar repl                          # Interactive REPL (default model: claude-sonnet-4)
-sidekar repl -p 'prompt'              # Single turn, exit after response
-sidekar repl -m <model-id>            # Specify model
-sidekar repl -r <credential-name>     # Use named credential
-sidekar repl --verbose                # Dump API requests/responses to stderr
-
-sidekar repl login <nickname>         # OAuth login (claude-1, codex-2, etc.)
-sidekar repl logout <nickname|all>    # Remove credentials
-sidekar repl credentials              # List stored credentials
+sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--verbose]
 ```
 
-## Providers
+Current subcommands documented in `src/lib.rs`:
 
-### Anthropic (Claude subscription)
-- OAuth PKCE via `claude.com/cai/oauth/authorize` → `platform.claude.com/v1/oauth/token`
-- Scopes: `org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`
-- After login, fetches profile from `GET /api/oauth/profile` to get `account_uuid`
-- API calls include `metadata.user_id` with `account_uuid` for subscription routing
-- Tool names must be PascalCase for OAuth: `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`
-- Required headers: `anthropic-beta: claude-code-20250219,oauth-2025-04-20,...`, `user-agent: claude-cli/2.1.87`, `x-app: cli`
-- System prompt must start with `"You are Claude Code, Anthropic's official CLI for Claude."`
-- Fallback: `ANTHROPIC_API_KEY` env var
+```bash
+sidekar repl login <provider>
+sidekar repl logout [name|all]
+sidekar repl credentials
+sidekar repl models -c <credential>
+sidekar repl sessions
+```
 
-### OpenAI Codex (ChatGPT subscription)
-- OAuth PKCE via `auth.openai.com/oauth/authorize` → `auth.openai.com/oauth/token`
-- Callback: `http://localhost:1455/auth/callback`
-- Extra params: `id_token_add_organizations=true`, `codex_cli_simplified_flow=true`
-- JWT decode extracts `chatgpt_account_id` from `https://api.openai.com/auth` claim
-- API: `POST https://chatgpt.com/backend-api/codex/responses`
-- Headers: `chatgpt-account-id`, `OpenAI-Beta: responses=experimental`
-- Body uses `instructions` (not `system`), `input` (not `messages`), `stream: true` required
-- Tool format: `{ type: "function", name, description, parameters }`
-- Tool results: `{ type: "function_call_output", call_id, output }`
-- Fallback: `OPENAI_API_KEY` env var
+Credential prefixes determine provider:
 
-### Named Credentials
-- Nicknames like `claude-1`, `claude-2`, `codex-1` stored as `oauth:<nickname>` in KV
-- Prefix determines provider: `claude-*` → Anthropic, `codex-*` → Codex
+- `claude...` → Anthropic
+- `codex...` → OpenAI Codex
+- `or...` → OpenRouter
 
-## Models
+Stored credentials live in KV under `oauth:<nickname>`.
 
-### Anthropic
-- `claude-opus-4-20250514` (Opus 4, 200K context, 32K output, adaptive thinking)
-- `claude-sonnet-4-20250514` (Sonnet 4, 200K context, 16K output, budget thinking)
-- `claude-sonnet-4-6-20250514` (Sonnet 4.6, adaptive thinking)
-- `claude-haiku-4-5-20251001` (Haiku 4.5, no thinking)
+## Tool surface
 
-### Codex
-- `gpt-5.1-codex-mini` (272K context, 128K output)
-- `gpt-5.2-codex` (272K context, 128K output)
-- `gpt-5.3-codex` (272K context, 128K output)
-- `gpt-5.4-mini` (272K context, 128K output)
+The REPL currently exposes exactly one model-visible tool:
 
-## Tools
+- `bash` — execute a shell command and return compacted output
 
-The REPL exposes 6 tools to the LLM. Sidekar commands are accessed through `bash`:
+The model is expected to use `sidekar` through that tool. `sidekar skill` is no longer a separate tool; the prompt tells the model to run it via `bash` when it needs the command catalog.
 
-| Tool | Purpose |
-|------|---------|
-| `bash` | Shell execution — sidekar CLI commands go through here |
-| `read` | Read file with line numbers, offset/limit |
-| `write` | Write/create file |
-| `edit` | Exact string replacement in file |
-| `glob` | Find files by pattern |
-| `grep` | Search file contents by regex |
+## Runtime behavior
 
-## Agent Loop
+- Interactive mode keeps a local session history in SQLite and supports resume.
+- `-p <prompt>` runs a single-turn session and exits after the response.
+- The REPL registers on the local bus as `sidekar-repl`.
+- If relay is enabled and the machine has a device token, the REPL can attach a tunnel for web-terminal access.
+- A raw-mode mini line editor handles left/right navigation, history up/down, delete, and project-scoped persisted command history.
 
-1. Build context: system prompt + history + user message
-2. Call LLM (stream response)
-3. If tool calls in response → execute tools → append results → goto 2
-4. If no tool calls → done, return to user
-5. Max 25 iterations per turn
-6. Auto-compact at 50% of context window
+## Slash commands
 
-## Compaction (hermes-inspired)
+Current slash commands are implemented in `src/repl.rs`:
 
-### Phase 1 — Cheap (no LLM call)
-- Clear old `ToolResult` content with `[Cleared]` (keep last 10 messages)
-- Drop old thinking blocks
+- `/credential`
+- `/credentials`
+- `/model`
+- `/models`
+- `/new` and `/reset`
+- `/sessions`
+- `/resume`
+- `/compact`
+- `/verbose`
+- `/quit`, `/exit`, `/q`
+- `/help`
 
-### Phase 2 — LLM summarization
-- Protect first 3 messages + last ~20K tokens
-- Summarize middle turns with structured template:
-  Goal, Constraints, Progress (Done/In Progress/Blocked), Key Decisions, Relevant Files, Next Steps, Critical Context
-- Summary replaces middle messages
+Unknown `/...` input is treated as normal prompt text so absolute paths like `/Users/.../image.png` are not hijacked as slash commands.
 
-## Session Persistence
+## Persistence
 
-SQLite tables in `sidekar.sqlite3`:
-- `repl_sessions` — id, cwd, model, provider, name, timestamps
-- `repl_entries` — id, session_id, parent_id, entry_type, role, content (JSON), timestamp
+REPL state is stored in `~/.sidekar/sidekar.sqlite3`:
+
+- `repl_sessions` stores session metadata
+- `repl_entries` stores persisted message history
+- `repl_input_history` stores submitted mini-line history scoped by canonical project root
+
+The input-history store is separate from the chat transcript. It exists only to support persistent up/down history across REPL restarts in the same project.
+
+## Notes
+
+- `provider` in `repl_sessions` is a free-form label written by current code, not a strict provider enum.
+- Top-level `sidekar help` still shows a narrower REPL synopsis than the actual parser supports. Use `src/lib.rs` and `src/main.rs` as the source of truth when changing CLI behavior.
 
 Sessions scoped to cwd. Auto-resumes latest session. `/new` creates fresh session.
 

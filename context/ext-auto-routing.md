@@ -39,7 +39,7 @@ Replace shared secret with OAuth:
 2. Extension opens `sidekar.dev/api/auth/github?redirect=ext-callback`
 3. OAuth completes, server returns token, extension stores in `chrome.storage.local`
 4. On native bridge registration, extension sends token to the native host
-5. Native host verifies both tokens (extension + CLI from `sidekar login`) belong to same user
+5. Native host verifies both tokens (extension + CLI from `sidekar device login`) belong to same user
 6. Match → daemon bridge registered. Mismatch → rejected.
 
-This requires `sidekar login` for extension use, which is fine — extension is a power-user feature. Eliminates the manual secret copy-paste step entirely.
+This requires `sidekar device login` for extension use, which is fine — extension is a power-user feature. Eliminates the manual secret copy-paste step entirely.
