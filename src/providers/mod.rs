@@ -21,14 +21,14 @@ pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json:
         return;
     }
 
-    eprintln!("\x1b[2m--- API Request ---");
-    eprintln!("POST {url}");
-    eprintln!("Headers: {headers:?}");
-    eprintln!(
+    crate::tunnel::tunnel_println("\x1b[2m--- API Request ---");
+    crate::tunnel::tunnel_println(&format!("POST {url}"));
+    crate::tunnel::tunnel_println(&format!("Headers: {headers:?}"));
+    crate::tunnel::tunnel_println(&format!(
         "Body: {}",
         serde_json::to_string_pretty(body).unwrap_or_default()
-    );
-    eprintln!("---\x1b[0m");
+    ));
+    crate::tunnel::tunnel_println("---\x1b[0m");
 }
 
 pub(super) fn log_api_error(status: StatusCode, text: &str) {
@@ -36,7 +36,7 @@ pub(super) fn log_api_error(status: StatusCode, text: &str) {
         return;
     }
 
-    eprintln!("\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m");
+    crate::tunnel::tunnel_println(&format!("\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m"));
 }
 
 #[derive(Debug, Clone)]

@@ -164,7 +164,7 @@ pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
 }
 
-/// Compact brief used by the PTY starter. Returns only real user-authored
+/// Compact brief appended to the REPL system prompt. Returns only real user-authored
 /// memory events (decisions, constraints, conventions, preferences, open
 /// threads, artifact pointers). Returns an empty string when there is no real
 /// content — the starter skips the brief entirely in that case.
