@@ -217,8 +217,6 @@
     });
   }
 
-  connect();
-})();
   function toWebSocketOrigin(origin) {
     return origin.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
   }
@@ -241,3 +239,6 @@
         return data.owner_origin || relayOrigin;
       });
   }
+
+  connect();
+})();
