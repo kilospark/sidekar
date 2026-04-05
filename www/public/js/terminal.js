@@ -65,9 +65,32 @@
   })();
 
   var terminalWrap = document.getElementById("terminal-wrap");
+  var jumpBtn = document.getElementById("jump-bottom");
   var remoteCols = 80;
   var remoteRows = 24;
   var layoutTimer = null;
+
+  // Scroll both xterm's scrollback AND the outer wrap container to bottom.
+  function jumpToBottom() {
+    term.scrollToBottom();
+    terminalWrap.scrollTop = terminalWrap.scrollHeight;
+  }
+
+  jumpBtn.addEventListener("click", function () {
+    jumpToBottom();
+    jumpBtn.style.display = "none";
+  });
+
+  // Show/hide the jump button based on xterm scroll position.
+  function updateJumpButton() {
+    var vp = term.element && term.element.querySelector(".xterm-viewport");
+    if (!vp) return;
+    var nearBottom = vp.scrollHeight - vp.scrollTop - vp.clientHeight <= 48;
+    jumpBtn.style.display = nearBottom ? "none" : "block";
+  }
+
+  // Listen for xterm scroll events to toggle the button.
+  term.onScroll(updateJumpButton);
 
   function syncTerminalFrame() {
     term.resize(remoteCols, remoteRows);
@@ -81,11 +104,10 @@
 
   syncTerminalFrame();
 
-  function isViewportNearBottom() {
+  function isNearBottom() {
     var vp = term.element && term.element.querySelector(".xterm-viewport");
     if (!vp) return true;
-    var threshold = 48;
-    return vp.scrollHeight - vp.scrollTop - vp.clientHeight <= threshold;
+    return vp.scrollHeight - vp.scrollTop - vp.clientHeight <= 48;
   }
 
   function setStatus(state, text) {
@@ -154,29 +176,11 @@
             }
 
             var u8 = new Uint8Array(event.data);
+            var stick = isNearBottom();
 
-            if (!sessionProtocolReady && !legacyRelay) {
-              legacyRelay = true;
-              sessionProtocolReady = true;
-              var stickLegacy = isViewportNearBottom();
-              term.write(u8, function () {
-                if (stickLegacy) term.scrollToBottom();
-              });
-              return;
-            }
-
-            if (expectScrollbackBytes > 0) {
-              expectScrollbackBytes = 0;
-              var stickScrollback = isViewportNearBottom();
-              term.write(u8, function () {
-                if (stickScrollback) term.scrollToBottom();
-              });
-              return;
-            }
-
-            var stickToBottom = isViewportNearBottom();
             term.write(u8, function () {
-              if (stickToBottom) term.scrollToBottom();
+              if (stick) jumpToBottom();
+              updateJumpButton();
             });
           };
 
@@ -218,12 +222,12 @@
   });
 
   // iOS keyboard: visualViewport shrinks but fixed elements don't.
-  // Resize terminal-wrap to fit above the keyboard and scroll to bottom.
+  // Resize terminal-wrap to fit above the keyboard and jump to bottom.
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
       var vv = window.visualViewport;
       terminalWrap.style.height = (vv.height - 32) + "px";
-      term.scrollToBottom();
+      jumpToBottom();
     });
     window.visualViewport.addEventListener("scroll", function () {
       var vv = window.visualViewport;
