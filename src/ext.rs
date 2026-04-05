@@ -7,12 +7,19 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::fs;
+use std::io::Cursor;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::auth;
 use crate::message::epoch_secs;
 
+use zip::ZipArchive;
+use dirs;
+
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
+
+pub const EXTENSION_ZIP: &[u8] = include_bytes!("../assets/extension.zip");
 
 /// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
 const TIMEOUT_SECS: u64 = 180;
@@ -444,6 +451,9 @@ pub async fn send_cli_command(
     if command == "status" {
         return show_status();
     }
+    if command == "dev-extract" {
+        return extract_extension();
+    }
 
     // Parse --conn and --profile from args
     let mut filtered_args = Vec::new();
@@ -538,6 +548,45 @@ fn show_status() -> Result<()> {
             println!("No extension connections");
         }
     }
+    Ok(())
+}
+
+fn extract_extension() -> Result<()> {
+    let home = dirs::home_dir().ok_or(anyhow!("No home directory found"))?;
+    let target_dir = home.join(".sidekar/extension");
+
+    fs::create_dir_all(&target_dir).context("Failed to create .sidekar directory")?;
+
+    let reader = Cursor::new(EXTENSION_ZIP);
+    let mut archive = ZipArchive::new(reader).context("Failed to read embedded ZIP")?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).context("Failed to access ZIP entry")?;
+        let outpath = target_dir.join(file.name());
+
+        if file.name().ends_with('/') {
+            fs::create_dir_all(&outpath).context("Failed to create directory in extraction")?;
+        } else {
+            if let Some(parent) = outpath.parent() {
+                fs::create_dir_all(parent).context("Failed to create parent directory")?;
+            }
+            let mut outfile = fs::File::create(&outpath).context("Failed to create output file")?;
+            std::io::copy(&mut file, &mut outfile).context("Failed to copy file contents")?;
+        }
+
+// Set permissions
+#[cfg(unix)]
+{
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(mode) = file.unix_mode() {
+        fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
+            .context("Failed to set file permissions")?;
+    }
+}
+    }
+
+    println!("Chrome extension extracted/updated to {}", target_dir.display());
+    println!("To load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}", target_dir.display());
     Ok(())
 }
 
