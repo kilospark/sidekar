@@ -31,23 +31,10 @@ pub fn kv_key_for(nickname: &str) -> String {
     format!("oauth:{nickname}")
 }
 
-/// Resolve which KV key to use: try the nickname key first, fall back to default.
-/// e.g., `-r claude` → tries "oauth:claude", if missing falls back to "oauth:anthropic".
+/// Resolve which KV key to use.
 fn resolve_kv_key(nickname: Option<&str>, default_key: &str) -> String {
     match nickname {
-        Some(n) => {
-            let key = kv_key_for(n);
-            // If the nickname key has stored creds, use it
-            if crate::broker::kv_get(&key).ok().flatten().is_some() {
-                return key;
-            }
-            // Otherwise fall back to the default provider key
-            if crate::broker::kv_get(default_key).ok().flatten().is_some() {
-                return default_key.to_string();
-            }
-            // Neither exists — use nickname key (will trigger login)
-            key
-        }
+        Some(n) => kv_key_for(n),
         None => default_key.to_string(),
     }
 }

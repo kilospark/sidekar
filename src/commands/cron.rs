@@ -1028,11 +1028,8 @@ fn job_belongs_to_agent(target: &str, created_by: &str, agent_name: Option<&str>
     let Some(agent_name) = agent_name else {
         return false;
     };
-    // A job belongs to the agent that created it.  The target field only
-    // controls where *results* are delivered and may differ from the creator
-    // (cross-agent cron).  Fall back to target match for legacy jobs where
-    // created_by was "cli" and target carried the owner name.
-    created_by == agent_name || normalize_loaded_target(target, created_by) == agent_name
+    let _ = target;
+    created_by == agent_name
 }
 
 /// Map cron action args (JSON object) to CLI arg vector for dispatch.

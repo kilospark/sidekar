@@ -63,7 +63,6 @@ sidekar repl credentials              # List stored credentials
 ### Named Credentials
 - Nicknames like `claude-1`, `claude-2`, `codex-1` stored as `oauth:<nickname>` in KV
 - Prefix determines provider: `claude-*` → Anthropic, `codex-*` → Codex
-- Legacy names (`anthropic`, `codex`) still work for backward compat
 
 ## Models
 

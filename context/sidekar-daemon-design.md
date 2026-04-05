@@ -152,8 +152,6 @@ The MCP `monitor` tool becomes a thin client:
 
 The daemon is **not** the broker from the orchestration plan. The broker is a heavier concept (session registry, task/lease model, capability routing). The daemon is lighter — it just runs background work and delivers results via the bus.
 
-If/when the broker is built, the daemon's subsystems could migrate into it. For now, the daemon is a practical stepping stone that delivers value immediately.
-
 ## Implementation Order
 
 1. **Daemon skeleton**: process management, unix socket, PID file
