@@ -67,7 +67,7 @@
     <p>The <code>sidekar</code> binary runs on your local machine. It does not phone home or collect telemetry. Browser automation, desktop automation, and inter-agent communication all happen locally.</p>
     <p>The CLI makes outbound network requests in these cases:</p>
     <ul>
-      <li><strong>Authentication:</strong> <code>sidekar login</code> initiates a device-auth code exchange with sidekar.dev to verify your license. An auth token is stored locally in <code>~/.config/sidekar/</code>.</li>
+      <li><strong>Authentication:</strong> <code>sidekar device login</code> initiates a device-auth code exchange with sidekar.dev. The device token is stored locally in Sidekar's SQLite state under <code>~/.sidekar/</code>.</li>
       <li><strong>Session relay:</strong> when you start a session, the CLI connects to <code>relay.sidekar.dev</code> via WebSocket so that the dashboard can display and interact with your active sessions. Session metadata (name, hostname, working directory, agent type) is transmitted to the relay.</li>
       <li><strong>Updates:</strong> <code>sidekar update</code> checks GitHub Releases for new versions. This is optional and must be explicitly initiated by you.</li>
     </ul>
@@ -97,8 +97,7 @@
     <p>The CLI stores the following data on your machine:</p>
     <ul>
       <li>Chrome profiles: <code>~/.sidekar/profiles/</code></li>
-      <li>Configuration: <code>~/.config/sidekar/sidekar.json</code></li>
-      <li>Auth token: <code>~/.config/sidekar/</code></li>
+      <li>Configuration and auth state: <code>~/.sidekar/sidekar.sqlite3</code></li>
       <li>Extension bridge secret: <code>~/.sidekar/ext-secret</code> (0600 permissions)</li>
       <li>Temporary files: <code>/tmp/sidekar-*</code></li>
     </ul>

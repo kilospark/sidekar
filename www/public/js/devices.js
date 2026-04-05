@@ -53,7 +53,7 @@
       content.innerHTML =
         '<div class="empty-state">' +
         "<h2>No authorized devices</h2>" +
-        "<p>Run <code>sidekar login</code> on a machine and approve it here to list CLI sessions and tunnels under your account.</p>" +
+        "<p>Run <code>sidekar device login</code> on a machine and approve it here to list CLI sessions and tunnels under your account.</p>" +
         "</div>";
       return;
     }
@@ -76,7 +76,7 @@
         sidekarConfirm({
           title: "Revoke device?",
           message:
-            "The CLI on that machine will need to run sidekar login again.",
+            "The CLI on that machine will need to run sidekar device login again.",
           confirmLabel: "Revoke",
           cancelLabel: "Cancel",
           danger: true,
