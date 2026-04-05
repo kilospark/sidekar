@@ -424,6 +424,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                     credential,
                     verbose,
                     resume,
+                    relay_override,
                 })
                 .await;
             }

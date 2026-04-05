@@ -43,6 +43,37 @@ pub async fn maybe_compact(
         return false;
     }
 
+    compact_history(provider, model, history, on_event, current, true)
+        .await
+        .unwrap_or(false)
+}
+
+/// Force compaction immediately, regardless of the current token estimate.
+///
+/// Returns true if the history changed.
+pub async fn compact_now(
+    provider: &Provider,
+    model: &str,
+    history: &mut Vec<ChatMessage>,
+    on_event: &StreamCallback,
+) -> bool {
+    let current = estimate_tokens(history);
+    compact_history(provider, model, history, on_event, current, false)
+        .await
+        .unwrap_or(false)
+}
+
+async fn compact_history(
+    provider: &Provider,
+    model: &str,
+    history: &mut Vec<ChatMessage>,
+    on_event: &StreamCallback,
+    current: usize,
+    stop_after_phase1_if_small: bool,
+) -> anyhow::Result<bool> {
+    let threshold = current;
+    let original_len = history.len();
+
     // Phase 1: cheap clear of old tool results
     let cleared = phase1_clear_old_results(history);
     if cleared > 0 {
@@ -53,23 +84,29 @@ pub async fn maybe_compact(
             current / 1000,
             after / 1000,
         );
-        if after < threshold {
-            return true;
+        if stop_after_phase1_if_small && after < threshold {
+            return Ok(true);
         }
     }
 
     // Phase 2: LLM summarization
     eprintln!("\x1b[2m[Compaction phase 2: summarizing old context...]\x1b[0m");
     on_event(&StreamEvent::Compacting);
-    match phase2_summarize(provider, model, history).await {
+    let result = phase2_summarize(provider, model, history, on_event).await;
+    on_event(&StreamEvent::Idle);
+    match result {
         Ok(()) => {
             let after = estimate_tokens(history);
             eprintln!("\x1b[2m[Compacted to ~{}k tokens]\x1b[0m", after / 1000,);
-            true
+            Ok(cleared > 0 || history.len() != original_len)
         }
         Err(e) => {
             eprintln!("\x1b[2m[Compaction failed: {e}]\x1b[0m");
-            false
+            if cleared > 0 {
+                Ok(true)
+            } else {
+                Err(e)
+            }
         }
     }
 }
@@ -105,6 +142,7 @@ async fn phase2_summarize(
     provider: &Provider,
     model: &str,
     history: &mut Vec<ChatMessage>,
+    on_event: &StreamCallback,
 ) -> anyhow::Result<()> {
     // Protect first 3 messages and last ~20K tokens worth of messages
     let protect_head = 3.min(history.len());
@@ -194,10 +232,22 @@ async fn phase2_summarize(
         .await?;
 
     let mut summary_text = String::new();
+    let mut last_error: Option<String> = None;
     while let Some(event) = rx.recv().await {
-        if let StreamEvent::TextDelta { delta } = event {
-            summary_text.push_str(&delta);
+        match &event {
+            StreamEvent::TextDelta { delta } => {
+                summary_text.push_str(delta);
+            }
+            StreamEvent::Error { message } => {
+                on_event(&event);
+                last_error = Some(message.clone());
+            }
+            _ => {}
         }
+    }
+
+    if let Some(err) = last_error {
+        anyhow::bail!("LLM stream error: {err}");
     }
 
     if summary_text.is_empty() {

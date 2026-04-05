@@ -61,7 +61,16 @@ pub fn ensure_tables() -> Result<()> {
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_repl_entries_session
-            ON repl_entries(session_id, created_at);",
+            ON repl_entries(session_id, created_at);
+        CREATE TABLE IF NOT EXISTS repl_input_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_root TEXT NOT NULL,
+            scope_name TEXT NOT NULL DEFAULT '',
+            line TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_repl_input_history_scope
+            ON repl_input_history(scope_root, id);",
     )
     .context("Failed to create session tables")?;
     Ok(())
@@ -324,6 +333,77 @@ pub fn prune_empty_sessions() -> Result<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// REPL input history
+// ---------------------------------------------------------------------------
+
+pub fn load_input_history(scope_root: &str, limit: usize) -> Result<Vec<String>> {
+    ensure_tables()?;
+    let conn = crate::broker::open()?;
+    let mut stmt = conn.prepare(
+        "SELECT line FROM repl_input_history
+         WHERE scope_root = ?1
+         ORDER BY id DESC
+         LIMIT ?2",
+    )?;
+    let mut lines: Vec<String> = stmt
+        .query_map(rusqlite::params![scope_root, limit], |row| row.get(0))?
+        .filter_map(|row| row.ok())
+        .collect();
+    lines.reverse();
+    Ok(lines)
+}
+
+pub fn append_input_history(
+    scope_root: &str,
+    scope_name: &str,
+    line: &str,
+    max_entries: usize,
+) -> Result<()> {
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+
+    ensure_tables()?;
+    let conn = crate::broker::open()?;
+    let tx = conn.unchecked_transaction()?;
+
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT line FROM repl_input_history
+             WHERE scope_root = ?1
+             ORDER BY id DESC
+             LIMIT 1",
+            rusqlite::params![scope_root],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if previous.as_deref() != Some(line) {
+        tx.execute(
+            "INSERT INTO repl_input_history (scope_root, scope_name, line, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![scope_root, scope_name, line, epoch_secs()],
+        )?;
+    }
+
+    if max_entries > 0 {
+        tx.execute(
+            "DELETE FROM repl_input_history
+             WHERE scope_root = ?1
+               AND id NOT IN (
+                   SELECT id FROM repl_input_history
+                   WHERE scope_root = ?1
+                   ORDER BY id DESC
+                   LIMIT ?2
+               )",
+            rusqlite::params![scope_root, max_entries],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -338,4 +418,55 @@ fn epoch_secs() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{env, fs};
+
+    fn with_test_home<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _guard = crate::test_home_lock()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("failed to lock test HOME mutex"))?;
+
+        let old_home = env::var_os("HOME");
+        let temp_home = env::temp_dir().join(format!("sidekar-session-test-{}", generate_id()));
+        fs::create_dir_all(&temp_home)?;
+
+        // Safety: tests run under a process-global mutex and restore HOME before returning.
+        unsafe { env::set_var("HOME", &temp_home) };
+
+        let result = f();
+
+        match old_home {
+            Some(home) => unsafe { env::set_var("HOME", home) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+        let _ = fs::remove_dir_all(&temp_home);
+        result
+    }
+
+    #[test]
+    fn repl_input_history_is_scoped_deduped_and_bounded() -> Result<()> {
+        with_test_home(|| {
+            append_input_history("/repo/a", "a", "first", 3)?;
+            append_input_history("/repo/a", "a", "first", 3)?;
+            append_input_history("/repo/a", "a", "second", 3)?;
+            append_input_history("/repo/b", "b", "other", 3)?;
+            append_input_history("/repo/a", "a", "third", 3)?;
+            append_input_history("/repo/a", "a", "fourth", 3)?;
+
+            assert_eq!(
+                load_input_history("/repo/a", 10)?,
+                vec![
+                    "second".to_string(),
+                    "third".to_string(),
+                    "fourth".to_string()
+                ]
+            );
+            assert_eq!(load_input_history("/repo/b", 10)?, vec!["other".to_string()]);
+            Ok(())
+        })
+    }
 }

@@ -20,6 +20,15 @@ pub struct MarkdownStream {
     committed_line_count: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Style {
+    Emphasis,
+    Strong,
+    Strikethrough,
+    Link,
+    BlockQuote,
+}
+
 impl MarkdownStream {
     pub fn new() -> Self {
         Self {
@@ -74,6 +83,25 @@ impl MarkdownStream {
         self.committed_line_count = 0;
         new_lines
     }
+
+    /// Render the currently buffered trailing partial line, if any.
+    pub fn preview_partial_line(&self) -> Option<String> {
+        if self.buffer.is_empty() || self.buffer.ends_with('\n') {
+            return None;
+        }
+
+        let rendered = render_markdown(&self.buffer);
+        if self.committed_line_count >= rendered.len() {
+            return None;
+        }
+
+        let pending = &rendered[self.committed_line_count..];
+        if pending.len() == 1 {
+            Some(pending[0].clone())
+        } else {
+            None
+        }
+    }
 }
 
 /// Parse markdown and return ANSI-formatted lines.
@@ -83,7 +111,7 @@ fn render_markdown(source: &str) -> Vec<String> {
 
     let mut lines: Vec<String> = Vec::new();
     let mut current_line = String::new();
-    let mut style_stack: Vec<&str> = Vec::new();
+    let mut style_stack: Vec<Style> = Vec::new();
     let mut in_code_block = false;
     let mut code_block_lang = String::new();
     let mut code_block_buf = String::new();
@@ -102,19 +130,18 @@ fn render_markdown(source: &str) -> Vec<String> {
                     // Heading prefix
                     let marker = "#".repeat(*level as usize);
                     current_line.push_str(&format!("{BOLD}{YELLOW}{marker} "));
-                    style_stack.push(RESET);
                 }
                 Tag::Emphasis => {
                     current_line.push_str(ITALIC);
-                    style_stack.push(ITALIC);
+                    style_stack.push(Style::Emphasis);
                 }
                 Tag::Strong => {
                     current_line.push_str(BOLD);
-                    style_stack.push(BOLD);
+                    style_stack.push(Style::Strong);
                 }
                 Tag::Strikethrough => {
                     current_line.push_str("\x1b[9m");
-                    style_stack.push("\x1b[9m");
+                    style_stack.push(Style::Strikethrough);
                 }
                 Tag::CodeBlock(kind) => {
                     in_code_block = true;
@@ -124,12 +151,12 @@ fn render_markdown(source: &str) -> Vec<String> {
                         _ => String::new(),
                     };
                 }
-                Tag::Link { dest_url, .. } => {
+                Tag::Link { .. } => {
                     current_line.push_str(&format!("{CYAN}{UNDERLINE}"));
-                    style_stack.push(dest_url.to_string().leak());
+                    style_stack.push(Style::Link);
                 }
                 Tag::BlockQuote(_) => {
-                    style_stack.push(GREEN);
+                    style_stack.push(Style::BlockQuote);
                 }
                 Tag::List(start) => {
                     list_depth += 1;
@@ -163,7 +190,7 @@ fn render_markdown(source: &str) -> Vec<String> {
                     }
                     // Apply blockquote styling if inside one
                     for s in &style_stack {
-                        if *s == GREEN {
+                        if *s == Style::BlockQuote {
                             current_line.push_str(&format!("{GREEN}> "));
                         }
                     }
@@ -180,30 +207,24 @@ fn render_markdown(source: &str) -> Vec<String> {
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                     current_line.push_str(RESET);
                     style_stack.pop();
-                    // Re-apply remaining styles
-                    for s in &style_stack {
-                        if *s != GREEN {
-                            current_line.push_str(s);
-                        }
-                    }
+                    reapply_inline_styles(&mut current_line, &style_stack);
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
-                    if !code_block_lang.is_empty() {
-                        push_line(&mut lines, &mut current_line);
-                        current_line.push_str(&format!("  ┌─ {code_block_lang}"));
-                        push_line(&mut lines, &mut current_line);
+                    push_line(&mut lines, &mut current_line);
+                    let lang_label = if code_block_lang.is_empty() {
+                        "code".to_string()
                     } else {
-                        push_line(&mut lines, &mut current_line);
-                    }
+                        code_block_lang.clone()
+                    };
+                    current_line.push_str(&format!("{DIM}  ╭─{RESET} {CYAN}{lang_label}{RESET}"));
+                    push_line(&mut lines, &mut current_line);
                     for code_line in code_block_buf.lines() {
-                        current_line.push_str(&format!("  │ {code_line}"));
+                        current_line.push_str(&format!("{DIM}  │{RESET} {code_line}"));
                         push_line(&mut lines, &mut current_line);
                     }
-                    if !code_block_lang.is_empty() {
-                        current_line.push_str("  └─");
-                        push_line(&mut lines, &mut current_line);
-                    }
+                    current_line.push_str(&format!("{DIM}  ╰─{RESET}"));
+                    push_line(&mut lines, &mut current_line);
                     code_block_buf.clear();
                 }
                 TagEnd::Link => {
@@ -236,11 +257,7 @@ fn render_markdown(source: &str) -> Vec<String> {
                 if in_heading {
                     current_line.push_str(&format!("{BOLD}{YELLOW}"));
                 }
-                for s in &style_stack {
-                    if *s != GREEN && *s != RESET {
-                        current_line.push_str(s);
-                    }
-                }
+                reapply_inline_styles(&mut current_line, &style_stack);
             }
             Event::SoftBreak => {
                 current_line.push(' ');
@@ -266,6 +283,18 @@ fn render_markdown(source: &str) -> Vec<String> {
 
 fn push_line(lines: &mut Vec<String>, current: &mut String) {
     lines.push(std::mem::take(current));
+}
+
+fn reapply_inline_styles(current_line: &mut String, style_stack: &[Style]) {
+    for style in style_stack {
+        match style {
+            Style::Emphasis => current_line.push_str(ITALIC),
+            Style::Strong => current_line.push_str(BOLD),
+            Style::Strikethrough => current_line.push_str("\x1b[9m"),
+            Style::Link => current_line.push_str(&format!("{CYAN}{UNDERLINE}")),
+            Style::BlockQuote => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -304,6 +333,23 @@ mod tests {
     }
 
     #[test]
+    fn renders_link_without_url_leak() {
+        let lines = render_markdown("[docs](https://example.com/docs)\n");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("docs"));
+        assert!(!lines[0].contains("https://example.com/docs"));
+    }
+
+    #[test]
+    fn nested_link_styles_reapply_without_url_text() {
+        let lines = render_markdown("**[docs](https://example.com/docs)** and `code`\n");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("docs"));
+        assert!(lines[0].contains("`code`"));
+        assert!(!lines[0].contains("https://example.com/docs"));
+    }
+
+    #[test]
     fn stream_newline_gating() {
         let mut stream = MarkdownStream::new();
         stream.push("Hello **wor");
@@ -324,5 +370,14 @@ mod tests {
         let lines = stream.finalize();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("No newline here"));
+    }
+
+    #[test]
+    fn previews_partial_line_before_newline() {
+        let mut stream = MarkdownStream::new();
+        stream.push("Hello **world");
+        let preview = stream.preview_partial_line().expect("partial preview");
+        assert!(preview.contains("Hello"));
+        assert!(preview.contains("world"));
     }
 }

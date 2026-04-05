@@ -252,6 +252,8 @@ pub enum StreamEvent {
     ToolExec { name: String },
     /// Emitted when context compaction (LLM summarization) is in progress.
     Compacting,
+    /// Emitted when a background activity ends without assistant output.
+    Idle,
     TextDelta {
         delta: String,
     },

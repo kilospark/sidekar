@@ -67,10 +67,6 @@ echo "=== Restarting daemon ==="
 ~/.local/bin/sidekar daemon restart >/dev/null
 
 echo ""
-echo "=== Refreshing native host manifest ==="
-~/.local/bin/sidekar ext install-host >/dev/null
-
-echo ""
 echo "=== Cleaning up ==="
 rm -f "$NAME" "${NAME}.tar.gz" "${NAME}.tar.gz.minisig"
 

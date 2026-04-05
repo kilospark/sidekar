@@ -44,9 +44,18 @@ pub async fn run(
         on_event(&StreamEvent::Waiting);
 
         // Stream LLM response
-        let mut rx = provider
+        let mut rx = match provider
             .stream(model, system_prompt, history, tool_defs)
-            .await?;
+            .await
+        {
+            Ok(rx) => rx,
+            Err(e) => {
+                on_event(&StreamEvent::Error {
+                    message: format!("{e:#}"),
+                });
+                return Err(e);
+            }
+        };
 
         let response = match consume_stream(&mut rx, &on_event, cancel).await {
             Ok(r) => r,

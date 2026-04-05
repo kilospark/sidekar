@@ -1,10 +1,12 @@
 use anyhow::Result;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use crate::broker;
 use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
+
+const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
 /// REPL options parsed from CLI flags.
 pub struct ReplOptions {
@@ -14,6 +16,7 @@ pub struct ReplOptions {
     pub verbose: bool,
     /// None = fresh session, Some(None) = interactive picker, Some(Some(id)) = resume specific session
     pub resume: Option<Option<String>>,
+    pub relay_override: Option<bool>,
 }
 
 /// Entry point for the REPL.
@@ -124,13 +127,42 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     };
 
     if let Err(e) = broker::register_agent(&identity, Some(&pane_id)) {
-        eprintln!("\x1b[2m[bus registration failed: {e}]\x1b[0m");
+        broker::try_log_error("bus", &format!("registration failed: {e}"), None);
     }
 
     crate::bus::set_terminal_title(&format!("{nick} ({bus_name}) — sidekar repl"));
 
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
+
+    // Relay tunnel (web terminal access)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let relay_policy = match opts.relay_override {
+        Some(true) => crate::config::RelayMode::On,
+        Some(false) => crate::config::RelayMode::Off,
+        None => crate::config::relay_mode(),
+    };
+    let (tunnel_tx, _tunnel_rx): (Option<crate::tunnel::TunnelSender>, Option<crate::tunnel::TunnelReceiver>) = match relay_policy {
+        crate::config::RelayMode::On => {
+            if let Some(token) = crate::auth::auth_token() {
+                let (cols, rows) = terminal_size().unwrap_or((80, 24));
+                match crate::tunnel::connect(&token, &bus_name, "sidekar-repl", &cwd, &nick, cols, rows).await {
+                    Ok((tx, rx)) => {
+                        broker::try_log_event("debug", "relay", "connected", None);
+                        (Some(tx), Some(rx))
+                    }
+                    Err(e) => {
+                        broker::try_log_error("relay", &format!("{e:#}"), None);
+                        (None, None)
+                    }
+                }
+            } else {
+                broker::try_log_error("relay", "skipped: no device token; run: sidekar login", None);
+                (None, None)
+            }
+        }
+        _ => (None, None),
+    };
 
     let cron_project = crate::scope::resolve_project_name(None);
     crate::commands::cron::start_default_cron_loop(bus_name.clone(), cron_project).await;
@@ -147,7 +179,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         history.push(user_msg);
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
+        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone(), tunnel_tx.clone()));
         let on_event: crate::agent::StreamCallback =
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
@@ -171,6 +203,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             }
         }
 
+        if let Some(tx) = tunnel_tx {
+            tx.shutdown();
+        }
         let _ = broker::unregister_agent(&bus_name);
         return Ok(());
     }
@@ -182,11 +217,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             match session::find_session_by_prefix(sid)? {
                 Some(s) => {
                     let hist = session::load_history(&s.id)?;
-                    eprintln!(
-                        "\x1b[2mResumed session {} ({} messages).\x1b[0m",
-                        &s.id[..s.id.len().min(8)],
-                        hist.len()
-                    );
+                    broker::try_log_event("debug", "session", "resumed", Some(&format!("{} ({} messages)", &s.id[..s.id.len().min(8)], hist.len())));
                     (s.id, hist)
                 }
                 None => {
@@ -204,40 +235,80 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
     };
 
-    print_banner(&model);
+    print_banner(&model, tunnel_tx.as_ref());
+
+    let scope_root = crate::scope::resolve_project_root(Some(&cwd));
+    let scope_name = crate::scope::resolve_project_name(Some(&cwd));
+    let mut line_editor = LineEditor::with_history(
+        session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
+    );
 
     loop {
-        let input = match read_input_or_bus(&bus_name) {
+        // Send prompt marker to tunnel so web viewers see it
+        if let Some(ref tx) = tunnel_tx {
+            tx.send_data(b"\n\x1b[36m\xe2\x80\xba\x1b[0m ".to_vec());
+        }
+        let input = match read_input_or_bus(&bus_name, &mut line_editor) {
             InputEvent::User(s) => Some(s),
             InputEvent::Bus => None, // no user text — bus messages trigger the agent
             InputEvent::Eof => break,
         };
 
         if let Some(ref text) = input {
+            // Echo user input to tunnel
+            if let Some(ref tx) = tunnel_tx {
+                let mut data = text.as_bytes().to_vec();
+                data.extend_from_slice(b"\r\n");
+                tx.send_data(data);
+            }
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
             }
 
+            let _ = session::append_input_history(
+                &scope_root,
+                &scope_name,
+                text,
+                REPL_INPUT_HISTORY_LIMIT,
+            );
+
             // Slash commands
-            if trimmed.starts_with('/') {
-                match handle_slash_command(trimmed, &cwd, &model, &session_id) {
+            if let Some(result) = handle_slash_command(trimmed, &cwd, &model, &session_id) {
+                match result {
                     SlashResult::Continue => continue,
                     SlashResult::Quit => break,
                     SlashResult::SwitchSession(new_id) => {
                         history = session::load_history(&new_id)?;
                         let count = history.len();
                         if count > 0 {
-                            eprintln!("\x1b[2mSwitched to session ({count} messages).\x1b[0m");
+                            println!("\x1b[2mSwitched to session ({count} messages).\x1b[0m");
                         } else {
-                            eprintln!("New session started.");
+                            println!("New session started.");
                         }
                         session_id = new_id;
                         continue;
                     }
-                    SlashResult::NotFound => {
-                        eprintln!("Unknown command: {trimmed}");
-                        eprintln!("Available: /new /resume /sessions /model /quit /help");
+                    SlashResult::Compact => {
+                        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone(), tunnel_tx.clone()));
+                        let on_event: crate::agent::StreamCallback =
+                            Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
+
+                        let changed = crate::agent::compaction::compact_now(
+                            &provider,
+                            &model,
+                            &mut history,
+                            &on_event,
+                        )
+                        .await;
+                        if changed {
+                            let _ = session::replace_history(&session_id, &history);
+                            println!("\x1b[2m[session compacted]\x1b[0m");
+                        } else {
+                            println!("\x1b[2m[nothing to compact]\x1b[0m");
+                        }
+                        let _ = io::stdout().flush();
                         continue;
                     }
                 }
@@ -245,7 +316,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
 
         // Inject pending bus messages as steering
-        inject_bus_messages(&bus_name, &mut history, &session_id);
+        inject_bus_messages(&bus_name, &mut history, &session_id, tunnel_tx.as_ref());
 
         // Add user message (if any)
         if let Some(text) = input {
@@ -259,7 +330,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         // Run agent loop
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
+        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone(), tunnel_tx.clone()));
         let on_event: crate::agent::StreamCallback =
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
@@ -277,13 +348,22 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         {
             Ok(c) => c,
             Err(e) if e.is::<crate::agent::Cancelled>() => {
-                // Truncate any partial messages added during cancelled run
                 history.truncate(pre_len);
-                eprintln!("\x1b[33m[cancelled]\x1b[0m");
+                println!("\x1b[33m[cancelled]\x1b[0m");
+                if let Some(ref tx) = tunnel_tx {
+                    tx.send_data(b"\x1b[33m[cancelled]\x1b[0m\r\n".to_vec());
+                }
                 false
             }
             Err(e) => {
-                eprintln!("\x1b[31mError: {e:#}\x1b[0m");
+                let msg = format!("\x1b[31mError: {e:#}\x1b[0m");
+                println!("{msg}");
+                if let Some(ref tx) = tunnel_tx {
+                    let mut d = msg.into_bytes();
+                    d.extend_from_slice(b"\r\n");
+                    tx.send_data(d);
+                }
+                broker::try_log_error("repl", &format!("{e:#}"), None);
                 false
             }
         };
@@ -298,7 +378,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
     }
 
-    eprintln!();
+    println!();
+    if let Some(tx) = tunnel_tx {
+        tx.shutdown();
+    }
     let _ = broker::unregister_agent(&bus_name);
     Ok(())
 }
@@ -308,10 +391,7 @@ fn init_session(cwd: &str, model: &str) -> Result<(String, Vec<ChatMessage>)> {
         Some(s) => {
             let hist = session::load_history(&s.id)?;
             if !hist.is_empty() {
-                eprintln!(
-                    "\x1b[2mResuming session ({} messages). /new to start fresh.\x1b[0m",
-                    hist.len()
-                );
+                broker::try_log_event("debug", "session", "resuming", Some(&format!("{} messages", hist.len())));
             }
             Ok((s.id, hist))
         }
@@ -320,6 +400,17 @@ fn init_session(cwd: &str, model: &str) -> Result<(String, Vec<ChatMessage>)> {
             Ok((id, Vec::new()))
         }
     }
+}
+
+fn terminal_size() -> Option<(u16, u16)> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 {
+        return None;
+    }
+    if ws.ws_col == 0 || ws.ws_row == 0 {
+        return None;
+    }
+    Some((ws.ws_col, ws.ws_row))
 }
 
 // ---------------------------------------------------------------------------
@@ -331,16 +422,36 @@ struct EventRenderer {
     md: crate::md::MarkdownStream,
     tool_args: std::collections::HashMap<usize, (String, String)>,
     spinner: Option<Spinner>,
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    partial_visible: bool,
+    tunnel_tx: Option<crate::tunnel::TunnelSender>,
 }
 
 impl EventRenderer {
-    fn new(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+    fn new(_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, tunnel_tx: Option<crate::tunnel::TunnelSender>) -> Self {
         Self {
             md: crate::md::MarkdownStream::new(),
             tool_args: std::collections::HashMap::new(),
             spinner: None,
-            cancel,
+            partial_visible: false,
+            tunnel_tx,
+        }
+    }
+
+    /// Write text to stdout and relay tunnel.
+    fn emit(&self, text: &str) {
+        print!("{text}");
+        if let Some(ref tx) = self.tunnel_tx {
+            tx.send_data(text.as_bytes().to_vec());
+        }
+    }
+
+    /// Write text + newline to stdout and relay tunnel.
+    fn emitln(&self, text: &str) {
+        println!("{text}");
+        if let Some(ref tx) = self.tunnel_tx {
+            let mut data = text.as_bytes().to_vec();
+            data.extend_from_slice(b"\r\n");
+            tx.send_data(data);
         }
     }
 
@@ -351,8 +462,33 @@ impl EventRenderer {
     }
 
     fn flush_md_lines(&mut self) {
-        for line in self.md.commit_complete_lines() {
-            println!("{line}");
+        let lines = self.md.commit_complete_lines();
+        if lines.is_empty() {
+            return;
+        }
+        self.clear_partial_preview();
+        for line in lines {
+            self.emitln(&line);
+        }
+        let _ = io::stdout().flush();
+    }
+
+    fn update_partial_preview(&mut self) {
+        match self.md.preview_partial_line() {
+            Some(line) => {
+                self.emit(&format!("\r\x1b[K{line}"));
+                let _ = io::stdout().flush();
+                self.partial_visible = true;
+            }
+            None => self.clear_partial_preview(),
+        }
+    }
+
+    fn clear_partial_preview(&mut self) {
+        if self.partial_visible {
+            self.emit("\r\x1b[K");
+            let _ = io::stdout().flush();
+            self.partial_visible = false;
         }
     }
 
@@ -360,73 +496,79 @@ impl EventRenderer {
         match event {
             StreamEvent::Waiting => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label(
-                    self.cancel.clone(),
-                    "thinking".to_string(),
-                ));
+                self.spinner = Some(Spinner::start_with_label("thinking".to_string(), self.tunnel_tx.clone()));
             }
             StreamEvent::Compacting => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label(
-                    self.cancel.clone(),
-                    "compacting context".to_string(),
-                ));
+                self.spinner = Some(Spinner::start_with_label("compacting context".to_string(), self.tunnel_tx.clone()));
+            }
+            StreamEvent::Idle => {
+                self.stop_spinner();
             }
             StreamEvent::ToolExec { name } => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label(
-                    self.cancel.clone(),
-                    format!("running {name}"),
-                ));
+                self.spinner = Some(Spinner::start_with_label(format!("running {name}"), self.tunnel_tx.clone()));
             }
             StreamEvent::TextDelta { delta } => {
                 self.stop_spinner();
                 self.md.push(delta);
                 self.flush_md_lines();
+                self.update_partial_preview();
             }
             StreamEvent::ThinkingDelta { .. } => {
-                self.stop_spinner();
+                if self.spinner.is_none() {
+                    self.spinner = Some(Spinner::start_with_label("thinking".to_string(), self.tunnel_tx.clone()));
+                }
             }
             StreamEvent::ToolCallStart { index, name, .. } => {
                 self.stop_spinner();
+                self.clear_partial_preview();
                 for line in self.md.finalize() {
-                    println!("{line}");
+                    self.emitln(&line);
                 }
+                let _ = io::stdout().flush();
                 self.tool_args
                     .insert(*index, (name.clone(), String::new()));
+                self.spinner = Some(Spinner::start_with_label(format!("preparing {name}"), self.tunnel_tx.clone()));
             }
             StreamEvent::ToolCallDelta { index, delta } => {
                 if let Some((_, args)) = self.tool_args.get_mut(index) {
                     args.push_str(delta);
                 }
+                if self.spinner.is_none() {
+                    self.spinner = Some(Spinner::start_with_label("preparing tool".to_string(), self.tunnel_tx.clone()));
+                }
             }
             StreamEvent::ToolCallEnd { index } => {
                 if let Some((name, args_json)) = self.tool_args.remove(index) {
                     let detail = extract_tool_summary(&name, &args_json);
-                    eprintln!("\n\x1b[2m> {name}: {detail}\x1b[0m");
+                    self.emitln(&format!("\n\x1b[2m└─\x1b[0m \x1b[36m{name}\x1b[0m \x1b[2m{detail}\x1b[0m"));
+                    let _ = io::stdout().flush();
                 }
                 // Restart spinner while tool executes and next API call happens
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label(
-                    self.cancel.clone(),
-                    "working".to_string(),
-                ));
+                self.spinner = Some(Spinner::start_with_label("working".to_string(), self.tunnel_tx.clone()));
             }
             StreamEvent::Done { message } => {
                 self.stop_spinner();
+                self.clear_partial_preview();
                 for line in self.md.finalize() {
-                    println!("{line}");
+                    self.emitln(&line);
                 }
-                println!();
+                self.emitln("");
+                let _ = io::stdout().flush();
                 let u = &message.usage;
-                eprintln!(
+                self.emitln(&format!(
                     "\x1b[2m[{} in / {} out tokens]\x1b[0m",
                     u.input_tokens, u.output_tokens
-                );
+                ));
+                let _ = io::stdout().flush();
             }
             StreamEvent::Error { message } => {
                 self.stop_spinner();
-                eprintln!("\n\x1b[31mError: {message}\x1b[0m");
+                self.clear_partial_preview();
+                self.emitln(&format!("\n\x1b[31mError: {message}\x1b[0m"));
+                let _ = io::stdout().flush();
             }
         }
     }
@@ -451,16 +593,12 @@ const ANIMATIONS: &[&[&str]] = &[
 ];
 
 impl Spinner {
-    fn start_with_label(
-        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        label: String,
-    ) -> Self {
+    fn start_with_label(label: String, tunnel_tx: Option<crate::tunnel::TunnelSender>) -> Self {
         let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let r = running.clone();
         let anim_idx = rand::random::<u32>() as usize % ANIMATIONS.len();
         let color_offset = rand::random::<u32>() as usize;
         let handle = std::thread::spawn(move || {
-            let orig_termios = enter_raw_mode();
             let frames = ANIMATIONS[anim_idx];
             let colors = [
                 "\x1b[33m", // yellow
@@ -480,25 +618,25 @@ impl Spinner {
             while r.load(std::sync::atomic::Ordering::Relaxed) {
                 let elapsed = started.elapsed().as_secs_f32();
                 let color = colors[(i + color_offset) % colors.len()];
-                eprint!(
-                    "\r{color}{}\x1b[0m \x1b[2m{:.1}s\x1b[0m{label_part} \x1b[2m(esc to cancel)\x1b[0m\x1b[K",
+                let line = format!(
+                    "\r{color}{}\x1b[0m \x1b[2m{:.1}s\x1b[0m{label_part}\x1b[K",
                     frames[i % frames.len()],
                     elapsed,
                 );
-                let _ = io::stderr().flush();
-                i += 1;
-
-                if poll_stdin_byte(80) == Some(0x1b) {
-                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                    r.store(false, std::sync::atomic::Ordering::Relaxed);
-                    break;
+                print!("{line}");
+                if let Some(ref tx) = tunnel_tx {
+                    tx.send_data(line.as_bytes().to_vec());
                 }
+                let _ = io::stdout().flush();
+                i += 1;
+                std::thread::sleep(std::time::Duration::from_millis(80));
             }
-            eprint!("\r\x1b[K");
-            let _ = io::stderr().flush();
-            if let Some(t) = orig_termios {
-                restore_termios(t);
+            let clear = "\r\x1b[K";
+            print!("{clear}");
+            if let Some(ref tx) = tunnel_tx {
+                tx.send_data(clear.as_bytes().to_vec());
             }
+            let _ = io::stdout().flush();
         });
         Self {
             running,
@@ -513,52 +651,6 @@ impl Spinner {
             let _ = h.join();
         }
     }
-}
-
-fn enter_raw_mode() -> Option<libc::termios> {
-    unsafe {
-        let mut termios: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(0, &mut termios) != 0 {
-            return None;
-        }
-        let orig = termios;
-        // Disable canonical mode and echo
-        termios.c_lflag &= !(libc::ICANON | libc::ECHO);
-        // Set minimum chars to 0, timeout to 0 (non-blocking)
-        termios.c_cc[libc::VMIN] = 0;
-        termios.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(0, libc::TCSANOW, &termios) != 0 {
-            return None;
-        }
-        Some(orig)
-    }
-}
-
-fn restore_termios(termios: libc::termios) {
-    unsafe {
-        libc::tcsetattr(0, libc::TCSANOW, &termios);
-    }
-}
-
-/// Poll stdin for a single byte with a timeout in milliseconds.
-/// Returns the byte if available, None if timeout or error.
-fn poll_stdin_byte(timeout_ms: i32) -> Option<u8> {
-    unsafe {
-        let mut fds = libc::pollfd {
-            fd: 0,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ready = libc::poll(&mut fds, 1, timeout_ms);
-        if ready > 0 && (fds.revents & libc::POLLIN) != 0 {
-            let mut buf = [0u8; 1];
-            let n = libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, 1);
-            if n == 1 {
-                return Some(buf[0]);
-            }
-        }
-    }
-    None
 }
 
 fn extract_tool_summary(name: &str, args_json: &str) -> String {
@@ -608,9 +700,10 @@ fn build_system_prompt() -> String {
     let mut prompt = format!(
         "You are a capable coding and automation assistant.\n\
          You have a bash tool for running shell commands.\n\
-         You have access to `sidekar` CLI tools for browser automation, desktop automation, \
-         web research, agent coordination, secrets management, and more. \
-         Run `sidekar skill` with the bash tool to see what's available.\n\n\
+         You have access to the `sidekar` CLI for browser/page interaction, data capture, \
+         desktop automation, local agent memory/tasks/repo actions, scheduled jobs, \
+         account/device/session management, encrypted secrets, daemon/config management, \
+         and extension control. Run `sidekar skill` with the bash tool for the command catalog.\n\n\
          ## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
          - Do not guess file contents — read them first.\n\
@@ -690,18 +783,27 @@ enum SlashResult {
     Continue,
     Quit,
     SwitchSession(String),
-    NotFound,
+    Compact,
 }
 
-fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &str) -> SlashResult {
+fn handle_slash_command(
+    input: &str,
+    cwd: &str,
+    model: &str,
+    current_session: &str,
+) -> Option<SlashResult> {
     let cmd = input.split_whitespace().next().unwrap_or("");
 
-    match cmd {
+    if !is_known_slash_command(cmd) {
+        return None;
+    }
+
+    let result = match cmd {
         "/quit" | "/exit" | "/q" => SlashResult::Quit,
         "/new" | "/reset" => match session::create_session(cwd, model, "anthropic") {
             Ok(id) => SlashResult::SwitchSession(id),
             Err(e) => {
-                eprintln!("Failed to create session: {e}");
+                broker::try_log_error("session", &format!("failed to create: {e}"), None);
                 SlashResult::Continue
             }
         },
@@ -709,25 +811,24 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
             match session::list_sessions(cwd, 10) {
                 Ok(sessions) => {
                     if sessions.is_empty() {
-                        eprintln!("No sessions found.");
+                        println!("No sessions found.");
                     } else {
-                        eprintln!("Sessions (most recent first):");
+                        println!("Sessions (most recent first):");
                         for s in &sessions {
                             let msgs = session::message_count(&s.id).unwrap_or(0);
                             let marker = if s.id == current_session { " *" } else { "" };
                             let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-                            eprintln!("  {name} — {msgs} msgs, {}{marker}", s.model);
+                            println!("  {name} — {msgs} msgs, {}{marker}", s.model);
                         }
                     }
                 }
-                Err(e) => eprintln!("Failed to list sessions: {e}"),
+                Err(e) => broker::try_log_error("session", &format!("failed to list: {e}"), None),
             }
             SlashResult::Continue
         }
         "/resume" => {
             match session::list_sessions(cwd, 10) {
                 Ok(sessions) => {
-                    // Filter out empty sessions (except current)
                     let sessions: Vec<_> = sessions
                         .into_iter()
                         .filter(|s| {
@@ -736,10 +837,10 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
                         })
                         .collect();
                     if sessions.len() <= 1 {
-                        eprintln!("No other sessions to resume.");
-                        return SlashResult::Continue;
+                        println!("No other sessions to resume.");
+                        return Some(SlashResult::Continue);
                     }
-                    eprintln!("Pick a session:");
+                    println!("Pick a session:");
                     for (i, s) in sessions.iter().enumerate() {
                         let msgs = session::message_count(&s.id).unwrap_or(0);
                         let marker = if s.id == current_session {
@@ -748,55 +849,84 @@ fn handle_slash_command(input: &str, cwd: &str, model: &str, current_session: &s
                             ""
                         };
                         let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-                        eprintln!("  [{i}] {name} — {msgs} msgs{marker}");
+                        println!("  [{i}] {name} — {msgs} msgs{marker}");
                     }
-                    eprint!("Enter number: ");
-                    let _ = io::stderr().flush();
+                    print!("Enter number: ");
+                    let _ = io::stdout().flush();
                     let mut line = String::new();
                     if io::stdin().lock().read_line(&mut line).is_ok()
                         && let Ok(idx) = line.trim().parse::<usize>()
                         && let Some(s) = sessions.get(idx)
                     {
-                        return SlashResult::SwitchSession(s.id.clone());
+                        return Some(SlashResult::SwitchSession(s.id.clone()));
                     }
-                    eprintln!("Invalid selection.");
+                    println!("Invalid selection.");
                 }
-                Err(e) => eprintln!("Failed to list sessions: {e}"),
+                Err(e) => broker::try_log_error("session", &format!("failed to list: {e}"), None),
             }
             SlashResult::Continue
         }
         "/model" => {
-            eprintln!("Current model: {model}");
-            eprintln!("\nList available models: sidekar repl models -c <credential>");
+            println!("Current model: {model}");
+            println!("\nList available models: sidekar repl models -c <credential>");
             SlashResult::Continue
         }
+        "/compact" => SlashResult::Compact,
         "/help" => {
-            eprintln!("Slash commands:");
-            eprintln!("  /new      — Start fresh session");
-            eprintln!("  /sessions — List sessions for this directory");
-            eprintln!("  /resume   — Switch to a different session");
-            eprintln!("  /model    — Show/change model");
-            eprintln!("  /quit     — Exit REPL");
-            eprintln!("  /help     — Show this help");
-            eprintln!();
-            eprintln!("Auth (run outside REPL):");
-            eprintln!("  sidekar repl login   — OAuth login");
-            eprintln!("  sidekar repl logout  — Remove credentials");
+            println!("Slash commands:");
+            println!("  /new      — Start fresh session");
+            println!("  /sessions — List sessions for this directory");
+            println!("  /resume   — Switch to a different session");
+            println!("  /compact  — Compact older session context now");
+            println!("  /model    — Show/change model");
+            println!("  /quit     — Exit REPL");
+            println!("  /help     — Show this help");
+            println!();
+            println!("Auth (run outside REPL):");
+            println!("  sidekar repl login   — OAuth login");
+            println!("  sidekar repl logout  — Remove credentials");
             SlashResult::Continue
         }
-        _ => SlashResult::NotFound,
-    }
+        _ => unreachable!("checked by is_known_slash_command"),
+    };
+
+    Some(result)
+}
+
+fn is_known_slash_command(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "/quit"
+            | "/exit"
+            | "/q"
+            | "/new"
+            | "/reset"
+            | "/sessions"
+            | "/resume"
+            | "/model"
+            | "/compact"
+            | "/help"
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Bus integration
 // ---------------------------------------------------------------------------
 
-fn inject_bus_messages(bus_name: &str, history: &mut Vec<ChatMessage>, session_id: &str) {
+fn inject_bus_messages(
+    bus_name: &str,
+    history: &mut Vec<ChatMessage>,
+    session_id: &str,
+    tunnel_tx: Option<&crate::tunnel::TunnelSender>,
+) {
     if let Ok(messages) = broker::poll_messages(bus_name) {
         for msg in messages {
             let text = format!("[Bus message from {}]: {}", msg.sender, msg.body);
-            eprintln!("\x1b[33m[bus] {} says: {}\x1b[0m", msg.sender, msg.body);
+            let display = format!("\x1b[33m[bus] {} says: {}\x1b[0m", msg.sender, msg.body);
+            println!("{display}");
+            if let Some(tx) = tunnel_tx {
+                let _ = tx.send_data(format!("{display}\r\n").into_bytes());
+            }
             let steering = ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::Text { text }],
@@ -821,20 +951,344 @@ enum InputEvent {
     Eof,
 }
 
+struct RawModeGuard {
+    saved: libc::termios,
+    fd: i32,
+}
+
+impl RawModeGuard {
+    fn enter() -> Result<Self> {
+        let fd = libc::STDIN_FILENO;
+        let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
+            anyhow::bail!("tcgetattr failed: {}", std::io::Error::last_os_error());
+        }
+        let mut raw = saved;
+        unsafe { libc::cfmakeraw(&mut raw) };
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+            anyhow::bail!("tcsetattr failed: {}", std::io::Error::last_os_error());
+        }
+        Ok(Self { saved, fd })
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
+    }
+}
+
+enum LineEditResult {
+    Continue,
+    Submit(String),
+    Eof,
+}
+
+struct LineEditor {
+    buffer: String,
+    cursor: usize,
+    escape: Vec<u8>,
+    utf8: Vec<u8>,
+    history: Vec<String>,
+    history_index: Option<usize>,
+    history_draft: Option<String>,
+}
+
+impl LineEditor {
+    fn with_history(history: Vec<String>) -> Self {
+        Self {
+            buffer: String::new(),
+            cursor: 0,
+            escape: Vec::new(),
+            utf8: Vec::new(),
+            history,
+            history_index: None,
+            history_draft: None,
+        }
+    }
+
+    fn redraw(&self) {
+        print!("\r\x1b[K\x1b[36m›\x1b[0m {}", self.buffer);
+        let trailing = self.buffer[self.cursor..].chars().count();
+        if trailing > 0 {
+            print!("\x1b[{}D", trailing);
+        }
+        let _ = io::stdout().flush();
+    }
+
+    fn clear_display(&self) {
+        print!("\r\x1b[K");
+        let _ = io::stdout().flush();
+    }
+
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.escape.clear();
+        self.utf8.clear();
+        self.history_index = None;
+        self.history_draft = None;
+    }
+
+    fn feed_bytes(&mut self, bytes: &[u8]) -> LineEditResult {
+        for &byte in bytes {
+            let result = self.feed_byte(byte);
+            if !matches!(result, LineEditResult::Continue) {
+                return result;
+            }
+        }
+        LineEditResult::Continue
+    }
+
+    fn feed_byte(&mut self, byte: u8) -> LineEditResult {
+        if !self.escape.is_empty() {
+            self.escape.push(byte);
+            if self.try_handle_escape() {
+                self.redraw();
+            }
+            return LineEditResult::Continue;
+        }
+
+        if !self.utf8.is_empty() {
+            self.utf8.push(byte);
+            match std::str::from_utf8(&self.utf8) {
+                Ok(s) => {
+                    if let Some(ch) = s.chars().next() {
+                        self.insert_char(ch);
+                        self.utf8.clear();
+                        self.redraw();
+                    }
+                }
+                Err(err) if err.error_len().is_none() => {}
+                Err(_) => {
+                    self.utf8.clear();
+                }
+            }
+            return LineEditResult::Continue;
+        }
+
+        match byte {
+            b'\r' | b'\n' => {
+                print!("\r\n");
+                let _ = io::stdout().flush();
+                let submitted = self.buffer.clone();
+                self.record_submission(&submitted);
+                self.reset();
+                LineEditResult::Submit(submitted)
+            }
+            0x04 => {
+                if self.buffer.is_empty() {
+                    print!("\r\n");
+                    let _ = io::stdout().flush();
+                    LineEditResult::Eof
+                } else {
+                    self.delete_at_cursor();
+                    self.redraw();
+                    LineEditResult::Continue
+                }
+            }
+            0x7f | 0x08 => {
+                self.backspace();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x1b => {
+                self.escape.push(byte);
+                LineEditResult::Continue
+            }
+            byte if byte.is_ascii_control() => LineEditResult::Continue,
+            byte if byte.is_ascii() => {
+                self.insert_char(byte as char);
+                self.redraw();
+                LineEditResult::Continue
+            }
+            _ => {
+                self.utf8.push(byte);
+                LineEditResult::Continue
+            }
+        }
+    }
+
+    fn try_handle_escape(&mut self) -> bool {
+        match self.escape.as_slice() {
+            [0x1b, b'[', b'D'] => {
+                self.move_left();
+                self.escape.clear();
+                true
+            }
+            [0x1b, b'[', b'C'] => {
+                self.move_right();
+                self.escape.clear();
+                true
+            }
+            [0x1b, b'[', b'A'] => {
+                self.history_prev();
+                self.escape.clear();
+                true
+            }
+            [0x1b, b'[', b'B'] => {
+                self.history_next();
+                self.escape.clear();
+                true
+            }
+            [0x1b, b'[', b'H'] | [0x1b, b'O', b'H'] => {
+                self.cursor = 0;
+                self.escape.clear();
+                true
+            }
+            [0x1b, b'[', b'F'] | [0x1b, b'O', b'F'] => {
+                self.cursor = self.buffer.len();
+                self.escape.clear();
+                true
+            }
+            [0x1b, b'[', b'3', b'~'] => {
+                self.delete_at_cursor();
+                self.escape.clear();
+                true
+            }
+            [0x1b] | [0x1b, b'['] | [0x1b, b'O'] | [0x1b, b'[', b'3'] => false,
+            _ => {
+                self.escape.clear();
+                false
+            }
+        }
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        self.detach_history_nav();
+        self.buffer.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+
+    fn move_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.cursor = self.buffer[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+    }
+
+    fn move_right(&mut self) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        if let Some(ch) = self.buffer[self.cursor..].chars().next() {
+            self.cursor += ch.len_utf8();
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.detach_history_nav();
+        let prev = self.buffer[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        self.buffer.drain(prev..self.cursor);
+        self.cursor = prev;
+    }
+
+    fn delete_at_cursor(&mut self) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        self.detach_history_nav();
+        if let Some(ch) = self.buffer[self.cursor..].chars().next() {
+            let end = self.cursor + ch.len_utf8();
+            self.buffer.drain(self.cursor..end);
+        }
+    }
+
+    fn detach_history_nav(&mut self) {
+        if self.history_index.is_some() {
+            self.history_index = None;
+            self.history_draft = None;
+        }
+    }
+
+    fn record_submission(&mut self, line: &str) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.history.last().is_some_and(|prev| prev == line) {
+            return;
+        }
+        self.history.push(line.to_string());
+    }
+
+    fn history_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        match self.history_index {
+            None => {
+                self.history_draft = Some(self.buffer.clone());
+                self.history_index = Some(self.history.len() - 1);
+            }
+            Some(0) => {}
+            Some(idx) => {
+                self.history_index = Some(idx - 1);
+            }
+        }
+        self.load_history_selection();
+    }
+
+    fn history_next(&mut self) {
+        match self.history_index {
+            None => {}
+            Some(idx) if idx + 1 < self.history.len() => {
+                self.history_index = Some(idx + 1);
+                self.load_history_selection();
+            }
+            Some(_) => {
+                self.history_index = None;
+                self.buffer = self.history_draft.take().unwrap_or_default();
+                self.cursor = self.buffer.len();
+            }
+        }
+    }
+
+    fn load_history_selection(&mut self) {
+        if let Some(idx) = self.history_index {
+            self.buffer = self.history[idx].clone();
+            self.cursor = self.buffer.len();
+        }
+    }
+}
+
 /// Block for user input **or** a bus message, whichever comes first.
 ///
 /// Uses non-blocking stdin polling (500 ms cycles) interleaved with
 /// bus queue checks so that cron prompts are picked up without
 /// requiring the user to press Enter.
-fn read_input_or_bus(bus_name: &str) -> InputEvent {
-    print!("\n\x1b[1m> \x1b[0m");
-    let _ = io::stdout().flush();
+fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor) -> InputEvent {
+    editor.redraw();
 
-    let mut line_buf = String::new();
+    let _raw_mode = match RawModeGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let mut line_buf = String::new();
+            match io::stdin().lock().read_line(&mut line_buf) {
+                Ok(0) => return InputEvent::Eof,
+                Ok(_) => return InputEvent::User(line_buf.trim_end_matches('\n').to_string()),
+                Err(_) => return InputEvent::Eof,
+            }
+        }
+    };
+
+    let mut buf = [0u8; 64];
 
     loop {
         // Check for pending bus messages (non-destructive peek)
         if broker::has_pending_messages(bus_name) {
+            editor.clear_display();
             return InputEvent::Bus;
         }
 
@@ -847,14 +1301,13 @@ fn read_input_or_bus(bus_name: &str) -> InputEvent {
             };
             let ready = libc::poll(&mut fds, 1, 500); // 500 ms
             if ready > 0 && (fds.revents & libc::POLLIN) != 0 {
-                // Data available on stdin — read a full line
-                match io::stdin().lock().read_line(&mut line_buf) {
+                match io::stdin().read(&mut buf) {
                     Ok(0) => return InputEvent::Eof,
-                    Ok(_) => {
-                        return InputEvent::User(
-                            line_buf.trim_end_matches('\n').to_string(),
-                        );
-                    }
+                    Ok(n) => match editor.feed_bytes(&buf[..n]) {
+                        LineEditResult::Continue => {}
+                        LineEditResult::Submit(line) => return InputEvent::User(line),
+                        LineEditResult::Eof => return InputEvent::Eof,
+                    },
                     Err(_) => return InputEvent::Eof,
                 }
             } else if ready < 0 {
@@ -865,8 +1318,98 @@ fn read_input_or_bus(bus_name: &str) -> InputEvent {
     }
 }
 
-fn print_banner(model: &str) {
+fn print_banner(model: &str, tunnel_tx: Option<&crate::tunnel::TunnelSender>) {
     let version = env!("CARGO_PKG_VERSION");
-    eprintln!("\x1b[1msidekar repl\x1b[0m v{version} — {model}");
-    eprintln!("Type /help for commands, /quit to exit\n");
+    let line1 = format!("\x1b[1msidekar repl\x1b[0m \x1b[2mv{version}\x1b[0m");
+    let line2 = format!("\x1b[36mmodel\x1b[0m {model}  \x1b[2m/help commands · /quit exit\x1b[0m\n");
+    println!("{line1}");
+    println!("{line2}");
+    if let Some(tx) = tunnel_tx {
+        let mut data = line1.into_bytes();
+        data.extend_from_slice(b"\r\n");
+        data.extend_from_slice(line2.as_bytes());
+        data.extend_from_slice(b"\r\n");
+        tx.send_data(data);
+    }
+    let _ = io::stdout().flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LineEditResult, LineEditor, SlashResult, handle_slash_command};
+
+    #[test]
+    fn absolute_path_is_not_treated_as_slash_command() {
+        let result = handle_slash_command("/Users/karthik/image.png", ".", "model", "session");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn known_slash_command_still_dispatches() {
+        let result = handle_slash_command("/compact", ".", "model", "session");
+        assert!(matches!(result, Some(SlashResult::Compact)));
+    }
+
+    #[test]
+    fn slash_command_alias_still_dispatches() {
+        let result = handle_slash_command("/q", ".", "model", "session");
+        assert!(matches!(result, Some(SlashResult::Quit)));
+    }
+
+    #[test]
+    fn line_editor_supports_left_right_insertion() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        assert!(matches!(editor.feed_bytes(b"ac"), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'D']), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(b"b"), LineEditResult::Continue));
+        assert!(matches!(
+            editor.feed_bytes(b"\r"),
+            LineEditResult::Submit(line) if line == "abc"
+        ));
+    }
+
+    #[test]
+    fn line_editor_supports_delete_key() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        assert!(matches!(editor.feed_bytes(b"abc"), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'D']), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'3', b'~']), LineEditResult::Continue));
+        assert!(matches!(
+            editor.feed_bytes(b"\r"),
+            LineEditResult::Submit(line) if line == "ab"
+        ));
+    }
+
+    #[test]
+    fn line_editor_supports_history_up_down() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        assert!(matches!(
+            editor.feed_bytes(b"first\r"),
+            LineEditResult::Submit(line) if line == "first"
+        ));
+        assert!(matches!(
+            editor.feed_bytes(b"second\r"),
+            LineEditResult::Submit(line) if line == "second"
+        ));
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'A']), LineEditResult::Continue));
+        assert_eq!(editor.buffer, "second");
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'A']), LineEditResult::Continue));
+        assert_eq!(editor.buffer, "first");
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'B']), LineEditResult::Continue));
+        assert_eq!(editor.buffer, "second");
+    }
+
+    #[test]
+    fn line_editor_restores_draft_after_history_navigation() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        assert!(matches!(
+            editor.feed_bytes(b"saved\r"),
+            LineEditResult::Submit(line) if line == "saved"
+        ));
+        assert!(matches!(editor.feed_bytes(b"draft"), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'A']), LineEditResult::Continue));
+        assert_eq!(editor.buffer, "saved");
+        assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'B']), LineEditResult::Continue));
+        assert_eq!(editor.buffer, "draft");
+    }
 }
