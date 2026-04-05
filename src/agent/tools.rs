@@ -24,14 +24,6 @@ pub fn definitions() -> Vec<ToolDef> {
                 "required": ["command"]
             }),
         },
-        ToolDef {
-            name: "sidekar_skill".into(),
-            description: "Read the sidekar SKILL.md reference. Returns the full tool catalog with usage, examples, and workflows for all sidekar commands (browser automation, desktop automation, web research, agent bus, etc.). Call this when you need to use sidekar tools or the user asks about sidekar capabilities.".into(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {},
-            }),
-        },
     ]
 }
 
@@ -39,7 +31,6 @@ pub fn definitions() -> Vec<ToolDef> {
 pub async fn execute(name: &str, arguments: &Value) -> Result<String> {
     match name {
         "bash" | "Bash" => exec_bash(arguments).await,
-        "sidekar_skill" => Ok(crate::skill::skill_text().to_string()),
         _ => bail!("Unknown tool: {name}"),
     }
 }
