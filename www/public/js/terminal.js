@@ -91,8 +91,6 @@
         var h = el.offsetHeight;
         if (w > 0) {
           container.style.width = w + "px";
-          terminalWrap.style.justifyContent =
-            w <= terminalWrap.clientWidth - 24 ? "center" : "flex-start";
         }
         if (h > 0) {
           container.style.height = h + "px";
