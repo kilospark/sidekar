@@ -37,6 +37,25 @@
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
 
+  // Mobile touch scroll boost — xterm scrolls 1:1 with no momentum; amplify it.
+  (function () {
+    var vp = term.element && term.element.querySelector(".xterm-viewport");
+    if (!vp) return;
+    var touchY = null;
+    var BOOST = 2;
+    vp.addEventListener("touchstart", function (e) {
+      touchY = e.touches.length === 1 ? e.touches[0].clientY : null;
+    }, { passive: true });
+    vp.addEventListener("touchmove", function (e) {
+      if (touchY !== null && e.touches.length === 1) {
+        var dy = touchY - e.touches[0].clientY;
+        touchY = e.touches[0].clientY;
+        vp.scrollTop += dy * BOOST;
+      }
+    }, { passive: true });
+    vp.addEventListener("touchend", function () { touchY = null; }, { passive: true });
+  })();
+
   var terminalWrap = document.getElementById("terminal-wrap");
   var remoteCols = 80;
   var remoteRows = 24;
