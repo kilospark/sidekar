@@ -10,8 +10,8 @@ use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEv
 use crate::session;
 use crate::tunnel::tunnel_println;
 use self::editor::{
-    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, emit_shared_line,
-    emit_shared_output, print_banner, read_input_or_bus,
+    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, clear_transient_status,
+    emit_shared_line, emit_transient_status, print_banner, read_input_or_bus,
 };
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
@@ -705,11 +705,6 @@ impl EventRenderer {
         }
     }
 
-    /// Write text to stdout and relay tunnel.
-    fn emit(&self, text: &str) {
-        emit_shared_output(text);
-    }
-
     /// Write text + newline to stdout and relay tunnel.
     fn emitln(&self, text: &str) {
         emit_shared_line(text);
@@ -736,7 +731,7 @@ impl EventRenderer {
     fn update_partial_preview(&mut self) {
         match self.md.preview_partial_line() {
             Some(line) => {
-                self.emit(&format!("\r\x1b[K{line}"));
+                emit_transient_status(&line);
                 let _ = io::stdout().flush();
                 self.partial_visible = true;
             }
@@ -746,7 +741,7 @@ impl EventRenderer {
 
     fn clear_partial_preview(&mut self) {
         if self.partial_visible {
-            self.emit("\r\x1b[K");
+            clear_transient_status();
             let _ = io::stdout().flush();
             self.partial_visible = false;
         }
@@ -858,15 +853,15 @@ impl Spinner {
             while r.load(std::sync::atomic::Ordering::Relaxed) {
                 let elapsed = started.elapsed().as_secs_f32();
                 let line = format!(
-                    "\r{SPINNER_COLOR}{}\x1b[0m \x1b[2m{:.1}s\x1b[0m{label_part}\x1b[K",
+                    "{SPINNER_COLOR}{}\x1b[0m \x1b[2m{:.1}s\x1b[0m{label_part}",
                     SPINNER_FRAMES[i % SPINNER_FRAMES.len()],
                     elapsed,
                 );
-                emit_shared_output(&line);
+                emit_transient_status(&line);
                 i += 1;
                 std::thread::sleep(std::time::Duration::from_millis(80));
             }
-            emit_shared_output("\r\x1b[K");
+            clear_transient_status();
         });
         Self {
             running,

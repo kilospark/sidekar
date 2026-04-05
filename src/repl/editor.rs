@@ -48,7 +48,8 @@ fn with_active_prompt<R>(f: impl FnOnce(&mut LineEditor) -> R) -> Option<R> {
 
 pub(super) fn emit_shared_output(text: &str) {
     if with_active_prompt(|editor| {
-        editor.clear_rendered_prompt_inner();
+        editor.clear_prompt_and_status_inner();
+        editor.status_visible = false;
         emit_raw(text);
         editor.redraw_inner();
     })
@@ -63,6 +64,36 @@ pub(super) fn emit_shared_line(text: &str) {
     line.push_str(text);
     line.push('\n');
     emit_shared_output(&line);
+}
+
+pub(super) fn emit_transient_status(text: &str) {
+    if with_active_prompt(|editor| {
+        editor.clear_prompt_and_status_inner();
+        emit_raw("\r\x1b[2K");
+        emit_raw(text);
+        emit_raw("\n");
+        editor.status_visible = true;
+        editor.redraw_inner();
+    })
+    .is_none()
+    {
+        emit_raw(text);
+    }
+}
+
+pub(super) fn clear_transient_status() {
+    if with_active_prompt(|editor| {
+        if !editor.status_visible {
+            return;
+        }
+        editor.clear_prompt_and_status_inner();
+        editor.status_visible = false;
+        editor.redraw_inner();
+    })
+    .is_none()
+    {
+        emit_raw("\r\x1b[K");
+    }
 }
 
 pub(super) struct RawModeGuard {
@@ -426,6 +457,7 @@ pub(super) struct LineEditor {
     history_draft: Option<String>,
     escape_started_at: Option<std::time::Instant>,
     preferred_col: Option<usize>,
+    status_visible: bool,
     rendered_rows: usize,
     rendered_cursor: CursorPos,
     kill_buffer: String,
@@ -449,6 +481,7 @@ impl LineEditor {
             history_draft: None,
             escape_started_at: None,
             preferred_col: None,
+            status_visible: false,
             rendered_rows: 0,
             rendered_cursor: CursorPos::default(),
             kill_buffer: String::new(),
@@ -465,15 +498,24 @@ impl LineEditor {
         }
     }
 
-    fn clear_rendered_prompt_inner(&mut self) {
-        if self.rendered_rows == 0 {
+    fn clear_prompt_and_status_inner(&mut self) {
+        if self.rendered_rows == 0 && !self.status_visible {
             return;
         }
         let mut clear = String::new();
         if self.rendered_cursor.row > 0 {
             clear.push_str(&format!("\x1b[{}A", self.rendered_cursor.row));
         }
+        if self.status_visible {
+            clear.push_str("\x1b[1A");
+        }
         clear.push('\r');
+        if self.status_visible {
+            clear.push_str("\x1b[2K");
+            if self.rendered_rows > 0 {
+                clear.push_str("\x1b[1B\r");
+            }
+        }
         for row in 0..self.rendered_rows {
             clear.push_str("\x1b[2K");
             if row + 1 < self.rendered_rows {
@@ -483,10 +525,21 @@ impl LineEditor {
         if self.rendered_rows > 1 {
             clear.push_str(&format!("\x1b[{}A", self.rendered_rows - 1));
         }
+        if self.status_visible && self.rendered_rows > 0 {
+            clear.push_str("\x1b[1A");
+            clear.push_str("\x1b[1B");
+        }
         clear.push('\r');
         emit_raw(&clear);
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
+    }
+
+    fn clear_rendered_prompt_inner(&mut self) {
+        let had_status = self.status_visible;
+        self.status_visible = false;
+        self.clear_prompt_and_status_inner();
+        self.status_visible = had_status;
     }
 
     fn redraw_inner(&mut self) {
@@ -537,6 +590,7 @@ impl LineEditor {
         self.history_draft = None;
         self.escape_started_at = None;
         self.preferred_col = None;
+        self.status_visible = false;
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
     }
@@ -879,6 +933,7 @@ impl LineEditor {
         self.history_draft = None;
         self.escape_started_at = None;
         self.preferred_col = None;
+        self.status_visible = false;
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
     }
