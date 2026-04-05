@@ -25,6 +25,7 @@ const CODEX_SCOPES: &str = "openid profile email offline_access";
 pub const KV_KEY_ANTHROPIC: &str = "oauth:anthropic";
 pub const KV_KEY_CODEX: &str = "oauth:codex";
 pub const KV_KEY_OPENROUTER: &str = "oauth:openrouter";
+pub const KV_KEY_OPENCODE: &str = "oauth:opencode";
 
 /// KV key for a named credential. e.g., "claude-1" → "oauth:claude-1"
 pub fn kv_key_for(nickname: &str) -> String {
@@ -47,6 +48,8 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("codex")
     } else if nickname.starts_with("or") {
         Some("openrouter")
+    } else if nickname.starts_with("oc") || nickname.starts_with("opencode") {
+        Some("opencode")
     } else {
         None
     }
@@ -65,6 +68,8 @@ pub fn list_credentials() -> Vec<(String, String)> {
                 "codex"
             } else if name == "openrouter" {
                 "openrouter"
+            } else if name == "opencode" {
+                "opencode"
             } else {
                 "unknown"
             });
@@ -215,6 +220,48 @@ pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
     };
     save_credentials(&kv_key, &creds)?;
     eprintln!("OpenRouter API key saved.");
+
+    Ok(key)
+}
+
+/// Get a valid OpenCode API key. No OAuth — uses stored key or OPENCODE_API_KEY env var.
+pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE);
+
+    // 1. Stored credentials
+    if let Some(creds) = load_credentials(&kv_key)? {
+        return Ok(creds.access_token);
+    }
+
+    // 2. Environment variable
+    if let Ok(key) = std::env::var("OPENCODE_API_KEY") {
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+
+    // 3. Interactive prompt — open browser to auth page
+    eprintln!("No OpenCode credentials found. Opening https://opencode.ai/auth ...");
+    let _ = open_browser("https://opencode.ai/auth");
+    eprint!("Paste API key: ");
+    let _ = std::io::stderr().flush();
+    let mut key = String::new();
+    std::io::stdin()
+        .read_line(&mut key)
+        .context("failed to read API key")?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        bail!("No API key provided");
+    }
+
+    let creds = OAuthCredentials {
+        access_token: key.clone(),
+        refresh_token: String::new(),
+        expires_at: u64::MAX,
+        metadata: serde_json::json!({}),
+    };
+    save_credentials(&kv_key, &creds)?;
+    eprintln!("OpenCode API key saved.");
 
     Ok(key)
 }

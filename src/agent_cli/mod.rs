@@ -1,21 +1,21 @@
 //! Per–command-line agent argv shaping for the PTY wrapper.
 //!
-//! Each supported agent **binary** has its own [`AgentCliSpec`] in the registry.
+//! Each [`AgentCliSpec`] registers one or more argv0 names (e.g. the Cursor family
+//! covers `cursor`, `agent`, and `cursor-agent`).
 //! [`AgentCliSpec::proxy_env_flags`] layers optional reverse-proxy URLs and Codex
 //! hooks on top of the universal MITM env block in [`proxy_env::build_proxy_child_env`].
 
 mod cursor_family;
 mod proxy_env;
 
-use cursor_family::{Agent, Cursor, CursorAgent};
-pub(crate) use proxy_env::build_proxy_child_env;
+use cursor_family::CursorFamily;
 use proxy_env::ProxyEnvFlags;
+pub(crate) use proxy_env::build_proxy_child_env;
 
 /// Starter prompt passed via each tool’s native “initial prompt” mechanism.
-pub const STARTUP_INJECT: &str =
-    "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
+pub const STARTUP_INJECT: &str = "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
 
-/// One implementation per PTY-wrapped binary — no default `proxy_env_flags`.
+/// Registry spec: one type per agent **family** (or single binary). No default `proxy_env_flags`.
 pub trait AgentCliSpec: Send + Sync {
     fn ids(&self) -> &'static [&'static str];
     fn enrich_startup(&self, invoked_as: &str, args: &[String]) -> Vec<String>;
@@ -186,9 +186,7 @@ impl AgentCliSpec for Goose {
 
 static CLAUDE: Claude = Claude;
 static CODEX: Codex = Codex;
-static CURSOR: Cursor = Cursor;
-static AGENT: Agent = Agent;
-static CURSOR_AGENT: CursorAgent = CursorAgent;
+static CURSOR_FAMILY: CursorFamily = CursorFamily;
 static GEMINI: Gemini = Gemini;
 static OPENCODE: OpenCode = OpenCode;
 static PI: Pi = Pi;
@@ -198,9 +196,7 @@ static GOOSE: Goose = Goose;
 static REGISTRY: &[&dyn AgentCliSpec] = &[
     &CLAUDE,
     &CODEX,
-    &CURSOR,
-    &AGENT,
-    &CURSOR_AGENT,
+    &CURSOR_FAMILY,
     &GEMINI,
     &OPENCODE,
     &PI,

@@ -389,7 +389,15 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                         } else {
                             format!("{} | {}", r.message, details)
                         };
-                        out!(ctx, "{}\t{}\t{}\t{}\t{}", r.id, r.created_at, r.level, r.source, msg);
+                        out!(
+                            ctx,
+                            "{}\t{}\t{}\t{}\t{}",
+                            r.id,
+                            r.created_at,
+                            r.level,
+                            r.source,
+                            msg
+                        );
                     }
                     Ok(())
                 }
@@ -506,8 +514,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                             );
                         }
                     }
-                    if key == "relay" && crate::config::RelayMode::parse(raw_value).is_none()
-                    {
+                    if key == "relay" && crate::config::RelayMode::parse(raw_value).is_none() {
                         bail!("relay must be one of: auto, on, off");
                     }
                     crate::config::config_set(key, raw_value)?;
@@ -734,15 +741,15 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
             let filtered: Vec<&str> = args
                 .iter()
-                .filter(|a| {
-                    !a.starts_with("--reply-to=") && !a.starts_with("--file=")
-                })
+                .filter(|a| !a.starts_with("--reply-to=") && !a.starts_with("--file="))
                 .map(String::as_str)
                 .collect();
             // With --file: <next> <summary> (request body from file)
             // Without: <next> <summary> <request>
             if filtered.len() < 2 || (filtered.len() < 3 && file_path.is_none()) {
-                bail!("Usage: sidekar bus done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]");
+                bail!(
+                    "Usage: sidekar bus done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]"
+                );
             }
             let request_body = if let Some(path) = file_path {
                 std::fs::read_to_string(path)
@@ -812,8 +819,18 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 _ => Some(project_name.as_str()),
             };
             let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
-            let id = cron::cmd_cron_create(ctx, schedule, &action, target, name, &created_by, once, project, None)
-                .await?;
+            let id = cron::cmd_cron_create(
+                ctx,
+                schedule,
+                &action,
+                target,
+                name,
+                &created_by,
+                once,
+                project,
+                None,
+            )
+            .await?;
             let _ = id; // printed by cmd_cron_create
             Ok(())
         }

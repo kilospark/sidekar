@@ -465,7 +465,10 @@ mod tests {
                     "fourth".to_string()
                 ]
             );
-            assert_eq!(load_input_history("/repo/b", 10)?, vec!["other".to_string()]);
+            assert_eq!(
+                load_input_history("/repo/b", 10)?,
+                vec!["other".to_string()]
+            );
             Ok(())
         })
     }

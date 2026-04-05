@@ -322,7 +322,9 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
     let jobs = Arc::new(Mutex::new(Vec::new()));
 
     // Load persisted jobs scoped to this agent's project
-    if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::Project, &cron_ctx.project) {
+    if let Ok(records) =
+        broker::list_cron_jobs(true, crate::scope::ScopeView::Project, &cron_ctx.project)
+    {
         let mut loaded = jobs.lock().await;
         for rec in records {
             if !job_belongs_to_agent(&rec.target, &rec.created_by, cron_ctx.agent_name.as_deref()) {
@@ -481,7 +483,10 @@ pub(crate) async fn cmd_cron_create(
 }
 
 /// List cron jobs scoped to the current project (default), global, or all.
-pub(crate) async fn cmd_cron_list(ctx: &mut AppContext, scope: crate::scope::ScopeView) -> Result<()> {
+pub(crate) async fn cmd_cron_list(
+    ctx: &mut AppContext,
+    scope: crate::scope::ScopeView,
+) -> Result<()> {
     let current_project = crate::scope::resolve_project_name(None);
     let cell = cron_cell().await;
     let guard = cell.lock().await;
@@ -730,10 +735,13 @@ async fn cron_loop(
         }
 
         // Reload jobs from broker to pick up externally-created jobs
-        if let Ok(records) = broker::list_cron_jobs(true, crate::scope::ScopeView::Project, &cron_ctx.project) {
+        if let Ok(records) =
+            broker::list_cron_jobs(true, crate::scope::ScopeView::Project, &cron_ctx.project)
+        {
             let mut mem_jobs = jobs.lock().await;
             // Collect IDs of jobs that belong to this agent for pruning deleted ones
-            let mut broker_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut broker_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for rec in &records {
                 if !job_belongs_to_agent(&rec.target, &rec.created_by, owner_name.as_deref()) {
                     continue;

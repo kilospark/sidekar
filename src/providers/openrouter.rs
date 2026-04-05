@@ -235,8 +235,10 @@ async fn parse_sse_stream(
             if let Some(u) = data.get("usage") {
                 usage.input_tokens =
                     u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                usage.output_tokens =
-                    u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                usage.output_tokens = u
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
             }
 
             let choices = match data.get("choices").and_then(|v| v.as_array()) {
@@ -268,7 +270,8 @@ async fn parse_sse_stream(
                 // Tool call deltas
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tool_calls {
-                        let tc_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let tc_index =
+                            tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
                         // New tool call (has id and function.name)
                         if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {

@@ -10,7 +10,6 @@ const MEMORY_TYPES: &[&str] = &[
     "artifact-pointer",
 ];
 
-
 const TAG_RULES: &[(&str, &[&str])] = &[
     (
         "testing",
@@ -1522,5 +1521,4 @@ mod tests {
             Ok(())
         })
     }
-
 }

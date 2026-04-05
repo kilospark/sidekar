@@ -56,10 +56,7 @@ pub fn inject_codex_ca(ca_path: &std::path::Path) -> bool {
     }
 
     let ca_str = ca_path.to_string_lossy();
-    let injection = format!(
-        "ca-certificate = \"{}\" {}\n",
-        ca_str, CODEX_CA_MARKER
-    );
+    let injection = format!("ca-certificate = \"{}\" {}\n", ca_str, CODEX_CA_MARKER);
 
     // Prepend before any section headers
     let new_content = format!("{injection}{content}");
@@ -85,7 +82,14 @@ pub fn remove_codex_ca() {
         .join("\n");
 
     // Preserve trailing newline
-    let _ = std::fs::write(&config_path, if cleaned.ends_with('\n') { cleaned } else { cleaned + "\n" });
+    let _ = std::fs::write(
+        &config_path,
+        if cleaned.ends_with('\n') {
+            cleaned
+        } else {
+            cleaned + "\n"
+        },
+    );
 }
 
 /// Squash runs of 2+ newlines into a single newline in the raw body.
@@ -313,9 +317,9 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
 
     let (upstream_host, upstream_port) = resolve_upstream(&parsed_headers);
 
-    let is_websocket = parsed_headers.iter().any(|(k, v)| {
-        k.to_lowercase() == "upgrade" && v.to_lowercase() == "websocket"
-    });
+    let is_websocket = parsed_headers
+        .iter()
+        .any(|(k, v)| k.to_lowercase() == "upgrade" && v.to_lowercase() == "websocket");
 
     if state.verbose {
         let ws_tag = if is_websocket { " [WS]" } else { "" };
@@ -323,7 +327,13 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
             "debug",
             "proxy",
             &format!("REVERSE {method} {path} → {upstream_host}{ws_tag} ({content_length}b)"),
-            Some(&raw_headers.iter().map(|h| h.trim_end()).collect::<Vec<_>>().join(" | ")),
+            Some(
+                &raw_headers
+                    .iter()
+                    .map(|h| h.trim_end())
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
         );
     }
 
@@ -341,7 +351,11 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
                 crate::broker::try_log_event(
                     "debug",
                     "proxy",
-                    &format!("squashed {saved}b newlines from request ({} → {})", content_length, squashed.len()),
+                    &format!(
+                        "squashed {saved}b newlines from request ({} → {})",
+                        content_length,
+                        squashed.len()
+                    ),
                     None,
                 );
             }
@@ -355,7 +369,10 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
     // Connect TLS to upstream
     let upstream_tcp = TcpStream::connect((upstream_host, upstream_port)).await?;
     let server_name = rustls::pki_types::ServerName::try_from(upstream_host.to_string())?;
-    let upstream_tls = state.tls_connector.connect(server_name, upstream_tcp).await?;
+    let upstream_tls = state
+        .tls_connector
+        .connect(server_name, upstream_tcp)
+        .await?;
     let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
 
     // Forward request — only Host is rewritten (CDN routing requires it)
@@ -467,12 +484,7 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
     stream.flush().await?;
 
     if state.verbose {
-        crate::broker::try_log_event(
-            "debug",
-            "proxy",
-            &format!("CONNECT {host}:{port}"),
-            None,
-        );
+        crate::broker::try_log_event("debug", "proxy", &format!("CONNECT {host}:{port}"), None);
     }
 
     let cached = get_host_cert(&state, &host).await?;
@@ -488,14 +500,210 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
 
     let real_stream = TcpStream::connect(format!("{host}:{port}")).await?;
     let server_name = rustls::pki_types::ServerName::try_from(host.clone())?;
-    let server_tls = state.tls_connector.connect(server_name, real_stream).await?;
+    let server_tls = state
+        .tls_connector
+        .connect(server_name, real_stream)
+        .await?;
 
-    let (mut client_read, mut client_write) = tokio::io::split(client_tls);
-    let (mut server_read, mut server_write) = tokio::io::split(server_tls);
+    let (client_read, mut client_write) = tokio::io::split(client_tls);
+    let (server_read, mut server_write) = tokio::io::split(server_tls);
+    let mut client_reader = BufReader::new(client_read);
+    let mut server_reader = BufReader::new(server_read);
 
-    tokio::select! {
-        r = tokio::io::copy(&mut client_read, &mut server_write) => { let _ = r; }
-        r = tokio::io::copy(&mut server_read, &mut client_write) => { let _ = r; }
+    // Parse and forward HTTP requests inside the decrypted tunnel.
+    loop {
+        // Read request line from client
+        let mut request_line = String::new();
+        match client_reader.read_line(&mut request_line).await {
+            Ok(0) | Err(_) => break,
+            _ => {}
+        }
+        let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+        if parts.len() < 3 {
+            break;
+        }
+        let method = parts[0];
+        let path = parts[1];
+        let version = parts[2];
+
+        // Read headers
+        let mut raw_headers: Vec<String> = Vec::new();
+        let mut content_length: usize = 0;
+        let mut is_websocket = false;
+        loop {
+            let mut line = String::new();
+            match client_reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                _ => {}
+            }
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                let kl = k.trim().to_lowercase();
+                if kl == "content-length" {
+                    content_length = v.trim().parse().unwrap_or(0);
+                }
+                if kl == "upgrade" && v.trim().to_lowercase() == "websocket" {
+                    is_websocket = true;
+                }
+            }
+            raw_headers.push(line);
+        }
+
+        // Read request body
+        let mut body = vec![0u8; content_length];
+        if content_length > 0 {
+            if client_reader.read_exact(&mut body).await.is_err() {
+                break;
+            }
+        }
+
+        if state.verbose {
+            let ws_tag = if is_websocket { " [WS]" } else { "" };
+            crate::broker::try_log_event(
+                "debug",
+                "proxy",
+                &format!("CONNECT {method} {path} → {host}{ws_tag} ({content_length}b)"),
+                Some(
+                    &raw_headers
+                        .iter()
+                        .map(|h| h.trim_end())
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                ),
+            );
+        }
+
+        // Squash consecutive newlines in request body
+        let body = if content_length > 0 {
+            let (squashed, saved) = squash_newlines(&body);
+            if saved > 0 {
+                for h in raw_headers.iter_mut() {
+                    if h.to_lowercase().starts_with("content-length:") {
+                        *h = format!("Content-Length: {}\r\n", squashed.len());
+                    }
+                }
+                if state.verbose {
+                    crate::broker::try_log_event(
+                        "debug",
+                        "proxy",
+                        &format!(
+                            "squashed {saved}b newlines from request ({} → {})",
+                            content_length,
+                            squashed.len()
+                        ),
+                        None,
+                    );
+                }
+            }
+            squashed
+        } else {
+            body
+        };
+
+        // Forward to upstream
+        server_write
+            .write_all(format!("{method} {path} {version}\r\n").as_bytes())
+            .await?;
+        for h in &raw_headers {
+            server_write.write_all(h.as_bytes()).await?;
+        }
+        server_write.write_all(b"\r\n").await?;
+        if !body.is_empty() {
+            server_write.write_all(&body).await?;
+        }
+        server_write.flush().await?;
+
+        if is_websocket {
+            // WebSocket upgrade: bidirectional pipe from here on
+            tokio::select! {
+                r = tokio::io::copy(&mut client_reader, &mut server_write) => { let _ = r; }
+                r = tokio::io::copy(&mut server_reader, &mut client_write) => { let _ = r; }
+            }
+            break;
+        }
+
+        // Stream response back to client unchanged
+        let mut response_line = String::new();
+        match server_reader.read_line(&mut response_line).await {
+            Ok(0) | Err(_) => break,
+            _ => {}
+        }
+        client_write.write_all(response_line.as_bytes()).await?;
+
+        // Read and forward response headers
+        let mut resp_content_length: Option<usize> = None;
+        let mut is_chunked = false;
+        loop {
+            let mut line = String::new();
+            match server_reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                _ => {}
+            }
+            client_write.write_all(line.as_bytes()).await?;
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                let kl = k.trim().to_lowercase();
+                if kl == "content-length" {
+                    resp_content_length = v.trim().parse().ok();
+                }
+                if kl == "transfer-encoding" && v.trim().to_lowercase().contains("chunked") {
+                    is_chunked = true;
+                }
+            }
+        }
+
+        // Forward response body
+        if let Some(len) = resp_content_length {
+            let mut remaining = len;
+            let mut buf = vec![0u8; 8192];
+            while remaining > 0 {
+                let to_read = remaining.min(buf.len());
+                let n = match server_reader.read(&mut buf[..to_read]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                client_write.write_all(&buf[..n]).await?;
+                remaining -= n;
+            }
+        } else if is_chunked {
+            // Forward chunked encoding until terminal chunk
+            loop {
+                let mut chunk_line = String::new();
+                match server_reader.read_line(&mut chunk_line).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+                client_write.write_all(chunk_line.as_bytes()).await?;
+                let chunk_size = usize::from_str_radix(chunk_line.trim(), 16).unwrap_or(0);
+                if chunk_size == 0 {
+                    // Terminal chunk — read trailing \r\n
+                    let mut trail = String::new();
+                    let _ = server_reader.read_line(&mut trail).await;
+                    client_write.write_all(trail.as_bytes()).await?;
+                    break;
+                }
+                let mut remaining = chunk_size;
+                let mut buf = vec![0u8; 8192];
+                while remaining > 0 {
+                    let to_read = remaining.min(buf.len());
+                    let n = match server_reader.read(&mut buf[..to_read]).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    client_write.write_all(&buf[..n]).await?;
+                    remaining -= n;
+                }
+                // Read trailing \r\n after chunk data
+                let mut trail = String::new();
+                let _ = server_reader.read_line(&mut trail).await;
+                client_write.write_all(trail.as_bytes()).await?;
+            }
+        }
+        client_write.flush().await?;
     }
 
     Ok(())
@@ -507,8 +715,8 @@ mod tests {
 
     /// Build a client that uses CONNECT proxy (MITM mode).
     async fn mitm_client(port: u16, ca_path: &std::path::Path) -> reqwest::Client {
-        let ca_pem = std::fs::read(ca_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", ca_path.display()));
+        let ca_pem =
+            std::fs::read(ca_path).unwrap_or_else(|e| panic!("read {}: {e}", ca_path.display()));
         let ca_cert = reqwest::Certificate::from_pem(&ca_pem).expect("parse ca cert");
         reqwest::Client::builder()
             .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{port}")).unwrap())
@@ -519,9 +727,7 @@ mod tests {
 
     /// Build a plain HTTP client (reverse proxy mode — no TLS on local leg).
     fn reverse_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .build()
-            .expect("build client")
+        reqwest::Client::builder().build().expect("build client")
     }
 
     #[tokio::test]

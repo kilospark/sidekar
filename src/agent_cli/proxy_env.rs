@@ -18,6 +18,8 @@ pub struct ProxyEnvFlags {
     pub codex_ca_certificate_env: bool,
     /// Run [`crate::proxy::inject_codex_ca`] before fork; pair with cleanup on exit.
     pub inject_codex_config_toml: bool,
+    /// `NODE_USE_ENV_PROXY=1` — Node 18+ global `fetch()` ignores proxy env vars without this.
+    pub node_use_env_proxy: bool,
 }
 
 /// Build `(env pairs, inject_codex_toml)` for the child. `ca_pem_path` should be
@@ -63,6 +65,9 @@ pub fn build_proxy_child_env(
     if flags.codex_ca_certificate_env {
         v.push(("CODEX_CA_CERTIFICATE", ca_pem_path.to_string()));
     }
+    if flags.node_use_env_proxy {
+        v.push(("NODE_USE_ENV_PROXY", "1".into()));
+    }
 
     let inject_codex = flags.inject_codex_config_toml;
     (v, inject_codex)
@@ -104,11 +109,24 @@ mod tests {
     }
 
     #[test]
+    fn cursor_family_sets_node_use_env_proxy() {
+        for agent in &["cursor", "agent", "cursor-agent"] {
+            let (env, inject) = build_proxy_child_env(agent, 9, "/tmp/ca.pem");
+            assert!(!inject);
+            assert!(!has(&env, "ANTHROPIC_BASE_URL"));
+            assert!(!has(&env, "OPENAI_BASE_URL"));
+            assert_eq!(val(&env, "NODE_USE_ENV_PROXY"), "1");
+            assert!(has(&env, "HTTPS_PROXY"));
+        }
+    }
+
+    #[test]
     fn gemini_mitm_only() {
         let (env, inject) = build_proxy_child_env("gemini", 9, "/x/ca.pem");
         assert!(!inject);
         assert!(!has(&env, "ANTHROPIC_BASE_URL"));
         assert!(!has(&env, "OPENAI_BASE_URL"));
+        assert!(!has(&env, "NODE_USE_ENV_PROXY"));
         assert!(has(&env, "SSL_CERT_FILE"));
     }
 }

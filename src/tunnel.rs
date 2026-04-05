@@ -27,18 +27,32 @@ const CHANNEL_CAPACITY: usize = 256;
 // web terminal viewers without threading a TunnelSender through every call.
 // ---------------------------------------------------------------------------
 
-static OUTPUT_TUNNEL: std::sync::OnceLock<TunnelSender> = std::sync::OnceLock::new();
+static OUTPUT_TUNNEL: Mutex<Option<TunnelSender>> = Mutex::new(None);
 
 /// Register the tunnel sender for global output forwarding.
 pub fn set_output_tunnel(tx: TunnelSender) {
-    let _ = OUTPUT_TUNNEL.set(tx);
+    if let Ok(mut guard) = OUTPUT_TUNNEL.lock() {
+        *guard = Some(tx);
+    }
+}
+
+/// Unregister the tunnel sender (e.g. when relay is turned off).
+pub fn clear_output_tunnel() {
+    if let Ok(mut guard) = OUTPUT_TUNNEL.lock() {
+        *guard = None;
+    }
+}
+
+/// Returns true if a tunnel sender is currently registered.
+pub fn has_output_tunnel() -> bool {
+    OUTPUT_TUNNEL.lock().ok().map_or(false, |g| g.is_some())
 }
 
 /// Print a line to stdout and, if a tunnel is registered, to web viewers.
 /// Bare `\n` in `text` is converted to `\r\n` for the terminal emulator.
 pub fn tunnel_println(text: &str) {
     println!("{text}");
-    if let Some(tx) = OUTPUT_TUNNEL.get() {
+    if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
         // Normalize line endings: \r\n → \n → \r\n to avoid \r\r\n
         let converted = text.replace("\r\n", "\n").replace('\n', "\r\n");
         let mut data = converted.into_bytes();
@@ -49,7 +63,7 @@ pub fn tunnel_println(text: &str) {
 
 /// Send raw bytes to the tunnel only (no stdout). No-op if no tunnel registered.
 pub fn tunnel_send(data: Vec<u8>) {
-    if let Some(tx) = OUTPUT_TUNNEL.get() {
+    if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
         tx.send_data(data);
     }
 }
