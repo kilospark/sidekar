@@ -455,8 +455,20 @@ async fn cdp_pool_reaper(pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>) {
     }
 }
 
-/// Sweep dead agents from the broker. Checks each agent's PTY PID and
-/// unregisters any whose process is no longer alive.
+/// Extract a local process PID from broker pane IDs that encode one.
+fn pid_from_agent_pane(pane: &str) -> Option<i32> {
+    for prefix in ["pty-", "repl-", "cli-"] {
+        if let Some(pid_str) = pane.strip_prefix(prefix) {
+            if let Ok(pid) = pid_str.parse::<i32>() {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+/// Sweep dead agents from the broker. Checks each local agent PID encoded in
+/// the pane ID and unregisters agents whose process is no longer alive.
 fn sweep_dead_agents() {
     let agents = match crate::broker::list_agents(None) {
         Ok(a) => a,
@@ -464,11 +476,9 @@ fn sweep_dead_agents() {
     };
     for agent in agents {
         if let Some(ref pane) = agent.id.pane {
-            if let Some(pid_str) = pane.strip_prefix("pty-") {
-                if let Ok(pid) = pid_str.parse::<i32>() {
-                    if unsafe { libc::kill(pid, 0) } != 0 {
-                        let _ = crate::broker::unregister_agent(&agent.id.name);
-                    }
+            if let Some(pid) = pid_from_agent_pane(pane) {
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    let _ = crate::broker::unregister_agent(&agent.id.name);
                 }
             }
         }
@@ -939,4 +949,24 @@ async fn read_line_limited(
     let len = s.len();
     *buf = s;
     Ok(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pid_from_agent_pane;
+
+    #[test]
+    fn pid_from_agent_pane_recognizes_local_agent_prefixes() {
+        assert_eq!(pid_from_agent_pane("pty-123"), Some(123));
+        assert_eq!(pid_from_agent_pane("repl-456"), Some(456));
+        assert_eq!(pid_from_agent_pane("cli-789"), Some(789));
+    }
+
+    #[test]
+    fn pid_from_agent_pane_rejects_non_pid_panes() {
+        assert_eq!(pid_from_agent_pane("tab-123"), None);
+        assert_eq!(pid_from_agent_pane("repl-abc"), None);
+        assert_eq!(pid_from_agent_pane("pty-"), None);
+        assert_eq!(pid_from_agent_pane(""), None);
+    }
 }

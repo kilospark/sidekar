@@ -142,7 +142,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         Some(false) => crate::config::RelayMode::Off,
         None => crate::config::relay_mode(),
     };
-    let (tunnel_tx, _tunnel_rx): (Option<crate::tunnel::TunnelSender>, Option<crate::tunnel::TunnelReceiver>) = match relay_policy {
+    let (tunnel_tx, tunnel_rx): (Option<crate::tunnel::TunnelSender>, Option<crate::tunnel::TunnelReceiver>) = match relay_policy {
         crate::config::RelayMode::On => {
             if let Some(token) = crate::auth::auth_token() {
                 let (cols, rows) = terminal_size().unwrap_or((80, 24));
@@ -162,6 +162,57 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             }
         }
         _ => (None, None),
+    };
+
+    // Bridge tunnel input (web terminal keystrokes) into a pipe fd so the
+    // synchronous poll loop in read_input_or_bus can multiplex it with stdin.
+    use std::os::unix::io::FromRawFd;
+    let tunnel_input_fd: Option<i32> = if let Some(mut rx) = tunnel_rx {
+        let mut fds = [0i32; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
+            let read_fd = fds[0];
+            let write_fd = fds[1];
+            unsafe { libc::fcntl(write_fd, libc::F_SETFL, libc::O_NONBLOCK) };
+            let bus = bus_name.clone();
+            tokio::spawn(async move {
+                use std::io::Write as _;
+                let mut pipe = unsafe { std::fs::File::from_raw_fd(write_fd) };
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        crate::tunnel::TunnelEvent::Data(data) => {
+                            let _ = pipe.write_all(&data);
+                        }
+                        crate::tunnel::TunnelEvent::BusRelay { recipient, sender, body, envelope } => {
+                            if let Some(envelope) = envelope {
+                                match envelope.kind {
+                                    crate::message::MessageKind::Request
+                                    | crate::message::MessageKind::Handoff => {
+                                        let _ = broker::set_pending(&envelope);
+                                    }
+                                    crate::message::MessageKind::Response => {
+                                        if let Some(reply_to) = envelope.reply_to.as_deref() {
+                                            let _ = broker::record_reply(reply_to, &envelope);
+                                        }
+                                    }
+                                    crate::message::MessageKind::Fyi => {}
+                                }
+                            }
+                            let _ = broker::enqueue_message(&sender, &recipient, &body);
+                        }
+                        crate::tunnel::TunnelEvent::BusPlain(text) => {
+                            let _ = broker::enqueue_message("relay", &bus, &text);
+                        }
+                        crate::tunnel::TunnelEvent::Disconnected => {}
+                    }
+                }
+                drop(pipe);
+            });
+            Some(read_fd)
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
     let cron_project = crate::scope::resolve_project_name(None);
@@ -241,26 +292,17 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let scope_name = crate::scope::resolve_project_name(Some(&cwd));
     let mut line_editor = LineEditor::with_history(
         session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
+        tunnel_tx.clone(),
     );
 
     loop {
-        // Send prompt marker to tunnel so web viewers see it
-        if let Some(ref tx) = tunnel_tx {
-            tx.send_data(b"\n\x1b[36m\xe2\x80\xba\x1b[0m ".to_vec());
-        }
-        let input = match read_input_or_bus(&bus_name, &mut line_editor) {
+        let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
             InputEvent::User(s) => Some(s),
             InputEvent::Bus => None, // no user text — bus messages trigger the agent
             InputEvent::Eof => break,
         };
 
         if let Some(ref text) = input {
-            // Echo user input to tunnel
-            if let Some(ref tx) = tunnel_tx {
-                let mut data = text.as_bytes().to_vec();
-                data.extend_from_slice(b"\r\n");
-                tx.send_data(data);
-            }
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
@@ -992,10 +1034,12 @@ struct LineEditor {
     history: Vec<String>,
     history_index: Option<usize>,
     history_draft: Option<String>,
+    escape_started_at: Option<std::time::Instant>,
+    tunnel_tx: Option<crate::tunnel::TunnelSender>,
 }
 
 impl LineEditor {
-    fn with_history(history: Vec<String>) -> Self {
+    fn with_history(history: Vec<String>, tunnel_tx: Option<crate::tunnel::TunnelSender>) -> Self {
         Self {
             buffer: String::new(),
             cursor: 0,
@@ -1004,21 +1048,31 @@ impl LineEditor {
             history,
             history_index: None,
             history_draft: None,
+            escape_started_at: None,
+            tunnel_tx,
         }
+    }
+
+    /// Write to both stdout and tunnel.
+    fn emit(&self, text: &str) {
+        print!("{text}");
+        if let Some(ref tx) = self.tunnel_tx {
+            tx.send_data(text.as_bytes().to_vec());
+        }
+        let _ = io::stdout().flush();
     }
 
     fn redraw(&self) {
-        print!("\r\x1b[K\x1b[36m›\x1b[0m {}", self.buffer);
+        let mut line = format!("\r\x1b[K\x1b[36m›\x1b[0m {}", self.buffer);
         let trailing = self.buffer[self.cursor..].chars().count();
         if trailing > 0 {
-            print!("\x1b[{}D", trailing);
+            line.push_str(&format!("\x1b[{}D", trailing));
         }
-        let _ = io::stdout().flush();
+        self.emit(&line);
     }
 
     fn clear_display(&self) {
-        print!("\r\x1b[K");
-        let _ = io::stdout().flush();
+        self.emit("\r\x1b[K");
     }
 
     fn reset(&mut self) {
@@ -1028,6 +1082,7 @@ impl LineEditor {
         self.utf8.clear();
         self.history_index = None;
         self.history_draft = None;
+        self.escape_started_at = None;
     }
 
     fn feed_bytes(&mut self, bytes: &[u8]) -> LineEditResult {
@@ -1069,8 +1124,7 @@ impl LineEditor {
 
         match byte {
             b'\r' | b'\n' => {
-                print!("\r\n");
-                let _ = io::stdout().flush();
+                self.emit("\r\n");
                 let submitted = self.buffer.clone();
                 self.record_submission(&submitted);
                 self.reset();
@@ -1078,14 +1132,18 @@ impl LineEditor {
             }
             0x04 => {
                 if self.buffer.is_empty() {
-                    print!("\r\n");
-                    let _ = io::stdout().flush();
+                    self.emit("\r\n");
                     LineEditResult::Eof
                 } else {
                     self.delete_at_cursor();
                     self.redraw();
                     LineEditResult::Continue
                 }
+            }
+            0x03 => {
+                self.emit("\r\n");
+                self.cancel_line();
+                LineEditResult::Eof
             }
             0x7f | 0x08 => {
                 self.backspace();
@@ -1094,6 +1152,7 @@ impl LineEditor {
             }
             0x1b => {
                 self.escape.push(byte);
+                self.escape_started_at = Some(std::time::Instant::now());
                 LineEditResult::Continue
             }
             byte if byte.is_ascii_control() => LineEditResult::Continue,
@@ -1114,44 +1173,67 @@ impl LineEditor {
             [0x1b, b'[', b'D'] => {
                 self.move_left();
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'C'] => {
                 self.move_right();
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'A'] => {
                 self.history_prev();
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'B'] => {
                 self.history_next();
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'H'] | [0x1b, b'O', b'H'] => {
                 self.cursor = 0;
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'F'] | [0x1b, b'O', b'F'] => {
                 self.cursor = self.buffer.len();
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'3', b'~'] => {
                 self.delete_at_cursor();
                 self.escape.clear();
+                self.escape_started_at = None;
                 true
             }
             [0x1b] | [0x1b, b'['] | [0x1b, b'O'] | [0x1b, b'[', b'3'] => false,
             _ => {
                 self.escape.clear();
+                self.escape_started_at = None;
                 false
             }
         }
+    }
+
+    fn maybe_resolve_pending_escape(&mut self) -> bool {
+        if self.escape.as_slice() != [0x1b] {
+            return false;
+        }
+        let Some(started) = self.escape_started_at else {
+            return false;
+        };
+        if started.elapsed() < std::time::Duration::from_millis(75) {
+            return false;
+        }
+        self.cancel_line();
+        self.redraw();
+        true
     }
 
     fn insert_char(&mut self, ch: char) {
@@ -1203,6 +1285,16 @@ impl LineEditor {
             let end = self.cursor + ch.len_utf8();
             self.buffer.drain(self.cursor..end);
         }
+    }
+
+    fn cancel_line(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.escape.clear();
+        self.utf8.clear();
+        self.history_index = None;
+        self.history_draft = None;
+        self.escape_started_at = None;
     }
 
     fn detach_history_nav(&mut self) {
@@ -1268,7 +1360,7 @@ impl LineEditor {
 /// Uses non-blocking stdin polling (500 ms cycles) interleaved with
 /// bus queue checks so that cron prompts are picked up without
 /// requiring the user to press Enter.
-fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor) -> InputEvent {
+fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor, tunnel_fd: Option<i32>) -> InputEvent {
     editor.redraw();
 
     let _raw_mode = match RawModeGuard::enter() {
@@ -1292,26 +1384,45 @@ fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor) -> InputEvent {
             return InputEvent::Bus;
         }
 
-        // Poll stdin with a short timeout so we cycle back to bus check
+        // Poll stdin (and optionally tunnel pipe) with a short timeout
         unsafe {
-            let mut fds = libc::pollfd {
-                fd: 0,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ready = libc::poll(&mut fds, 1, 500); // 500 ms
-            if ready > 0 && (fds.revents & libc::POLLIN) != 0 {
-                match io::stdin().read(&mut buf) {
-                    Ok(0) => return InputEvent::Eof,
-                    Ok(n) => match editor.feed_bytes(&buf[..n]) {
-                        LineEditResult::Continue => {}
-                        LineEditResult::Submit(line) => return InputEvent::User(line),
-                        LineEditResult::Eof => return InputEvent::Eof,
-                    },
-                    Err(_) => return InputEvent::Eof,
+            let nfds: libc::nfds_t;
+            let mut fds_arr = [
+                libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: tunnel_fd.unwrap_or(-1), events: libc::POLLIN, revents: 0 },
+            ];
+            nfds = if tunnel_fd.is_some() { 2 } else { 1 };
+
+            let ready = libc::poll(fds_arr.as_mut_ptr(), nfds, 100);
+            if ready > 0 {
+                // Read from tunnel pipe first (web terminal keystrokes)
+                if nfds > 1 && (fds_arr[1].revents & libc::POLLIN) != 0 {
+                    match libc::read(fds_arr[1].fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) {
+                        n if n > 0 => {
+                            match editor.feed_bytes(&buf[..n as usize]) {
+                                LineEditResult::Continue => {}
+                                LineEditResult::Submit(line) => return InputEvent::User(line),
+                                LineEditResult::Eof => return InputEvent::Eof,
+                            }
+                        }
+                        _ => {} // tunnel pipe closed or error — ignore
+                    }
                 }
+                // Read from stdin
+                if (fds_arr[0].revents & libc::POLLIN) != 0 {
+                    match io::stdin().read(&mut buf) {
+                        Ok(0) => return InputEvent::Eof,
+                        Ok(n) => match editor.feed_bytes(&buf[..n]) {
+                            LineEditResult::Continue => {}
+                            LineEditResult::Submit(line) => return InputEvent::User(line),
+                            LineEditResult::Eof => return InputEvent::Eof,
+                        },
+                        Err(_) => return InputEvent::Eof,
+                    }
+                }
+            } else if ready == 0 {
+                let _ = editor.maybe_resolve_pending_escape();
             } else if ready < 0 {
-                // poll error (e.g. EINTR from signal) — just retry
                 continue;
             }
         }
@@ -1321,14 +1432,16 @@ fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor) -> InputEvent {
 fn print_banner(model: &str, tunnel_tx: Option<&crate::tunnel::TunnelSender>) {
     let version = env!("CARGO_PKG_VERSION");
     let line1 = format!("\x1b[1msidekar repl\x1b[0m \x1b[2mv{version}\x1b[0m");
-    let line2 = format!("\x1b[36mmodel\x1b[0m {model}  \x1b[2m/help commands · /quit exit\x1b[0m\n");
+    let line2 = format!("\x1b[36mmodel\x1b[0m {model}  \x1b[2m/help commands · /quit exit\x1b[0m");
     println!("{line1}");
-    println!("{line2}");
+    println!("{line2}\n");
     if let Some(tx) = tunnel_tx {
-        let mut data = line1.into_bytes();
+        // \x1b[H = cursor home (1,1), \x1b[2J = clear screen
+        let mut data = b"\x1b[H\x1b[2J".to_vec();
+        data.extend_from_slice(line1.as_bytes());
         data.extend_from_slice(b"\r\n");
         data.extend_from_slice(line2.as_bytes());
-        data.extend_from_slice(b"\r\n");
+        data.extend_from_slice(b"\r\n\r\n");
         tx.send_data(data);
     }
     let _ = io::stdout().flush();
@@ -1358,7 +1471,7 @@ mod tests {
 
     #[test]
     fn line_editor_supports_left_right_insertion() {
-        let mut editor = LineEditor::with_history(Vec::new());
+        let mut editor = LineEditor::with_history(Vec::new(), None);
         assert!(matches!(editor.feed_bytes(b"ac"), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'D']), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(b"b"), LineEditResult::Continue));
@@ -1370,7 +1483,7 @@ mod tests {
 
     #[test]
     fn line_editor_supports_delete_key() {
-        let mut editor = LineEditor::with_history(Vec::new());
+        let mut editor = LineEditor::with_history(Vec::new(), None);
         assert!(matches!(editor.feed_bytes(b"abc"), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'D']), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'3', b'~']), LineEditResult::Continue));
@@ -1382,7 +1495,7 @@ mod tests {
 
     #[test]
     fn line_editor_supports_history_up_down() {
-        let mut editor = LineEditor::with_history(Vec::new());
+        let mut editor = LineEditor::with_history(Vec::new(), None);
         assert!(matches!(
             editor.feed_bytes(b"first\r"),
             LineEditResult::Submit(line) if line == "first"
@@ -1401,7 +1514,7 @@ mod tests {
 
     #[test]
     fn line_editor_restores_draft_after_history_navigation() {
-        let mut editor = LineEditor::with_history(Vec::new());
+        let mut editor = LineEditor::with_history(Vec::new(), None);
         assert!(matches!(
             editor.feed_bytes(b"saved\r"),
             LineEditResult::Submit(line) if line == "saved"
@@ -1411,5 +1524,26 @@ mod tests {
         assert_eq!(editor.buffer, "saved");
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'B']), LineEditResult::Continue));
         assert_eq!(editor.buffer, "draft");
+    }
+
+    #[test]
+    fn line_editor_ctrl_c_exits_prompt() {
+        let mut editor = LineEditor::with_history(Vec::new(), None);
+        assert!(matches!(editor.feed_bytes(b"draft"), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(&[0x03]), LineEditResult::Eof));
+        assert_eq!(editor.buffer, "");
+        assert_eq!(editor.cursor, 0);
+    }
+
+    #[test]
+    fn line_editor_escape_clears_pending_line_after_timeout() {
+        let mut editor = LineEditor::with_history(Vec::new(), None);
+        assert!(matches!(editor.feed_bytes(b"draft"), LineEditResult::Continue));
+        assert!(matches!(editor.feed_bytes(&[0x1b]), LineEditResult::Continue));
+        editor.escape_started_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
+        assert!(editor.maybe_resolve_pending_escape());
+        assert_eq!(editor.buffer, "");
+        assert_eq!(editor.cursor, 0);
     }
 }

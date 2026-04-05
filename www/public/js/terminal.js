@@ -70,10 +70,18 @@
   var remoteRows = 24;
   var layoutTimer = null;
 
-  // Scroll both xterm's scrollback AND the outer wrap container to bottom.
+  // Scroll xterm's scrollback to bottom and outer wrap to show cursor row.
   function jumpToBottom() {
     term.scrollToBottom();
-    terminalWrap.scrollTop = terminalWrap.scrollHeight;
+    // Scroll outer container to reveal the cursor row, not the absolute bottom.
+    // This avoids hiding top content when the terminal canvas is taller than
+    // the viewport (e.g. 50-row terminal in a shorter browser window).
+    var el = document.getElementById("terminal");
+    if (!el) return;
+    var cellHeight = el.clientHeight / term.rows || 18;
+    var cursorBottom = (term.buffer.active.cursorY + 1) * cellHeight + 12; // +12 for wrap padding
+    var visible = terminalWrap.clientHeight;
+    terminalWrap.scrollTop = Math.max(0, cursorBottom - visible);
   }
 
   jumpBtn.addEventListener("click", function () {
@@ -164,6 +172,8 @@
                 if (j.type === "session" && j.v === 1) {
                   sessionProtocolReady = true;
                   expectScrollbackBytes = j.scrollback_bytes | 0;
+                  // Clear stale content before receiving fresh scrollback
+                  term.reset();
                   setRemoteGeometry(j.cols | 0, j.rows | 0);
                   return;
                 }
@@ -181,6 +191,11 @@
             term.write(u8, function () {
               if (stick) jumpToBottom();
               updateJumpButton();
+              // Force repaint after scrollback to fix mobile rendering
+              if (expectScrollbackBytes > 0) {
+                expectScrollbackBytes = 0;
+                term.refresh(0, term.rows - 1);
+              }
             });
           };
 
