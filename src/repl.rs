@@ -605,7 +605,7 @@ fn build_system_prompt() -> String {
 
     let today = chrono_lite_today();
 
-    format!(
+    let mut prompt = format!(
         "You are a capable coding and automation assistant.\n\
          You have a bash tool for running shell commands.\n\
          You have access to `sidekar` CLI tools for browser automation, desktop automation, \
@@ -614,11 +614,25 @@ fn build_system_prompt() -> String {
          ## Guidelines\n\
          - Be concise. Lead with the answer, not the reasoning.\n\
          - Do not guess file contents — read them first.\n\
-         - Show file paths when referencing code.\n\n\
+         - Show file paths when referencing code.\n\
+         - When you learn a durable fact (decision, constraint, convention, preference), \
+         store it with `sidekar memory write` so it persists across sessions.\n\n\
          ## Environment\n\
          - Working directory: {cwd}\n\
          - Date: {today}\n"
-    )
+    );
+
+    // Inject project + global memory context (decisions, constraints, conventions, etc.)
+    if let Ok(brief) = crate::memory::startup_brief(5) {
+        let brief = brief.trim();
+        if !brief.is_empty() {
+            prompt.push_str("\n## Memory\n");
+            prompt.push_str(brief);
+            prompt.push('\n');
+        }
+    }
+
+    prompt
 }
 
 

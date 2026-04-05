@@ -752,7 +752,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     commands::dispatch(&mut ctx, &command, &args).await?;
-    let _ = sidekar::memory::maybe_record_cli_observation(&command, &args);
     let buffered = ctx.drain_output();
     if !buffered.is_empty() {
         print!("{buffered}");

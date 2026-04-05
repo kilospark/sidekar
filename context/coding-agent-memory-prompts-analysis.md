@@ -1,8 +1,8 @@
 # Coding Agent Memory & Prompt Architecture
 
-Comparative analysis of six coding agent implementations.
+Comparative analysis of seven coding agent implementations.
 
-**Repos:** Claude Code (free-code), pi-mono, hermes-agent, claw42, OpenAI Codex, AnythingLLM
+**Repos:** Claude Code (free-code), pi-mono, hermes-agent, claw42, OpenAI Codex, AnythingLLM, opencode
 
 ---
 
@@ -198,6 +198,40 @@ Each workspace file truncated to 20K chars. Files sourced from virtual file stor
 ```
 
 Middle truncation ("cannonball") when prompts exceed limits — preserves semantic meaning better than naive head/tail.
+
+### opencode
+
+**Model-family-specific system prompt selection:**
+```typescript
+// session/system.ts
+function provider(model) {
+  if (model.api.id.includes("gpt-4") || "o1" || "o3") return [PROMPT_BEAST]
+  if (model.api.id.includes("gpt") && "codex") return [PROMPT_CODEX]
+  if (model.api.id.includes("gpt")) return [PROMPT_GPT]
+  if (model.api.id.includes("gemini-")) return [PROMPT_GEMINI]
+  if (model.api.id.includes("claude")) return [PROMPT_ANTHROPIC]
+  if (model.api.id.includes("trinity")) return [PROMPT_TRINITY]
+  if (model.api.id.includes("kimi")) return [PROMPT_KIMI]
+  return [PROMPT_DEFAULT]
+}
+```
+
+Eight hand-tuned base prompts, chosen by model ID substring. Most donors use one base prompt. opencode is the only one that admits different frontier models need different phrasing for the same behavior.
+
+**Composition layers:**
+```
+1. Model-family base prompt (one of 8)
+2. Environment block — cwd, worktree, git state, platform, date, directory tree
+3. Skills block — verbose XML <available_skills> with name/description/location
+4. Agent-specific prompt override (optional, per selected agent)
+5. Context files — AGENTS.md scoped by directory (Codex-style)
+```
+
+**Agent-scoped prompts:** Each agent (`build`, `plan`, `general`, `explore`, `compaction`, `title`, `summary`) can ship its own system prompt file (e.g., `PROMPT_EXPLORE` for the explore subagent). The hidden `compaction` / `title` / `summary` agents are specialized single-purpose prompts — opencode models them as full agents rather than ad-hoc LLM calls.
+
+**ACP (Agent Client Protocol):** Has a dedicated `acp/` module implementing an agent protocol so external clients can drive opencode as a backend. None of the other donors expose their agent as a protocol-speaking server in this form.
+
+**Effect-based service layer:** Uses the TypeScript `effect` library for service composition (`Skill.Service`, `Agent.Service`, `Config.Service`, etc.) — distinctive architecturally vs. the other donors, which use plain classes or closures.
 
 ---
 
@@ -445,6 +479,21 @@ agent.memory.search("who leads auth?")
 
 **No automatic extraction.** Memory is manual or RAG-based retrieval.
 
+### opencode — None (session-only)
+
+**No persistent cross-session memory.** Searched `packages/opencode/src` for persistent-memory modules — nothing. No MEMORY.md, no event store, no auto-extraction, no cross-session recall, no keyword/FTS search over past conversations.
+
+What it does have is **per-session lifecycle tooling**:
+- `session/compaction.ts` (428 lines) — in-session context pruning
+- `session/summary.ts` — session summarization via a dedicated hidden `summary` agent
+- `session/overflow.ts` — overflow detection
+- Hidden `title` agent — generates session titles
+- `PRUNE_PROTECTED_TOOLS = ["skill"]` — skill tool calls are protected from pruning during compaction so recently-loaded skill content survives
+
+Memory across sessions is the user's responsibility: start a new session, re-state context. The AGENTS.md hierarchy (inherited from Codex) carries durable per-project context, but there's no project-scoped memory event store.
+
+**Implication:** If you're evaluating opencode as a donor pattern, the memory half of this document is not where it contributes. Its strengths are the agent system (§ Background Agent Support) and the skills discovery path.
+
 ---
 
 ## 3. Compaction / Context Management
@@ -554,42 +603,401 @@ Phase 3 — LLM compaction: When `non_system_count > compaction_threshold`:
 - Preserves both beginning (system/context) and end (recent turns)
 - Priority: system (15%) > history (15%) > user+context (70%)
 
+### opencode — Hidden-agent compaction
+
+**Constants (from `session/compaction.ts`):**
+```typescript
+const PRUNE_MINIMUM = 20_000           // don't prune below this
+const PRUNE_PROTECT = 40_000           // preserve last ~40K tokens from pruning
+const PRUNE_PROTECTED_TOOLS = ["skill"] // always keep skill tool calls
+```
+
+**Compaction runs inside a dedicated hidden agent.** opencode treats compaction as an agent rather than a bespoke LLM call: the `compaction` agent is a native agent with `mode: "primary"`, `hidden: true`, its own `PROMPT_COMPACTION` system prompt, and a "deny all" permission set so it can only summarize, not act. Same pattern for `title` and `summary` agents.
+
+**Separation of concerns:**
+- `overflow.ts` — detects when to compact (overflow threshold)
+- `compaction.ts` — orchestrates pruning + summarization
+- `summary.ts` — invoked by the hidden `summary` agent to produce session summaries
+- The hidden `title` agent generates session titles at a different trigger point
+
+**Why this is interesting:** every other donor has compaction as either (a) inline logic in the session loop or (b) a hardcoded LLM call. opencode promotes it to a first-class agent concept, which means the same compaction prompt/permission model can be tested, swapped, or per-model-tuned the same way any other agent can.
+
 ---
 
 ## 4. Patterns Comparison Matrix
 
-| Pattern | Claude Code | pi-mono | hermes | claw42 | Codex | AnythingLLM |
-|---------|:-----------:|:-------:|:------:|:------:|:-----:|:-----------:|
-| Persistent cross-session memory | ● | | ● | ● | ● | ● |
-| Session-scoped notes | ● | | | | | |
-| Auto-extraction (background) | ● | | | | ● | |
-| Memory in system prompt | ● | | ● | ● | | |
-| Memory via tools only | | ● | ● | ● | | ● |
-| Frozen prompt (cache stable) | ● | ● | ● | | | |
-| Memory budget (% of context) | | | | ● | | ● |
-| FTS5 session search | | | ● | | | |
-| Vector similarity recall | | | | | | ● |
-| Keyword recall | | | | ● | | |
-| LLM-selected recall | ● | | | | | |
-| Memory type taxonomy | ● | | | ● | | |
-| Entity tagging | | | | ● | | |
-| Heartbeat curation | | | | ● | | |
-| Staged pipeline | | | | | ● | |
-| Usage/citation tracking | | | | | ● | |
-| Injection scanning | ● | | ● | | | |
-| Context file hierarchy | ● | ● | ● | ● | ● | |
-| Skills progressive disclosure | ● | ● | ● | | ● | |
-| Compaction: cheap pre-pass | ● | | ● | ● | | |
-| Compaction: LLM summarization | ● | ● | ● | ● | | |
-| Compaction: iterative update | ● | ● | ● | ● | | |
-| Post-compact file re-injection | ● | | | | | |
-| Post-compact memory reload | | | ● | | | |
-| Persona/identity system | | | ● | ● | ● | |
-| Approval/safety layer | | | | ● | ● | |
+| Pattern | Claude Code | pi-mono | hermes | claw42 | Codex | AnythingLLM | opencode |
+|---------|:-----------:|:-------:|:------:|:------:|:-----:|:-----------:|:--------:|
+| Persistent cross-session memory | ● | | ● | ● | ● | ● | |
+| Session-scoped notes | ● | | | | | | |
+| Auto-extraction (background) | ● | | | | ● | | |
+| Memory in system prompt | ● | | ● | ● | | | |
+| Memory via tools only | | ● | ● | ● | | ● | ● |
+| Frozen prompt (cache stable) | ● | ● | ● | | | | ● |
+| Memory budget (% of context) | | | | ● | | ● | |
+| FTS5 session search | | | ● | | | | |
+| Vector similarity recall | | | | | | ● | |
+| Keyword recall | | | | ● | | | |
+| LLM-selected recall | ● | | | | | | |
+| Memory type taxonomy | ● | | | ● | | | |
+| Entity tagging | | | | ● | | | |
+| Heartbeat curation | | | | ● | | | |
+| Staged pipeline | | | | | ● | | |
+| Usage/citation tracking | | | | | ● | | |
+| Injection scanning | ● | | ● | | | | |
+| Context file hierarchy | ● | ● | ● | ● | ● | | ● |
+| Skills progressive disclosure | ● | ● | ● | | ● | | ● |
+| Skills cross-agent discovery | | | ● | | | | ● |
+| Compaction: cheap pre-pass | ● | | ● | ● | | | ● |
+| Compaction: LLM summarization | ● | ● | ● | ● | | | ● |
+| Compaction: iterative update | ● | ● | ● | ● | | | |
+| Compaction: dedicated agent | | | | | | | ● |
+| Post-compact file re-injection | ● | | | | | | |
+| Post-compact memory reload | | | ● | | | | |
+| Persona/identity system | | | ● | ● | ● | | |
+| Approval/safety layer | | | | ● | ● | | ● |
+| **Background / parallel subagents** | ● | | ● | ● | ● | | |
+| **Plan vs build mode (first-class)** | ● | ● | | | ● | | ● |
+| **Plan mode (via skill/slash)** | | | ● | | | | |
+| **Agent-as-tool (spawn from LLM)** | ● | | ● | ● | ● | | |
+| **Agent-as-protocol (ACP)** | | | | | | | ● |
+| **Per-agent permission scoping** | ● | | ● | | ● | | ● |
+| **Skills: file-based SKILL.md** | ● | ● | ● | | ● | | ● |
+| **Skills: remote registry/hub** | | | ● | | | | ● |
+| **Skills: conditional activation** | ● | ● | ● | | | | ● |
+| **Skills: env var dependencies** | | | ● | ● | | | |
 
 ---
 
-## 5. Persona & Role Systems
+## 5. Background Agent Support
+
+### Claude Code — Fork + Teammate Spawning
+
+**Two paths for background agents:**
+
+**Path 1: Fork subagents** (feature-gated, implicit context inheritance):
+```typescript
+const FORK_AGENT = {
+  agentType: 'fork',
+  tools: ['*'],        // Exact parent toolset
+  maxTurns: 200,
+  model: 'inherit',    // Parent's model
+  permissionMode: 'bubble',  // Surface approvals to parent terminal
+}
+```
+
+Fork children share the parent's prompt-cache prefix. `buildForkedMessages()` clones the full assistant message (thinking, text, all `tool_use` blocks) and builds a single user message with placeholder `tool_result`s for every `tool_use`. Only the final text block (the per-child directive) differs — byte-identical API prefixes maximize cache hits across forks.
+
+**Path 2: Traditional teammates** (explicit spawn, separate terminal):
+```typescript
+type SpawnTeammateConfig = {
+  name: string
+  prompt: string
+  cwd?: string
+  use_splitpane?: boolean
+  plan_mode_required?: boolean
+  model?: string
+  agent_type?: string
+}
+```
+
+Backend detection: tmux pane, split-pane, or in-process fallback. Each teammate gets its own terminal with inherited env vars. File-based team communication via `readTeamFileAsync()` / `writeTeamFileAsync()`.
+
+**Recursive protection:** `isInForkChild()` scans message history for `FORK_BOILERPLATE_TAG` to prevent fork children from forking again.
+
+### pi-mono — No Subagent Spawning
+
+**No multi-agent spawning mechanism.** Single agent processes tools in sequence or parallel (mode-dependent via `QueueMode`). Tool results stream back to a single conversation context. No background task spawning for child agents.
+
+### hermes-agent — ThreadPoolExecutor Delegation
+
+**`delegate_task` tool** spawns child agents in a thread pool:
+
+```python
+MAX_CONCURRENT_CHILDREN = 3
+MAX_DEPTH = 2
+```
+
+Each child gets an isolated conversation (no parent history), a fresh `task_id`, and a restricted toolset — `delegate_task`, `clarify`, `memory`, `send_message`, and `execute_code` are all blocked.
+
+**Batch mode:** Up to 3 tasks run in parallel via `ThreadPoolExecutor`. Parent blocks until all children complete.
+
+**Result flow:** JSON summaries with tool trace metadata (tool names, arg/result bytes, exit reasons). Tool calls and reasoning from children are never visible in parent context.
+
+**Progress display:** Tree-view lines above CLI spinner with emoji + tool names. Gateway mode batches tool names in 5-item increments.
+
+**Depth limiting:** `_delegate_depth` tracks nesting. Children reject further delegation at depth >= 2 via `DELEGATE_BLOCKED_TOOLS` frozenset.
+
+### claw42 — Async Task Spawning
+
+**Tokio-based subagent registry:**
+
+```rust
+pub struct SubagentRegistry {
+    agents: HashMap<String, SubagentHandle>,
+}
+pub struct SubagentHandle {
+    pub id: String,
+    pub task: String,
+    pub status: SubagentStatus,  // Running | Completed | Failed(String)
+    pub result: Option<String>,
+    pub join_handle: Option<JoinHandle<()>>,
+    pub depth: u8,
+}
+```
+
+Results posted via ControlPlaneClient to parent session and broadcast to WebSocket connections. Result preview truncated at 500 chars.
+
+**Heartbeat loop** spawned as a background tokio task — runs agent turns periodically (default 30min interval). Includes self-healing checks (Chrome CDP, workspace disk) before each agent turn. Uses `try_lock()` on shared `agent_turn_lock` — skips tick if already running.
+
+### OpenAI Codex — Hierarchical Agent Control
+
+**Full hierarchical spawning with depth limits and batch processing:**
+
+```rust
+session.services.agent_control.spawn_agent_with_metadata(
+    config,
+    input_items,
+    thread_spawn_source(...),
+    SpawnAgentOptions {
+        fork_parent_spawn_call_id: ...,
+        fork_mode: SpawnAgentForkMode::FullHistory,
+    },
+)
+```
+
+**Depth limiting:** `next_thread_spawn_depth()` tracks child depth. Returns error "Agent depth limit reached. Solve the task yourself."
+
+**Batch/Job processing (Agent Job Tool):**
+- `spawn_agents_on_csv` — one worker per CSV row
+- `max_concurrency`: default 16, capped by config
+- `max_runtime_seconds` per worker: default 1800s
+- `output_schema` for structured result validation
+- Workers report results via `report_agent_job_result(job_id, item_id, result)`
+- Parent blocks until all complete; auto-exports to output CSV
+
+**Fork mode:** `SpawnAgentForkMode::FullHistory` passes parent's full conversation. `fork_parent_spawn_call_id` tracks lineage.
+
+### AnythingLLM — No Subagent Spawning
+
+**No explicit parallel subagent spawning.** AIbitat framework chains skills sequentially within a single agent loop. Multiple agents can collaborate via channels and message passing, but not in a spawn-from-tool pattern.
+
+### opencode — Role-Based, No True Background Agents
+
+**No true background subagents.** Agent roles (`build`, `plan`, `general`, `explore`, `compaction`, `title`, `summary`) are behavioral modes, not separate processes. Roles switch via the `agent` field in messages. Hidden agents (`compaction`, `title`, `summary`) run as single-purpose LLM calls within the same process.
+
+The distinction matters: opencode's "agents" are prompt configurations, not concurrent execution units. There is no spawn-from-tool, no thread pool, no background task queue.
+
+---
+
+## 6. Plan vs Build Mode
+
+### Claude Code — First-Class Plan Mode
+
+**Entry:** `/plan` slash command, or `EnterPlanModeTool` / `ExitPlanModeV2Tool` (formal tools).
+
+**Tool restrictions:**
+- Plan mode: read-only tools only (Bash restricted to safe commands, Glob, Grep, FileRead)
+- Build mode: full tool access
+- Gating: `prepareContextForPlanMode()` applies permission restrictions
+
+**Plan artifact:** Markdown file at `~/.claude/plans/{slug}.md`. Slug generated via `generateWordSlug()`. Editable by user before approval. Separate plan files per subagent: `{slug}-agent-{agentId}.md`.
+
+**Separate agent:** YES — `PLAN_AGENT` is a built-in read-only architecture specialist. Disallows `AgentTool`, `ExitPlanMode`, `FileEdit`, `FileWrite`.
+
+**Multi-phase workflow:**
+1. Read-only exploration
+2. Design phase (plan file created)
+3. User approval
+4. Build phase (full tool access)
+
+### pi-mono — Extension-Based Plan Mode
+
+**Entry:** `/plan` command, `Ctrl+Alt+P`, or `--plan` CLI flag.
+
+**Tool restrictions enforced via event hook:**
+- Plan mode: `read`, `bash` (safe commands only via `isSafeCommand()`), `grep`, `find`, `ls`, `questionnaire`
+- Build mode: `read`, `bash`, `edit`, `write`
+- Pre-`tool_call` event hook blocks unsafe bash commands (rm, mv, cp, git write, npm install)
+
+**Plan artifact:** Extracted from assistant message under "Plan:" header. Numbered todo items with `(step, text, completed)` fields. Persisted via `pi.appendEntry("plan-mode", {...})`.
+
+**Execution tracking:** `[DONE:n]` markers in assistant response. Widget shows `☑ completed / ○ pending` progress. Agent iterates through remaining steps automatically.
+
+### hermes-agent — Skill-Based Planning
+
+**Entry:** `/plan [description]` slash command.
+
+**No tool-level restrictions.** Plan enforced via skill description/prompt only ("do not implement code, do not edit project files except plan file").
+
+**Plan artifact:** Markdown file under `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md` with structured sections: Goal, Context, Approach, Step-by-step, Files likely to change, Tests, Risks/tradeoffs.
+
+**No formal transition:** Agent continues in same session after planning. Plan file is reference only, not enforced.
+
+### claw42 — No Plan Mode
+
+**No plan/build separation.** Workspace modes (shared vs isolated) are infrastructure-level container isolation, not agent-level workflow stages.
+
+### OpenAI Codex — Collaboration Mode
+
+**Entry:** Collaboration mode UI selection. Modes: `Plan`, `Default`, `Execute`, `Pair Programming`.
+
+**Tool restrictions:**
+- Plan mode: read-only (file reading, searching, git read, tests/builds that don't edit tracked files)
+- `update_plan` tool explicitly rejected in Plan mode with error
+- Build mode: full tool access
+
+**Plan artifact:** `<proposed_plan>` XML block in assistant message. Client renders specially. Not persisted to disk automatically.
+
+**Three phases (strict adherence):**
+1. Explore & ground in environment
+2. Intent chat (clarify requirements)
+3. Implementation chat (decision-complete spec)
+
+### AnythingLLM — No Plan Mode
+
+**No plan/build separation.** Task-driven agentic loop with multi-agent delegation, not explore→design→build workflow.
+
+### opencode — Dual-Agent Architecture
+
+**Entry:** Agent field in messages: `agent: "plan"` vs `agent: "build"`. Tool: `plan_exit` to switch.
+
+**Tool restrictions:** Plan mode disallows all edit tools via prompt + file write limited to plan file only.
+
+**Plan artifact:** Markdown file at session-specific path from `Session.plan(session)`. Editable before approval.
+
+**Separate agents:** YES — `plan` and `build` are distinct agents with separate system prompts (`PROMPT_PLAN` and `BUILD_SWITCH`). Build agent receives plan reference: "A plan file exists at... You should execute on the plan defined within it."
+
+---
+
+## 7. Skills Systems
+
+### Claude Code — File-Based Discovery + Built-in Skills
+
+**Definition:** `SKILL.md` files with YAML frontmatter (`name`, `description`, `when-to-use`, `allowed-tools`, `model`, `disable-model-invocation`, `hooks`).
+
+**Discovery:**
+- Root `.md` files in `~/.claude/skills/` and `.claude/skills/`
+- Directories containing `SKILL.md` (recursive scan)
+- Symlink-aware deduplication via `realpath()`
+
+**Progressive disclosure:**
+- Level 0: Only frontmatter (name, description) in system prompt via XML `<available_skills>` block. Descriptions truncated to 250 chars.
+- Full content loaded on demand via `SkillTool` when model invokes `/skill:name`
+
+**Built-in skills:** Bundled programmatically via `registerBundledSkill()`. Includes: debug, batch, skillify. Inlined into binary, extracted to disk on first invocation.
+
+**Cross-agent sharing:** YES — `"skills": ["~/.claude/skills", "~/.codex/skills"]` in settings.
+
+**Compaction:** Frontmatter survives (in system prompt). Full content loaded on demand, so it's ephemeral.
+
+### pi-mono — Agent Skills Standard
+
+**Implements [agentskills.io specification](https://agentskills.io/specification).**
+
+**Discovery locations:**
+- Global: `~/.pi/agent/skills/`, `~/.agents/skills/`
+- Project: `.pi/skills/`, `.agents/skills/` (ancestor walk to git root)
+- Packages: `skills/` in `package.json` or `pi.skills` field
+- Settings: `skills` array in config
+- CLI: `--skill <path>` (repeatable, additive with `--no-skills`)
+
+**Three-level progressive disclosure:**
+- Level 0: `skills_list()` → name + description in XML (~3k tokens)
+- Level 1: `skill_view(name)` → full content + metadata
+- Level 2: `skill_view(name, path)` → specific reference file
+
+**Validation:** Name 1–64 chars, lowercase a-z/0-9/hyphens, must match parent directory.
+
+**Name collisions:** First skill wins, diagnostic warning issued.
+
+### hermes-agent — Hub-Based + Remote Registries
+
+**Most advanced skills distribution system.** Three sources:
+
+```
+OptionalSkillSource  → official optional skills (not activated by default)
+GitHubSource         → fetch via GitHub API (PAT, gh CLI, GitHub App auth)
+WellKnownSource      → domain .well-known/skills/index.json endpoint
+```
+
+**Hub state management:**
+- Lock file: `~/.hermes/skills/.hub/lock.json` (provenance tracking)
+- Index cache: `~/.hermes/skills/.hub/index-cache/` (1-hour TTL)
+- Quarantine: `~/.hermes/skills/.hub/quarantine/` (scanning)
+- Audit log: `~/.hermes/skills/.hub/audit.log`
+- Trust levels: `builtin` | `trusted` | `community`
+
+**Conditional activation:**
+- `fallback_for_toolsets`: skill hidden when toolset available, shown when missing
+- `requires_toolsets`: skill hidden when toolset unavailable
+- `platforms: [macos, linux]` — auto-hidden on non-matching OS
+
+**Environment variables:** Declared in frontmatter via `required_environment_variables`. Hermes prompts securely only on local CLI (not messaging surfaces). Auto-passed to `execute_code` and `terminal` sandboxes.
+
+**Installation:** `hermes skills install <identifier>` resolves short names. `hermes skills search [query]` for unified hub search.
+
+### claw42 — Database-Backed Skills
+
+**Not file-based.** Skills stored in PostgreSQL:
+
+```sql
+id, name, description, content, category, is_builtin, enabled, sort_order
+```
+
+**8 preset skills** seeded via `PRESET_SKILLS`: Test-Driven Development, Systematic Debugging, Verify Before Done, Code Review Mindset, Defensive Web Browsing, Structured Research, Incremental Delivery, Memory-Driven Learning.
+
+**API-managed:** `GET /api/skills` (list), `POST /api/skills` (create/upsert). Agent-specific assignment via `GET /api/agents/[agentId]/skills`.
+
+**No progressive disclosure.** Full content in system prompt as `SKILLS.md` section. No on-demand loading.
+
+### OpenAI Codex — Rust-Based, Type-Safe
+
+**TOML-based configuration** with `SkillsConfig` and `BundledSkillsConfig`. File-based `SKILL.md` discovery.
+
+**Key types:**
+- `SkillsManager` — orchestrates loading and execution
+- `SkillMetadata`, `SkillPolicy`, `SkillDependencyInfo`
+- `SkillScope` — defines access boundaries
+
+**Dependency resolution:** Async resolution for skill environment variables. User input request for missing dependencies (session-only in-memory storage).
+
+**Injection system:** `SkillInjections` + `build_skill_injections()` for explicit mention collection. `render_skills_section()` formats for system prompt.
+
+**RPC protocol:** `SkillsListParams`, `SkillsListResponse`, `SkillsChangedNotification`, `SkillsConfigWriteParams` — full app-server protocol for skill management.
+
+**Built-in samples:** `skill-creator`, `plugin-creator`, `skill-installer`, `openai-docs`.
+
+### AnythingLLM — Hardcoded Skill Set
+
+**No user-defined skills.** Fixed catalog in code: `rag-memory`, `document-summarizer`, `web-scraping`, `filesystem-agent`, `create-files-agent`, `create-chart`, `web-browsing`, `sql-agent`.
+
+Each skill maps to a UI component. **Whitelist system:** `AgentSkillWhitelist` model gates per-user access. No file discovery, no progressive disclosure.
+
+### opencode — Effect-Based Discovery + Remote Skills
+
+**Distributed discovery:**
+- External dirs: `.claude/`, `.agents/` (shared with other harnesses)
+- Global: `~/.claude/skills/`, `~/.agents/skills/`
+- Project: ancestor walk to worktree root
+- Config: `skills.paths` explicit paths
+- Remote URLs: `skills.urls` with `index.json` manifest downloads
+
+**Remote skill fetching:**
+- Fetches `index.json` from URL (schema-validated)
+- Downloads skills matching manifest
+- 8 concurrent download limit
+- Local cache in `~/.opencode/cache/skills/`
+
+**Permission integration:** Skills filtered by `Permission.evaluate("skill", skillName, agent.permission)` — allow, deny, or default.
+
+**Effect-based architecture:** Lazy loading via Effect monad. Service-based dependency injection. `InstanceState` singleton for skill registry.
+
+**Cross-agent sharing:** YES — loads from `.claude/` and `.agents/` directories.
+
+---
+
+## 8. Persona & Role Systems
 
 ### Claude Code
 
@@ -728,7 +1136,7 @@ These are injected into the system prompt as separate prompt files (never.md, wo
 
 ---
 
-## 6. Key Architectural Decisions
+## 9. Key Architectural Decisions
 
 ### When to inject memory into the system prompt
 
@@ -771,7 +1179,7 @@ These are injected into the system prompt as separate prompt files (never.md, wo
 
 ---
 
-## 7. Implications for sidekar repl
+## 10. Implications for sidekar repl
 
 ### What sidekar repl has today
 
