@@ -36,7 +36,7 @@ Important framing:
 
 1. **`RegisterMsg`:** `proto: 2` in register.
 2. **`TunnelCommand::BusText(String)`** — full JSON string to send as Text.
-3. **`TunnelEvent::BusRelay` / `BusPlain`** — routed (`recipient`/`sender`/`body`) vs legacy body-only.
+3. **`TunnelEvent::BusRelay` / `BusPlain`** — routed (`recipient`/`sender`/`body`) vs plain PTY body-only.
 4. **`TunnelSender::send_bus_routed(recipient, sender, body)`** — multiplex JSON including `from_session`.
 5. **`io_loop`:** on `Message::Text` from relay, parse bus → `BusRelay` or `BusPlain`.
 
@@ -44,12 +44,6 @@ Important framing:
 
 - **`BusRelay`:** if `recipient` matches this agent, `broker::enqueue_message` (poller delivers).
 - **`BusPlain`:** write `body + "\r\n"` to PTY master.
-
-## Backward compatibility
-
-- Old relay + new client: extra `proto` field ignored by serde if not in struct — **relay must accept unknown fields** (no `deny_unknown_fields`). New relay reads `proto`.
-- New relay + old client: no bus; binary-only — OK.
-- Web terminal: only receives binary PTY — unchanged.
 
 ## Follow-ups
 

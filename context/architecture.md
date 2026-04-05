@@ -136,7 +136,7 @@ isolation. Only bare CLI invocations (outside PTY) use the extension.
 
 ### Bus (`src/bus.rs`, `src/broker.rs`, `src/poller.rs`)
 
-SQLite-backed message bus (`~/.sidekar/broker.sqlite3`).
+SQLite-backed message bus (`~/.sidekar/sidekar.sqlite3`).
 
 - **Agents register** via PTY wrapper with name, label, channel, pane
 - **Messages**: `bus send <to> <message>`, `bus done <next> <summary> <request>`
@@ -190,7 +190,7 @@ Watches Chrome tabs for title/favicon changes via CDP
 
 ### Config (`src/config.rs`)
 
-SQLite config table in `~/.sidekar/broker.sqlite3`. Keys: `telemetry`,
+SQLite config table in `~/.sidekar/sidekar.sqlite3`. Keys: `telemetry`,
 `feedback`, `browser`, `auto_update`, `relay_pty`, `max_tabs`,
 `cdp_timeout_secs`, `max_cron_jobs`.
 
@@ -229,7 +229,7 @@ list windows, activate apps.
 
 ```
 ~/.sidekar/
-  broker.sqlite3              # config, bus, cron, kv, memory, tasks
+  sidekar.sqlite3             # config, bus, cron, kv, memory, tasks
   daemon.pid                  # daemon process ID
   daemon.sock                 # daemon unix socket
   profiles/{name}/            # Chrome user data dirs

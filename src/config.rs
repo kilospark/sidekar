@@ -267,7 +267,7 @@ pub fn load_config() -> SidekarConfig {
     }
 }
 
-/// Save all fields from a SidekarConfig struct (backwards compat).
+/// Save all fields from a SidekarConfig struct.
 pub fn save_config(config: &SidekarConfig) -> Result<()> {
     config_set("telemetry", &config.telemetry.to_string())?;
     config_set("feedback", &config.feedback.to_string())?;

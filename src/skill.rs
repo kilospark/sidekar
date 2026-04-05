@@ -64,7 +64,7 @@ pub fn install_skill() {
     }
 }
 
-/// Remove sidekar skill files, legacy MCP configs, and data from all known locations.
+/// Remove sidekar skill files, MCP configs, and data from all known locations.
 pub fn remove_skill() {
     println!();
     println!("Removing sidekar...");
@@ -80,7 +80,6 @@ pub fn remove_skill() {
         ".codex/skills/sidekar",
         ".gemini/skills/sidekar",
         ".pi/skills/sidekar",
-        ".agents/skills/sidekar", // legacy
     ] {
         let path = home.join(subdir);
         if path.is_dir() {

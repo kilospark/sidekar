@@ -4,16 +4,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct RegisterMsg {
     #[serde(rename = "type")]
-    pub msg_type: String, // "register"
+    pub _msg_type: String, // "register"
     pub session_name: String,
     pub agent_type: String,
     pub cwd: String,
     pub hostname: String,
     #[serde(default)]
     pub nickname: Option<String>,
-    /// 1 = legacy PTY-only tunnel; 2 = multiplex (bus JSON on text frames).
-    #[serde(default)]
-    pub proto: Option<u8>,
+    /// Protocol version. Current tunnel clients use 2 (multiplex bus JSON on text frames).
+    pub proto: u8,
     #[serde(default)]
     pub cols: Option<u16>,
     #[serde(default)]

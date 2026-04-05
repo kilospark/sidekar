@@ -16,7 +16,7 @@ All persistent state lives in `~/.sidekar/sidekar.sqlite3`.
 | `bus_replies` | Durable stored replies for local request history | No |
 | `agent_sessions` | Durable local Sidekar agent session metadata | No |
 | `bus_queue` | Direct agent-to-agent messages | No |
-| `error_events` | Append-only error log | No |
+| `events` | Append-only event log | No |
 | `encryption_meta` | Encryption key markers | No |
 
 ## Config table namespaces
@@ -69,9 +69,4 @@ local SQLite broker.
 System tables (`config`, `cron_jobs`, etc.) are unencrypted because:
 - `config` bootstraps auth (chicken-and-egg)
 - `cron_jobs` need to run before user authenticates
-- `error_events` should be readable for debugging
-
-## Migration notes
-
-- Auth data was moved from separate `auth` table to `config` with `auth:` prefix (2026-03)
-- Legacy `auth` table is auto-migrated on first run
+- `events` should be readable for debugging

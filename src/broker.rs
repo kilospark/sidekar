@@ -15,7 +15,6 @@ use rand::Rng;
 use rusqlite::{Connection, OptionalExtension, params};
 
 const DB_FILE: &str = "sidekar.sqlite3";
-const LEGACY_DB_FILE: &str = "broker.sqlite3";
 const OUTBOUND_STATUS_OPEN: &str = "open";
 const OUTBOUND_STATUS_ANSWERED: &str = "answered";
 const OUTBOUND_STATUS_TIMED_OUT: &str = "timed_out";
@@ -95,10 +94,6 @@ pub fn db_path() -> PathBuf {
     data_dir().join(DB_FILE)
 }
 
-fn legacy_db_path() -> PathBuf {
-    data_dir().join(LEGACY_DB_FILE)
-}
-
 /// Open the broker SQLite database (creating it + schema if needed).
 pub fn open_db() -> Result<Connection> {
     open()
@@ -106,16 +101,9 @@ pub fn open_db() -> Result<Connection> {
 
 pub(crate) fn open() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
-
-    // Migrate: rename broker.sqlite3 → sidekar.sqlite3
-    let legacy = legacy_db_path();
-    let current = db_path();
-    if legacy.exists() && !current.exists() {
-        let _ = fs::rename(&legacy, &current);
-    }
-
-    let conn = Connection::open(&current)
-        .with_context(|| format!("failed to open database at {}", current.display()))?;
+    let path = db_path();
+    let conn = Connection::open(&path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -218,41 +206,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON agent_sessions(project, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active
             ON agent_sessions(last_active_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_outbound_sender_status
+            ON outbound_requests(sender_name, status, created_at);
         ",
     )?;
-    // Migration: add cwd column if missing (existing databases)
-    let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN cwd TEXT");
-    let _ = conn.execute_batch("ALTER TABLE outbound_requests ADD COLUMN last_nudged_at INTEGER");
-    let _ = conn.execute_batch(
-        "
-        ALTER TABLE outbound_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'request';
-        ALTER TABLE outbound_requests ADD COLUMN channel TEXT;
-        ALTER TABLE outbound_requests ADD COLUMN project TEXT;
-        ALTER TABLE outbound_requests ADD COLUMN message_preview TEXT NOT NULL DEFAULT '';
-        ALTER TABLE outbound_requests ADD COLUMN status TEXT NOT NULL DEFAULT 'open';
-        ALTER TABLE outbound_requests ADD COLUMN answered_at INTEGER;
-        ALTER TABLE outbound_requests ADD COLUMN timed_out_at INTEGER;
-        ALTER TABLE outbound_requests ADD COLUMN closed_at INTEGER;
-        ",
-    );
-    let _ = conn.execute_batch(
-        "
-        ALTER TABLE agent_sessions ADD COLUMN display_name TEXT;
-        ALTER TABLE agent_sessions ADD COLUMN notes TEXT;
-        ",
-    );
-    // Index on status — must be after migration that adds the column for existing DBs
-    let _ = conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_outbound_sender_status
-            ON outbound_requests(sender_name, status, created_at);",
-    );
-
-    // Migration: rename pending_messages -> pending_requests (clarity)
-    // Must copy data since CREATE TABLE IF NOT EXISTS runs first
-    let _ = conn.execute_batch(
-        "INSERT OR IGNORE INTO pending_requests SELECT * FROM pending_messages;
-         DROP TABLE IF EXISTS pending_messages;",
-    );
 
     // Bus message queue — replaces IPC sockets for agent-to-agent delivery.
     // Writer inserts a row, recipient's poller reads and deletes it.
@@ -286,25 +243,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
             error_count INTEGER NOT NULL DEFAULT 0,
             last_error TEXT,
             active INTEGER NOT NULL DEFAULT 1,
-            once INTEGER NOT NULL DEFAULT 0
+            once INTEGER NOT NULL DEFAULT 0,
+            project TEXT,
+            loop_interval_secs INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_cron_active
             ON cron_jobs(active);
         ",
     )?;
 
-    // Migration: add once column to cron_jobs
-    let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN once INTEGER NOT NULL DEFAULT 0");
-    // Migration: add project column to cron_jobs (scoping)
-    let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN project TEXT");
-    // Migration: add loop_interval_secs for loop-style jobs (sequential execution)
-    let _ = conn.execute_batch("ALTER TABLE cron_jobs ADD COLUMN loop_interval_secs INTEGER");
-
     // TOTP secrets table
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS totp_secrets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
             service TEXT NOT NULL,
             account TEXT NOT NULL,
             secret TEXT NOT NULL,
@@ -312,7 +265,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             digits INTEGER NOT NULL DEFAULT 6,
             period INTEGER NOT NULL DEFAULT 30,
             created_at INTEGER NOT NULL,
-            UNIQUE(service, account)
+            UNIQUE(user_id, service, account)
         );
         CREATE INDEX IF NOT EXISTS idx_totp_service
             ON totp_secrets(service);
@@ -324,24 +277,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "
         CREATE TABLE IF NOT EXISTS kv_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
             key TEXT NOT NULL,
             value TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            UNIQUE(key)
+            UNIQUE(user_id, key)
         );
         ",
     )?;
-
-    // Migration: add user_id to kv_store and totp_secrets for multi-account isolation
-    let _ = conn.execute_batch("ALTER TABLE kv_store ADD COLUMN user_id TEXT");
-    let _ = conn.execute_batch("ALTER TABLE totp_secrets ADD COLUMN user_id TEXT");
-    // Migration: drop scope column from kv_store (SQLite doesn't support DROP COLUMN directly,
-    // so we just ignore it and use user_id+key as the unique constraint going forward)
-    let _ = conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kv_user_key ON kv_store(user_id, key);
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_totp_user_service_account ON totp_secrets(user_id, service, account);",
-    );
 
     // Encryption key marker
     conn.execute_batch(
@@ -363,24 +307,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Auth table (legacy - data migrated to config with 'auth:' prefix)
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS auth (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        ",
-    )?;
-
-    // Migrate auth table data to config table with 'auth:' prefix
-    let _ = conn.execute_batch(
-        "INSERT OR IGNORE INTO config (key, value)
-         SELECT 'auth:' || key, value FROM auth;
-         DELETE FROM auth;",
-    );
-
-    // Event log (durable, queryable) — was error_events, now events with level column
+    // Event log (durable, queryable)
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS events (
@@ -397,26 +324,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON events(level);
         ",
     )?;
-    // Migrate from old table if it exists
-    let has_old: bool = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='error_events'")?
-        .exists([])?;
-    if has_old {
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO events (id, created_at, level, source, message, details)
-             SELECT id, created_at, 'error', source, message, details FROM error_events;
-             DROP TABLE error_events;",
-        )?;
-    }
 
     // Local memory layer
     conn.execute_batch(
         "
-        DROP TABLE IF EXISTS memory_observations;
-        DROP TABLE IF EXISTS memory_sessions;
-        DROP TABLE IF EXISTS memory_session_events;
-        DROP TABLE IF EXISTS memory_session_snapshots;
-
         CREATE TABLE IF NOT EXISTS memory_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project TEXT NOT NULL,
@@ -462,15 +373,6 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON memory_event_history(event_id, created_at);
         ",
     )?;
-
-    let _ = conn.execute_batch(
-        "
-        ALTER TABLE memory_sessions ADD COLUMN last_event_at INTEGER;
-        ALTER TABLE memory_sessions ADD COLUMN compact_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE memory_events ADD COLUMN superseded_by INTEGER;
-        ALTER TABLE memory_events ADD COLUMN summary_hash TEXT;
-        ",
-    );
 
     conn.execute_batch(
         "
@@ -533,9 +435,6 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON task_dependencies(depends_on_task_id, task_id);
         ",
     )?;
-    let _ =
-        conn.execute_batch("ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
-    let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN project TEXT");
     conn.execute_batch(
         "
         CREATE INDEX IF NOT EXISTS idx_tasks_scope
@@ -1570,7 +1469,7 @@ pub fn totp_add(
 ) -> Result<i64> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
 
     let secret_to_store = if get_encryption_key().is_some() {
         match encrypt(secret) {
@@ -1599,10 +1498,10 @@ pub fn totp_add(
 /// List all TOTP secrets for current user.
 pub fn totp_list() -> Result<Vec<TotpSecret>> {
     let conn = open()?;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
     let mut stmt = conn.prepare(
         "SELECT id, service, account, secret, algorithm, digits, period, created_at \
-         FROM totp_secrets WHERE user_id IS ?1 ORDER BY service, account",
+         FROM totp_secrets WHERE user_id = ?1 ORDER BY service, account",
     )?;
     let mut out = Vec::new();
     let mut rows = stmt.query(params![uid])?;
@@ -1630,10 +1529,10 @@ pub fn totp_list() -> Result<Vec<TotpSecret>> {
 /// Get TOTP secret for a service+account, scoped to current user.
 pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
     let conn = open()?;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
     let mut stmt = conn.prepare(
         "SELECT id, service, account, secret, algorithm, digits, period, created_at \
-         FROM totp_secrets WHERE user_id IS ?1 AND service = ?2 AND account = ?3",
+         FROM totp_secrets WHERE user_id = ?1 AND service = ?2 AND account = ?3",
     )?;
     stmt.query_row(params![uid, service, account], |row| {
         let secret: String = row.get(3)?;
@@ -1660,9 +1559,9 @@ pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
 /// Delete a TOTP secret (by id — already scoped by user via query)
 pub fn totp_delete(id: i64) -> Result<()> {
     let conn = open()?;
-    let uid = current_user_id();
+    let uid = current_user_id().unwrap_or_default();
     conn.execute(
-        "DELETE FROM totp_secrets WHERE id = ?1 AND user_id IS ?2",
+        "DELETE FROM totp_secrets WHERE id = ?1 AND user_id = ?2",
         params![id, uid],
     )?;
     Ok(())
@@ -1716,7 +1615,7 @@ pub fn kv_get(key: &str) -> Result<Option<KvEntry>> {
 
     let mut stmt = conn.prepare(
         "SELECT id, key, value, created_at, updated_at FROM kv_store \
-         WHERE (user_id = ?1 OR user_id IS NULL) AND key = ?2 \
+         WHERE user_id = ?1 AND key = ?2 \
          ORDER BY id DESC LIMIT 1",
     )?;
     stmt.query_row(params![uid, key], |row| {
@@ -1745,7 +1644,7 @@ pub fn kv_list() -> Result<Vec<KvEntry>> {
 
     let mut stmt = conn.prepare(
         "SELECT id, key, value, created_at, updated_at FROM kv_store \
-         WHERE (user_id = ?1 OR user_id IS NULL) \
+         WHERE user_id = ?1 \
          GROUP BY key HAVING id = MAX(id) ORDER BY key",
     )?;
     let mut out = Vec::new();
@@ -1772,9 +1671,8 @@ pub fn kv_list() -> Result<Vec<KvEntry>> {
 pub fn kv_delete(key: &str) -> Result<()> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
-    // Delete both new (user_id='') and legacy (user_id IS NULL) rows
     conn.execute(
-        "DELETE FROM kv_store WHERE (user_id = ?1 OR user_id IS NULL) AND key = ?2",
+        "DELETE FROM kv_store WHERE user_id = ?1 AND key = ?2",
         params![uid, key],
     )?;
     Ok(())
@@ -1812,163 +1710,11 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
 
     set_encryption_key(decoded.clone());
 
-    // Store user_id for scoping KV/TOTP data
     if let Some(ref uid) = body.user_id {
         set_current_user_id(uid.clone());
-        // Persist in encryption_meta so we can detect account switches
-        let _ = store_meta("user_id", uid);
-    }
-
-    // One-time pass per user: encrypt any plaintext rows owned by this user
-    // (or unowned rows from before user_id scoping was added).
-    let migration_key = format!("encrypted:{}", body.user_id.as_deref().unwrap_or("unknown"));
-    if !has_meta(&migration_key).unwrap_or(true) {
-        if let Err(e) = encrypt_plaintext_rows() {
-            eprintln!("Warning: failed to encrypt existing plaintext data: {e}");
-        } else {
-            let _ = store_meta(&migration_key, "1");
-        }
     }
 
     Ok(Some(decoded))
-}
-
-/// Check if a key exists in encryption_meta.
-fn has_meta(key: &str) -> Result<bool> {
-    let conn = open()?;
-    let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM encryption_meta WHERE key = ?1",
-        [key],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
-}
-
-/// Store a value in encryption_meta (upsert).
-fn store_meta(key: &str, value: &str) -> Result<()> {
-    let conn = open()?;
-    conn.execute(
-        "INSERT INTO encryption_meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-        params![key, value],
-    )?;
-    Ok(())
-}
-
-/// Read a value from encryption_meta.
-pub fn read_meta(key: &str) -> Result<Option<String>> {
-    let conn = open()?;
-    conn.query_row(
-        "SELECT value FROM encryption_meta WHERE key = ?1",
-        [key],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
-/// One-time migration per user: encrypt all plaintext KV/TOTP rows and claim
-/// any unowned rows (user_id IS NULL) for the current user.
-fn encrypt_plaintext_rows() -> Result<()> {
-    let conn = open()?;
-    let uid = current_user_id();
-
-    // Delete duplicate NULL rows first (keep only the one with highest id per key)
-    conn.execute(
-        "DELETE FROM kv_store WHERE user_id IS NULL AND id NOT IN (
-            SELECT MAX(id) FROM kv_store WHERE user_id IS NULL GROUP BY key
-        )",
-        [],
-    )?;
-    conn.execute(
-        "DELETE FROM totp_secrets WHERE user_id IS NULL AND id NOT IN (
-            SELECT MAX(id) FROM totp_secrets WHERE user_id IS NULL GROUP BY service, account
-        )",
-        [],
-    )?;
-
-    // Claim unowned rows for this user (pre-user_id data from before this migration)
-    // Use OR IGNORE to skip any remaining conflicts
-    conn.execute(
-        "UPDATE OR IGNORE kv_store SET user_id = ?1 WHERE user_id IS NULL",
-        params![uid],
-    )?;
-    conn.execute(
-        "UPDATE OR IGNORE totp_secrets SET user_id = ?1 WHERE user_id IS NULL",
-        params![uid],
-    )?;
-    // Clean up any rows that couldn't be claimed (conflicts with existing user rows)
-    conn.execute("DELETE FROM kv_store WHERE user_id IS NULL", [])?;
-    conn.execute("DELETE FROM totp_secrets WHERE user_id IS NULL", [])?;
-
-    // Collect plaintext KV rows for this user
-    let kv_rows: Vec<(i64, String)> = {
-        let mut stmt = conn.prepare("SELECT id, value FROM kv_store WHERE user_id IS ?1")?;
-        let mut out = Vec::new();
-        let mut rows = stmt.query(params![uid])?;
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let val: String = row.get(1)?;
-            if !is_encrypted(&val) {
-                out.push((id, val));
-            }
-        }
-        out
-    };
-
-    // Collect plaintext TOTP rows for this user
-    let totp_rows: Vec<(i64, String)> = {
-        let mut stmt = conn.prepare("SELECT id, secret FROM totp_secrets WHERE user_id IS ?1")?;
-        let mut out = Vec::new();
-        let mut rows = stmt.query(params![uid])?;
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let val: String = row.get(1)?;
-            if !is_encrypted(&val) {
-                out.push((id, val));
-            }
-        }
-        out
-    };
-
-    // Encrypt KV rows in a transaction
-    let mut kv_count = 0usize;
-    if !kv_rows.is_empty() {
-        let tx = conn.unchecked_transaction()?;
-        for (id, plaintext) in &kv_rows {
-            if let Ok(encrypted) = encrypt(plaintext) {
-                tx.execute(
-                    "UPDATE kv_store SET value = ?1 WHERE id = ?2",
-                    params![encrypted, id],
-                )?;
-                kv_count += 1;
-            }
-        }
-        tx.commit()?;
-    }
-
-    // Encrypt TOTP rows in a transaction
-    let mut totp_count = 0usize;
-    if !totp_rows.is_empty() {
-        let tx = conn.unchecked_transaction()?;
-        for (id, plaintext) in &totp_rows {
-            if let Ok(encrypted) = encrypt(plaintext) {
-                tx.execute(
-                    "UPDATE totp_secrets SET secret = ?1 WHERE id = ?2",
-                    params![encrypted, id],
-                )?;
-                totp_count += 1;
-            }
-        }
-        tx.commit()?;
-    }
-
-    if kv_count > 0 || totp_count > 0 {
-        eprintln!(
-            "sidekar: encrypted {kv_count} KV value(s) and {totp_count} TOTP secret(s) at rest"
-        );
-    }
-
-    Ok(())
 }
 
 use std::sync::Mutex;

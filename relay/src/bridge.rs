@@ -73,7 +73,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     // Create channel for data flowing TO the tunnel (from viewers)
     let (tunnel_tx, mut tunnel_rx) = mpsc::unbounded_channel::<crate::registry::TunnelMsg>();
 
-    let multiplex = register_msg.proto.unwrap_or(1) >= 2;
+    let multiplex = register_msg.proto >= 2;
 
     // Register session
     let session_id = state
@@ -98,7 +98,7 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
     let confirmation = serde_json::json!({
         "type": "registered",
         "session_id": session_id,
-        "proto": if multiplex { 2 } else { 1 },
+        "proto": 2,
     });
     if ws_tx
         .send(Message::Text(confirmation.to_string().into()))

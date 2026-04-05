@@ -240,9 +240,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             name,
                         ));
                     }
-                    // Also delete legacy keys
-                    let _ = sidekar::broker::kv_delete(sidekar::providers::oauth::KV_KEY_ANTHROPIC);
-                    let _ = sidekar::broker::kv_delete(sidekar::providers::oauth::KV_KEY_CODEX);
                     println!("All OAuth credentials removed.");
                 } else {
                     let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
