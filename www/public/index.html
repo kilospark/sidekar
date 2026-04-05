@@ -75,26 +75,13 @@ nav {
   background: var(--page-bg);
 }
 
-.nav-cta,
-.nav-auth {
-  color: var(--page-muted);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 7px 12px;
-  border-radius: 0;
-  border: 1px solid transparent;
-}
-
-.nav-cta:hover,
-.nav-auth:hover {
-  color: var(--page-ink);
-  border-color: var(--page-line);
-  background: var(--page-panel);
-}
-
-.nav-cta {
-  border-color: var(--page-line);
+body {
+  --nav-link-color: var(--page-muted);
+  --nav-link-hover-color: var(--page-ink);
+  --nav-link-active-color: var(--page-ink);
+  --nav-link-border: var(--page-line);
+  --nav-link-hover-bg: var(--page-panel);
+  --nav-link-active-bg: transparent;
 }
 
 .hero {
@@ -569,7 +556,11 @@ html.light .primary-cta {
       sidekar
     </a>
     <div class="nav-right">
+      <a class="nav-cta" href="/">Home</a>
       <a class="nav-auth" href="/docs">Docs</a>
+      <a class="nav-auth" href="/extension">Extension</a>
+      <a class="nav-auth" href="/privacy">Privacy</a>
+      <a class="nav-auth" href="/terms">Terms</a>
       <div class="nav-auth-wrap" id="nav-auth-wrap">
         <a class="nav-auth" href="/login?redirect=/dashboard">Sign in</a>
       </div>

@@ -62,6 +62,12 @@ html.light {
 body {
   background: var(--page-bg);
   color: var(--page-ink);
+  --nav-link-color: var(--page-muted);
+  --nav-link-hover-color: var(--page-ink);
+  --nav-link-active-color: var(--page-ink);
+  --nav-link-border: var(--page-line);
+  --nav-link-hover-bg: var(--page-panel);
+  --nav-link-active-bg: transparent;
 }
 
 nav {
@@ -81,29 +87,6 @@ nav {
   grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
   gap: 22px;
   margin-bottom: 38px;
-}
-
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--page-line);
-  background: var(--page-panel);
-  border-radius: 0;
-  padding: 8px 13px;
-  font: 12px/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--page-muted);
-  margin-bottom: 22px;
-}
-
-.eyebrow::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 0;
-  background: var(--page-accent);
 }
 
 h1 {
@@ -373,6 +356,7 @@ footer {
     <div class="nav-right">
       <a class="nav-auth" href="/">Home</a>
       <a class="nav-auth" href="/docs">Docs</a>
+      <a class="nav-cta" href="/extension">Extension</a>
       <a class="nav-auth" href="/privacy">Privacy</a>
       <a class="nav-auth" href="/terms">Terms</a>
       <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme" aria-label="Toggle theme">
@@ -388,7 +372,6 @@ footer {
   <div class="container">
     <section class="hero">
       <div>
-        <div class="eyebrow">Chrome extension</div>
         <h1>Add stronger in-page control for Gmail, Docs, and other SPA-heavy sites.</h1>
         <p>The Sidekar Chrome extension adds an in-page bridge for the web apps that push past plain browser automation. Use it for the harder cases, not as the default path for every site.</p>
         <div class="cta-row">
