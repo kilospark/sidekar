@@ -121,6 +121,29 @@ body {
   display: inline-block;
   text-align: left;
 }
+
+#jump-bottom {
+  display: none;
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--bar-border);
+  background: var(--bar-bg);
+  color: var(--bar-text-hover);
+  font-size: 18px;
+  line-height: 40px;
+  text-align: center;
+  cursor: pointer;
+  z-index: 20;
+  opacity: 0.85;
+}
+
+#jump-bottom:hover {
+  opacity: 1;
+}
 </style>
 </head>
 <body>
@@ -131,6 +154,7 @@ body {
   <div id="terminal-wrap">
     <div id="terminal"></div>
   </div>
+  <button id="jump-bottom" aria-label="Jump to bottom">&darr;</button>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.js"></script>
