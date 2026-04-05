@@ -50,9 +50,9 @@ Current subcommands documented in `src/lib.rs`:
 ```bash
 sidekar repl login <provider>
 sidekar repl logout [name|all]
-sidekar repl credentials
+sidekar repl credential list
 sidekar repl models -c <credential>
-sidekar repl sessions
+
 ```
 
 Credential prefixes determine provider:
@@ -83,13 +83,13 @@ The model is expected to use `sidekar` through that tool. `sidekar skill` is no 
 
 Current slash commands are implemented in `src/repl.rs`:
 
-- `/credential`
-- `/credentials`
-- `/model`
-- `/models`
+- `/credential` (show/set/list/select credentials) (show/set/list)
+
+- `/model` (show/set/list/select models) (show/set/list)
+
 - `/new` and `/reset`
-- `/sessions`
-- `/resume`
+
+- `/session` (list and switch)
 - `/compact`
 - `/verbose`
 - `/quit`, `/exit`, `/q`
@@ -135,9 +135,9 @@ Assembled from:
 | Command | Action |
 |---------|--------|
 | `/new` | Start fresh session |
-| `/sessions` | List sessions for this directory |
-| `/resume` | Switch to a different session |
-| `/model` | Show available models + auth status |
+
+| `/session` | List and switch sessions |
+| `/model` | Show/set/list models + auth status |
 | `/quit` | Exit REPL |
 | `/help` | Show help |
 

@@ -1037,7 +1037,10 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(out, "{BOLD}sidekar{RST} {DIM}v{version}{RST}");
     let _ = writeln!(out);
     let _ = writeln!(out, "{BOLD}Usage:{RST} sidekar <command> [args]");
-    let _ = writeln!(out, "       sidekar repl {DIM}[-c cred] [-m model] [-r session]{RST}");
+    let _ = writeln!(
+        out,
+        "       sidekar repl {DIM}[-c cred] [-m model] [-r session]{RST}"
+    );
     let _ = writeln!(out, "       sidekar <agent>  {DIM}(wrap agent in PTY){RST}");
     let _ = writeln!(out, "       sidekar help <command>");
     let _ = writeln!(out);
@@ -1111,4 +1114,3 @@ pub fn render_help(version: &str) -> String {
     );
     out
 }
-

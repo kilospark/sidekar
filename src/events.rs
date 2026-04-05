@@ -366,8 +366,10 @@ impl EventParser {
 fn kinds_compatible(a: LineKind, b: LineKind) -> bool {
     match (a, b) {
         // Diff lines can mix
-        (LineKind::DiffAdd | LineKind::DiffRemove | LineKind::DiffMeta,
-         LineKind::DiffAdd | LineKind::DiffRemove | LineKind::DiffMeta) => true,
+        (
+            LineKind::DiffAdd | LineKind::DiffRemove | LineKind::DiffMeta,
+            LineKind::DiffAdd | LineKind::DiffRemove | LineKind::DiffMeta,
+        ) => true,
         // Tool output lines can accumulate
         (LineKind::ToolOutput, LineKind::ToolOutput) => true,
         // Text lines can accumulate
@@ -384,7 +386,9 @@ fn parse_tool_header(content: &str) -> (String, String) {
     // Try patterns like "⏎ Read src/main.rs" or "● Bash(ls -la)"
     for prefix in &["⏎ ", "● ", "◆ "] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let parts: Vec<&str> = rest.splitn(2, |c: char| c.is_whitespace() || c == '(').collect();
+            let parts: Vec<&str> = rest
+                .splitn(2, |c: char| c.is_whitespace() || c == '(')
+                .collect();
             let tool = parts[0].to_string();
             let input = if parts.len() > 1 {
                 parts[1].trim_end_matches(')').trim().to_string()
@@ -453,7 +457,9 @@ mod tests {
         let mut parser = EventParser::new();
         let events = parser.feed(b"hello world\nmore text\n\n");
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AgentEvent::Text { content } if content == "hello world\nmore text"));
+        assert!(
+            matches!(&events[0], AgentEvent::Text { content } if content == "hello world\nmore text")
+        );
     }
 
     #[test]

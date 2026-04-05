@@ -173,8 +173,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                         eprintln!("  claude     Claude (Anthropic) — OAuth");
                         eprintln!("  codex      Codex (OpenAI) — OAuth");
                         eprintln!("  or         OpenRouter — API key");
+                        eprintln!("  oc         OpenCode — API key");
                         eprintln!();
-                        eprintln!("Named credentials: claude-work, codex-2, or-personal, etc.");
+                        eprintln!(
+                            "Named credentials: claude-work, codex-2, or-personal, oc-work, etc."
+                        );
                         std::process::exit(1);
                     }
                 };
@@ -186,9 +189,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             "codex"
                         } else if nickname == "openrouter" {
                             "openrouter"
+                        } else if nickname == "opencode" {
+                            "opencode"
                         } else {
                             eprintln!("Unknown provider: '{nickname}'.");
-                            eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or or-<name> for OpenRouter.");
+                            eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, or oc-<name> for OpenCode.");
                             std::process::exit(1);
                         }
                     });
@@ -222,9 +227,16 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             sidekar::providers::oauth::get_openrouter_token(Some(nickname)).await?;
                         println!("Logged in as '{nickname}' (OpenRouter).");
                     }
+                    "opencode" => {
+                        let _ =
+                            sidekar::providers::oauth::get_opencode_token(Some(nickname)).await?;
+                        println!("Logged in as '{nickname}' (OpenCode).");
+                    }
                     _ => {
                         eprintln!("Unknown provider type for nickname '{nickname}'.");
-                        eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or or-<name> for OpenRouter.");
+                        eprintln!(
+                            "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, or oc-<name> for OpenCode."
+                        );
                         std::process::exit(1);
                     }
                 }
@@ -289,6 +301,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             "codex"
                         } else if cred == "openrouter" {
                             "openrouter"
+                        } else if cred == "opencode" {
+                            "opencode"
                         } else {
                             eprintln!("Unknown provider for '{cred}'.");
                             std::process::exit(1);
@@ -296,9 +310,16 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                     });
                 // Get token silently (don't trigger login)
                 let api_key = match provider_type {
-                    "anthropic" => sidekar::providers::oauth::get_anthropic_token(Some(&cred)).await,
-                    "codex" => sidekar::providers::oauth::get_codex_token(Some(&cred)).await.map(|(t, _)| t),
-                    "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
+                    "anthropic" => {
+                        sidekar::providers::oauth::get_anthropic_token(Some(&cred)).await
+                    }
+                    "codex" => sidekar::providers::oauth::get_codex_token(Some(&cred))
+                        .await
+                        .map(|(t, _)| t),
+                    "openrouter" => {
+                        sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await
+                    }
+                    "opencode" => sidekar::providers::oauth::get_opencode_token(Some(&cred)).await,
                     _ => anyhow::bail!("Unknown provider"),
                 };
                 let api_key = match api_key {
@@ -365,9 +386,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                                 "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}  \x1b[2m{dir}\x1b[0m",
                             );
                         } else {
-                            println!(
-                                "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}",
-                            );
+                            println!("  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}",);
                         }
                     }
                 }
@@ -449,7 +468,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                             "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN"
                         );
                         for d in devices {
-                            let hostname = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                            let hostname =
+                                d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
                             let os = d.get("os").and_then(|v| v.as_str()).unwrap_or("-");
                             let arch = d.get("arch").and_then(|v| v.as_str()).unwrap_or("-");
                             let version = d
@@ -493,7 +513,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                         for s in sessions {
                             let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("-");
                             let agent = s.get("agent_type").and_then(|v| v.as_str()).unwrap_or("-");
-                            let hostname = s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                            let hostname =
+                                s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
                             let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("-");
                             println!("{:<20} {:<15} {:<12} {}", name, agent, hostname, cwd);
                         }
@@ -507,7 +528,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             }
         }
     }
-
 
     // Daemon
     if command == "daemon" {

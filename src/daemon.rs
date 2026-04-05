@@ -553,10 +553,7 @@ async fn accept_http_connections(
     }
 }
 
-async fn handle_http_connection(
-    mut stream: tokio::net::TcpStream,
-    state: Arc<Mutex<DaemonState>>,
-) {
+async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mutex<DaemonState>>) {
     let mut buf = [0u8; 4096];
     let n = match stream.peek(&mut buf).await {
         Ok(n) if n > 0 => n,
@@ -615,7 +612,11 @@ async fn handle_ext_websocket(
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     let welcome = json!({"type": "welcome", "version": env!("CARGO_PKG_VERSION")});
-    if ws_tx.send(Message::Text(welcome.to_string().into())).await.is_err() {
+    if ws_tx
+        .send(Message::Text(welcome.to_string().into()))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -625,8 +626,15 @@ async fn handle_ext_websocket(
             Some(Ok(Message::Text(text))) => {
                 if let Ok(val) = serde_json::from_str::<Value>(&text) {
                     if val.get("type").and_then(|v| v.as_str()) == Some("bridge_register") {
-                        let token = val.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let aid = val.get("agent_id").and_then(|v| v.as_str()).map(String::from);
+                        let token = val
+                            .get("token")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let aid = val
+                            .get("agent_id")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
                         break (token, aid);
                     }
                 }
@@ -643,7 +651,9 @@ async fn handle_ext_websocket(
         match tokio::task::spawn_blocking({
             let token = ext_token.clone();
             move || crate::ext::verify_ext_token(&token)
-        }).await {
+        })
+        .await
+        {
             Ok(Ok(uid)) => Some(uid),
             _ => None,
         }
@@ -668,12 +678,18 @@ async fn handle_ext_websocket(
         crate::ext::register_bridge_ws(&ext_state, user_id.clone(), agent_id).await;
 
     let ok = json!({"type": "auth_ok", "cli_logged_in": cli_logged_in, "profile": profile});
-    if ws_tx.send(Message::Text(ok.to_string().into())).await.is_err() {
+    if ws_tx
+        .send(Message::Text(ok.to_string().into()))
+        .await
+        .is_err()
+    {
         crate::ext::disconnect_bridge_by_id(&ext_state, conn_id).await;
         return;
     }
 
-    eprintln!("[sidekar] Extension bridge connected via WebSocket (conn: {conn_id}, user: {user_id})");
+    eprintln!(
+        "[sidekar] Extension bridge connected via WebSocket (conn: {conn_id}, user: {user_id})"
+    );
 
     // Keepalive task — send pings via bridge_tx, check last_contact for timeout
     let ka_state = ext_state.clone();
@@ -691,7 +707,8 @@ async fn handle_ext_websocket(
                     Some(conn) => {
                         should_disconnect = now - conn.last_contact > 30;
                         if !should_disconnect {
-                            let ping = serde_json::to_string(&json!({"type":"ping"})).unwrap_or_default();
+                            let ping =
+                                serde_json::to_string(&json!({"type":"ping"})).unwrap_or_default();
                             let _ = conn.bridge_tx.send(ping);
                         }
                     }
@@ -795,10 +812,19 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
         // Extension commands - forward to ext-bridge
         "ext" => {
             let ext_cmd = cmd.get("command").cloned().unwrap_or(json!({}));
-            let agent_id = cmd.get("agent_id").and_then(|v| v.as_str()).map(String::from);
+            let agent_id = cmd
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let target_conn = cmd.get("conn_id").and_then(|v| v.as_u64());
-            let target_profile = cmd.get("profile").and_then(|v| v.as_str()).map(String::from);
-            let deliver_to = cmd.get("deliver_to").and_then(|v| v.as_str()).map(String::from);
+            let target_profile = cmd
+                .get("profile")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let deliver_to = cmd
+                .get("deliver_to")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             // Capture the inner command name before forwarding for bookkeeping.
             let inner_cmd = ext_cmd
@@ -831,8 +857,15 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
             // Post-process: maintain watch registry.
             if inner_cmd == "watch" && result.get("error").is_none() {
                 if let (Some(wid), Some(sel), Some(dest)) = (
-                    result.get("watchId").and_then(|v| v.as_str()).map(String::from),
-                    result.get("selector").and_then(|v| v.as_str()).map(String::from).or(inner_selector),
+                    result
+                        .get("watchId")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    result
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .or(inner_selector),
                     deliver_to,
                 ) {
                     // Find which connection ended up servicing this watch.
@@ -853,15 +886,7 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
                                 .unwrap_or((0, String::new()))
                         }
                     };
-                    crate::ext::register_watch(
-                        &ext_state,
-                        wid,
-                        sel,
-                        dest,
-                        conn_id,
-                        profile,
-                    )
-                    .await;
+                    crate::ext::register_watch(&ext_state, wid, sel, dest, conn_id, profile).await;
                 }
             } else if inner_cmd == "unwatch" && result.get("error").is_none() {
                 if let Some(wid) = inner_watch_id {
@@ -876,7 +901,11 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
             // Annotate the response with deliver_to so the CLI can display it.
             let mut final_result = result;
             if inner_cmd == "watch" && final_result.is_object() {
-                if let Some(dest) = final_result.get("watchId").and_then(|v| v.as_str()).map(String::from) {
+                if let Some(dest) = final_result
+                    .get("watchId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                {
                     let _ = dest; // just checking existence
                     if let Some(obj) = final_result.as_object_mut() {
                         // Look up deliver_to from the just-registered watch (if any).

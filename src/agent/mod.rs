@@ -95,7 +95,11 @@ pub async fn run(
             let (content, is_error) = match result {
                 Ok(output) => (truncate_tool_output(&output, 50_000), false),
                 Err(e) => {
-                    crate::broker::try_log_error("repl", &format!("tool {name} failed"), Some(&format!("{e:#}")));
+                    crate::broker::try_log_error(
+                        "repl",
+                        &format!("tool {name} failed"),
+                        Some(&format!("{e:#}")),
+                    );
                     (format!("Error: {e:#}"), true)
                 }
             };

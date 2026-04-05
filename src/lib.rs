@@ -3026,18 +3026,28 @@ fn colorize_command_help(help: &str) -> String {
 
         // Example lines (indented, starting with "sidekar")
         if in_examples && trimmed.starts_with("sidekar ") {
-            out.push_str(&format!("{}{CYAN}{trimmed}{RST}\n", &line[..line.len() - trimmed.len()]));
+            out.push_str(&format!(
+                "{}{CYAN}{trimmed}{RST}\n",
+                &line[..line.len() - trimmed.len()]
+            ));
             continue;
         }
         // Also handle inline examples like "Example: sidekar foo"
         if trimmed.starts_with("Example: sidekar ") || trimmed.starts_with("Example:  sidekar ") {
             let rest = trimmed.strip_prefix("Example:").unwrap().trim();
-            out.push_str(&format!("{}{YELLOW}{BOLD}Example:{RST} {CYAN}{rest}{RST}\n", &line[..line.len() - trimmed.len()]));
+            out.push_str(&format!(
+                "{}{YELLOW}{BOLD}Example:{RST} {CYAN}{rest}{RST}\n",
+                &line[..line.len() - trimmed.len()]
+            ));
             continue;
         }
 
         // Flag lines: --flag or -f
-        if trimmed.starts_with("--") || (trimmed.starts_with('-') && trimmed.len() > 1 && trimmed.as_bytes()[1].is_ascii_alphabetic()) {
+        if trimmed.starts_with("--")
+            || (trimmed.starts_with('-')
+                && trimmed.len() > 1
+                && trimmed.as_bytes()[1].is_ascii_alphabetic())
+        {
             // Split at first two-space gap or end of flag
             if let Some(pos) = trimmed.find("  ") {
                 let flag = &trimmed[..pos];

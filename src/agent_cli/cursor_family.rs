@@ -90,7 +90,7 @@ fn should_inject_initial_prompt(args: &[String]) -> bool {
 }
 
 /// `sidekar cursor …` (shim that may forward to IDE or `agent`).
-pub fn enrich_cursor(user_args: &[String]) -> Vec<String> {
+fn enrich_cursor(user_args: &[String]) -> Vec<String> {
     let has_positional = user_args.iter().any(|a| !a.starts_with('-'));
     if user_args.is_empty() {
         return vec!["agent".into(), STARTUP_INJECT.to_string()];
@@ -110,7 +110,7 @@ pub fn enrich_cursor(user_args: &[String]) -> Vec<String> {
 }
 
 /// `sidekar agent …` and `sidekar cursor-agent …`.
-pub fn enrich_agent_binary(user_args: &[String]) -> Vec<String> {
+fn enrich_agent_binary(user_args: &[String]) -> Vec<String> {
     let mut out = user_args.to_vec();
     if should_inject_initial_prompt(user_args) {
         out.push(STARTUP_INJECT.to_string());
@@ -118,56 +118,27 @@ pub fn enrich_agent_binary(user_args: &[String]) -> Vec<String> {
     out
 }
 
-// --- One registry entry per binary; proxy flags are independent per struct. ---
+/// Cursor CLI family: `cursor` shim, `agent`, and `cursor-agent` are the same stack;
+/// argv differs by which binary is `exec`'d.
+pub struct CursorFamily;
 
-pub struct Cursor;
-
-impl AgentCliSpec for Cursor {
+impl AgentCliSpec for CursorFamily {
     fn ids(&self) -> &'static [&'static str] {
-        &["cursor"]
+        &["cursor", "agent", "cursor-agent"]
     }
 
     fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
-        debug_assert_eq!(invoked_as, "cursor");
-        enrich_cursor(user_args)
+        match invoked_as {
+            "agent" | "cursor-agent" => enrich_agent_binary(user_args),
+            "cursor" => enrich_cursor(user_args),
+            _ => user_args.to_vec(),
+        }
     }
 
     fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
-        // `cursor` shim: universal MITM + CA only (IDE vs agent subcommand varies at runtime).
-        ProxyEnvFlags::default()
-    }
-}
-
-pub struct Agent;
-
-impl AgentCliSpec for Agent {
-    fn ids(&self) -> &'static [&'static str] {
-        &["agent"]
-    }
-
-    fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
-        debug_assert_eq!(invoked_as, "agent");
-        enrich_agent_binary(user_args)
-    }
-
-    fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
-        ProxyEnvFlags::default()
-    }
-}
-
-pub struct CursorAgent;
-
-impl AgentCliSpec for CursorAgent {
-    fn ids(&self) -> &'static [&'static str] {
-        &["cursor-agent"]
-    }
-
-    fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
-        debug_assert_eq!(invoked_as, "cursor-agent");
-        enrich_agent_binary(user_args)
-    }
-
-    fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
-        ProxyEnvFlags::default()
+        ProxyEnvFlags {
+            node_use_env_proxy: true,
+            ..Default::default()
+        }
     }
 }

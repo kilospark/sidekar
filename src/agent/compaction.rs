@@ -97,16 +97,15 @@ async fn compact_history(
     match result {
         Ok(()) => {
             let after = estimate_tokens(history);
-            crate::tunnel::tunnel_println(&format!("\x1b[2m[Compacted to ~{}k tokens]\x1b[0m", after / 1000));
+            crate::tunnel::tunnel_println(&format!(
+                "\x1b[2m[Compacted to ~{}k tokens]\x1b[0m",
+                after / 1000
+            ));
             Ok(cleared > 0 || history.len() != original_len)
         }
         Err(e) => {
             crate::tunnel::tunnel_println(&format!("\x1b[2m[Compaction failed: {e}]\x1b[0m"));
-            if cleared > 0 {
-                Ok(true)
-            } else {
-                Err(e)
-            }
+            if cleared > 0 { Ok(true) } else { Err(e) }
         }
     }
 }

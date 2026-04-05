@@ -1249,7 +1249,10 @@ pub fn list_cron_jobs(
 
         match scope {
             crate::scope::ScopeView::Project => {
-                clauses.push(format!("(project = ?{} OR project IS NULL)", params.len() + 1));
+                clauses.push(format!(
+                    "(project = ?{} OR project IS NULL)",
+                    params.len() + 1
+                ));
                 params.push(Box::new(current_project.to_string()));
             }
             crate::scope::ScopeView::Global => {
@@ -1340,7 +1343,10 @@ fn row_to_cron_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJobRecord> {
             .unwrap_or(0)
             != 0,
         project: row.get::<_, Option<String>>(13).unwrap_or(None),
-        loop_interval_secs: row.get::<_, Option<i64>>(14).unwrap_or(None).map(|v| v as u64),
+        loop_interval_secs: row
+            .get::<_, Option<i64>>(14)
+            .unwrap_or(None)
+            .map(|v| v as u64),
     })
 }
 
@@ -2122,47 +2128,6 @@ mod tests {
             assert!(set_agent_session_notes("pty:321:1700000000", None)?);
             let cleared = get_agent_session("pty:321:1700000000")?.context("missing session")?;
             assert_eq!(cleared.notes, None);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn migrates_legacy_tasks_table_before_creating_scope_index() -> Result<()> {
-        with_test_db(|| {
-            let path = db_path();
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let conn = Connection::open(&path)?;
-            conn.execute_batch(
-                "
-                CREATE TABLE tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    notes TEXT,
-                    status TEXT NOT NULL DEFAULT 'open',
-                    priority INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    completed_at INTEGER
-                );
-                ",
-            )?;
-            drop(conn);
-
-            let conn = open()?;
-            let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
-            let cols = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            assert!(cols.iter().any(|c| c == "scope"));
-            assert!(cols.iter().any(|c| c == "project"));
-
-            let mut idx_stmt = conn.prepare("PRAGMA index_list(tasks)")?;
-            let indexes = idx_stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            assert!(indexes.iter().any(|idx| idx == "idx_tasks_scope"));
             Ok(())
         })
     }

@@ -5,26 +5,24 @@ use crate::providers::ToolDef;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDef> {
-    vec![
-        ToolDef {
-            name: "bash".into(),
-            description: "Execute a bash command and return its output.".into(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The bash command to execute"
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Timeout in seconds (default: 120)"
-                    }
+    vec![ToolDef {
+        name: "bash".into(),
+        description: "Execute a bash command and return its output.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute"
                 },
-                "required": ["command"]
-            }),
-        },
-    ]
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 120)"
+                }
+            },
+            "required": ["command"]
+        }),
+    }]
 }
 
 /// Execute a tool call and return the output string.

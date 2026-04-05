@@ -306,7 +306,12 @@ async fn connect_relay_tunnel(
 // ---------------------------------------------------------------------------
 
 /// Launch an agent inside a sidekar-owned PTY.
-pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>, proxy_override: Option<bool>) -> Result<()> {
+pub async fn run_agent(
+    agent: &str,
+    args: &[String],
+    relay_override: Option<bool>,
+    proxy_override: Option<bool>,
+) -> Result<()> {
     // Ensure rustls crypto provider is available before any WSS connection (relay tunnel).
     let _ = rustls::crypto::ring::default_provider().install_default();
 

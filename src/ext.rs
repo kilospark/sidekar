@@ -6,16 +6,16 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::fs;
 use std::io::Cursor;
+use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::auth;
 use crate::message::epoch_secs;
 
-use zip::ZipArchive;
 use dirs;
+use zip::ZipArchive;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
 
@@ -44,7 +44,10 @@ fn get_cached_user_id(_ext_token: &str) -> Option<String> {
 
 fn set_cached_user_id(user_id: String) {
     let expires_at = epoch_secs() + 300; // 5 minute TTL
-    let _ = TOKEN_CACHE.set(TokenCache { user_id, expires_at });
+    let _ = TOKEN_CACHE.set(TokenCache {
+        user_id,
+        expires_at,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +101,7 @@ pub fn verify_ext_token(ext_token: &str) -> Result<String> {
     if let Some(cached_user_id) = get_cached_user_id(ext_token) {
         return Ok(cached_user_id);
     }
-    
+
     let device_token = auth::auth_token().ok_or_else(|| anyhow!("Run `sidekar login`"))?;
 
     let client = reqwest::blocking::Client::builder()
@@ -131,10 +134,10 @@ pub fn verify_ext_token(ext_token: &str) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("No user_id in verification response"))?;
-    
+
     // Cache the result
     set_cached_user_id(user_id.clone());
-    
+
     Ok(user_id)
 }
 
@@ -238,11 +241,19 @@ pub async fn deliver_watch_event(
         }
     }
     if !previous.is_empty() {
-        let prev_trim = if previous.len() > 500 { &previous[..500] } else { previous };
+        let prev_trim = if previous.len() > 500 {
+            &previous[..500]
+        } else {
+            previous
+        };
         message.push_str(&format!("\nBefore: {prev_trim}"));
     }
     if !current.is_empty() {
-        let cur_trim = if current.len() > 500 { &current[..500] } else { current };
+        let cur_trim = if current.len() > 500 {
+            &current[..500]
+        } else {
+            current
+        };
         message.push_str(&format!("\nAfter: {cur_trim}"));
     }
 
@@ -264,14 +275,17 @@ pub async fn register_bridge_ws(
     let cid = s.next_connection_id;
     s.next_connection_id = cid.wrapping_add(1);
     let profile = format!("profile-{cid}");
-    s.connections.insert(cid, ExtConnection {
-        bridge_tx,
-        pending: HashMap::new(),
-        verified_user_id: user_id,
-        last_contact: now,
-        owner_agent_id: agent_id,
-        profile: profile.clone(),
-    });
+    s.connections.insert(
+        cid,
+        ExtConnection {
+            bridge_tx,
+            pending: HashMap::new(),
+            verified_user_id: user_id,
+            last_contact: now,
+            owner_agent_id: agent_id,
+            profile: profile.clone(),
+        },
+    );
     (cid, bridge_rx, profile)
 }
 
@@ -304,7 +318,15 @@ pub async fn forward_command(
     target_conn: Option<u64>,
     target_profile: Option<String>,
 ) -> Value {
-    match send_command(state, command, agent_id.as_deref(), target_conn, target_profile.as_deref()).await {
+    match send_command(
+        state,
+        command,
+        agent_id.as_deref(),
+        target_conn,
+        target_profile.as_deref(),
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => json!({"error": e.to_string()}),
     }
@@ -315,13 +337,17 @@ pub async fn get_status(state: &SharedExtState) -> Value {
     let s = state.lock().await;
     let count = s.connections.len();
     let connected = count > 0;
-    let details: Vec<Value> = s.connections.iter()
-        .map(|(id, c)| json!({
-            "id": id,
-            "profile": c.profile,
-            "user_id": c.verified_user_id,
-            "owner": c.owner_agent_id,
-        }))
+    let details: Vec<Value> = s
+        .connections
+        .iter()
+        .map(|(id, c)| {
+            json!({
+                "id": id,
+                "profile": c.profile,
+                "user_id": c.verified_user_id,
+                "owner": c.owner_agent_id,
+            })
+        })
         .collect();
     json!({
         "connected": connected,
@@ -360,24 +386,32 @@ async fn send_command(
         } else if let Some(profile) = target_profile {
             // Match by profile name (case-insensitive substring)
             let lp = profile.to_lowercase();
-            let found = s.connections.iter().find(|(_, c)| {
-                c.profile.to_lowercase().contains(&lp)
-            }).map(|(id, _)| *id);
+            let found = s
+                .connections
+                .iter()
+                .find(|(_, c)| c.profile.to_lowercase().contains(&lp))
+                .map(|(id, _)| *id);
             match found {
                 Some(cid) => cid,
-                None => bail!("No connection matching profile '{profile}'. Use `sidekar ext status` to list."),
+                None => bail!(
+                    "No connection matching profile '{profile}'. Use `sidekar ext status` to list."
+                ),
             }
         } else if let Some(req_agent) = agent_id {
             // Find connection owned by this agent
-            let owned = s.connections.iter().find(|(_, c)| {
-                c.owner_agent_id.as_deref() == Some(req_agent)
-            }).map(|(id, _)| *id);
+            let owned = s
+                .connections
+                .iter()
+                .find(|(_, c)| c.owner_agent_id.as_deref() == Some(req_agent))
+                .map(|(id, _)| *id);
             if let Some(cid) = owned {
                 cid
             } else {
-                let unowned = s.connections.iter().find(|(_, c)| {
-                    c.owner_agent_id.is_none()
-                }).map(|(id, _)| *id);
+                let unowned = s
+                    .connections
+                    .iter()
+                    .find(|(_, c)| c.owner_agent_id.is_none())
+                    .map(|(id, _)| *id);
                 match unowned {
                     Some(cid) => {
                         s.connections.get_mut(&cid).unwrap().owner_agent_id =
@@ -467,7 +501,10 @@ pub async fn send_cli_command(
         }
         if arg == "--conn" {
             if let Some(val) = args.get(i + 1) {
-                target_conn = Some(val.parse().context("--conn requires a numeric connection ID")?);
+                target_conn = Some(
+                    val.parse()
+                        .context("--conn requires a numeric connection ID")?,
+                );
                 skip_next = true;
             }
         } else if arg == "--profile" {
@@ -574,19 +611,25 @@ fn extract_extension() -> Result<()> {
             std::io::copy(&mut file, &mut outfile).context("Failed to copy file contents")?;
         }
 
-// Set permissions
-#[cfg(unix)]
-{
-    use std::os::unix::fs::PermissionsExt;
-    if let Some(mode) = file.unix_mode() {
-        fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
-            .context("Failed to set file permissions")?;
-    }
-}
+        // Set permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = file.unix_mode() {
+                fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
+                    .context("Failed to set file permissions")?;
+            }
+        }
     }
 
-    println!("Chrome extension extracted/updated to {}", target_dir.display());
-    println!("To load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}", target_dir.display());
+    println!(
+        "Chrome extension extracted/updated to {}",
+        target_dir.display()
+    );
+    println!(
+        "To load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}",
+        target_dir.display()
+    );
     Ok(())
 }
 
@@ -1009,8 +1052,14 @@ fn print_result(command: &str, result: &Value) {
                 for entry in entries {
                     let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
                     let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                    let visits = entry.get("visitCount").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let ts = entry.get("lastVisitTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let visits = entry
+                        .get("visitCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let ts = entry
+                        .get("lastVisitTime")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
                     let ago = format_time_ago(ts);
                     println!("{title}");
                     println!("  {url}");
@@ -1022,7 +1071,10 @@ fn print_result(command: &str, result: &Value) {
         }
         "watch" => {
             if let Some(watch_id) = result.get("watchId").and_then(|v| v.as_str()) {
-                let selector = result.get("selector").and_then(|v| v.as_str()).unwrap_or("");
+                let selector = result
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 println!("Watching: {selector}");
                 println!("Watch ID: {watch_id}");
                 if let Some(deliver) = result.get("deliverTo").and_then(|v| v.as_str()) {
@@ -1030,7 +1082,11 @@ fn print_result(command: &str, result: &Value) {
                 }
                 if let Some(state) = result.get("initialState").and_then(|v| v.as_str()) {
                     if !state.is_empty() {
-                        let preview = if state.len() > 200 { &state[..200] } else { state };
+                        let preview = if state.len() > 200 {
+                            &state[..200]
+                        } else {
+                            state
+                        };
                         println!("Current state: {preview}");
                     }
                 }
@@ -1069,8 +1125,14 @@ fn print_result(command: &str, result: &Value) {
 
             // Windows + tabs
             if let Some(windows) = result.get("windows").and_then(|v| v.as_object()) {
-                let tab_count = result.get("tab_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let win_count = result.get("window_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let tab_count = result
+                    .get("tab_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let win_count = result
+                    .get("window_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 println!("{tab_count} tab(s) across {win_count} window(s):");
                 for (wid, tabs) in windows {
                     if let Some(tabs) = tabs.as_array() {
@@ -1080,7 +1142,11 @@ fn print_result(command: &str, result: &Value) {
                             let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("");
                             let active = t.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
                             let marker = if active { " *" } else { "" };
-                            let short_title = if title.len() > 60 { &title[..60] } else { title };
+                            let short_title = if title.len() > 60 {
+                                &title[..60]
+                            } else {
+                                title
+                            };
                             println!("    [{id}]{marker} {short_title}");
                         }
                     }
@@ -1094,9 +1160,16 @@ fn print_result(command: &str, result: &Value) {
                     for h in history.iter().take(10) {
                         let title = h.get("title").and_then(|v| v.as_str()).unwrap_or("");
                         let url = h.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                        let ts = h.get("lastVisitTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let ts = h
+                            .get("lastVisitTime")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
                         let ago = format_time_ago(ts);
-                        let short_title = if title.len() > 50 { &title[..50] } else { title };
+                        let short_title = if title.len() > 50 {
+                            &title[..50]
+                        } else {
+                            title
+                        };
                         // Extract domain from URL
                         let domain = url
                             .strip_prefix("https://")
@@ -1125,4 +1198,3 @@ fn print_result(command: &str, result: &Value) {
         }
     }
 }
-

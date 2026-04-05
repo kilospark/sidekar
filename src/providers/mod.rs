@@ -36,7 +36,9 @@ pub(super) fn log_api_error(status: StatusCode, text: &str) {
         return;
     }
 
-    crate::tunnel::tunnel_println(&format!("\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m"));
+    crate::tunnel::tunnel_println(&format!(
+        "\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m"
+    ));
 }
 
 #[derive(Debug, Clone)]
@@ -208,20 +210,38 @@ pub enum StopReason {
 /// Sanitize a tool call ID for Anthropic (must match `^[a-zA-Z0-9_-]+$`).
 /// Returns a borrowed reference when the input is already valid.
 pub(crate) fn sanitize_id_anthropic(id: &str) -> std::borrow::Cow<'_, str> {
-    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return std::borrow::Cow::Borrowed(id);
     }
-    let sanitized: String = id.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }
-    }).collect();
-    std::borrow::Cow::Owned(if sanitized.is_empty() { "id_0".to_string() } else { sanitized })
+    let sanitized: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    std::borrow::Cow::Owned(if sanitized.is_empty() {
+        "id_0".to_string()
+    } else {
+        sanitized
+    })
 }
 
 /// Sanitize a tool call ID for OpenAI-compatible APIs (must start with `call_`).
 pub(crate) fn sanitize_id_openai(id: &str) -> String {
     // Strip pipe-separated item ID if present (Codex format)
     let base = id.split_once('|').map(|(call, _)| call).unwrap_or(id);
-    let sanitized: String = base.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    let sanitized: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
     if sanitized.starts_with("call_") {
         sanitized
     } else {
@@ -249,7 +269,9 @@ pub enum StreamEvent {
     /// Emitted before each API call so the UI can show a waiting indicator.
     Waiting,
     /// Emitted before a tool executes so the UI can show progress.
-    ToolExec { name: String },
+    ToolExec {
+        name: String,
+    },
     /// Emitted when context compaction (LLM summarization) is in progress.
     Compacting,
     /// Emitted when a background activity ends without assistant output.
@@ -289,13 +311,19 @@ pub struct AssistantResponse {
 }
 
 /// Cached model metadata fetched from provider APIs.
-static MODEL_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (u32, u32)>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static MODEL_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (u32, u32)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Fetch context window for a model from the provider API.
 /// Tries the provider's models endpoint first, falls back to static registry.
 pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
-    if let Some(&(ctx, _)) = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied()).as_ref() {
+    if let Some(&(ctx, _)) = MODEL_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(model).copied())
+        .as_ref()
+    {
         return ctx;
     }
 
@@ -311,7 +339,12 @@ pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
 
 /// Fetch max output tokens for a model from the provider API.
 pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
-    if let Some(&(_, max_out)) = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied()).as_ref() {
+    if let Some(&(_, max_out)) = MODEL_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(model).copied())
+        .as_ref()
+    {
         return max_out;
     }
 
@@ -339,7 +372,11 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
 }
 
 /// Anthropic: GET /v1/models → max_input_tokens, max_tokens
-async fn fetch_anthropic_model_limits(api_key: &str, base_url: &str, model: &str) -> Option<(u32, u32)> {
+async fn fetch_anthropic_model_limits(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+) -> Option<(u32, u32)> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -365,8 +402,14 @@ async fn fetch_anthropic_model_limits(api_key: &str, base_url: &str, model: &str
     for m in models {
         let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if id == model {
-            let ctx = m.get("max_input_tokens").and_then(|v| v.as_u64()).unwrap_or(200_000) as u32;
-            let max_out = m.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(16_000) as u32;
+            let ctx = m
+                .get("max_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200_000) as u32;
+            let max_out = m
+                .get("max_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16_000) as u32;
             return Some((ctx, max_out));
         }
     }
@@ -375,7 +418,11 @@ async fn fetch_anthropic_model_limits(api_key: &str, base_url: &str, model: &str
 }
 
 /// OpenRouter: GET /v1/models → context_length, top_provider.max_completion_tokens
-async fn fetch_openrouter_model_limits(api_key: &str, base_url: &str, model: &str) -> Option<(u32, u32)> {
+async fn fetch_openrouter_model_limits(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+) -> Option<(u32, u32)> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -399,7 +446,10 @@ async fn fetch_openrouter_model_limits(api_key: &str, base_url: &str, model: &st
     for m in models {
         let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if id == model {
-            let ctx = m.get("context_length").and_then(|v| v.as_u64()).unwrap_or(128_000) as u32;
+            let ctx = m
+                .get("context_length")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(128_000) as u32;
             let max_out = m
                 .get("top_provider")
                 .and_then(|tp| tp.get("max_completion_tokens"))
@@ -426,6 +476,7 @@ pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteM
         "anthropic" => fetch_anthropic_model_list(api_key).await,
         "codex" => fetch_codex_model_list(api_key).await,
         "openrouter" => fetch_openrouter_model_list(api_key).await,
+        "opencode" => fetch_opencode_model_list(api_key).await,
         _ => Vec::new(),
     }
 }
@@ -476,10 +527,7 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
         for m in data {
             let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let name = m
-                .get("display_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or(id);
+            let name = m.get("display_name").and_then(|v| v.as_str()).unwrap_or(id);
             let ctx = m
                 .get("max_input_tokens")
                 .and_then(|v| v.as_u64())
@@ -537,11 +585,14 @@ async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
     };
 
     let mut models = Vec::new();
-    let arr = body.get("models").and_then(|d| d.as_array())
+    let arr = body
+        .get("models")
+        .and_then(|d| d.as_array())
         .or_else(|| body.get("data").and_then(|d| d.as_array()));
     if let Some(data) = arr {
         for m in data {
-            let id = m.get("slug")
+            let id = m
+                .get("slug")
                 .or_else(|| m.get("model"))
                 .or_else(|| m.get("id"))
                 .and_then(|v| v.as_str())
@@ -609,6 +660,47 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
     models
 }
 
+async fn fetch_opencode_model_list(_api_key: &str) -> Vec<RemoteModel> {
+    let url = "https://opencode.ai/zen/v1/models";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let resp = match client
+        .get(url)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut models = Vec::new();
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        for m in data {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if !id.is_empty() {
+                models.push(RemoteModel {
+                    id: id.to_string(),
+                    display_name: String::new(),
+                    context_window: 0,
+                });
+            }
+        }
+    }
+    models
+}
+
 // ---------------------------------------------------------------------------
 // Provider — enum dispatch (no trait, 3 variants)
 // ---------------------------------------------------------------------------
@@ -653,6 +745,31 @@ impl Provider {
         }
     }
 
+    /// OpenCode uses the Anthropic API shape with a different base URL.
+    pub fn opencode(api_key: String) -> Self {
+        Provider::Anthropic {
+            api_key,
+            base_url: "https://opencode.ai/zen".to_string(),
+        }
+    }
+
+    pub fn api_key(&self) -> &str {
+        match self {
+            Provider::Anthropic { api_key, .. } => api_key,
+            Provider::Codex { api_key, .. } => api_key,
+            Provider::OpenRouter { api_key, .. } => api_key,
+        }
+    }
+
+    pub fn provider_type(&self) -> &str {
+        match self {
+            Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai") => "opencode",
+            Provider::Anthropic { .. } => "anthropic",
+            Provider::Codex { .. } => "codex",
+            Provider::OpenRouter { .. } => "openrouter",
+        }
+    }
+
     pub async fn stream(
         &self,
         model: &str,
@@ -664,15 +781,15 @@ impl Provider {
         let mut attempt = 0u32;
 
         loop {
-            let result = self.stream_once(model, system_prompt, messages, tools).await;
+            let result = self
+                .stream_once(model, system_prompt, messages, tools)
+                .await;
 
             match &result {
                 Err(e) if attempt < max_retries && is_retryable_error(e) => {
                     attempt += 1;
                     let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
-                    eprintln!(
-                        "\x1b[33m[error: {e:#}]\x1b[0m"
-                    );
+                    eprintln!("\x1b[33m[error: {e:#}]\x1b[0m");
                     eprintln!(
                         "\x1b[33m[retrying {attempt}/{max_retries} in {:.1}s...]\x1b[0m",
                         delay.as_secs_f32()
@@ -727,8 +844,11 @@ impl Provider {
 fn is_retryable_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}");
     // 5xx server errors
-    if msg.contains("(500)") || msg.contains("(502)") || msg.contains("(503)")
-        || msg.contains("(504)") || msg.contains("(529)")
+    if msg.contains("(500)")
+        || msg.contains("(502)")
+        || msg.contains("(503)")
+        || msg.contains("(504)")
+        || msg.contains("(529)")
     {
         return true;
     }
@@ -737,7 +857,8 @@ fn is_retryable_error(err: &anyhow::Error) -> bool {
         return true;
     }
     // Connection failures
-    if msg.contains("failed to connect") || msg.contains("connection reset")
+    if msg.contains("failed to connect")
+        || msg.contains("connection reset")
         || msg.contains("timed out")
     {
         return true;
