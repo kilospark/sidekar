@@ -46,31 +46,20 @@
     var touchY = null;
     var LINE_PX = 18;
     var MULTIPLIER = 6;
-    var lastTap = 0;
-    var moved = false;
     screen.addEventListener("touchstart", function (e) {
-      if (e.touches.length === 1) {
-        touchY = e.touches[0].clientY;
-        moved = false;
-      }
+      if (e.touches.length === 1) touchY = e.touches[0].clientY;
     }, { capture: true, passive: true });
     screen.addEventListener("touchmove", function (e) {
       if (touchY !== null && e.touches.length === 1) {
         var dy = touchY - e.touches[0].clientY;
         touchY = e.touches[0].clientY;
         var lines = Math.round((dy * MULTIPLIER) / LINE_PX);
-        if (lines !== 0) { term.scrollLines(lines); moved = true; }
+        if (lines !== 0) term.scrollLines(lines);
         e.preventDefault();
         e.stopPropagation();
       }
     }, { capture: true, passive: false });
     screen.addEventListener("touchend", function () {
-      // Double-tap to jump to bottom
-      if (!moved) {
-        var now = Date.now();
-        if (now - lastTap < 350) { term.scrollToBottom(); lastTap = 0; }
-        else { lastTap = now; }
-      }
       touchY = null;
     }, { capture: true, passive: true });
   })();
@@ -228,13 +217,17 @@
     }, 80);
   });
 
+  // iOS keyboard: visualViewport shrinks but fixed elements don't.
+  // Resize terminal-wrap to fit above the keyboard and scroll to bottom.
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
-      if (layoutTimer) clearTimeout(layoutTimer);
-      layoutTimer = setTimeout(function () {
-        layoutTimer = null;
-        syncTerminalFrame();
-      }, 80);
+      var vv = window.visualViewport;
+      terminalWrap.style.height = (vv.height - 32) + "px";
+      term.scrollToBottom();
+    });
+    window.visualViewport.addEventListener("scroll", function () {
+      var vv = window.visualViewport;
+      terminalWrap.style.height = (vv.height - 32) + "px";
     });
   }
 
