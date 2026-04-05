@@ -58,6 +58,7 @@ pub mod broker;
 pub mod bus;
 
 pub mod agent;
+pub mod agent_cli;
 pub mod cdp_proxy;
 pub mod cli;
 pub mod commands;

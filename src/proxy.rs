@@ -8,11 +8,16 @@
 //!
 //! Detected automatically by peeking the first byte: 0x16 = TLS → reverse proxy,
 //! plaintext = CONNECT → MITM proxy.
+//!
+//! PTY-wrapped agents receive per-tool env overrides from
+//! [`crate::agent_cli::build_proxy_child_env`] (universal MITM + CA trust, optional
+//! `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`, and Codex `config.toml` injection).
 
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
@@ -23,21 +28,6 @@ fn proxy_dir() -> PathBuf {
         .join(".sidekar")
         .join("proxy")
 }
-
-/// Env vars the proxy sets on the child process.
-/// ANTHROPIC_BASE_URL uses http:// (plain) to avoid cert trust issues.
-/// HTTPS_PROXY/NODE_EXTRA_CA_CERTS kept for agents that respect them.
-pub const PROXY_ENV_VARS: &[&str] = &[
-    "ANTHROPIC_BASE_URL",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "NO_PROXY",
-    "no_proxy",
-    "NODE_EXTRA_CA_CERTS",
-    "SSL_CERT_FILE",
-    "REQUESTS_CA_BUNDLE",
-    "CODEX_CA_CERTIFICATE",
-];
 
 // ---------------------------------------------------------------------------
 // Codex config.toml ca-certificate injection
@@ -164,6 +154,11 @@ struct ProxyState {
     verbose: bool,
 }
 
+/// Ephemeral ports are reused quickly; parallel tests (or back-to-back `start()`)
+/// can get the same port. CA path must be unique per instance so one `cleanup_ca_file`
+/// does not delete another proxy's PEM.
+static CA_PEM_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Start the proxy. Returns `(port, ca_cert_path)`.
 pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -197,7 +192,8 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
-    let ca_pem_path = dir.join(format!("ca-{port}.pem"));
+    let seq = CA_PEM_SEQ.fetch_add(1, Ordering::Relaxed);
+    let ca_pem_path = dir.join(format!("ca-{port}-{seq}.pem"));
     std::fs::write(&ca_pem_path, ca_cert.pem())?;
 
     let state = Arc::new(ProxyState {
@@ -511,7 +507,8 @@ mod tests {
 
     /// Build a client that uses CONNECT proxy (MITM mode).
     async fn mitm_client(port: u16, ca_path: &std::path::Path) -> reqwest::Client {
-        let ca_pem = std::fs::read(ca_path).expect("read ca.pem");
+        let ca_pem = std::fs::read(ca_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", ca_path.display()));
         let ca_cert = reqwest::Certificate::from_pem(&ca_pem).expect("parse ca cert");
         reqwest::Client::builder()
             .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{port}")).unwrap())
