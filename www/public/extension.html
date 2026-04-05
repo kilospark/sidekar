@@ -34,6 +34,7 @@
   --page-line: #262626;
   --page-panel: #111111;
   --page-accent: #f5f5f5;
+  --page-accent-ink: #13221e;
   --page-accent-2: #d4d4d4;
 }
 
@@ -44,6 +45,7 @@ html.light {
   --page-line: #d4d4d4;
   --page-panel: #f5f5f5;
   --page-accent: #111111;
+  --page-accent-ink: #ffffff;
   --page-accent-2: #737373;
 }
 
@@ -55,6 +57,7 @@ html.light {
     --page-line: #d4d4d4;
     --page-panel: #f5f5f5;
     --page-accent: #111111;
+    --page-accent-ink: #ffffff;
     --page-accent-2: #737373;
   }
 }
@@ -127,13 +130,9 @@ h1 {
 }
 
 .btn-primary {
-  color: #13221e;
+  color: var(--page-accent-ink);
   background: var(--page-accent);
   border-color: var(--page-accent);
-}
-
-html.light .btn-primary {
-  color: #ffffff;
 }
 
 .btn-secondary {
