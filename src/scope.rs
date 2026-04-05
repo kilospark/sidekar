@@ -30,6 +30,19 @@ pub fn parse_stored_scope(value: &str) -> Result<&'static str> {
 }
 
 pub fn resolve_project_name(cwd: Option<&str>) -> String {
+    let path = project_root_path(cwd);
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "default".to_string())
+}
+
+pub fn resolve_project_root(cwd: Option<&str>) -> String {
+    project_root_path(cwd).to_string_lossy().to_string()
+}
+
+fn project_root_path(cwd: Option<&str>) -> PathBuf {
     let path = cwd
         .map(PathBuf::from)
         .or_else(|| env::current_dir().ok())
@@ -45,14 +58,25 @@ pub fn resolve_project_name(cwd: Option<&str>) -> String {
     {
         if output.status.success() {
             let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Some(name) = Path::new(&top).file_name().and_then(|value| value.to_str()) {
-                return name.to_string();
+            if !top.is_empty() {
+                let top_path = PathBuf::from(top);
+                return fs::canonicalize(&top_path).unwrap_or(top_path);
             }
         }
     }
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "default".to_string())
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_root_falls_back_to_canonical_cwd() {
+        let tmp = env::temp_dir().join("sidekar-scope-project-root-test");
+        fs::create_dir_all(&tmp).unwrap();
+        let expected = fs::canonicalize(&tmp).unwrap();
+        assert_eq!(resolve_project_root(tmp.to_str()), expected.to_string_lossy());
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

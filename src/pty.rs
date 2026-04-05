@@ -367,6 +367,9 @@ fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
 
 /// Launch an agent inside a sidekar-owned PTY.
 pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool>, proxy_override: Option<bool>) -> Result<()> {
+    // Ensure rustls crypto provider is available before any WSS connection (relay tunnel).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let (path, c_path) = resolve_agent(agent)?;
     let enriched_args = enrich_args_with_startup(agent, args);
     let c_args = prepare_args(&c_path, &enriched_args)?;

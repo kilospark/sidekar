@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>sidekar: the sidecar for AI agents</title>
-<meta name="description" content="Sidekar is a coordination and automation substrate for agent CLIs. It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.">
+<meta name="description" content="Sidekar is a coordination and automation substrate for agent CLIs. It adds browser and page automation, data capture, desktop automation, agent coordination, local memory and tasks, background jobs, encrypted secrets, and extension control without replacing the agent you already use.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -589,7 +589,7 @@ html.light .primary-cta {
         Sidekar runs alongside Claude Code, Codex, Cursor, Copilot, Gemini CLI, and other agent CLIs.<br>
         It is not an orchestrator, harness, or agent OS.<br>
         Sidekar is a power packed binary and a skill. That's it.<br>
-        It adds browser automation, desktop automation, a messaging bus, and a cron scheduler without replacing the agent you already use.
+        It adds browser and page automation, data capture, desktop automation, agent coordination, local memory and tasks, background jobs, encrypted secrets, and extension control without replacing the agent you already use.
       </p>
       <div class="hero-actions">
         <a href="#setup" class="primary-cta">Install the CLI</a>
@@ -597,41 +597,41 @@ html.light .primary-cta {
       </div>
       <div class="hero-notes">
         <span>No MCP</span>
-        <span>Web terminal from any browser</span>
-        <span>Simple, clean CLI</span>
+        <span>Works with your existing agent CLI</span>
+        <span>Also runs as a standalone REPL agent</span>
       </div>
     </div>
     <div class="hero-panel">
       <div class="surface-grid">
         <div class="surface-card">
-          <div class="surface-badge">Messaging bus</div>
-          <h3>Multi-agent chat</h3>
-          <p>Your agents can collaborate with other agents on the same machine or across machines securely. Agents are smart. Let them cook!</p>
-        </div>
-        <div class="surface-card">
           <div class="surface-badge">Browser</div>
-          <h3>Your everyday Chrome</h3>
-          <p>Drive Chrome directly from the CLI. Read pages, click through flows, and inspect the browser without bolting on another protocol layer.</p>
+          <h3>One browser surface, end to end</h3>
+          <p>Launch or connect to Chrome, read pages, inspect DOM and accessibility trees, click and type through flows, capture screenshots and PDFs, inspect cookies and network traffic, and work across tabs and frames.</p>
         </div>
         <div class="surface-card">
           <div class="surface-badge">Desktop</div>
           <h3>macOS UI access</h3>
-          <p>Some work happens outside the browser. Sidekar can inspect native windows, click controls, and finish the parts of the job that live in desktop apps and system dialogs.</p>
+          <p>Inspect native windows, take desktop screenshots, click controls, press keys, paste text, launch apps, and finish work that lives outside the browser.</p>
         </div>
         <div class="surface-card">
-          <div class="surface-badge">Background</div>
-          <h3>Keep watch</h3>
-          <p>Give agents work that keeps running after the prompt ends. Schedule recurring jobs, watch for changes, and send the result back when it is ready.</p>
+          <div class="surface-badge">Agent</div>
+          <h3>Coordinate and keep context local</h3>
+          <p>Use the bus, durable memory, task graph, repo pack/tree/changes/actions, and output compaction so agents can collaborate without losing local context.</p>
+        </div>
+        <div class="surface-card">
+          <div class="surface-badge">Jobs + Account</div>
+          <h3>Run in the background, keep secrets local</h3>
+          <p>Schedule recurring prompts and tool runs, monitor tabs for changes, authenticate devices, manage sessions, and store encrypted secrets and TOTP codes.</p>
         </div>
         <div class="surface-card">
           <div class="surface-badge">Web terminal</div>
-          <h3>Access agents from anywhere</h3>
-          <p>Log in to Sidekar and open the web terminal from any browser to check in on your agents when you are away from your machine.</p>
+          <h3>Check in from anywhere</h3>
+          <p>Sign in to Sidekar and use the relay and web terminal to view active agent sessions remotely without replacing the local PTY as the source of truth.</p>
         </div>
         <div class="surface-card">
-          <div class="surface-badge">Secure</div>
-          <h3>Keep secrets local</h3>
-          <p>Secrets and TOTP codes stay encrypted on your machine. Sidekar keeps the trust boundary explicit instead of hiding it behind a hosted control plane.</p>
+          <div class="surface-badge">System + Extension</div>
+          <h3>Own the whole runtime</h3>
+          <p>Manage the daemon, config, updates, event log, skill install, and Chrome extension bridge from the same binary instead of scattering setup across services.</p>
         </div>
       </div>
     </div>
@@ -648,8 +648,8 @@ html.light .primary-cta {
       </div>
       <div class="mini-step">
         <div class="num">Step 2</div>
-        <strong>Log in locally (optional)</strong>
-        <p><code>sidekar login</code> stores the CLI device token, enables the web terminal and relay features, and installs the native messaging host.</p>
+        <strong>Authenticate this device (optional)</strong>
+        <p><code>sidekar device login</code> stores the device token and unlocks account-backed features like the relay tunnel, web terminal, and session management.</p>
       </div>
       <div class="mini-step">
         <div class="num">Step 3</div>
@@ -658,8 +658,42 @@ html.light .primary-cta {
       </div>
       <div class="mini-step">
         <div class="num">Step 4</div>
-        <strong>Launch your agent</strong>
-        <p>Launch your agent CLI as usual by just prefixing sidekar: <code>sidekar &lt;agent&gt; [args]</code>.</p>
+        <strong>Launch your agent or use Sidekar directly</strong>
+        <p>Wrap your usual agent with <code>sidekar &lt;agent&gt; [args]</code>, or run <code>sidekar repl -c &lt;credential&gt; -m &lt;model&gt;</code> for Sidekar's standalone LLM agent mode.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="capabilities">
+  <div class="container section-shell">
+    <div class="section-header">
+      <div class="label">Product pillars</div>
+      <div>
+        <h2>One binary, four main buckets, one supporting layer.</h2>
+        <p>At the product level, Sidekar is browser automation, desktop automation, agent coordination, and background automation. Account, system, and extension commands support those pillars.</p>
+      </div>
+    </div>
+    <div class="surface-grid">
+      <div class="surface-card">
+        <div class="surface-badge">Browser</div>
+        <p>The CLI splits this into Browser, Page, Interact, and Data commands, but it is one capability surface: launch and control Chrome, read pages, interact with real UI, and inspect page state.</p>
+      </div>
+      <div class="surface-card">
+        <div class="surface-badge">Desktop</div>
+        <p>Use macOS desktop automation for screenshots, app and window inspection, clicks, keypresses, text input, paste, launch, activate, and quit.</p>
+      </div>
+      <div class="surface-card">
+        <div class="surface-badge">Agent</div>
+        <p>Use the bus, local memory, task graph, agent session history, repo context and actions, and output compaction to keep collaboration local and durable.</p>
+      </div>
+      <div class="surface-card">
+        <div class="surface-badge">Background</div>
+        <p>Create scheduled jobs with <code>cron</code>, recurring prompt loops with <code>loop</code>, and reactive tab monitoring with <code>monitor</code>.</p>
+      </div>
+      <div class="surface-card">
+        <div class="surface-badge">Supporting layer</div>
+        <p>Device auth, account sessions, encrypted KV and TOTP, daemon and config management, the local event log, self-update, skill installation, extension control, and <code>sidekar repl</code> support the four main pillars.</p>
       </div>
     </div>
   </div>
@@ -680,8 +714,8 @@ html.light .primary-cta {
         <p>One agent edits the code, another opens the actual app in Chrome, and a third watches staging. The bus passes results back without you manually copying context between terminals.</p>
         <ul>
           <li><code>sidekar codex</code> builds the change</li>
-          <li><code>sidekar ext read</code> checks the real page</li>
-          <li><code>bus_send</code> hands off to QA</li>
+          <li><code>sidekar read</code> or <code>sidekar ext read</code> checks the real page</li>
+          <li><code>sidekar bus send</code> hands off to QA</li>
         </ul>
       </article>
       <article class="workflow-card">
@@ -694,11 +728,20 @@ html.light .primary-cta {
         </ul>
       </article>
       <article class="workflow-card">
+        <h3>Work from local context</h3>
+        <p>Keep project memory, task dependencies, repo context, and compact action output in the same local binary so agents can resume work without rebuilding context from scratch.</p>
+        <ul>
+          <li><code>sidekar memory context</code> loads scoped memory</li>
+          <li><code>sidekar tasks list --ready</code> shows the next unblocked work</li>
+          <li><code>sidekar repo actions</code> discovers likely project commands</li>
+        </ul>
+      </article>
+      <article class="workflow-card">
         <h3>Watch the background</h3>
         <p>Keep long-running checks alive after the prompt: watch a dashboard, poll a page, or schedule work and route the result back into the same agent bus.</p>
         <ul>
           <li>Monitors for reactive alerts</li>
-          <li>Cron for recurring checks</li>
+          <li>Cron and loop for recurring checks</li>
           <li>Results delivered through the bus</li>
         </ul>
       </article>
@@ -720,15 +763,6 @@ html.light .primary-cta {
         <h3>What stays local</h3>
         <p>Browser automation, desktop automation, local bus delivery, encrypted secret storage, and TOTP generation happen on your machine. The extension talks to a local bridge on <code>127.0.0.1</code>. It does not browse on its own and it does not act until your local Sidekar process tells it to.</p>
         <p>Remote features exist for authentication, dashboards, and relay sessions. They are a separate layer, and this site spells out that boundary instead of hiding it in docs.</p>
-      </div>
-      <div class="trust-list">
-        <h3>What the extension page answers</h3>
-        <ul>
-          <li>How the extension talks to the local Sidekar bridge.</li>
-          <li>Why native messaging and broad host access are required.</li>
-          <li>What stays local and what touches sidekar.dev.</li>
-          <li>Where to get support and how to revoke access.</li>
-        </ul>
       </div>
     </div>
     <div class="cta-band">

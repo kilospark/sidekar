@@ -1,8 +1,8 @@
 # sidekar: the sidecar for AI agents
 
-Sidekar is a coordination and automation substrate for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds a local message bus with optional cross-machine relay, token-efficient browser automation through a dedicated CLI and optional Chrome extension, macOS desktop automation, background monitoring and cron, and encrypted key-value storage with TOTP. The point is simple: equip autonomous agents with shared surfaces to communicate and act through, without taking over their control loop.
+Sidekar is a coordination and automation substrate for AI CLI agents like Claude Code, Codex, Cursor, Copilot, and Gemini CLI. It adds browser and page automation, data capture, macOS desktop automation, a local message bus with optional cross-machine relay, local memory and task tracking, repo context, background jobs, encrypted key-value storage with TOTP, and Chrome extension control. The point is simple: equip autonomous agents with shared surfaces to communicate and act through, without taking over their control loop.
 
-Sidekar is not an agent orchestrator, not an agent harness, and not an agent OS. It runs alongside your existing agent; it does not replace it.
+Sidekar is not an agent orchestrator, not an agent harness, and not an agent OS. It runs alongside your existing agent; it does not replace it. It can also run directly as `sidekar repl`, a standalone LLM agent with streaming, tool calling, and session persistence.
 
 Works with Claude Code, Codex, Cursor, Copilot, Gemini CLI, OpenCode, and other agents through the bundled skill (`sidekar install`) or the [Vercel skills registry](https://github.com/vercel-labs/skills).
 
@@ -50,9 +50,11 @@ Or copy `SKILL.md` from this repo into your agent's skills folder (see output of
 
 2. **Chrome extension (optional).** To drive your everyday Chrome profile (same cookies and logins as the window you already use), load the MV3 extension from the `extension/` directory and click **Login with GitHub** in the popup. The bridge starts automatically. See [`extension/README.md`](extension/README.md) for details.
 
-3. **`sidekar login` (optional).** Run `sidekar login` to authenticate with sidekar.dev. This unlocks the relay tunnel, the web terminal, and the dashboard -- everything that connects agents and sessions across machines.
+3. **`sidekar device login` (optional).** Run `sidekar device login` to authenticate this machine with sidekar.dev. This unlocks the relay tunnel, the web terminal, account session management, and account-backed encryption state.
 
 4. **Launch an agent with sidekar.** Run `sidekar <agent> [args...]` where `<agent>` is any CLI on your `PATH` (e.g. `sidekar claude`, `sidekar codex`). Sidekar wraps the process in a PTY, registers it on the bus, opens a tunnel to the relay, and wires up browser and messaging for that session.
+
+   Or run `sidekar repl -c <credential> -m <model>` to use Sidekar's standalone REPL agent mode directly.
 
 ## Usage
 
@@ -69,33 +71,37 @@ Or describe any goal; the agent will figure out the steps.
 
 ## What it does
 
-Six capability pillars. Everything else (web search, multi-page reads, batch runs) is a use case on top of them.
+The repo context frames Sidekar around four product pillars. The rest of the CLI surface builds on top of them.
 
-### 1. Agent communication bus
+### 1. Browser automation
 
-Agents find each other and coordinate through a shared message bus. On a single machine, messages flow through a SQLite broker. Across machines, a persistent WSS tunnel to `relay.sidekar.dev` carries bus traffic alongside PTY data on the same connection. From the agent's perspective there's no difference -- `bus send` delivers locally or remotely depending on where the recipient is, and `bus who` lists everyone reachable.
+Drive Chrome directly over CDP: launch or connect, navigate, manage tabs and frames, read pages, inspect DOM and accessibility trees, find elements, resolve links, capture screenshots and PDFs, search the web, and read multiple URLs in parallel. The optional Chrome extension exposes a second control surface for your everyday profile, including browser history, active context, and DOM watchers.
 
-Messages use a typed envelope protocol with four kinds: **request**, **response**, **fyi**, and **handoff**. Each carries a message ID, timestamp, and threading info. Unanswered requests trigger automatic nudge reminders. Agents get auto-assigned nicknames that persist per project across restarts.
+### 2. Desktop automation
 
-### 2. Web terminal
+Control native macOS applications via the Accessibility API: inspect apps and windows, click UI elements, press keys, type and paste text, launch and quit apps, and capture desktop screenshots. This covers the parts of real workflows that live outside CDP-driven browser pages.
 
-Every PTY session streams live to [sidekar.dev/terminal](https://sidekar.dev/terminal). Open it from your phone, a tablet, or any browser and check in on your agents in real time. The relay carries the raw PTY byte stream and the browser renders it with xterm.js-style scrollback, but the web terminal is a best-effort remote viewer optimized for usability, not a promise of bit-for-bit equivalence with every local terminal and agent UI combination. The local PTY remains the source of truth. Combined with the relay tunnel, this means you can start an agent on your desktop, walk away, and monitor or lightly interact with it from anywhere.
+### 3. Inter-agent communication and orchestration
 
-### 3. Browser automation (CDP + Chrome extension)
+Agents coordinate through a local SQLite-backed bus with optional relay support across machines. Sidekar also keeps useful context local: durable memory, task dependencies, local agent session history, repo packing and change summaries, discovered project actions, and output compaction for noisy command results.
 
-Direct Chrome DevTools Protocol over WebSocket -- navigate, click, type, fill forms, handle dialogs, capture network traffic, screenshot, and export PDFs. This is your actual Chrome with your cookies and logins, not a sandboxed Chromium instance. The optional **Chrome extension** bridges the same commands into your everyday browser profile for sites that need in-page context. Page perception is token-efficient: compact summaries instead of raw DOM dumps.
+### 4. Background automation
 
-### 4. Desktop automation (macOS)
+Long-running work stays in the binary. `monitor` watches tabs for changes. `cron` schedules tool runs, prompts, or shell commands. `loop` creates recurring prompt jobs tied back to the owning agent session. Remote relay and the web terminal layer sit on top of this so you can check in on a running PTY from another browser when needed.
 
-Control native applications via the macOS Accessibility API: find and click UI elements, desktop screenshots, launch and quit apps, list windows. Runs without Chrome when you need native UI, including permission dialogs and surfaces outside CDP-driven pages.
+### Product framing vs. CLI grouping
 
-### 5. Background automation
+At the product level, the main buckets are still the four pillars above. The CLI is more granular for discoverability.
 
-**Monitor:** watch tab titles and favicons, debounced, with notifications routed through the bus. **Cron:** run tools on a schedule (standard cron expressions), persist jobs in SQLite, deliver results to agents. Together they cover unattended and reactive work.
+| Product bucket | CLI groups |
+|------|-------------|
+| `Browser` | `Browser`, `Page`, `Interact`, `Data` |
+| `Desktop` | `Desktop` |
+| `Agent` | `Agent` |
+| `Background` | `monitor` under `Agent`, plus `Jobs` (`cron`, `loop`) |
+| Supporting layer | `Account` and `System`, plus the extension surface under `ext` and the standalone `repl` mode |
 
-### 6. Credentials and encrypted storage
-
-This is what closes the loop on fully autonomous agents. The **encrypted KV store** holds usernames, passwords, API keys, and any other secrets -- AES-256-GCM encrypted at rest. **TOTP** stores 2FA secrets and generates time-based codes on demand. Together with browser automation, an agent can log in to any service end-to-end: pull credentials from KV, generate a TOTP code, fill the login form, handle MFA, and proceed -- without secrets ever appearing in chat history or tool output. **Error log** (`sidekar errors`) surfaces recent failures for debugging.
+The browser bucket is intentionally broad: the help output splits launch/navigation, page reading, interaction, and page-state inspection into separate headings, but those are one browser automation surface, not four different product pillars. `repl` is different: it is not a pillar itself, but a top-level way to access Sidekar as a standalone agent.
 
 ## How it works
 
@@ -146,231 +152,88 @@ sidekar launch --headless                # Headless mode (no visible window)
 
 Each profile runs its own browser process. The default profile is persistent and shared. Custom profiles can be killed with `kill`, which closes the browser and cleans up the profile directory.
 
-## CLI
+## Selected commands
 
-### Agent bus
-
-```bash
-sidekar bus who                       # List agents on your channel (local + relay)
-sidekar bus send <to> <message>       # Send a message to another agent
-sidekar bus done <next> <summary> <request> # Hand off to another agent
-```
-
-### PTY wrapper (recommended for multi-agent)
+### PTY wrapper and agent coordination
 
 ```bash
-sidekar claude [args]           # Launch Claude Code in a sidekar PTY
-sidekar codex [args]            # Launch Codex in a sidekar PTY
-sidekar copilot [args]          # Launch any agent with bus integration
+sidekar claude [args]                     # Launch Claude Code in a sidekar PTY
+sidekar codex [args]                      # Launch Codex in a sidekar PTY
+sidekar repl -c claude -m claude-sonnet-4-5-20250514
+sidekar bus who                           # List agents on your channel
+sidekar bus send claude-2 "Review the PR" # Send a request or FYI
+sidekar memory context                    # Show scoped startup memory brief
+sidekar tasks list --ready                # Show unblocked tasks
+sidekar repo actions                      # Discover likely project commands
+sidekar monitor start all                 # Watch tabs for title/favicon changes
 ```
 
-Each agent gets automatic bus registration, a persistent nickname, a relay tunnel, and its PTY output streamed to the [web terminal](https://sidekar.dev/terminal).
+Each wrapped agent gets bus registration, a persistent nickname, and optional relay/web-terminal integration.
 
-### Browser control
+### Browser, page, and interaction
 
 ```bash
-sidekar launch                  # Start browser, create session
-sidekar connect                 # Create new session on existing browser
-sidekar navigate <url>          # Go to URL (auto-dismisses cookie banners)
-sidekar back / forward / reload # Navigation history
-sidekar activate                # Bring browser window to front (macOS)
-sidekar minimize                # Minimize browser window (macOS)
-sidekar kill                    # Kill custom profile session
+sidekar launch                            # Start Chrome and create a session
+sidekar connect                           # Attach to an already-running Chrome
+sidekar navigate https://example.com      # Navigate to a URL
+sidekar read                              # Reader-mode extraction
+sidekar text                              # Full page text with interactive refs
+sidekar observe                           # Ready-to-use interaction commands
+sidekar search "best ramen near me"       # Search in-browser and extract results
+sidekar read-urls https://a.com https://b.com
+sidekar screenshot --full                 # Full-page screenshot
+sidekar click 12                          # Click by ref after text/observe/ax-tree
+sidekar type "#email" "me@example.com"    # Type into a field
+sidekar fill "#email" "me@example.com" "#password" "secret"
+sidekar wait-for "button[type=submit]"    # Wait for an element
+sidekar eval "document.title"             # Run JavaScript in page context
 ```
 
-### Page reading
+### Data capture and page state
 
 ```bash
-sidekar read [selector]         # Reader-mode text extraction (strips nav/sidebar/ads)
-sidekar text [selector]         # Full page in reading order with interactive refs
-sidekar dom [selector]          # Get compact DOM HTML
-sidekar dom --tokens=N          # Truncate DOM to ~N tokens
-sidekar ax-tree                 # Full accessibility tree (auto-capped at ~4k tokens)
-sidekar ax-tree -i              # Interactive elements with ref numbers
-sidekar ax-tree -i --diff       # Show only changes since last snapshot
-sidekar observe                 # Interactive elements as ready-to-use commands
-sidekar find <query>            # Find element by description
-sidekar screenshot              # Capture screenshot (default JPEG, 800px wide)
-sidekar screenshot --full       # Full page screenshot
-sidekar screenshot --ref=N      # Screenshot a specific element by ref
-sidekar pdf [path]              # Save page as PDF
+sidekar console                           # Show recent console output
+sidekar network capture 10                # Capture XHR/fetch requests
+sidekar cookies                           # List cookies for the current page
+sidekar storage get                       # Show localStorage
+sidekar block images fonts                # Block selected resource types
+sidekar viewport desktop                  # Set a viewport preset
+sidekar download list                     # Show tracked downloads
+sidekar service-workers list              # List service workers
+sidekar pack data.json                    # Compact JSON, YAML, or CSV for agent use
+sidekar unpack packed.txt                 # Restore packed structured data
 ```
 
-### Interaction
+### Desktop automation and extension bridge
 
 ```bash
-sidekar click <sel|x,y|--text>  # Click by selector, coordinates, or text match
-sidekar click --mode=double <sel> # Double-click
-sidekar click --mode=right <sel>  # Right-click (context menu)
-sidekar click --mode=human <sel>  # Click with human-like Bezier mouse movement
-sidekar hover <sel>             # Hover (tooltips/menus)
-sidekar focus <selector>        # Focus an element without clicking
-sidekar clear <selector>        # Clear an input field
-sidekar type <selector> <text>  # Type into an input (focuses first, verifies)
-sidekar type --human <sel> <text> # Type with variable delays
-sidekar keyboard <text>         # Type at current caret position (no selector)
-sidekar insert-text <text>      # Insert text via CDP Input.insertText (fast)
-sidekar paste <text>            # Paste via clipboard event
-sidekar clipboard --html <html> # Paste rich HTML via real clipboard (Google Docs, Notion)
-sidekar fill <fields_json>      # Fill multiple form fields at once
-sidekar select <sel> <value>    # Select option(s) from a dropdown
-sidekar upload <sel> <file>     # Upload file(s) to a file input
-sidekar drag <from> <to>        # Drag from one selector to another
-sidekar dialog accept|dismiss   # Handle alert/confirm/prompt dialogs
-sidekar press <key>             # Press a key or combo (Enter, Ctrl+A, Meta+C)
-sidekar scroll <target> [px]    # Scroll: up, down, top, bottom, or selector
+sidekar desktop apps
+sidekar desktop screenshot --app Safari
+sidekar desktop click --app Finder "New Folder"
+sidekar desktop press Meta+Space
+sidekar ext tabs
+sidekar ext context
+sidekar ext history "terraform vpc"
+sidekar ext watch "span.notification-count"
 ```
 
-### Waiting
+### Jobs, account, and system
 
 ```bash
-sidekar wait-for <sel> [ms]     # Wait for element to appear (default 5s)
-sidekar wait-for-nav [ms]       # Wait for navigation to complete (default 10s)
+sidekar cron list
+sidekar cron create "*/5 * * * *" --prompt="check deployment status"
+sidekar loop 10m "summarize recent errors" --once
+sidekar device login
+sidekar session list
+sidekar kv set github_token abc123
+sidekar totp list
+sidekar daemon status
+sidekar event list --level=error 100
+sidekar install
+sidekar update
 ```
 
-### Web research
-
-```bash
-sidekar search <query>          # Search the web (Google by default)
-sidekar search --engine=bing <q> # Search via Bing, DuckDuckGo, or custom URL
-sidekar read-urls <url1> <url2> # Read multiple URLs in parallel
-sidekar resolve <sel>           # Get link/form target URL without clicking
-```
-
-### Tabs and frames
-
-```bash
-sidekar tabs                    # List this session's tabs
-sidekar tab <id>                # Switch to a session-owned tab
-sidekar new-tab [url]           # Open a new tab in this session
-sidekar close                   # Close current tab
-sidekar frames                  # List all frames/iframes
-sidekar frame <id|sel>          # Switch to a frame
-sidekar frame main              # Return to main frame
-```
-
-### Developer tools
-
-```bash
-sidekar eval <js>               # Run JavaScript in page context
-sidekar console                 # Show recent console output
-sidekar console errors          # Show only JS errors
-sidekar cookies                 # List cookies for current page
-sidekar cookies set <n> <v>     # Set a cookie
-sidekar cookies delete <name>   # Delete a cookie
-sidekar cookies clear           # Clear all cookies
-sidekar storage get [key]       # Show localStorage/sessionStorage
-sidekar storage set <key> <val> # Set a storage item
-sidekar storage clear [target]  # Clear storage (local, session, all, everything)
-sidekar network capture [secs]  # Capture XHR/fetch requests
-sidekar network show [filter]   # Re-display last capture
-sidekar service-workers list        # List service workers
-sidekar service-workers unregister  # Unregister all service workers
-```
-
-### Page environment
-
-```bash
-sidekar block <pattern>         # Block requests: images, css, fonts, media, scripts, or URL
-sidekar block --ads             # Block ads, analytics, and tracking (40+ patterns)
-sidekar block off               # Disable request blocking
-sidekar viewport <preset|w h>   # Set viewport (mobile, tablet, desktop, iphone, ipad)
-sidekar zoom [level]            # Zoom page (in, out, 50, reset)
-sidekar grid [spec]             # Overlay coordinate grid (off to remove)
-sidekar media dark|light|print  # Emulate media features
-sidekar animations pause|resume # Control animation playback
-sidekar security ignore-certs   # Accept self-signed certificates
-sidekar download path [dir]     # Set download directory
-```
-
-### Desktop automation (macOS)
-
-```bash
-sidekar desktop apps             # List running applications
-sidekar desktop windows --app X  # List windows for an app
-sidekar desktop find --app X <q> # Search UI elements by text
-sidekar desktop click --app X <q> # Click a UI element by text match
-sidekar desktop screenshot       # Capture full desktop or specific app
-sidekar desktop launch <app>     # Launch an application
-sidekar desktop activate --app X # Bring app to foreground
-sidekar desktop quit --app X     # Quit an app gracefully
-```
-
-### Monitoring
-
-```bash
-sidekar monitor start <tabs>    # Watch tabs for title/favicon changes
-sidekar monitor stop            # Stop watching
-sidekar monitor status          # Show watcher state
-```
-
-### Scheduling
-
-```bash
-sidekar cron create             # Create a recurring scheduled job
-sidekar cron list               # List active cron jobs
-sidekar cron delete <id>        # Delete a cron job
-```
-
-Jobs execute sidekar tools on a cron schedule and deliver results via the agent bus. Persisted in SQLite across session restarts.
-
-### TOTP (two-factor codes)
-
-```bash
-sidekar totp add <service> <account> <secret>  # Store a TOTP secret (base32)
-sidekar totp list                               # List stored TOTP entries
-sidekar totp get <service> <account>            # Print current 6-digit code only
-sidekar totp remove <id>                        # Delete a stored secret
-```
-
-Useful for automated login flows that require two-factor authentication. Secrets are stored encrypted on disk.
-
-### KV store (encrypted key-value storage)
-
-```bash
-sidekar kv set <key> <value>    # Store a value
-sidekar kv get <key>            # Retrieve a value
-sidekar kv list                 # List all keys
-sidekar kv delete <key>         # Delete a key
-```
-
-Values are encrypted at rest (AES-256-GCM) when logged in to sidekar.dev.
-
-Project-scoped keys are tied to the current working directory. Global keys are shared across all projects. Both persist across sessions in SQLite.
-
-### Error log
-
-```bash
-sidekar errors                  # Show recent errors (default 10)
-sidekar errors 25               # Show last 25 errors
-```
-
-Surfaces recent sidekar errors for debugging failed commands or transport issues.
-
-### Batch execution
-
-```bash
-sidekar batch '<json>'          # Execute multiple actions sequentially
-```
-
-### Session management
-
-```bash
-sidekar lock [seconds]          # Lock tab for exclusive access (default 300s)
-sidekar unlock                  # Release tab lock
-```
-
-### Configuration
-
-```bash
-sidekar config get              # Show current config
-sidekar config set <key> <val>  # Set config (telemetry, feedback, browser, auto_update, cdp_timeout_secs)
-sidekar install                 # Install SKILL.md into detected agent skill directories
-sidekar update                  # Check for and apply updates
-sidekar feedback <rating> [txt] # Send feedback (1-5)
-```
-
-**Ref-based targeting:** After `ax-tree -i`, `observe`, or `text`, use the ref numbers directly as selectors (`click 1`, `type 3 hello`). Cached per URL with 48-hour TTL.
+**Ref-based targeting:** after `text`, `observe`, or `ax-tree`, use ref numbers directly as selectors (`click 1`, `type 3 hello`).
 
 ## Architecture
 
@@ -386,8 +249,9 @@ sidekar feedback <rating> [txt] # Send feedback (1-5)
 │        │              │              │                        │
 │  ┌─────▼──────────────▼──────────────▼──────────────────────┐ │
 │  │              Command Dispatch                             │ │
-│  │  core · data · interaction · session · desktop            │ │
-│  │  batch · monitor · cron · totp · kv · errors              │ │
+│  │  browser/page · interact/data · desktop                   │ │
+│  │  bus · memory · tasks · repo · monitor · cron · loop      │ │
+│  │  device/session · kv/totp · daemon/config/event · ext     │ │
 │  └─────┬──────────────┬──────────────┬──────────────────────┘ │
 │        │              │              │                        │
 │  ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼────────────┐          │
@@ -421,7 +285,7 @@ sidekar feedback <rating> [txt] # Send feedback (1-5)
 ```
 
 - **Skill installer** (`skill.rs`): Copies `SKILL.md` into detected agent skill directories; `sidekar install` entry point
-- **CLI** (`main.rs` -> `commands/mod.rs`): Command dispatch for browser, desktop, bus, monitor, cron, etc.
+- **CLI** (`main.rs` -> `commands/mod.rs`): Command dispatch for browser/page/data, desktop, bus, memory/tasks/repo, monitor, cron/loop, account, and system surfaces
 - **PTY Wrapper** (`pty.rs`): Fork+exec agents in a PTY, register on bus, open WSS tunnel, bridge I/O, signal forwarding
 - **Agent Bus** (`bus.rs` + `broker.rs` + `message.rs`): SQLite-backed agent registry, typed envelope protocol (request/response/fyi/handoff), delivery via SQLite message queue, nudge timers, timeout tracking
 - **Transport** (`transport.rs`): `Broker` for local delivery (SQLite queue), `RelayHttp` for cross-machine delivery (HTTPS POST to relay, fanned out to recipient's WSS tunnel)
@@ -436,7 +300,7 @@ Several tools give AI agents browser control on top of Playwright: [agent-browse
 
 |  | **sidekar** | **Playwright-based tools** |
 |--|-----------|--------------------------|
-| **What it is** | Rust binary: CDP + extension bridge, desktop, agent bus, monitor/cron | SDK / CLI wrapping Playwright (often via MCP) |
+| **What it is** | Rust binary: CDP + extension bridge, desktop, agent bus, local memory/tasks, background jobs | SDK / CLI wrapping Playwright (often via MCP) |
 | **Architecture** | Direct CDP WebSocket to your Chrome | CLI/SDK -> IPC -> Playwright -> bundled Chromium |
 | **Install size** | Single binary, zero deps | ~200 MB+ (node_modules + Chromium download) |
 | **Uses your browser** | Yes - your Chrome, your cookies, your logins | No - launches bundled Chromium with clean state |
