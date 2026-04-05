@@ -571,6 +571,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             eprintln!("  watch <selector>             Watch element, stream changes to bus");
             eprintln!("  unwatch [watchId]            Remove watcher(s)");
             eprintln!("  watchers                     List active watchers");
+            eprintln!("  dev-extract                  Extract embedded extension ZIP");
             eprintln!();
             eprintln!("Management:");
             eprintln!("  status                       Connection status");
