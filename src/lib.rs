@@ -77,6 +77,7 @@ pub mod proxy;
 pub mod pty;
 pub mod repl;
 pub mod repo;
+pub mod runtime;
 pub mod rtk;
 pub mod scope;
 pub mod scripts;
@@ -141,6 +142,8 @@ pub struct AppContext {
     pub override_tab_id: Option<String>,
     /// Browser launched in headless mode — skip window management operations.
     pub headless: bool,
+    /// Agent identity when running inside a PTY wrapper or equivalent isolated context.
+    pub agent_name: Option<String>,
 }
 
 impl AppContext {
@@ -167,6 +170,7 @@ impl AppContext {
             current_profile: "default".to_string(),
             override_tab_id: None,
             headless: false,
+            agent_name: crate::runtime::agent_name(),
         };
         // Ensure persistent data directories exist
         if let Err(e) = fs::create_dir_all(ctx.data_dir()) {
@@ -197,11 +201,9 @@ impl AppContext {
     pub fn last_session_file(&self) -> PathBuf {
         // Inside a PTY, use a per-agent session file so multiple agents
         // don't clobber each other's session pointers.
-        if let Ok(agent_name) = env::var("SIDEKAR_AGENT_NAME") {
-            if !agent_name.is_empty() {
-                let safe_name = sanitize_for_filename(&agent_name);
-                return self.data_dir().join(format!("last-session-{safe_name}"));
-            }
+        if let Some(agent_name) = self.agent_name.as_deref() {
+            let safe_name = sanitize_for_filename(agent_name);
+            return self.data_dir().join(format!("last-session-{safe_name}"));
         }
         self.data_dir().join("last-session")
     }
@@ -210,9 +212,7 @@ impl AppContext {
     /// When true, session discovery must NEVER fall back to the generic
     /// last-session file — that would connect to another agent's browser.
     pub fn is_named_agent(&self) -> bool {
-        env::var("SIDEKAR_AGENT_NAME")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
+        self.agent_name.is_some()
     }
 
     pub fn session_state_file(&self, session_id: &str) -> PathBuf {
@@ -2926,7 +2926,7 @@ sidekar ext <subcommand> [args...]
 sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--verbose]
 
   Interactive LLM agent with streaming, tool calling, and session persistence.
-  Requires explicit provider credentials (-c) and model (-m), or SIDEKAR_MODEL env.
+  Credential and model may be supplied up front or selected interactively.
 
   Options:
     -c <credential>  Named credential (claude, codex, or-personal, claude-work, etc.)

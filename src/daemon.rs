@@ -81,7 +81,7 @@ pub fn ensure_running() -> Result<()> {
         .spawn()
         .context("Failed to spawn daemon")?;
 
-    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+    if crate::runtime::verbose() {
         eprintln!("Started daemon (PID {})", child.id());
     }
 
@@ -590,7 +590,7 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
         match tokio_tungstenite::accept_async(stream).await {
             Ok(ws) => handle_ext_websocket(ws, ext_state).await,
             Err(e) => {
-                if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+                if crate::runtime::verbose() {
                     eprintln!("WS handshake failed: {e}");
                 }
             }
@@ -774,7 +774,7 @@ async fn discover_heartbeat(port: u16) {
         return;
     }
     if let Err(e) = crate::api_client::register_discover_port(port).await {
-        if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+        if crate::runtime::verbose() {
             eprintln!("sidekar: discover heartbeat failed: {e:#}");
         }
     }

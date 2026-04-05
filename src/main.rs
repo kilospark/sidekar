@@ -25,13 +25,19 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     };
 
     // Parse global --verbose flag
-    if let Some(pos) = args.iter().position(|a| a == "--verbose") {
+    let verbose_flag = if let Some(pos) = args.iter().position(|a| a == "--verbose") {
         args.remove(pos);
-        // SAFETY: We're single-threaded at this point during startup
+        // SAFETY (`env::set_var`): The Rust standard library does not synchronize the process
+        // environment. This runs before the first `.await` in `run`, so this task has not yet
+        // yielded to Tokio; we only flip a diagnostic flag once at CLI startup.
         unsafe {
             std::env::set_var("SIDEKAR_VERBOSE", "1");
         }
-    }
+        true
+    } else {
+        false
+    };
+    sidekar::runtime::init(verbose_flag);
 
     let saw_relay = args.iter().any(|a| a == "--relay");
     let saw_no_relay = args.iter().any(|a| a == "--no-relay");
@@ -118,8 +124,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let config = sidekar::config::SidekarConfig::default();
         let _ = sidekar::config::save_config(&config);
         let message = "Thanks for installing sidekar!\n\nAnonymous telemetry is enabled by default to help us improve.\nIt collects: tool usage counts, error counts (no personal data).\n\nTo disable: sidekar config set telemetry false";
-        if env::var("SIDEKAR_PTY").is_ok() {
-            if env::var("SIDEKAR_VERBOSE").is_ok() {
+        if sidekar::runtime::pty_mode() {
+            if sidekar::runtime::verbose() {
                 sidekar::broker::try_log_event(
                     "debug",
                     "pty",
@@ -273,7 +279,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                 return Ok(());
             }
             "models" => {
-                // sidekar repl models -r <credential>
+                // sidekar repl models -c <credential>
                 let mut credential: Option<String> = None;
                 let mut i = 1;
                 while i < args.len() {
@@ -605,16 +611,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         } else {
             vec![]
         };
-        let default_tab = match override_tab_id.as_deref() {
-            None => None,
-            Some(s) => match s.parse::<u64>() {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    eprintln!("Error: --tab requires a numeric tab ID");
-                    std::process::exit(1);
-                }
-            },
-        };
+        let default_tab = tab_id_from_global_flag(&override_tab_id);
         return sidekar::ext::send_cli_command(&sub, &sub_args, default_tab).await;
     }
 
@@ -639,19 +636,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // Extension routing: only use when NOT inside a PTY wrapper.
     // PTY agents must use their own CDP-launched Chrome for session isolation.
     // Now checks at send time rather than dispatch time to avoid race condition.
-    let in_pty = env::var("SIDEKAR_PTY").is_ok();
+    let in_pty = sidekar::runtime::pty_mode();
     if !in_pty && sidekar::is_ext_routable_command(&command) {
         // Don't check availability here - let send_command handle it and fallback on failure
-        let default_tab = match override_tab_id.as_deref() {
-            None => None,
-            Some(s) => match s.parse::<u64>() {
-                Ok(id) => Some(id),
-                Err(_) => {
-                    eprintln!("Error: --tab requires a numeric tab ID");
-                    std::process::exit(1);
-                }
-            },
-        };
+        let default_tab = tab_id_from_global_flag(&override_tab_id);
         let ext_result = sidekar::ext::send_cli_command(&command, &args, default_tab).await;
         match ext_result {
             Ok(()) => return Ok(()),
@@ -677,7 +665,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     // Inside a PTY wrapper — enable isolated mode (own window, no tab activation)
-    if env::var("SIDEKAR_PTY").is_ok() {
+    if sidekar::runtime::pty_mode() {
         ctx.isolated = true;
     }
 
@@ -752,9 +740,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         ctx.set_current_session(format!("tab-{short}"));
     } else if sidekar::command_requires_session(&command) {
         if ctx.auto_discover_last_session().is_err() {
-            let in_pty = env::var("SIDEKAR_PTY").is_ok();
+            let in_pty = sidekar::runtime::pty_mode();
             if in_pty && sidekar::command_should_auto_launch_browser(&command) {
-                if env::var("SIDEKAR_VERBOSE").is_ok() {
+                if sidekar::runtime::verbose() {
                     sidekar::broker::try_log_event(
                         "debug",
                         "pty",
@@ -801,6 +789,20 @@ async fn run_command_file(ctx: &mut AppContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse `--tab <id>` global flag into a numeric tab id, or exit on invalid input.
+fn tab_id_from_global_flag(override_tab_id: &Option<String>) -> Option<u64> {
+    match override_tab_id.as_deref() {
+        None => None,
+        Some(s) => match s.parse::<u64>() {
+            Ok(id) => Some(id),
+            Err(_) => {
+                eprintln!("Error: --tab requires a numeric tab ID");
+                std::process::exit(1);
+            }
+        },
+    }
 }
 
 fn format_age(timestamp: f64) -> String {

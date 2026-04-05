@@ -286,6 +286,7 @@ impl CronContext {
         ctx.current_profile = self.current_profile.clone();
         ctx.headless = self.headless;
         ctx.isolated = true; // cron runs in isolated context
+        ctx.agent_name = self.agent_name.clone();
         Ok(ctx)
     }
 }
@@ -408,9 +409,9 @@ pub(crate) async fn cmd_cron_create(
             bail!("Bash command cannot be empty");
         }
     }
-    // Anti-replication: env var guard (best-effort, bypassable by child unset).
-    // The hard cap at max_cron_jobs (default 10) is the real safety net.
-    if std::env::var("SIDEKAR_CRON_DEPTH").is_ok() {
+    // Anti-replication: in-process guard for tool/batch dispatch plus inherited child env for
+    // spawned shell commands. The hard cap at max_cron_jobs is the deeper safety net.
+    if crate::runtime::cron_depth() > 0 {
         bail!("Cannot create cron/loop jobs from within a cron action (prevents self-replication)");
     }
     if let CronAction::Prompt { ref prompt } = action_parsed {
@@ -901,20 +902,14 @@ async fn execute_cron_job(
         .clone()
         .unwrap_or_else(|| fallback_ctx.clone());
 
-    // Set agent name so dispatched commands recover the PTY wrapper's bus identity
-    // instead of registering a new throwaway agent.
-    if let Some(ref name) = cron_ctx.agent_name {
-        unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", name) };
-        // Also set channel so broker lookup succeeds
-        if let Ok(Some(agent)) = crate::broker::find_agent(name, None) {
-            if let Some(ref session) = agent.id.session {
-                unsafe { std::env::set_var("SIDEKAR_CHANNEL", session) };
-            }
-        }
-    }
-
-    // Prevent cron actions from creating more cron jobs (anti-replication)
-    unsafe { std::env::set_var("SIDEKAR_CRON_DEPTH", "1") };
+    let _cron_guard = crate::runtime::enter_cron_action();
+    let inherited_agent_name = cron_ctx.agent_name.clone();
+    let inherited_channel = inherited_agent_name.as_deref().and_then(|name| {
+        crate::broker::find_agent(name, None)
+            .ok()
+            .flatten()
+            .and_then(|agent| agent.id.session)
+    });
 
     // Mark tool action so monitor doesn't double-notify
     super::monitor::mark_tool_action();
@@ -955,12 +950,18 @@ async fn execute_cron_job(
             }
         }
         CronAction::Bash { command } => {
+            let mut bash = tokio::process::Command::new("sh");
+            bash.arg("-c").arg(command);
+            bash.env("SIDEKAR_CRON_DEPTH", "1");
+            if let Some(ref name) = inherited_agent_name {
+                bash.env("SIDEKAR_AGENT_NAME", name);
+            }
+            if let Some(ref channel) = inherited_channel {
+                bash.env("SIDEKAR_CHANNEL", channel);
+            }
             let result = tokio::time::timeout(
                 timeout,
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(command)
-                    .output(),
+                bash.output(),
             )
             .await;
             match result {

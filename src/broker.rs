@@ -358,19 +358,6 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_memory_events_superseded_by
             ON memory_events(superseded_by);
 
-        CREATE TABLE IF NOT EXISTS memory_event_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id INTEGER NOT NULL,
-            action TEXT NOT NULL,
-            old_summary TEXT,
-            new_summary TEXT,
-            old_confidence REAL,
-            new_confidence REAL,
-            metadata_json TEXT,
-            created_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_event_history_event
-            ON memory_event_history(event_id, created_at);
         ",
     )?;
 
