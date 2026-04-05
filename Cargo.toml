@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "1.0.16"
+version = "1.0.18"
 edition = "2024"
 build = "build.rs"
 
@@ -49,6 +49,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio-rustls = "0.26"
 webpki-roots = "1"
 pulldown-cmark = "0.13.3"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["async"] }
