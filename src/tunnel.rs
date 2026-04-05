@@ -35,10 +35,13 @@ pub fn set_output_tunnel(tx: TunnelSender) {
 }
 
 /// Print a line to stdout and, if a tunnel is registered, to web viewers.
+/// Bare `\n` in `text` is converted to `\r\n` for the terminal emulator.
 pub fn tunnel_println(text: &str) {
     println!("{text}");
     if let Some(tx) = OUTPUT_TUNNEL.get() {
-        let mut data = text.as_bytes().to_vec();
+        // Normalize line endings: \r\n → \n → \r\n to avoid \r\r\n
+        let converted = text.replace("\r\n", "\n").replace('\n', "\r\n");
+        let mut data = converted.into_bytes();
         data.extend_from_slice(b"\r\n");
         tx.send_data(data);
     }
