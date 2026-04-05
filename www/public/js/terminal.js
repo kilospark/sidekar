@@ -81,7 +81,18 @@
   var layoutTimer = null;
 
   function syncTerminalFrame() {
+    var container = document.getElementById("terminal");
     term.resize(remoteCols, remoteRows);
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        var el = term.element;
+        if (!el) return;
+        var w = el.offsetWidth;
+        var h = el.offsetHeight;
+        if (w > 0) container.style.width = w + "px";
+        if (h > 0) container.style.height = h + "px";
+      });
+    });
   }
 
   function setRemoteGeometry(cols, rows) {
