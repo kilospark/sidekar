@@ -27,6 +27,12 @@ echo "=== Building v${VERSION} (release) ==="
 cargo build --release
 
 echo ""
+echo "=== Embedding Chrome extension ==="
+rm -f assets/extension.zip
+zip -r assets/extension.zip extension/
+cargo build --release
+
+echo ""
 echo "=== Packaging ==="
 cp target/release/sidekar "$NAME"
 chmod +x "$NAME"

@@ -8,6 +8,20 @@ CLI has two explicit paths:
 
 Agent must manually choose. No auto-detection.
 
+## Extension distribution: dev-extract
+
+For development/testing before Chrome Web Store publication, the extension ZIP is embedded in the binary:
+
+```bash
+sidekar ext dev-extract   # Extract to ~/.sidekar/extension
+```
+
+- ZIP embedded via `include_bytes!` in `src/ext.rs`
+- Extraction target: `~/.sidekar/extension`
+- Always overwrites on each run (supports updating extension)
+- Load via Chrome: Extensions → Enable Developer → Load unpacked → select `~/.sidekar/extension`
+- Build: `./local-release.sh` automatically zips `extension/` to `assets/extension.zip` before building
+
 ## Proposed behavior
 
 CLI auto-detects if the Chrome extension is connected and routes through it by default. No more `sidekar ext` prefix for normal use.
