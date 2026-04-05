@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn test_parser_tool_header() {
         let mut parser = EventParser::new();
-        let mut events = parser.feed(b"\xe2\x8f\x8e Read src/main.rs\n\n");
+        let events = parser.feed(b"\xe2\x8f\x8e Read src/main.rs\n\n");
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AgentEvent::ToolCall { tool, input }
             if tool == "Read" && input == "src/main.rs"));
