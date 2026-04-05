@@ -78,30 +78,30 @@ async fn compact_history(
     let cleared = phase1_clear_old_results(history);
     if cleared > 0 {
         let after = estimate_tokens(history);
-        eprintln!(
+        crate::tunnel::tunnel_println(&format!(
             "\x1b[2m[Compaction phase 1: cleared {} old results, ~{}k → ~{}k tokens]\x1b[0m",
             cleared,
             current / 1000,
             after / 1000,
-        );
+        ));
         if stop_after_phase1_if_small && after < threshold {
             return Ok(true);
         }
     }
 
     // Phase 2: LLM summarization
-    eprintln!("\x1b[2m[Compaction phase 2: summarizing old context...]\x1b[0m");
+    crate::tunnel::tunnel_println("\x1b[2m[Compaction phase 2: summarizing old context...]\x1b[0m");
     on_event(&StreamEvent::Compacting);
     let result = phase2_summarize(provider, model, history, on_event).await;
     on_event(&StreamEvent::Idle);
     match result {
         Ok(()) => {
             let after = estimate_tokens(history);
-            eprintln!("\x1b[2m[Compacted to ~{}k tokens]\x1b[0m", after / 1000,);
+            crate::tunnel::tunnel_println(&format!("\x1b[2m[Compacted to ~{}k tokens]\x1b[0m", after / 1000));
             Ok(cleared > 0 || history.len() != original_len)
         }
         Err(e) => {
-            eprintln!("\x1b[2m[Compaction failed: {e}]\x1b[0m");
+            crate::tunnel::tunnel_println(&format!("\x1b[2m[Compaction failed: {e}]\x1b[0m"));
             if cleared > 0 {
                 Ok(true)
             } else {

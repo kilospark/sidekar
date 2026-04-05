@@ -22,6 +22,35 @@ const RECONNECT_BASE: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const CHANNEL_CAPACITY: usize = 256;
 
+// ---------------------------------------------------------------------------
+// Global output tunnel — lets any module forward println-style output to
+// web terminal viewers without threading a TunnelSender through every call.
+// ---------------------------------------------------------------------------
+
+static OUTPUT_TUNNEL: std::sync::OnceLock<TunnelSender> = std::sync::OnceLock::new();
+
+/// Register the tunnel sender for global output forwarding.
+pub fn set_output_tunnel(tx: TunnelSender) {
+    let _ = OUTPUT_TUNNEL.set(tx);
+}
+
+/// Print a line to stdout and, if a tunnel is registered, to web viewers.
+pub fn tunnel_println(text: &str) {
+    println!("{text}");
+    if let Some(tx) = OUTPUT_TUNNEL.get() {
+        let mut data = text.as_bytes().to_vec();
+        data.extend_from_slice(b"\r\n");
+        tx.send_data(data);
+    }
+}
+
+/// Send raw bytes to the tunnel only (no stdout). No-op if no tunnel registered.
+pub fn tunnel_send(data: Vec<u8>) {
+    if let Some(tx) = OUTPUT_TUNNEL.get() {
+        tx.send_data(data);
+    }
+}
+
 fn relay_url() -> String {
     std::env::var("SIDEKAR_RELAY_URL").unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string())
 }

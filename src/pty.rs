@@ -317,14 +317,111 @@ async fn connect_relay_tunnel(
 const STARTUP_INJECT: &str =
     "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
 
+/// Cursor `agent` / `cursor-agent` CLI: subcommands that are not an interactive
+/// agent session (no initial user prompt slot).
+const CURSOR_AGENT_MGMT_COMMANDS: &[&str] = &[
+    "install-shell-integration",
+    "uninstall-shell-integration",
+    "login",
+    "logout",
+    "mcp",
+    "status",
+    "whoami",
+    "models",
+    "about",
+    "update",
+    "create-chat",
+    "generate-rule",
+    "rule",
+    "ls",
+    "resume",
+    "help",
+];
+
+/// Advance `i` past one argv token for Cursor agent-style parsing (options with
+/// optional/required values). Conservative: unknown short/long flags consume no
+/// extra token unless listed.
+fn skip_one_cursor_agent_arg(args: &[String], i: usize) -> usize {
+    let a = args[i].as_str();
+    if a.contains('=') {
+        return i + 1;
+    }
+    let needs_value = matches!(
+        a,
+        "--api-key"
+            | "-H"
+            | "--header"
+            | "--output-format"
+            | "--mode"
+            | "--model"
+            | "--sandbox"
+            | "--workspace"
+            | "--worktree-base"
+    );
+    if needs_value {
+        if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+            return i + 2;
+        }
+        return i + 1;
+    }
+    if a == "-w" || a == "--worktree" {
+        if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+            return i + 2;
+        }
+        return i + 1;
+    }
+    if a == "--resume" {
+        if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+            return i + 2;
+        }
+        return i + 1;
+    }
+    i + 1
+}
+
+fn first_cursor_agent_positional_index(args: &[String]) -> usize {
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i].starts_with('-') {
+            i = skip_one_cursor_agent_arg(args, i);
+        } else {
+            return i;
+        }
+    }
+    args.len()
+}
+
+/// Whether we should append [`STARTUP_INJECT`] for `agent` / `cursor-agent`, or
+/// for the tail after `cursor agent`.
+fn cursor_agent_should_inject_initial_prompt(args: &[String]) -> bool {
+    let i = first_cursor_agent_positional_index(args);
+    if i >= args.len() {
+        return true;
+    }
+    let cmd = args[i].as_str();
+    if CURSOR_AGENT_MGMT_COMMANDS.contains(&cmd) {
+        return false;
+    }
+    if cmd == "agent" {
+        let after = &args[i + 1..];
+        let j = first_cursor_agent_positional_index(after);
+        return j >= after.len();
+    }
+    false
+}
+
 /// Extend the user-supplied args with a native initial-prompt flag for agents
 /// that support one. Unknown agents get no starter — the PTY stdin-injection
 /// fallback was unreliable and has been removed.
 ///
-/// Flag map (verified against each agent's `--help`):
-/// - claude / codex / cursor-agent / cursor → positional prompt
-/// - gemini → `-i <str>` (NOT `-p`, which is headless)
-/// - opencode → `--prompt <str>`
+/// Per-agent behavior (see unit tests):
+/// - claude / codex — trailing positional prompt when none given
+/// - cursor — `cursor` shim: empty args → `agent` + starter; `cursor agent …` uses
+///   Cursor CLI rules; other invocations (IDE) unchanged from prior trailing rule
+/// - agent / cursor-agent — append starter when the CLI has no user prompt yet
+/// - gemini — `-i <str>` (NOT `-p`, which is headless)
+/// - opencode — `--prompt` before project path and other args
+/// - pi / aider / goose — not injected (CLI shape varies; avoid breaking installs/subcommands)
 fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
     let has_positional = user_args.iter().any(|a| !a.starts_with('-'));
     let has_flag = |flags: &[&str]| -> bool {
@@ -337,7 +434,27 @@ fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
 
     let mut out: Vec<String> = user_args.to_vec();
     match agent {
-        "claude" | "codex" | "cursor-agent" | "cursor" => {
+        "claude" | "codex" => {
+            if !has_positional {
+                out.push(STARTUP_INJECT.to_string());
+            }
+        }
+        "agent" | "cursor-agent" => {
+            if cursor_agent_should_inject_initial_prompt(user_args) {
+                out.push(STARTUP_INJECT.to_string());
+            }
+        }
+        "cursor" => {
+            if user_args.is_empty() {
+                return vec!["agent".into(), STARTUP_INJECT.to_string()];
+            }
+            if user_args.first().map(|s| s.as_str()) == Some("agent") {
+                let mut o = user_args.to_vec();
+                if cursor_agent_should_inject_initial_prompt(&user_args[1..]) {
+                    o.push(STARTUP_INJECT.to_string());
+                }
+                return o;
+            }
             if !has_positional {
                 out.push(STARTUP_INJECT.to_string());
             }
@@ -352,14 +469,17 @@ fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
             }
         }
         "opencode" => {
-            // opencode's positional is [project], not a prompt — only skip on --prompt.
             if !has_flag(&["--prompt"]) {
-                out.push("--prompt".into());
-                out.push(STARTUP_INJECT.to_string());
+                let mut prefixed =
+                    Vec::with_capacity(user_args.len().saturating_add(2));
+                prefixed.push("--prompt".into());
+                prefixed.push(STARTUP_INJECT.to_string());
+                prefixed.extend(user_args.iter().cloned());
+                return prefixed;
             }
         }
         _ => {
-            // Unknown agent — skip injection rather than fall back to flaky PTY stdin.
+            // pi, aider, goose, etc. — skip injection rather than guess CLI shape.
         }
     }
     out
@@ -1155,9 +1275,92 @@ async fn event_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn enrich(agent: &str, args: &[&str]) -> Vec<String> {
+        let v: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        enrich_args_with_startup(agent, &v)
+    }
+
+    #[test]
+    fn enrich_opencode_prepends_prompt_before_project() {
+        let out = enrich("opencode", &["."]);
+        assert_eq!(out[0], "--prompt");
+        assert_eq!(out[1], STARTUP_INJECT);
+        assert_eq!(out[2], ".");
+    }
+
+    #[test]
+    fn enrich_opencode_skips_when_prompt_present() {
+        let out = enrich("opencode", &["--prompt", "user", "."]);
+        assert_eq!(out, vec!["--prompt", "user", "."]);
+    }
+
+    #[test]
+    fn enrich_cursor_agent_tail_gets_starter() {
+        let out = enrich("cursor", &["agent"]);
+        assert_eq!(out, vec!["agent", STARTUP_INJECT]);
+    }
+
+    #[test]
+    fn enrich_cursor_empty_inserts_agent_and_starter() {
+        let out = enrich("cursor", &[]);
+        assert_eq!(out, vec!["agent", STARTUP_INJECT]);
+    }
+
+    #[test]
+    fn enrich_cursor_agent_with_user_prompt_skips_starter() {
+        let out = enrich("cursor", &["agent", "ship", "it"]);
+        assert_eq!(out, vec!["agent", "ship", "it"]);
+    }
+
+    #[test]
+    fn enrich_cursor_agent_login_skips_starter() {
+        let out = enrich("cursor", &["agent", "login"]);
+        assert_eq!(out, vec!["agent", "login"]);
+    }
+
+    #[test]
+    fn enrich_agent_binary_empty_gets_starter() {
+        let out = enrich("agent", &[]);
+        assert_eq!(out, vec![STARTUP_INJECT]);
+    }
+
+    #[test]
+    fn enrich_cursor_agent_binary_matches_agent() {
+        assert_eq!(enrich("cursor-agent", &[]), vec![STARTUP_INJECT]);
+        assert_eq!(enrich("cursor-agent", &["login"]), vec!["login"]);
+    }
+
+    #[test]
+    fn enrich_agent_login_skips_starter() {
+        let out = enrich("agent", &["login"]);
+        assert_eq!(out, vec!["login"]);
+    }
+
+    #[test]
+    fn enrich_agent_flags_only_gets_starter() {
+        let out = enrich("agent", &["--model", "x"]);
+        assert_eq!(out, vec!["--model", "x", STARTUP_INJECT]);
+    }
+
+    #[test]
+    fn enrich_claude_codex_trailing_prompt_unchanged() {
+        assert_eq!(enrich("claude", &[]), vec![STARTUP_INJECT]);
+        assert_eq!(enrich("claude", &["hi"]), vec!["hi"]);
+        assert_eq!(enrich("codex", &[]), vec![STARTUP_INJECT]);
+    }
+
+    #[test]
+    fn enrich_gemini_uses_dash_i() {
+        let out = enrich("gemini", &[]);
+        assert_eq!(out, vec!["-i", STARTUP_INJECT]);
+    }
+
+    #[test]
+    fn enrich_pi_and_goose_untouched() {
+        assert_eq!(enrich("pi", &[]), Vec::<String>::new());
+        assert_eq!(enrich("goose", &[]), Vec::<String>::new());
+    }
 
     #[test]
     fn rewrite_osc_titles_prepends_formatted_nick_prefix() {

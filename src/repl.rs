@@ -5,6 +5,7 @@ use crate::broker;
 use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
+use crate::tunnel::tunnel_println;
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
@@ -164,6 +165,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         _ => (None, None),
     };
 
+    if let Some(ref tx) = tunnel_tx {
+        crate::tunnel::set_output_tunnel(tx.clone());
+    }
+
     // Bridge tunnel input (web terminal keystrokes) into a pipe fd so the
     // synchronous poll loop in read_input_or_bus can multiplex it with stdin.
     use std::os::unix::io::FromRawFd;
@@ -230,7 +235,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         history.push(user_msg);
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone(), tunnel_tx.clone()));
+        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
         let on_event: crate::agent::StreamCallback =
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
@@ -286,13 +291,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
     };
 
-    print_banner(&model, tunnel_tx.as_ref());
+    print_banner(&model);
 
     let scope_root = crate::scope::resolve_project_root(Some(&cwd));
     let scope_name = crate::scope::resolve_project_name(Some(&cwd));
     let mut line_editor = LineEditor::with_history(
         session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
-        tunnel_tx.clone(),
     );
 
     loop {
@@ -324,16 +328,16 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                         history = session::load_history(&new_id)?;
                         let count = history.len();
                         if count > 0 {
-                            println!("\x1b[2mSwitched to session ({count} messages).\x1b[0m");
+                            tunnel_println(&format!("\x1b[2mSwitched to session ({count} messages).\x1b[0m"));
                         } else {
-                            println!("New session started.");
+                            tunnel_println("New session started.");
                         }
                         session_id = new_id;
                         continue;
                     }
                     SlashResult::Compact => {
                         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone(), tunnel_tx.clone()));
+                        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
                         let on_event: crate::agent::StreamCallback =
                             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
@@ -346,9 +350,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                         .await;
                         if changed {
                             let _ = session::replace_history(&session_id, &history);
-                            println!("\x1b[2m[session compacted]\x1b[0m");
+                            tunnel_println("\x1b[2m[session compacted]\x1b[0m");
                         } else {
-                            println!("\x1b[2m[nothing to compact]\x1b[0m");
+                            tunnel_println("\x1b[2m[nothing to compact]\x1b[0m");
                         }
                         let _ = io::stdout().flush();
                         continue;
@@ -358,7 +362,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
 
         // Inject pending bus messages as steering
-        inject_bus_messages(&bus_name, &mut history, &session_id, tunnel_tx.as_ref());
+        inject_bus_messages(&bus_name, &mut history, &session_id);
 
         // Add user message (if any)
         if let Some(text) = input {
@@ -372,7 +376,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         // Run agent loop
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone(), tunnel_tx.clone()));
+        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
         let on_event: crate::agent::StreamCallback =
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
@@ -391,20 +395,11 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Ok(c) => c,
             Err(e) if e.is::<crate::agent::Cancelled>() => {
                 history.truncate(pre_len);
-                println!("\x1b[33m[cancelled]\x1b[0m");
-                if let Some(ref tx) = tunnel_tx {
-                    tx.send_data(b"\x1b[33m[cancelled]\x1b[0m\r\n".to_vec());
-                }
+                tunnel_println("\x1b[33m[cancelled]\x1b[0m");
                 false
             }
             Err(e) => {
-                let msg = format!("\x1b[31mError: {e:#}\x1b[0m");
-                println!("{msg}");
-                if let Some(ref tx) = tunnel_tx {
-                    let mut d = msg.into_bytes();
-                    d.extend_from_slice(b"\r\n");
-                    tx.send_data(d);
-                }
+                tunnel_println(&format!("\x1b[31mError: {e:#}\x1b[0m"));
                 broker::try_log_error("repl", &format!("{e:#}"), None);
                 false
             }
@@ -420,7 +415,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
     }
 
-    println!();
+    tunnel_println("");
     if let Some(tx) = tunnel_tx {
         tx.shutdown();
     }
@@ -465,36 +460,27 @@ struct EventRenderer {
     tool_args: std::collections::HashMap<usize, (String, String)>,
     spinner: Option<Spinner>,
     partial_visible: bool,
-    tunnel_tx: Option<crate::tunnel::TunnelSender>,
 }
 
 impl EventRenderer {
-    fn new(_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, tunnel_tx: Option<crate::tunnel::TunnelSender>) -> Self {
+    fn new(_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
         Self {
             md: crate::md::MarkdownStream::new(),
             tool_args: std::collections::HashMap::new(),
             spinner: None,
             partial_visible: false,
-            tunnel_tx,
         }
     }
 
     /// Write text to stdout and relay tunnel.
     fn emit(&self, text: &str) {
         print!("{text}");
-        if let Some(ref tx) = self.tunnel_tx {
-            tx.send_data(text.as_bytes().to_vec());
-        }
+        crate::tunnel::tunnel_send(text.as_bytes().to_vec());
     }
 
     /// Write text + newline to stdout and relay tunnel.
     fn emitln(&self, text: &str) {
-        println!("{text}");
-        if let Some(ref tx) = self.tunnel_tx {
-            let mut data = text.as_bytes().to_vec();
-            data.extend_from_slice(b"\r\n");
-            tx.send_data(data);
-        }
+        tunnel_println(text);
     }
 
     fn stop_spinner(&mut self) {
@@ -538,18 +524,18 @@ impl EventRenderer {
         match event {
             StreamEvent::Waiting => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label("thinking".to_string(), self.tunnel_tx.clone()));
+                self.spinner = Some(Spinner::start_with_label("thinking".to_string(), ));
             }
             StreamEvent::Compacting => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label("compacting context".to_string(), self.tunnel_tx.clone()));
+                self.spinner = Some(Spinner::start_with_label("compacting context".to_string(), ));
             }
             StreamEvent::Idle => {
                 self.stop_spinner();
             }
             StreamEvent::ToolExec { name } => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label(format!("running {name}"), self.tunnel_tx.clone()));
+                self.spinner = Some(Spinner::start_with_label(format!("running {name}"), ));
             }
             StreamEvent::TextDelta { delta } => {
                 self.stop_spinner();
@@ -559,7 +545,7 @@ impl EventRenderer {
             }
             StreamEvent::ThinkingDelta { .. } => {
                 if self.spinner.is_none() {
-                    self.spinner = Some(Spinner::start_with_label("thinking".to_string(), self.tunnel_tx.clone()));
+                    self.spinner = Some(Spinner::start_with_label("thinking".to_string(), ));
                 }
             }
             StreamEvent::ToolCallStart { index, name, .. } => {
@@ -571,14 +557,14 @@ impl EventRenderer {
                 let _ = io::stdout().flush();
                 self.tool_args
                     .insert(*index, (name.clone(), String::new()));
-                self.spinner = Some(Spinner::start_with_label(format!("preparing {name}"), self.tunnel_tx.clone()));
+                self.spinner = Some(Spinner::start_with_label(format!("preparing {name}"), ));
             }
             StreamEvent::ToolCallDelta { index, delta } => {
                 if let Some((_, args)) = self.tool_args.get_mut(index) {
                     args.push_str(delta);
                 }
                 if self.spinner.is_none() {
-                    self.spinner = Some(Spinner::start_with_label("preparing tool".to_string(), self.tunnel_tx.clone()));
+                    self.spinner = Some(Spinner::start_with_label("preparing tool".to_string(), ));
                 }
             }
             StreamEvent::ToolCallEnd { index } => {
@@ -589,7 +575,7 @@ impl EventRenderer {
                 }
                 // Restart spinner while tool executes and next API call happens
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label("working".to_string(), self.tunnel_tx.clone()));
+                self.spinner = Some(Spinner::start_with_label("working".to_string(), ));
             }
             StreamEvent::Done { message } => {
                 self.stop_spinner();
@@ -635,7 +621,7 @@ const ANIMATIONS: &[&[&str]] = &[
 ];
 
 impl Spinner {
-    fn start_with_label(label: String, tunnel_tx: Option<crate::tunnel::TunnelSender>) -> Self {
+    fn start_with_label(label: String) -> Self {
         let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let r = running.clone();
         let anim_idx = rand::random::<u32>() as usize % ANIMATIONS.len();
@@ -666,18 +652,14 @@ impl Spinner {
                     elapsed,
                 );
                 print!("{line}");
-                if let Some(ref tx) = tunnel_tx {
-                    tx.send_data(line.as_bytes().to_vec());
-                }
+                crate::tunnel::tunnel_send(line.into_bytes());
                 let _ = io::stdout().flush();
                 i += 1;
                 std::thread::sleep(std::time::Duration::from_millis(80));
             }
             let clear = "\r\x1b[K";
             print!("{clear}");
-            if let Some(ref tx) = tunnel_tx {
-                tx.send_data(clear.as_bytes().to_vec());
-            }
+            crate::tunnel::tunnel_send(clear.as_bytes().to_vec());
             let _ = io::stdout().flush();
         });
         Self {
@@ -853,14 +835,14 @@ fn handle_slash_command(
             match session::list_sessions(cwd, 10) {
                 Ok(sessions) => {
                     if sessions.is_empty() {
-                        println!("No sessions found.");
+                        tunnel_println("No sessions found.");
                     } else {
-                        println!("Sessions (most recent first):");
+                        tunnel_println("Sessions (most recent first):");
                         for s in &sessions {
                             let msgs = session::message_count(&s.id).unwrap_or(0);
                             let marker = if s.id == current_session { " *" } else { "" };
                             let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-                            println!("  {name} — {msgs} msgs, {}{marker}", s.model);
+                            tunnel_println(&format!("  {name} — {msgs} msgs, {}{marker}", s.model));
                         }
                     }
                 }
@@ -879,10 +861,10 @@ fn handle_slash_command(
                         })
                         .collect();
                     if sessions.len() <= 1 {
-                        println!("No other sessions to resume.");
+                        tunnel_println("No other sessions to resume.");
                         return Some(SlashResult::Continue);
                     }
-                    println!("Pick a session:");
+                    tunnel_println("Pick a session:");
                     for (i, s) in sessions.iter().enumerate() {
                         let msgs = session::message_count(&s.id).unwrap_or(0);
                         let marker = if s.id == current_session {
@@ -891,7 +873,7 @@ fn handle_slash_command(
                             ""
                         };
                         let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-                        println!("  [{i}] {name} — {msgs} msgs{marker}");
+                        tunnel_println(&format!("  [{i}] {name} — {msgs} msgs{marker}"));
                     }
                     print!("Enter number: ");
                     let _ = io::stdout().flush();
@@ -902,31 +884,31 @@ fn handle_slash_command(
                     {
                         return Some(SlashResult::SwitchSession(s.id.clone()));
                     }
-                    println!("Invalid selection.");
+                    tunnel_println("Invalid selection.");
                 }
                 Err(e) => broker::try_log_error("session", &format!("failed to list: {e}"), None),
             }
             SlashResult::Continue
         }
         "/model" => {
-            println!("Current model: {model}");
-            println!("\nList available models: sidekar repl models -c <credential>");
+            tunnel_println(&format!("Current model: {model}"));
+            tunnel_println("\nList available models: sidekar repl models -c <credential>");
             SlashResult::Continue
         }
         "/compact" => SlashResult::Compact,
         "/help" => {
-            println!("Slash commands:");
-            println!("  /new      — Start fresh session");
-            println!("  /sessions — List sessions for this directory");
-            println!("  /resume   — Switch to a different session");
-            println!("  /compact  — Compact older session context now");
-            println!("  /model    — Show/change model");
-            println!("  /quit     — Exit REPL");
-            println!("  /help     — Show this help");
-            println!();
-            println!("Auth (run outside REPL):");
-            println!("  sidekar repl login   — OAuth login");
-            println!("  sidekar repl logout  — Remove credentials");
+            tunnel_println("Slash commands:");
+            tunnel_println("  /new      — Start fresh session");
+            tunnel_println("  /sessions — List sessions for this directory");
+            tunnel_println("  /resume   — Switch to a different session");
+            tunnel_println("  /compact  — Compact older session context now");
+            tunnel_println("  /model    — Show/change model");
+            tunnel_println("  /quit     — Exit REPL");
+            tunnel_println("  /help     — Show this help");
+            tunnel_println("");
+            tunnel_println("Auth (run outside REPL):");
+            tunnel_println("  sidekar repl login   — OAuth login");
+            tunnel_println("  sidekar repl logout  — Remove credentials");
             SlashResult::Continue
         }
         _ => unreachable!("checked by is_known_slash_command"),
@@ -959,16 +941,12 @@ fn inject_bus_messages(
     bus_name: &str,
     history: &mut Vec<ChatMessage>,
     session_id: &str,
-    tunnel_tx: Option<&crate::tunnel::TunnelSender>,
 ) {
     if let Ok(messages) = broker::poll_messages(bus_name) {
         for msg in messages {
             let text = format!("[Bus message from {}]: {}", msg.sender, msg.body);
             let display = format!("\x1b[33m[bus] {} says: {}\x1b[0m", msg.sender, msg.body);
-            println!("{display}");
-            if let Some(tx) = tunnel_tx {
-                let _ = tx.send_data(format!("{display}\r\n").into_bytes());
-            }
+            tunnel_println(&display);
             let steering = ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::Text { text }],
@@ -1035,11 +1013,10 @@ struct LineEditor {
     history_index: Option<usize>,
     history_draft: Option<String>,
     escape_started_at: Option<std::time::Instant>,
-    tunnel_tx: Option<crate::tunnel::TunnelSender>,
 }
 
 impl LineEditor {
-    fn with_history(history: Vec<String>, tunnel_tx: Option<crate::tunnel::TunnelSender>) -> Self {
+    fn with_history(history: Vec<String>) -> Self {
         Self {
             buffer: String::new(),
             cursor: 0,
@@ -1049,16 +1026,13 @@ impl LineEditor {
             history_index: None,
             history_draft: None,
             escape_started_at: None,
-            tunnel_tx,
         }
     }
 
     /// Write to both stdout and tunnel.
     fn emit(&self, text: &str) {
         print!("{text}");
-        if let Some(ref tx) = self.tunnel_tx {
-            tx.send_data(text.as_bytes().to_vec());
-        }
+        crate::tunnel::tunnel_send(text.as_bytes().to_vec());
         let _ = io::stdout().flush();
     }
 
@@ -1429,21 +1403,19 @@ fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor, tunnel_fd: Option<
     }
 }
 
-fn print_banner(model: &str, tunnel_tx: Option<&crate::tunnel::TunnelSender>) {
+fn print_banner(model: &str) {
     let version = env!("CARGO_PKG_VERSION");
     let line1 = format!("\x1b[1msidekar repl\x1b[0m \x1b[2mv{version}\x1b[0m");
     let line2 = format!("\x1b[36mmodel\x1b[0m {model}  \x1b[2m/help commands · /quit exit\x1b[0m");
     println!("{line1}");
     println!("{line2}\n");
-    if let Some(tx) = tunnel_tx {
-        // \x1b[H = cursor home (1,1), \x1b[2J = clear screen
-        let mut data = b"\x1b[H\x1b[2J".to_vec();
-        data.extend_from_slice(line1.as_bytes());
-        data.extend_from_slice(b"\r\n");
-        data.extend_from_slice(line2.as_bytes());
-        data.extend_from_slice(b"\r\n\r\n");
-        tx.send_data(data);
-    }
+    // Send to tunnel with cursor home + clear so web viewers start clean
+    let mut data = b"\x1b[H\x1b[2J".to_vec();
+    data.extend_from_slice(line1.as_bytes());
+    data.extend_from_slice(b"\r\n");
+    data.extend_from_slice(line2.as_bytes());
+    data.extend_from_slice(b"\r\n\r\n");
+    crate::tunnel::tunnel_send(data);
     let _ = io::stdout().flush();
 }
 
@@ -1471,7 +1443,7 @@ mod tests {
 
     #[test]
     fn line_editor_supports_left_right_insertion() {
-        let mut editor = LineEditor::with_history(Vec::new(), None);
+        let mut editor = LineEditor::with_history(Vec::new());
         assert!(matches!(editor.feed_bytes(b"ac"), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'D']), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(b"b"), LineEditResult::Continue));
@@ -1483,7 +1455,7 @@ mod tests {
 
     #[test]
     fn line_editor_supports_delete_key() {
-        let mut editor = LineEditor::with_history(Vec::new(), None);
+        let mut editor = LineEditor::with_history(Vec::new());
         assert!(matches!(editor.feed_bytes(b"abc"), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'D']), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b, b'[', b'3', b'~']), LineEditResult::Continue));
@@ -1495,7 +1467,7 @@ mod tests {
 
     #[test]
     fn line_editor_supports_history_up_down() {
-        let mut editor = LineEditor::with_history(Vec::new(), None);
+        let mut editor = LineEditor::with_history(Vec::new());
         assert!(matches!(
             editor.feed_bytes(b"first\r"),
             LineEditResult::Submit(line) if line == "first"
@@ -1514,7 +1486,7 @@ mod tests {
 
     #[test]
     fn line_editor_restores_draft_after_history_navigation() {
-        let mut editor = LineEditor::with_history(Vec::new(), None);
+        let mut editor = LineEditor::with_history(Vec::new());
         assert!(matches!(
             editor.feed_bytes(b"saved\r"),
             LineEditResult::Submit(line) if line == "saved"
@@ -1528,7 +1500,7 @@ mod tests {
 
     #[test]
     fn line_editor_ctrl_c_exits_prompt() {
-        let mut editor = LineEditor::with_history(Vec::new(), None);
+        let mut editor = LineEditor::with_history(Vec::new());
         assert!(matches!(editor.feed_bytes(b"draft"), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x03]), LineEditResult::Eof));
         assert_eq!(editor.buffer, "");
@@ -1537,7 +1509,7 @@ mod tests {
 
     #[test]
     fn line_editor_escape_clears_pending_line_after_timeout() {
-        let mut editor = LineEditor::with_history(Vec::new(), None);
+        let mut editor = LineEditor::with_history(Vec::new());
         assert!(matches!(editor.feed_bytes(b"draft"), LineEditResult::Continue));
         assert!(matches!(editor.feed_bytes(&[0x1b]), LineEditResult::Continue));
         editor.escape_started_at =
