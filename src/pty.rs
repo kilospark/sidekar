@@ -311,22 +311,11 @@ async fn connect_relay_tunnel(
 // ---------------------------------------------------------------------------
 
 /// Starter prompt passed to the wrapped agent via its native initial-prompt flag.
-/// Compact directive: load sidekar, set behavioral ground rules.
+/// Compact directive: load sidekar, set behavioral ground rules. PTY-wrapped
+/// agents manage their own memory — sidekar does not inject memory context
+/// here. Memory muscle lives in sidekar's REPL mode.
 const STARTUP_INJECT: &str =
     "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
-
-/// Build the starter string: the base directive plus any project memory brief.
-fn build_startup_prompt() -> String {
-    let mut msg = STARTUP_INJECT.to_string();
-    if let Ok(brief) = crate::memory::startup_brief(3) {
-        let brief = brief.trim();
-        if !brief.is_empty() {
-            msg.push_str("\n\n[memory context]\n");
-            msg.push_str(brief);
-        }
-    }
-    msg
-}
 
 /// Extend the user-supplied args with a native initial-prompt flag for agents
 /// that support one. Unknown agents get no starter — the PTY stdin-injection
@@ -350,7 +339,7 @@ fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
     match agent {
         "claude" | "codex" | "cursor-agent" | "cursor" => {
             if !has_positional {
-                out.push(build_startup_prompt());
+                out.push(STARTUP_INJECT.to_string());
             }
         }
         "gemini" => {
@@ -359,14 +348,14 @@ fn enrich_args_with_startup(agent: &str, user_args: &[String]) -> Vec<String> {
                 && !has_flag(&["-i", "--prompt-interactive", "-p", "--prompt"])
             {
                 out.push("-i".into());
-                out.push(build_startup_prompt());
+                out.push(STARTUP_INJECT.to_string());
             }
         }
         "opencode" => {
             // opencode's positional is [project], not a prompt — only skip on --prompt.
             if !has_flag(&["--prompt"]) {
                 out.push("--prompt".into());
-                out.push(build_startup_prompt());
+                out.push(STARTUP_INJECT.to_string());
             }
         }
         _ => {
@@ -520,7 +509,6 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
         }
     };
 
-    let _ = crate::memory::start_agent_session(&identity.name, &cwd);
     if std::env::var("SIDEKAR_VERBOSE").is_ok() {
         crate::broker::try_log_event(
             "debug",
@@ -619,7 +607,6 @@ pub async fn run_agent(agent: &str, args: &[String], relay_override: Option<bool
         crate::proxy::remove_codex_ca();
     }
 
-    let _ = crate::memory::finish_agent_session(&identity.name);
     let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
     let _ = broker::unregister_agent(&identity.name);
 

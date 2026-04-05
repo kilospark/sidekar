@@ -1,6 +1,5 @@
 use crate::*;
 use rusqlite::{OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
 const MEMORY_TYPES: &[&str] = &[
     "decision",
@@ -11,9 +10,6 @@ const MEMORY_TYPES: &[&str] = &[
     "artifact-pointer",
 ];
 
-const MAX_SESSION_EVENTS: i64 = 1000;
-const SESSION_DEDUP_WINDOW: i64 = 5;
-const SNAPSHOT_MAX_BYTES: usize = 2200;
 
 const TAG_RULES: &[(&str, &[&str])] = &[
     (
@@ -129,14 +125,6 @@ const TAG_RULES: &[(&str, &[&str])] = &[
     ),
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SessionSummary {
-    goal: String,
-    discoveries: Vec<String>,
-    accomplished: Vec<String>,
-    observation_count: usize,
-}
-
 #[derive(Debug, Clone)]
 struct MemoryEventRow {
     id: i64,
@@ -158,118 +146,83 @@ struct SearchResultRow {
     score: f64,
 }
 
-#[derive(Debug, Clone)]
-struct ObservationRow {
-    tool_name: String,
-    summary: String,
-}
-
 pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     match sub {
         "write" => cmd_memory_write(ctx, &args[1..]),
         "search" => cmd_memory_search(ctx, &args[1..]),
         "context" => cmd_memory_context(ctx, &args[1..]),
-        "observe" => cmd_memory_observe(ctx, &args[1..]),
-        "sessions" => cmd_memory_sessions(ctx, &args[1..]),
         "compact" => cmd_memory_compact(ctx, &args[1..]),
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
         "detail" => cmd_memory_detail(ctx, &args[1..]),
         "history" => cmd_memory_history(ctx, &args[1..]),
         "" => bail!(
-            "Usage: sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|detail|history> ..."
+            "Usage: sidekar memory <write|search|context|compact|patterns|rate|detail|history> ..."
         ),
         other => bail!("Unknown memory subcommand: {other}"),
     }
 }
 
-pub fn maybe_record_cli_observation(command: &str, args: &[String]) -> Result<()> {
-    if command == "memory" {
-        return Ok(());
-    }
-
-    let session_name = match env::var("SIDEKAR_AGENT_NAME") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(()),
-    };
-    let project = crate::scope::resolve_project_name(None);
-    ensure_session_started(&session_name, &project)?;
-    let summary = summarize_cli_command(command, args);
-    record_observation(&session_name, &project, command, &summary)?;
-    record_session_event(&session_name, command, &summary, "cli")?;
-    Ok(())
-}
-
-pub fn start_agent_session(session_name: &str, cwd: &str) -> Result<()> {
-    let project = crate::scope::resolve_project_name(Some(cwd));
-    ensure_session_started(session_name, &project)?;
-    record_session_event(
-        session_name,
-        "session-start",
-        &format!("started session for {}", project),
-        "pty",
-    )?;
-    Ok(())
-}
-
-pub fn finish_agent_session(session_name: &str) -> Result<()> {
-    let conn = crate::broker::open_db()?;
-    let project = conn
-        .query_row(
-            "SELECT project FROM memory_sessions WHERE session_name = ?1",
-            [session_name],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    let Some(project) = project else {
-        return Ok(());
-    };
-
-    let observations = session_observations(&conn, session_name)?;
-    let summary = summarize_session(&project, &observations);
-    let summary_json =
-        serde_json::to_string(&summary).context("failed to encode session summary")?;
-    let snapshot = build_snapshot(&conn, session_name)?;
-    let now = now_epoch_ms();
-
-    conn.execute(
-        "UPDATE memory_sessions
-         SET ended_at = ?2, summary_json = ?3, observation_count = ?4, last_event_at = ?2
-         WHERE session_name = ?1",
-        params![session_name, now, summary_json, observations.len() as i64],
-    )?;
-
-    if !snapshot.is_empty() {
-        let event_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory_session_events WHERE session_name = ?1",
-            [session_name],
-            |row| row.get(0),
-        )?;
-        conn.execute(
-            "INSERT INTO memory_session_snapshots (session_name, snapshot, event_count, consumed, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4)",
-            params![session_name, snapshot, event_count, now],
-        )?;
-        conn.execute(
-            "UPDATE memory_sessions SET compact_count = compact_count + 1 WHERE session_name = ?1",
-            [session_name],
-        )?;
-    }
-
-    compact_project(None, Some(&project))?;
-    detect_patterns(2)?;
-    Ok(())
-}
-
+/// Compact brief used by the PTY starter. Returns only real user-authored
+/// memory events (decisions, constraints, conventions, preferences, open
+/// threads, artifact pointers). Returns an empty string when there is no real
+/// content — the starter skips the brief entirely in that case.
+///
+/// Deliberately excludes the title, "Last Session" summary, and session
+/// snapshot that `build_context_text` renders. Those sections are populated
+/// by self-generated session bookkeeping (every PTY launch records a
+/// "session-start" intent event) and produce pure noise when the memory DB
+/// has no user content.
 pub fn startup_brief(limit: usize) -> Result<String> {
+    const EVENT_TYPES: &[&str] = &[
+        "constraint",
+        "decision",
+        "convention",
+        "preference",
+        "open-thread",
+        "artifact-pointer",
+    ];
+
     let project = crate::scope::resolve_project_name(None);
-    build_context_text(
+    let conn = crate::broker::open_db()?;
+    let ranked = ranked_recent_events(
+        &conn,
         crate::scope::ScopeView::Project,
         Some(&project),
-        None,
-        limit,
-    )
+        limit * 4,
+    )?;
+    let deduped = dedupe_rows_by_norm(ranked.into_iter().map(|item| item.row).collect());
+
+    let mut sections: Vec<String> = Vec::new();
+    for event_type in EVENT_TYPES {
+        let items = deduped
+            .iter()
+            .filter(|row| row.event_type == *event_type)
+            .take(limit)
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            continue;
+        }
+        sections.push(format!("## {}", event_type_label(event_type)));
+        for item in items {
+            let scope = if item.scope == "global" {
+                " [global]"
+            } else {
+                ""
+            };
+            sections.push(format!("- {}{}", item.summary, scope));
+        }
+    }
+
+    if sections.is_empty() {
+        return Ok(String::new());
+    }
+
+    let ids: Vec<i64> = deduped.iter().take(limit * 4).map(|row| row.id).collect();
+    reinforce_events(ids)?;
+
+    Ok(sections.join("\n"))
 }
 
 fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -387,98 +340,9 @@ fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let limit = extract_optional_value(args, "--limit=")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(3);
-    out!(
-        ctx,
-        "{}",
-        build_context_text(scope_view, project.as_deref(), hint.as_deref(), limit)?
-    );
-    Ok(())
-}
-
-fn cmd_memory_observe(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    if args.len() < 2 {
-        bail!("Usage: sidekar memory observe <tool> <summary> [--project=P] [--session=S]");
-    }
-    let tool = args[0].clone();
-    let summary = args[1].clone();
-    let project = extract_optional_value(args, "--project=")
-        .unwrap_or_else(|| crate::scope::resolve_project_name(None));
-    let session_name = extract_optional_value(args, "--session=")
-        .or_else(|| env::var("SIDEKAR_AGENT_NAME").ok())
-        .unwrap_or_else(|| format!("manual-{}", now_epoch_ms()));
-    ensure_session_started(&session_name, &project)?;
-    record_observation(&session_name, &project, &tool, &summary)?;
-    record_session_event(&session_name, &tool, &summary, "manual")?;
-    out!(ctx, "Recorded observation in session {session_name}.");
-    Ok(())
-}
-
-fn cmd_memory_sessions(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let project = extract_optional_value(args, "--project=");
-    let limit = extract_optional_value(args, "--limit=")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(10);
-    let conn = crate::broker::open_db()?;
-
-    let mut stmt = if project.is_some() {
-        conn.prepare(
-            "SELECT session_name, project, started_at, ended_at, summary_json, observation_count, compact_count
-             FROM memory_sessions
-             WHERE project = ?1
-             ORDER BY started_at DESC
-             LIMIT ?2",
-        )?
-    } else {
-        conn.prepare(
-            "SELECT session_name, project, started_at, ended_at, summary_json, observation_count, compact_count
-             FROM memory_sessions
-             ORDER BY started_at DESC
-             LIMIT ?1",
-        )?
-    };
-
-    let mut rows = if let Some(ref project_name) = project {
-        stmt.query(params![project_name, limit as i64])?
-    } else {
-        stmt.query(params![limit as i64])?
-    };
-
-    let mut printed = false;
-    while let Some(row) = rows.next()? {
-        printed = true;
-        let session_name: String = row.get(0)?;
-        let project_name: String = row.get(1)?;
-        let started_at: i64 = row.get(2)?;
-        let ended_at: Option<i64> = row.get(3)?;
-        let summary_json: Option<String> = row.get(4)?;
-        let observation_count: i64 = row.get(5)?;
-        let compact_count: i64 = row.get(6)?;
-        out!(
-            ctx,
-            "{} [{}] obs={} compacts={} started={} ended={}",
-            session_name,
-            project_name,
-            observation_count,
-            compact_count,
-            started_at,
-            ended_at
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        );
-        if let Some(summary_json) = summary_json {
-            if let Ok(summary) = serde_json::from_str::<SessionSummary>(&summary_json) {
-                out!(ctx, "  goal: {}", summary.goal);
-                if !summary.accomplished.is_empty() {
-                    out!(ctx, "  done: {}", summary.accomplished.join("; "));
-                }
-                if !summary.discoveries.is_empty() {
-                    out!(ctx, "  discovered: {}", summary.discoveries.join("; "));
-                }
-            }
-        }
-    }
-    if !printed {
-        out!(ctx, "No memory sessions found.");
+    let text = build_context_text(scope_view, project.as_deref(), hint.as_deref(), limit)?;
+    if !text.is_empty() {
+        out!(ctx, "{}", text);
     }
     Ok(())
 }
@@ -667,108 +531,6 @@ fn cmd_memory_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn ensure_session_started(session_name: &str, project: &str) -> Result<()> {
-    let conn = crate::broker::open_db()?;
-    let now = now_epoch_ms();
-    conn.execute(
-        "INSERT INTO memory_sessions (session_name, project, started_at, observation_count, last_event_at, compact_count)
-         VALUES (?1, ?2, ?3, 0, ?3, 0)
-         ON CONFLICT(session_name) DO NOTHING",
-        params![session_name, project, now],
-    )?;
-    Ok(())
-}
-
-fn record_observation(
-    session_name: &str,
-    project: &str,
-    tool_name: &str,
-    summary: &str,
-) -> Result<()> {
-    let conn = crate::broker::open_db()?;
-    let now = now_epoch_ms();
-    conn.execute(
-        "INSERT INTO memory_observations (session_name, project, tool_name, summary, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![session_name, project, tool_name, summary, now],
-    )?;
-    conn.execute(
-        "UPDATE memory_sessions
-         SET observation_count = observation_count + 1, last_event_at = ?2
-         WHERE session_name = ?1",
-        params![session_name, now],
-    )?;
-    Ok(())
-}
-
-fn record_session_event(
-    session_name: &str,
-    event_type: &str,
-    data: &str,
-    source_kind: &str,
-) -> Result<bool> {
-    let conn = crate::broker::open_db()?;
-    let category = session_category(event_type);
-    let priority = session_priority(event_type);
-    let hash = summary_hash(data);
-    let now = now_epoch_ms();
-
-    let duplicate_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM (
-            SELECT data_hash, event_type
-            FROM memory_session_events
-            WHERE session_name = ?1
-            ORDER BY id DESC
-            LIMIT ?2
-         ) WHERE event_type = ?3 AND data_hash = ?4",
-        params![session_name, SESSION_DEDUP_WINDOW, event_type, hash],
-        |row| row.get(0),
-    )?;
-    if duplicate_count > 0 {
-        return Ok(false);
-    }
-
-    let current_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM memory_session_events WHERE session_name = ?1",
-        [session_name],
-        |row| row.get(0),
-    )?;
-    if current_count >= MAX_SESSION_EVENTS {
-        let to_delete = current_count - MAX_SESSION_EVENTS + 1;
-        conn.execute(
-            "DELETE FROM memory_session_events WHERE id IN (
-                SELECT id FROM memory_session_events
-                WHERE session_name = ?1
-                ORDER BY priority DESC, created_at ASC
-                LIMIT ?2
-            )",
-            params![session_name, to_delete],
-        )?;
-    }
-
-    let truncated = truncate_for_summary_limit(data, 300);
-    conn.execute(
-        "INSERT INTO memory_session_events (
-            session_name, event_type, category, priority, data, data_hash, source_kind, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            session_name,
-            event_type,
-            category,
-            priority,
-            truncated,
-            hash,
-            source_kind,
-            now
-        ],
-    )?;
-    conn.execute(
-        "UPDATE memory_sessions SET last_event_at = ?2 WHERE session_name = ?1",
-        params![session_name, now],
-    )?;
-    Ok(true)
-}
-
 fn write_memory_event(
     project: &str,
     event_type: &str,
@@ -931,26 +693,6 @@ fn build_context_text(
     };
     let mut sections = vec![title];
 
-    if scope_view == crate::scope::ScopeView::Project
-        && let Some(project) = project
-        && let Some(summary) = latest_session_summary(&conn, project)?
-    {
-        sections.push(format!("\n## Last Session\n- Goal: {}", summary.goal));
-        if !summary.accomplished.is_empty() {
-            sections.push(format!("- Done: {}", summary.accomplished.join("; ")));
-        }
-        if !summary.discoveries.is_empty() {
-            sections.push(format!("- Discovered: {}", summary.discoveries.join("; ")));
-        }
-    }
-
-    if scope_view == crate::scope::ScopeView::Project
-        && let Some(project) = project
-        && let Some(snapshot) = latest_snapshot(&conn, project)?
-    {
-        sections.push(format!("\n## Snapshot\n{}", snapshot.trim()));
-    }
-
     let ranked = ranked_recent_events(&conn, scope_view, project, limit * 4)?;
     let deduped = dedupe_rows_by_norm(ranked.into_iter().map(|item| item.row).collect());
     let ids_to_reinforce: Vec<i64> = deduped.iter().take(limit * 4).map(|row| row.id).collect();
@@ -993,11 +735,10 @@ fn build_context_text(
         }
     }
 
+    // Only the title was pushed — no real content. Return empty so callers
+    // can stay silent rather than emit a filler header.
     if sections.len() == 1 {
-        sections.push(
-            "\nNo memories yet. Use `sidekar memory write ...` to store durable project knowledge."
-                .to_string(),
-        );
+        return Ok(String::new());
     }
 
     Ok(sections.join("\n"))
@@ -1296,221 +1037,6 @@ fn detect_patterns(min_projects: usize) -> Result<usize> {
     Ok(promoted)
 }
 
-fn session_observations(
-    conn: &rusqlite::Connection,
-    session_name: &str,
-) -> Result<Vec<ObservationRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT tool_name, summary
-         FROM memory_observations
-         WHERE session_name = ?1
-         ORDER BY created_at ASC",
-    )?;
-    let rows = stmt.query_map([session_name], |row| {
-        Ok(ObservationRow {
-            tool_name: row.get(0)?,
-            summary: row.get(1)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
-}
-
-fn summarize_session(project: &str, observations: &[ObservationRow]) -> SessionSummary {
-    if observations.is_empty() {
-        return SessionSummary {
-            goal: format!("Worked on {project}"),
-            discoveries: Vec::new(),
-            accomplished: Vec::new(),
-            observation_count: 0,
-        };
-    }
-
-    SessionSummary {
-        goal: observations
-            .first()
-            .map(|row| format!("Worked on {project}: {}", row.summary))
-            .unwrap_or_else(|| format!("Worked on {project}")),
-        discoveries: unique_strings(
-            observations
-                .iter()
-                .filter(|row| {
-                    matches!(
-                        row.tool_name.as_str(),
-                        "read"
-                            | "text"
-                            | "dom"
-                            | "axtree"
-                            | "network"
-                            | "cookies"
-                            | "storage"
-                            | "console"
-                    )
-                })
-                .map(|row| row.summary.clone())
-                .collect(),
-            3,
-        ),
-        accomplished: unique_strings(
-            observations
-                .iter()
-                .rev()
-                .map(|row| row.summary.clone())
-                .take(8)
-                .collect(),
-            4,
-        ),
-        observation_count: observations.len(),
-    }
-}
-
-fn latest_session_summary(
-    conn: &rusqlite::Connection,
-    project: &str,
-) -> Result<Option<SessionSummary>> {
-    let row = conn
-        .query_row(
-            "SELECT summary_json
-             FROM memory_sessions
-             WHERE project = ?1 AND summary_json IS NOT NULL
-             ORDER BY COALESCE(last_event_at, started_at) DESC
-             LIMIT 1",
-            [project],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    row.map(|json| serde_json::from_str(&json).context("failed to parse session summary"))
-        .transpose()
-}
-
-fn latest_snapshot(conn: &rusqlite::Connection, project: &str) -> Result<Option<String>> {
-    conn.query_row(
-        "SELECT ss.snapshot
-         FROM memory_session_snapshots ss
-         JOIN memory_sessions s ON s.session_name = ss.session_name
-         WHERE s.project = ?1
-         ORDER BY ss.id DESC
-         LIMIT 1",
-        [project],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(Into::into)
-}
-
-fn build_snapshot(conn: &rusqlite::Connection, session_name: &str) -> Result<String> {
-    let goals = fetch_session_events(conn, session_name, Some("intent"), None)?;
-    let critical = fetch_session_events(conn, session_name, None, Some(1))?;
-    let important = fetch_session_events(conn, session_name, None, Some(2))?;
-    let context = {
-        let mut items = fetch_session_events(conn, session_name, None, Some(3))?;
-        items.extend(fetch_session_events(conn, session_name, None, Some(4))?);
-        items
-    };
-
-    let mut snapshot = String::new();
-    if !goals.is_empty() {
-        snapshot.push_str("### Goals\n");
-        for (_, _, data) in goals.iter().take(4) {
-            snapshot.push_str(&format!("- {}\n", truncate_for_summary_limit(data, 120)));
-        }
-    }
-
-    snapshot.push_str(&render_priority_group(
-        "Critical",
-        &critical,
-        SNAPSHOT_MAX_BYTES / 2,
-    ));
-    snapshot.push_str(&render_priority_group(
-        "Important",
-        &important,
-        SNAPSHOT_MAX_BYTES / 3,
-    ));
-    snapshot.push_str(&render_priority_group(
-        "Context",
-        &context,
-        SNAPSHOT_MAX_BYTES / 6,
-    ));
-
-    if snapshot.len() > SNAPSHOT_MAX_BYTES {
-        snapshot.truncate(SNAPSHOT_MAX_BYTES);
-    }
-    Ok(snapshot)
-}
-
-fn fetch_session_events(
-    conn: &rusqlite::Connection,
-    session_name: &str,
-    category: Option<&str>,
-    priority: Option<i64>,
-) -> Result<Vec<(String, String, String)>> {
-    let sql = match (category, priority) {
-        (Some(_), Some(_)) => {
-            "SELECT event_type, category, data
-             FROM memory_session_events
-             WHERE session_name = ?1 AND category = ?2 AND priority = ?3
-             ORDER BY id DESC"
-        }
-        (Some(_), None) => {
-            "SELECT event_type, category, data
-             FROM memory_session_events
-             WHERE session_name = ?1 AND category = ?2
-             ORDER BY id DESC"
-        }
-        (None, Some(_)) => {
-            "SELECT event_type, category, data
-             FROM memory_session_events
-             WHERE session_name = ?1 AND priority = ?2
-             ORDER BY id DESC"
-        }
-        (None, None) => {
-            "SELECT event_type, category, data
-             FROM memory_session_events
-             WHERE session_name = ?1
-             ORDER BY id DESC"
-        }
-    };
-    let mut stmt = conn.prepare(sql)?;
-    let mut rows = match (category, priority) {
-        (Some(category), Some(priority)) => {
-            stmt.query(params![session_name, category, priority])?
-        }
-        (Some(category), None) => stmt.query(params![session_name, category])?,
-        (None, Some(priority)) => stmt.query(params![session_name, priority])?,
-        (None, None) => stmt.query(params![session_name])?,
-    };
-    let mut result = Vec::new();
-    while let Some(row) = rows.next()? {
-        result.push((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-        ));
-    }
-    Ok(result)
-}
-
-fn render_priority_group(
-    label: &str,
-    items: &[(String, String, String)],
-    max_bytes: usize,
-) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    let mut result = format!("### {label}\n");
-    let mut used = result.len();
-    for (_, category, data) in items {
-        let line = format!("- [{}] {}\n", category, data);
-        if used + line.len() > max_bytes {
-            break;
-        }
-        used += line.len();
-        result.push_str(&line);
-    }
-    result
-}
-
 fn find_active_events(
     conn: &rusqlite::Connection,
     project: Option<&str>,
@@ -1674,56 +1200,6 @@ fn normalize_event_type(value: &str) -> Result<String> {
             MEMORY_TYPES.join(", ")
         )
     }
-}
-
-fn summarize_cli_command(command: &str, args: &[String]) -> String {
-    match command {
-        "navigate" => format!("navigated to {}", safe_arg(args.first())),
-        "read" | "text" | "dom" | "axtree" => format!("inspected page with {}", command),
-        "click" => format!("clicked {}", safe_arg(args.first())),
-        "hover" => format!("hovered {}", safe_arg(args.first())),
-        "type" => format!("typed into {}", safe_arg(args.first())),
-        "fill" => format!("filled {} fields", args.len() / 2),
-        "keyboard" => "typed with keyboard input".to_string(),
-        "paste" | "clipboard" | "inserttext" | "insert-text" => {
-            "pasted or inserted text".to_string()
-        }
-        "network" | "cookies" | "storage" | "console" | "service-workers" | "download" => {
-            format!("inspected {}", command.replace('-', " "))
-        }
-        "desktop" | "bus" | "cron" | "compact" | "pack" | "unpack" | "kv" | "totp" => {
-            let tail = args
-                .iter()
-                .take(2)
-                .map(|arg| truncate_for_summary(arg))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if tail.is_empty() {
-                format!("ran sidekar {command}")
-            } else {
-                format!("ran sidekar {command} {tail}")
-            }
-        }
-        _ => {
-            let tail = args
-                .iter()
-                .take(2)
-                .map(|arg| truncate_for_summary(arg))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if tail.is_empty() {
-                format!("ran sidekar {command}")
-            } else {
-                format!("ran sidekar {command} {tail}")
-            }
-        }
-    }
-}
-
-fn safe_arg(value: Option<&String>) -> String {
-    value
-        .map(|value| truncate_for_summary(value))
-        .unwrap_or_else(|| "(none)".to_string())
 }
 
 fn parse_csv_list(value: Option<String>) -> Vec<String> {
@@ -1892,31 +1368,6 @@ fn event_type_label(event_type: &str) -> &'static str {
     }
 }
 
-fn session_category(event_type: &str) -> &'static str {
-    match event_type {
-        "click" | "type" | "fill" | "keyboard" | "paste" | "clipboard" | "insert-text"
-        | "inserttext" => "interaction",
-        "navigate" | "new-tab" | "tab" | "tabs" | "back" | "forward" | "reload" | "frame"
-        | "download" | "pdf" => "browser",
-        "read" | "text" | "dom" | "axtree" | "network" | "cookies" | "storage" | "console"
-        | "service-workers" => "context",
-        "bus" | "cron" => "agent",
-        "memory" => "memory",
-        "session-start" => "intent",
-        _ => "tool",
-    }
-}
-
-fn session_priority(event_type: &str) -> i64 {
-    match event_type {
-        "click" | "type" | "fill" | "keyboard" | "paste" | "clipboard" | "insert-text"
-        | "inserttext" => 1,
-        "navigate" | "new-tab" | "tab" | "tabs" | "back" | "forward" | "reload" | "frame"
-        | "download" | "pdf" | "bus" | "cron" => 2,
-        _ => 3,
-    }
-}
-
 fn cluster_by_similarity(rows: &[MemoryEventRow], threshold: f64) -> Vec<Vec<MemoryEventRow>> {
     let mut clusters = Vec::new();
     let mut used = HashSet::new();
@@ -1964,35 +1415,6 @@ fn candidate_scope_match(row: &MemoryEventRow, project: &str, scope: &str) -> bo
     } else {
         row.project == project || row.scope == "global"
     }
-}
-
-fn truncate_for_summary(value: &str) -> String {
-    truncate_for_summary_limit(value, 80)
-}
-
-fn truncate_for_summary_limit(value: &str, limit: usize) -> String {
-    let trimmed = value.trim();
-    if trimmed.len() <= limit {
-        trimmed.to_string()
-    } else {
-        format!("{}...", &trimmed[..limit.min(trimmed.len())])
-    }
-}
-
-fn unique_strings(values: Vec<String>, limit: usize) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut result = Vec::new();
-    for value in values {
-        let key = normalize_summary(&value);
-        if key.is_empty() || !seen.insert(key) {
-            continue;
-        }
-        result.push(value);
-        if result.len() >= limit {
-            break;
-        }
-    }
-    result
 }
 
 #[cfg(test)]
@@ -2101,61 +1523,4 @@ mod tests {
         })
     }
 
-    #[test]
-    fn finishing_session_persists_summary_and_snapshot() -> Result<()> {
-        with_test_home(|| {
-            let cwd = env::current_dir()?;
-            let cwd = cwd.to_string_lossy().to_string();
-
-            start_agent_session("agent-test", &cwd)?;
-            record_observation(
-                "agent-test",
-                "sidekar",
-                "read",
-                "inspected login flow DOM and auth redirects",
-            )?;
-            record_session_event(
-                "agent-test",
-                "navigate",
-                "navigated to https://example.com/login",
-                "cli",
-            )?;
-            record_session_event(
-                "agent-test",
-                "read",
-                "inspected login flow DOM and auth redirects",
-                "cli",
-            )?;
-
-            finish_agent_session("agent-test")?;
-
-            let conn = crate::broker::open_db()?;
-            let row = conn.query_row(
-                "SELECT ended_at, summary_json, compact_count, observation_count
-                 FROM memory_sessions
-                 WHERE session_name = ?1",
-                ["agent-test"],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<i64>>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )?;
-            assert!(row.0.is_some());
-            assert!(row.1.is_some());
-            assert_eq!(row.2, 1);
-            assert_eq!(row.3, 1);
-
-            let snapshot_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM memory_session_snapshots WHERE session_name = ?1",
-                ["agent-test"],
-                |row| row.get(0),
-            )?;
-            assert_eq!(snapshot_count, 1);
-            Ok(())
-        })
-    }
 }

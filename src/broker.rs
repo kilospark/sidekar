@@ -412,58 +412,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // Local memory layer
     conn.execute_batch(
         "
-        CREATE TABLE IF NOT EXISTS memory_observations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_name TEXT NOT NULL,
-            project TEXT NOT NULL,
-            tool_name TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_observations_session
-            ON memory_observations(session_name, created_at);
-        CREATE INDEX IF NOT EXISTS idx_memory_observations_project
-            ON memory_observations(project, created_at);
-
-        CREATE TABLE IF NOT EXISTS memory_sessions (
-            session_name TEXT PRIMARY KEY,
-            project TEXT NOT NULL,
-            started_at INTEGER NOT NULL,
-            ended_at INTEGER,
-            summary_json TEXT,
-            observation_count INTEGER NOT NULL DEFAULT 0,
-            last_event_at INTEGER,
-            compact_count INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_sessions_project
-            ON memory_sessions(project, started_at);
-
-        CREATE TABLE IF NOT EXISTS memory_session_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_name TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            category TEXT,
-            priority INTEGER NOT NULL DEFAULT 3,
-            data TEXT,
-            data_hash TEXT,
-            source_kind TEXT,
-            created_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_session_events_session
-            ON memory_session_events(session_name, created_at);
-        CREATE INDEX IF NOT EXISTS idx_memory_session_events_priority
-            ON memory_session_events(session_name, priority);
-
-        CREATE TABLE IF NOT EXISTS memory_session_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_name TEXT NOT NULL,
-            snapshot TEXT,
-            event_count INTEGER NOT NULL DEFAULT 0,
-            consumed INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_session_snapshots_session
-            ON memory_session_snapshots(session_name, created_at);
+        DROP TABLE IF EXISTS memory_observations;
+        DROP TABLE IF EXISTS memory_sessions;
+        DROP TABLE IF EXISTS memory_session_events;
+        DROP TABLE IF EXISTS memory_session_snapshots;
 
         CREATE TABLE IF NOT EXISTS memory_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
