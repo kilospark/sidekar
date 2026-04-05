@@ -162,8 +162,62 @@ pub fn find_frame_by_url(node: &Value, target_url: &str) -> Option<(String, Stri
     None
 }
 
+/// Format Unix epoch **seconds** as UTC `YYYY-MM-DD HH:MM:SS UTC` (e.g. cookie `expires`).
 pub fn epoch_to_date(epoch_seconds: i64) -> String {
-    epoch_seconds.to_string()
+    if epoch_seconds <= 0 {
+        return "—".to_string();
+    }
+    let Ok(secs) = u64::try_from(epoch_seconds) else {
+        return epoch_seconds.to_string();
+    };
+    let days = secs / 86_400;
+    let t = secs % 86_400;
+    let (y, mo, d) = unix_epoch_days_to_ymd(days);
+    let hh = t / 3600;
+    let mm = (t % 3600) / 60;
+    let ss = t % 60;
+    format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02} UTC")
+}
+
+fn unix_epoch_days_to_ymd(mut days: u64) -> (u32, u32, u32) {
+    let mut year = 1970u32;
+    loop {
+        let diy = if year_is_leap(year) { 366u64 } else { 365 };
+        if days < diy {
+            break;
+        }
+        days -= diy;
+        year += 1;
+    }
+    let leap = year_is_leap(year);
+    let mdays: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u32;
+    for &dim in &mdays {
+        if days < u64::from(dim) {
+            break;
+        }
+        days -= u64::from(dim);
+        month += 1;
+    }
+    let day = days as u32 + 1;
+    (year, month, day)
+}
+
+fn year_is_leap(y: u32) -> bool {
+    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
 }
 
 pub fn human_size(size: u64) -> String {
@@ -416,7 +470,7 @@ pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Res
     Ok(())
 }
 
-pub fn build_dom_extract_script(selector: Option<&str>) -> Result<String> {
+fn dom_query_root_and_suffix(selector: Option<&str>) -> Result<(String, String)> {
     let root = match selector {
         Some(sel) => format!("document.querySelector({})", serde_json::to_string(sel)?),
         None => "document.body".to_string(),
@@ -425,37 +479,25 @@ pub fn build_dom_extract_script(selector: Option<&str>) -> Result<String> {
         Some(sel) => format!("' for selector: ' + {}", serde_json::to_string(sel)?),
         None => "''".to_string(),
     };
+    Ok((root, selector_suffix))
+}
 
+pub fn build_dom_extract_script(selector: Option<&str>) -> Result<String> {
+    let (root, selector_suffix) = dom_query_root_and_suffix(selector)?;
     Ok(DOM_EXTRACT_TEMPLATE
         .replace("__SIDEKAR_ROOT__", &root)
         .replace("__SIDEKAR_SELECTOR_SUFFIX__", &selector_suffix))
 }
 
 pub fn build_read_extract_script(selector: Option<&str>) -> Result<String> {
-    let root = match selector {
-        Some(sel) => format!("document.querySelector({})", serde_json::to_string(sel)?),
-        None => "document.body".to_string(),
-    };
-    let selector_suffix = match selector {
-        Some(sel) => format!("' for selector: ' + {}", serde_json::to_string(sel)?),
-        None => "''".to_string(),
-    };
-
+    let (root, selector_suffix) = dom_query_root_and_suffix(selector)?;
     Ok(READ_EXTRACT_TEMPLATE
         .replace("__SIDEKAR_ROOT__", &root)
         .replace("__SIDEKAR_SELECTOR_SUFFIX__", &selector_suffix))
 }
 
 pub fn build_text_extract_script(selector: Option<&str>) -> Result<String> {
-    let root = match selector {
-        Some(sel) => format!("document.querySelector({})", serde_json::to_string(sel)?),
-        None => "document.body".to_string(),
-    };
-    let selector_suffix = match selector {
-        Some(sel) => format!("' for selector: ' + {}", serde_json::to_string(sel)?),
-        None => "''".to_string(),
-    };
-
+    let (root, selector_suffix) = dom_query_root_and_suffix(selector)?;
     Ok(TEXT_EXTRACT_TEMPLATE
         .replace("__SIDEKAR_ROOT__", &root)
         .replace("__SIDEKAR_SELECTOR_SUFFIX__", &selector_suffix)
@@ -599,93 +641,7 @@ pub fn find_browser() -> Option<BrowserCandidate> {
         }
     }
 
-    let home = env::var("HOME").unwrap_or_default();
-    let mut candidates: Vec<(String, String)> = Vec::new();
-
-    if cfg!(target_os = "macos") {
-        for (name, rel) in [
-            (
-                "Google Chrome",
-                "Google Chrome.app/Contents/MacOS/Google Chrome",
-            ),
-            (
-                "Google Chrome Canary",
-                "Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-            ),
-            (
-                "Microsoft Edge",
-                "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-            ),
-            (
-                "Brave Browser",
-                "Brave Browser.app/Contents/MacOS/Brave Browser",
-            ),
-            ("Arc", "Arc.app/Contents/MacOS/Arc"),
-            ("Vivaldi", "Vivaldi.app/Contents/MacOS/Vivaldi"),
-            ("Opera", "Opera.app/Contents/MacOS/Opera"),
-            ("Chromium", "Chromium.app/Contents/MacOS/Chromium"),
-        ] {
-            candidates.push((format!("/Applications/{rel}"), name.to_string()));
-            candidates.push((format!("{home}/Applications/{rel}"), name.to_string()));
-        }
-    } else if cfg!(target_os = "linux") {
-        candidates.extend(
-            [
-                ("/usr/bin/google-chrome-stable", "Google Chrome"),
-                ("/usr/bin/google-chrome", "Google Chrome"),
-                ("/usr/local/bin/google-chrome-stable", "Google Chrome"),
-                ("/usr/local/bin/google-chrome", "Google Chrome"),
-                ("/usr/bin/microsoft-edge-stable", "Microsoft Edge"),
-                ("/usr/bin/microsoft-edge", "Microsoft Edge"),
-                ("/usr/bin/brave-browser", "Brave Browser"),
-                ("/usr/bin/brave-browser-stable", "Brave Browser"),
-                ("/usr/bin/vivaldi-stable", "Vivaldi"),
-                ("/usr/bin/vivaldi", "Vivaldi"),
-                ("/usr/bin/opera", "Opera"),
-                ("/usr/bin/chromium-browser", "Chromium"),
-                ("/usr/bin/chromium", "Chromium"),
-                ("/usr/local/bin/chromium-browser", "Chromium"),
-                ("/usr/local/bin/chromium", "Chromium"),
-                ("/snap/bin/chromium", "Chromium (snap)"),
-            ]
-            .into_iter()
-            .map(|(p, n)| (p.to_string(), n.to_string())),
-        );
-    } else if cfg!(target_os = "windows") {
-        let pf = env::var("PROGRAMFILES").unwrap_or_else(|_| "C:\\Program Files".to_string());
-        let pf86 =
-            env::var("PROGRAMFILES(X86)").unwrap_or_else(|_| "C:\\Program Files (x86)".to_string());
-        let local = env::var("LOCALAPPDATA").unwrap_or_default();
-
-        candidates.extend([
-            (
-                format!("{pf}\\Google\\Chrome\\Application\\chrome.exe"),
-                "Google Chrome".to_string(),
-            ),
-            (
-                format!("{pf86}\\Google\\Chrome\\Application\\chrome.exe"),
-                "Google Chrome".to_string(),
-            ),
-            (
-                format!("{local}\\Google\\Chrome\\Application\\chrome.exe"),
-                "Google Chrome".to_string(),
-            ),
-            (
-                format!("{pf}\\Microsoft\\Edge\\Application\\msedge.exe"),
-                "Microsoft Edge".to_string(),
-            ),
-            (
-                format!("{pf86}\\Microsoft\\Edge\\Application\\msedge.exe"),
-                "Microsoft Edge".to_string(),
-            ),
-            (
-                format!("{pf}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
-                "Brave Browser".to_string(),
-            ),
-        ]);
-    }
-
-    for (path, name) in candidates {
+    for (path, name) in all_browser_candidates() {
         if Path::new(&path).exists() {
             return Some(BrowserCandidate { path, name });
         }
@@ -886,4 +842,21 @@ pub fn new_session_id() -> String {
     let mut bytes = [0u8; 4];
     rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::epoch_to_date;
+
+    #[test]
+    fn epoch_to_date_non_positive() {
+        assert_eq!(epoch_to_date(0), "—");
+        assert_eq!(epoch_to_date(-1), "—");
+    }
+
+    #[test]
+    fn epoch_to_date_known_instants() {
+        assert_eq!(epoch_to_date(1), "1970-01-01 00:00:01 UTC");
+        assert_eq!(epoch_to_date(86_400), "1970-01-02 00:00:00 UTC");
+    }
 }

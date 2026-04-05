@@ -150,14 +150,15 @@ pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     match sub {
         "write" => cmd_memory_write(ctx, &args[1..]),
         "search" => cmd_memory_search(ctx, &args[1..]),
+        "list" => cmd_memory_list(ctx, &args[1..]),
+        "delete" => cmd_memory_delete(ctx, &args[1..]),
         "context" => cmd_memory_context(ctx, &args[1..]),
         "compact" => cmd_memory_compact(ctx, &args[1..]),
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
         "detail" => cmd_memory_detail(ctx, &args[1..]),
-        "history" => cmd_memory_history(ctx, &args[1..]),
         "" => bail!(
-            "Usage: sidekar memory <write|search|context|compact|patterns|rate|detail|history> ..."
+            "Usage: sidekar memory <write|search|list|delete|context|compact|patterns|rate|detail> ..."
         ),
         other => bail!("Unknown memory subcommand: {other}"),
     }
@@ -324,6 +325,102 @@ fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let scope_view =
+        crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
+    let project = if scope_view == crate::scope::ScopeView::Project {
+        Some(
+            extract_optional_value(args, "--project=")
+                .unwrap_or_else(|| crate::scope::resolve_project_name(None)),
+        )
+    } else {
+        extract_optional_value(args, "--project=")
+    };
+    let event_type = extract_optional_value(args, "--type=")
+        .map(|value| normalize_event_type(&value))
+        .transpose()?;
+    let limit = extract_optional_value(args, "--limit=")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20);
+
+    let conn = crate::broker::open_db()?;
+
+    let scope_clause = match scope_view {
+        crate::scope::ScopeView::Project => "(project = ?1 OR scope = 'global')",
+        crate::scope::ScopeView::Global => "scope = 'global'",
+        crate::scope::ScopeView::All => "1=1",
+    };
+    let type_clause = if event_type.is_some() {
+        "AND event_type = ?2"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT id, project, event_type, scope, summary, confidence, tags_json, created_at
+         FROM memory_events
+         WHERE superseded_by IS NULL AND {scope_clause} {type_clause}
+         ORDER BY updated_at DESC
+         LIMIT ?3"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let project_str = project.as_deref().unwrap_or("");
+    let type_str = event_type.as_deref().unwrap_or("");
+    let mut rows = stmt.query(params![project_str, type_str, limit as i64])?;
+
+    let mut count = 0usize;
+    while let Some(row) = rows.next()? {
+        count += 1;
+        let id: i64 = row.get(0)?;
+        let proj: String = row.get(1)?;
+        let etype: String = row.get(2)?;
+        let scope: String = row.get(3)?;
+        let summary: String = row.get(4)?;
+        let confidence: f64 = row.get(5)?;
+        let tags: Vec<String> =
+            serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default();
+        let scope_label = if scope == "global" { " [global]" } else { "" };
+        let tags_label = if tags.is_empty() {
+            String::new()
+        } else {
+            format!(" tags={}", tags.join(","))
+        };
+        out!(
+            ctx,
+            "[{}] {} ({}, {:.2}, {}){}{}", id, summary, etype, confidence, proj, scope_label, tags_label
+        );
+    }
+    if count == 0 {
+        out!(ctx, "No memories found.");
+    }
+    Ok(())
+}
+
+fn cmd_memory_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let id: i64 = args
+        .first()
+        .context("Usage: sidekar memory delete <id>")?
+        .parse()
+        .context("memory id must be numeric")?;
+
+    let conn = crate::broker::open_db()?;
+
+    // Verify it exists and get summary for the confirmation message.
+    let summary: String = conn
+        .query_row(
+            "SELECT summary FROM memory_events WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context(format!("No memory with id [{}].", id))?;
+
+    conn.execute("DELETE FROM memory_events WHERE id = ?1", [id])?;
+
+    out!(ctx, "Deleted memory [{}]: {}", id, summary);
+    Ok(())
+}
+
 fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let scope_view =
         crate::scope::ScopeView::parse(extract_optional_value(args, "--scope=").as_deref())?;
@@ -404,16 +501,6 @@ fn cmd_memory_rate(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             params![id, serde_json::to_string(&merged)?],
         )?;
     }
-    insert_history(
-        &conn,
-        id,
-        &format!("rated_{rating}"),
-        None,
-        None,
-        Some(old_confidence),
-        Some(new_confidence),
-        serde_json::json!({}),
-    )?;
     out!(
         ctx,
         "Rated memory [{}]: {:.2} -> {:.2}",
@@ -492,43 +579,6 @@ fn cmd_memory_detail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_memory_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let id: i64 = args
-        .first()
-        .context("Usage: sidekar memory history <id>")?
-        .parse()
-        .context("memory id must be numeric")?;
-    let conn = crate::broker::open_db()?;
-    let mut stmt = conn.prepare(
-        "SELECT action, old_confidence, new_confidence, metadata_json, created_at
-         FROM memory_event_history
-         WHERE event_id = ?1
-         ORDER BY id ASC",
-    )?;
-    let mut rows = stmt.query([id])?;
-    let mut printed = false;
-    while let Some(row) = rows.next()? {
-        printed = true;
-        let action: String = row.get(0)?;
-        let old_confidence: Option<f64> = row.get(1)?;
-        let new_confidence: Option<f64> = row.get(2)?;
-        let metadata_json: Option<String> = row.get(3)?;
-        let created_at: i64 = row.get(4)?;
-        out!(
-            ctx,
-            "{} old={:?} new={:?} at={} {}",
-            action,
-            old_confidence,
-            new_confidence,
-            created_at,
-            metadata_json.unwrap_or_default()
-        );
-    }
-    if !printed {
-        out!(ctx, "No history for memory [{}].", id);
-    }
-    Ok(())
-}
 
 fn write_memory_event(
     project: &str,
@@ -560,16 +610,6 @@ fn write_memory_event(
              WHERE id = ?1",
             params![existing_id, new_confidence, now],
         )?;
-        insert_history(
-            &conn,
-            existing_id,
-            "deduplicated_hash",
-            None,
-            None,
-            Some(old_confidence),
-            Some(new_confidence),
-            serde_json::json!({}),
-        )?;
         return Ok(format!("Deduplicated existing memory [{}].", existing_id));
     }
 
@@ -593,16 +633,6 @@ fn write_memory_event(
                      last_reinforced_at = ?3, updated_at = ?3
                  WHERE id = ?1",
                 params![candidate.row.id, new_confidence, now],
-            )?;
-            insert_history(
-                &conn,
-                candidate.row.id,
-                "deduplicated_fts",
-                None,
-                None,
-                Some(old_confidence),
-                Some(new_confidence),
-                serde_json::json!({"score":candidate.score}),
             )?;
             return Ok(format!(
                 "Deduplicated existing memory [{}].",
@@ -650,28 +680,8 @@ fn write_memory_event(
             "UPDATE memory_events SET superseded_by = ?2, updated_at = ?3 WHERE id = ?1",
             params![candidate.id, event_id, now],
         )?;
-        insert_history(
-            &conn,
-            candidate.id,
-            "superseded",
-            Some(&candidate.summary),
-            Some(summary),
-            Some(candidate.confidence),
-            Some(confidence),
-            serde_json::json!({"superseded_by":event_id}),
-        )?;
     }
 
-    insert_history(
-        &conn,
-        event_id,
-        "created",
-        None,
-        Some(summary),
-        None,
-        Some(confidence),
-        serde_json::json!({}),
-    )?;
     Ok(format!("Stored memory [{}].", event_id))
 }
 
@@ -1145,34 +1155,6 @@ where
     Ok(())
 }
 
-fn insert_history(
-    conn: &rusqlite::Connection,
-    event_id: i64,
-    action: &str,
-    old_summary: Option<&str>,
-    new_summary: Option<&str>,
-    old_confidence: Option<f64>,
-    new_confidence: Option<f64>,
-    metadata: serde_json::Value,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO memory_event_history (
-            event_id, action, old_summary, new_summary, old_confidence,
-            new_confidence, metadata_json, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            event_id,
-            action,
-            old_summary,
-            new_summary,
-            old_confidence,
-            new_confidence,
-            serde_json::to_string(&metadata)?,
-            now_epoch_ms()
-        ],
-    )?;
-    Ok(())
-}
 
 fn event_tags(conn: &rusqlite::Connection, id: i64) -> Result<Vec<String>> {
     let tags = conn.query_row(

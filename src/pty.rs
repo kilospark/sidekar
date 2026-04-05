@@ -337,7 +337,7 @@ pub async fn run_agent(
         None => std::env::var("SIDEKAR_PROXY").is_ok(),
     };
     let proxy_info = if proxy_enabled {
-        let verbose = std::env::var("SIDEKAR_VERBOSE").is_ok();
+        let verbose = crate::runtime::verbose();
         match crate::proxy::start(verbose).await {
             Ok((port, ca_path)) => Some((port, ca_path)),
             Err(e) => {
@@ -375,6 +375,8 @@ pub async fn run_agent(
         .iter()
         .map(|(k, _)| (*k, std::env::var(k).ok()))
         .collect();
+    // SAFETY (`env::set_var`): Temporary overrides for the child only; parent restores below
+    // before continuing. No other thread should rely on these values during this window.
     unsafe {
         for (k, v) in &env_overrides {
             std::env::set_var(k, v);
@@ -386,6 +388,7 @@ pub async fn run_agent(
     let master_raw = master.as_raw_fd();
 
     // Restore parent env vars to their original state.
+    // SAFETY: same as above — sequential restore before resuming normal execution.
     unsafe {
         for (k, original) in &saved_env {
             match original {
@@ -455,7 +458,7 @@ pub async fn run_agent(
         }
     };
 
-    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+    if crate::runtime::verbose() {
         crate::broker::try_log_event(
             "debug",
             "pty",
@@ -475,7 +478,7 @@ pub async fn run_agent(
     // Optionally establish tunnel to relay for web terminal access (dashboard / web terminal).
     let tunnel = match relay_policy {
         crate::config::RelayMode::Off | crate::config::RelayMode::Auto => {
-            if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+            if crate::runtime::verbose() {
                 crate::broker::try_log_event(
                     "debug",
                     "relay",
@@ -556,7 +559,7 @@ pub async fn run_agent(
     let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
     let _ = broker::unregister_agent(&identity.name);
 
-    if std::env::var("SIDEKAR_VERBOSE").is_ok() {
+    if crate::runtime::verbose() {
         crate::broker::try_log_event(
             "debug",
             "pty",

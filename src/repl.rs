@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use crate::broker;
 use crate::message::AgentId;
@@ -22,7 +22,7 @@ pub struct ReplOptions {
 
 /// Entry point for the REPL.
 pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
-    providers::set_verbose(opts.verbose || std::env::var("SIDEKAR_VERBOSE").is_ok());
+    crate::runtime::init(opts.verbose);
 
     // Credential and model are optional — user can set them interactively.
     let mut cred_name: Option<String> = opts.credential;
@@ -88,6 +88,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
+    crate::runtime::set_agent_name(Some(bus_name.clone()));
 
     // Relay tunnel (web terminal access)
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -280,174 +281,6 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                             continue;
                         };
                         match action {
-    SlashAsync::Compact => {
-        let Some(ref mdl) = model else {
-            tunnel_println(
-                "\x1b[33mSet a model first: /model <name>\x1b[0m",
-            );
-            continue;
-        };
-        let cancel =
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let renderer =
-            std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
-        let on_event: crate::agent::StreamCallback =
-            Box::new(move |event: &StreamEvent| {
-                renderer.borrow_mut().render(event)
-            });
-        let changed = crate::agent::compaction::compact_now(
-            prov,
-            mdl,
-            &mut history,
-            &on_event,
-        )
-        .await;
-        if changed {
-            let _ = session::replace_history(&session_id, &history);
-            tunnel_println("\x1b[2m[session compacted]\x1b[0m");
-        } else {
-            tunnel_println("\x1b[2m[nothing to compact]\x1b[0m");
-        }
-        let _ = io::stdout().flush();
-    }
-    SlashAsync::ListModels => {
-        let cn = cred_name.as_deref().unwrap_or("?");
-        let pt = prov.provider_type();
-        tunnel_println(&format!(
-            "Fetching models for \x1b[1m{cn}\x1b[0m ({pt})..."
-        ));
-        let models = providers::fetch_model_list(pt, prov.api_key()).await;
-        if models.is_empty() {
-            tunnel_println("No models found.");
-        } else {
-            tunnel_println(&format!(
-                "\nModels for \x1b[1m{cn}\x1b[0m ({pt}):\n"
-            ));
-            for m in &models {
-                let ctx = if m.context_window > 0 {
-                    format!("{}k ctx", m.context_window / 1000)
-                } else {
-                    String::new()
-                };
-                tunnel_println(&format!(
-                    "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
-                    m.id,
-                    m.display_name,
-                    if ctx.is_empty() {
-                        String::new()
-                    } else {
-                        format!(", {ctx}")
-                    }
-                ));
-            }
-            tunnel_println(&format!(
-                "\n\x1b[2m{} models\x1b[0m",
-                models.len()
-            ));
-        }
-    }
-    SlashAsync::InteractiveSelectModel => {
-        let cn = cred_name.as_deref().unwrap_or("?");
-        let pt = prov.provider_type();
-        tunnel_println(&format!(
-            "Fetching models for \x1b[1m{cn}\x1b[0m ({pt})..."
-        ));
-        let models = providers::fetch_model_list(pt, prov.api_key()).await;
-        if models.is_empty() {
-            tunnel_println("No models found.");
-            continue;
-        }
-        let current = model.as_deref().cloned().unwrap_or_default();
-        tunnel_println("\nAvailable models (pick one to set):");
-        for (i, m) in models.iter().enumerate() {
-            let ctx = if m.context_window > 0 {
-                format!("{}k ctx", m.context_window / 1000)
-            } else {
-                String::new()
-            };
-            let marker = if m.id == current { " (current)" } else { "" };
-            tunnel_println(&format!(
-                "  [{i}] \x1b[36m{}\x1b[0m  \x1b[2m{}{}{marker}\x1b[0m",
-                m.id,
-                m.display_name,
-                if ctx.is_empty() { String::new() } else { format!(", {ctx}") }
-            ));
-        }
-        print!("Enter number (or Enter to keep current): ");
-        let _ = io::stdout().flush();
-        let mut line = String::new();
-        if io::stdin().lock().read_line(&mut line).is_ok() {
-            let choice = line.trim();
-            if choice.is_empty() {
-                if !current.is_empty() {
-                    tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
-                }
-                continue;
-            } else if let Ok(idx) = choice.parse::<usize>() {
-                if let Some(m) = models.get(idx) {
-                    model = Some(m.id.clone());
-                    tunnel_println(&format!("\x1b[32mModel set: {} \x1b[0m({})", m.id, m.display_name));
-                    continue;
-                }
-            }
-            tunnel_println("Invalid selection.");
-        }
-        continue;
-    }
-    SlashAsync::Compact => {
-        // existing
-    }
-    SlashAsync::ListModels => {
-        // existing fetch and print
-    }
-    SlashAsync::InteractiveSelectModel => {
-        let cn = cred_name.as_deref().unwrap_or("?");
-        let pt = prov.provider_type();
-        tunnel_println(&format!(
-            "Fetching models for \x1b[1m{cn}\x1b[0m ({pt})..."
-        ));
-        let models = providers::fetch_model_list(pt, prov.api_key()).await;
-        if models.is_empty() {
-            tunnel_println("No models found.");
-            continue;
-        }
-        let current = model.as_deref().cloned().unwrap_or_default();
-        tunnel_println("\nAvailable models (pick one to set):");
-        for (i, m) in models.iter().enumerate() {
-            let ctx = if m.context_window > 0 {
-                format!("{}k ctx", m.context_window / 1000)
-            } else {
-                String::new()
-            };
-            let marker = if m.id == current { " (current)" } else { "" };
-            tunnel_println(&format!(
-                "  [{i}] \x1b[36m{}\x1b[0m  \x1b[2m{}{}{marker}\x1b[0m",
-                m.id,
-                m.display_name,
-                if ctx.is_empty() { String::new() } else { format!(", {ctx}") }
-            ));
-        }
-        print!("Enter number (or Enter to keep current): ");
-        let _ = io::stdout().flush();
-        let mut line = String::new();
-        if io::stdin().lock().read_line(&mut line).is_ok() {
-            let choice = line.trim();
-            if choice.is_empty() {
-                if !current.is_empty() {
-                    tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
-                }
-                continue;
-            } else if let Ok(idx) = choice.parse::<usize>() {
-                if let Some(m) = models.get(idx) {
-                    model = Some(m.id.clone());
-                    tunnel_println(&format!("\x1b[32mModel set: {} \x1b[0m({})", m.id, m.display_name));
-                    continue;
-                }
-            }
-            tunnel_println("Invalid selection.");
-        }
-        continue;
-    }
                             SlashAsync::Compact => {
                                 let Some(ref mdl) = model else {
                                     tunnel_println(
@@ -455,8 +288,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                     );
                                     continue;
                                 };
-                                let cancel =
-                                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                                let cancel = std::sync::Arc::new(
+                                    std::sync::atomic::AtomicBool::new(false),
+                                );
                                 let renderer =
                                     std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
                                 let on_event: crate::agent::StreamCallback =
@@ -478,7 +312,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                 }
                                 let _ = io::stdout().flush();
                             }
-                            SlashAsync::ListModels => {
+                            SlashAsync::InteractiveSelectModel => {
                                 let cn = cred_name.as_deref().unwrap_or("?");
                                 let pt = prov.provider_type();
                                 tunnel_println(&format!(
@@ -487,31 +321,49 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                 let models = providers::fetch_model_list(pt, prov.api_key()).await;
                                 if models.is_empty() {
                                     tunnel_println("No models found.");
-                                } else {
+                                    continue;
+                                }
+                                let current = model.clone().unwrap_or_default();
+                                tunnel_println("\nAvailable models (pick one to set):");
+                                for (i, m) in models.iter().enumerate() {
+                                    let ctx = if m.context_window > 0 {
+                                        format!("{}k ctx", m.context_window / 1000)
+                                    } else {
+                                        String::new()
+                                    };
+                                    let marker = if m.id == current { " (current)" } else { "" };
                                     tunnel_println(&format!(
-                                        "\nModels for \x1b[1m{cn}\x1b[0m ({pt}):\n"
-                                    ));
-                                    for m in &models {
-                                        let ctx = if m.context_window > 0 {
-                                            format!("{}k ctx", m.context_window / 1000)
-                                        } else {
+                                        "  [{i}] \x1b[36m{}\x1b[0m  \x1b[2m{}{}{marker}\x1b[0m",
+                                        m.id,
+                                        m.display_name,
+                                        if ctx.is_empty() {
                                             String::new()
-                                        };
-                                        tunnel_println(&format!(
-                                            "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
-                                            m.id,
-                                            m.display_name,
-                                            if ctx.is_empty() {
-                                                String::new()
-                                            } else {
-                                                format!(", {ctx}")
-                                            }
-                                        ));
-                                    }
-                                    tunnel_println(&format!(
-                                        "\n\x1b[2m{} models\x1b[0m",
-                                        models.len()
+                                        } else {
+                                            format!(", {ctx}")
+                                        }
                                     ));
+                                }
+                                print!("Enter number (or Enter to keep current): ");
+                                let _ = io::stdout().flush();
+                                let mut line = String::new();
+                                if io::stdin().lock().read_line(&mut line).is_ok() {
+                                    let choice = line.trim();
+                                    if choice.is_empty() {
+                                        if !current.is_empty() {
+                                            tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
+                                        }
+                                        continue;
+                                    } else if let Ok(idx) = choice.parse::<usize>() {
+                                        if let Some(m) = models.get(idx) {
+                                            model = Some(m.id.clone());
+                                            tunnel_println(&format!(
+                                                "\x1b[32mModel set: {} \x1b[0m({})",
+                                                m.id, m.display_name
+                                            ));
+                                            continue;
+                                        }
+                                    }
+                                    tunnel_println("Invalid selection.");
                                 }
                             }
                         }
@@ -527,9 +379,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                     "Credential set: \x1b[1m{name}\x1b[0m ({pt})"
                                 ));
                                 if model.is_none() {
-                tunnel_println(
-                    "\x1b[2mUse /model list to list available models, then /model <name> to select one.\x1b[0m",
-                );
+                                    tunnel_println(
+                                        "\x1b[2mUse /model list to select a model.\x1b[0m",
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -651,7 +503,17 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
     }
 
-    tunnel_println("");
+    // Show resume command
+    let mut resume_cmd = String::from("sidekar repl");
+    if let Some(ref c) = cred_name {
+        resume_cmd.push_str(&format!(" -c {c}"));
+    }
+    if let Some(ref m) = model {
+        resume_cmd.push_str(&format!(" -m {m}"));
+    }
+    resume_cmd.push_str(&format!(" -r {session_id}"));
+    tunnel_println(&format!("\n\x1b[2mResume: {resume_cmd}\x1b[0m"));
+
     stop_relay(tunnel_tx);
     let _ = broker::unregister_agent(&bus_name);
     Ok(())
@@ -1185,11 +1047,7 @@ enum SlashResult {
 /// Async slash commands that require an active provider.
 enum SlashAsync {
     Compact,
-    ListModels,
     InteractiveSelectModel,
-}
-    Compact,
-    ListModels,
 }
 
 struct SlashContext<'a> {
@@ -1273,13 +1131,13 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
         },
         "/model" => {
             let parts: Vec<_> = input.split_whitespace().collect();
-            let arg = parts.get(1);
+            let arg = parts.get(1).copied();
             match arg {
                 Some("list") => SlashResult::NeedProvider(SlashAsync::InteractiveSelectModel),
                 Some(name) => SlashResult::SetModel(name.to_string()),
                 None => {
-                    if let Some(m) = model.as_deref() {
-                        tunnel_println(&format!("Current model: {m}"));
+                    if model != "(not set)" {
+                        tunnel_println(&format!("Current model: {model}"));
                     } else {
                         tunnel_println("No model set.");
                     }
@@ -1290,7 +1148,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
         },
         "/credential" => {
             let parts: Vec<_> = input.split_whitespace().collect();
-            let arg = parts.get(1);
+            let arg = parts.get(1).copied();
             match arg {
                 Some("list") => {
                     let creds = providers::oauth::list_credentials();
@@ -1298,7 +1156,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                         tunnel_println("No credentials stored. Use: sidekar repl login <nickname>");
                         SlashResult::Continue
                     } else {
-                        let current = cred_name.as_deref().cloned().unwrap_or_default();
+                        let current = cred_name.to_string();
                         tunnel_println("Stored credentials (pick to switch):");
                         for (i, (name, provider)) in creds.iter().enumerate() {
                             let marker = if *name == current { " (current)" } else { "" };
@@ -1330,8 +1188,8 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                 }
                 Some(name) => SlashResult::SetCredential(name.to_string()),
                 None => {
-                    if let Some(c) = cred_name.as_deref() {
-                        tunnel_println(&format!("Current credential: {c}"));
+                    if cred_name != "(none)" {
+                        tunnel_println(&format!("Current credential: {cred_name}"));
                     } else {
                         tunnel_println("No credential set.");
                     }
@@ -1360,20 +1218,20 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                     SlashResult::Continue
                 }
             }
-        }
+        },
         "/verbose" => {
             let arg = input.split_whitespace().nth(1).unwrap_or("");
             match arg {
                 "on" | "true" | "1" => {
-                    crate::providers::set_verbose(true);
+                    crate::runtime::set_verbose(true);
                     tunnel_println("Verbose mode: on");
                 }
                 "off" | "false" | "0" => {
-                    crate::providers::set_verbose(false);
+                    crate::runtime::set_verbose(false);
                     tunnel_println("Verbose mode: off");
                 }
                 "" => {
-                    let state = if crate::providers::is_verbose() {
+                    let state = if crate::runtime::verbose() {
                         "on"
                     } else {
                         "off"
@@ -1391,7 +1249,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
             tunnel_println("  /credential  — Show/set/list & select stored credentials");
             tunnel_println("  /model       — Show/set/list & select available models");
             tunnel_println("  /new         — Start fresh session");
-    tunnel_println("  /session     — List and switch sessions");
+            tunnel_println("  /session     — List and switch sessions");
             tunnel_println("  /compact     — Compact older session context now");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
             tunnel_println("  /verbose     — Toggle verbose API logging (on/off)");
@@ -1421,10 +1279,10 @@ fn is_known_slash_command(cmd: &str) -> bool {
             | "/new"
             | "/reset"
             | "/session"
-| "/credential"
-| "/model"
-| "/compact"
-| "/relay"
+            | "/credential"
+            | "/model"
+            | "/compact"
+            | "/relay"
             | "/verbose"
             | "/help"
     )
@@ -1507,15 +1365,427 @@ impl Drop for RawModeGuard {
     }
 }
 
-// Placeholder for LineEditor, read_input_or_bus, print_banner - assume they remain the same, but update print_banner for consistency.
+enum LineEditResult {
+    Continue,
+    Submit(String),
+    Eof,
+}
+
+struct LineEditor {
+    buffer: String,
+    cursor: usize,
+    escape: Vec<u8>,
+    utf8: Vec<u8>,
+    history: Vec<String>,
+    history_index: Option<usize>,
+    history_draft: Option<String>,
+    escape_started_at: Option<std::time::Instant>,
+}
+
+impl LineEditor {
+    fn with_history(history: Vec<String>) -> Self {
+        Self {
+            buffer: String::new(),
+            cursor: 0,
+            escape: Vec::new(),
+            utf8: Vec::new(),
+            history,
+            history_index: None,
+            history_draft: None,
+            escape_started_at: None,
+        }
+    }
+
+    fn emit(&self, text: &str) {
+        print!("{text}");
+        crate::tunnel::tunnel_send(text.as_bytes().to_vec());
+        let _ = io::stdout().flush();
+    }
+
+    fn redraw(&self) {
+        let mut line = format!("\r\x1b[K\x1b[36m›\x1b[0m {}", self.buffer);
+        let trailing = self.buffer[self.cursor..].chars().count();
+        if trailing > 0 {
+            line.push_str(&format!("\x1b[{}D", trailing));
+        }
+        self.emit(&line);
+    }
+
+    fn clear_display(&self) {
+        self.emit("\r\x1b[K");
+    }
+
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.escape.clear();
+        self.utf8.clear();
+        self.history_index = None;
+        self.history_draft = None;
+        self.escape_started_at = None;
+    }
+
+    fn feed_bytes(&mut self, bytes: &[u8]) -> LineEditResult {
+        for &byte in bytes {
+            let result = self.feed_byte(byte);
+            if !matches!(result, LineEditResult::Continue) {
+                return result;
+            }
+        }
+        LineEditResult::Continue
+    }
+
+    fn feed_byte(&mut self, byte: u8) -> LineEditResult {
+        if !self.escape.is_empty() {
+            self.escape.push(byte);
+            if self.try_handle_escape() {
+                self.redraw();
+            }
+            return LineEditResult::Continue;
+        }
+
+        if !self.utf8.is_empty() {
+            self.utf8.push(byte);
+            match std::str::from_utf8(&self.utf8) {
+                Ok(s) => {
+                    if let Some(ch) = s.chars().next() {
+                        self.insert_char(ch);
+                        self.utf8.clear();
+                        self.redraw();
+                    }
+                }
+                Err(err) if err.error_len().is_none() => {}
+                Err(_) => {
+                    self.utf8.clear();
+                }
+            }
+            return LineEditResult::Continue;
+        }
+
+        match byte {
+            b'\r' | b'\n' => {
+                self.emit("\r\n");
+                let submitted = self.buffer.clone();
+                self.record_submission(&submitted);
+                self.reset();
+                LineEditResult::Submit(submitted)
+            }
+            0x04 => {
+                if self.buffer.is_empty() {
+                    self.emit("\r\n");
+                    LineEditResult::Eof
+                } else {
+                    self.delete_at_cursor();
+                    self.redraw();
+                    LineEditResult::Continue
+                }
+            }
+            0x03 => {
+                self.emit("\r\n");
+                self.cancel_line();
+                LineEditResult::Eof
+            }
+            0x7f | 0x08 => {
+                self.backspace();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x1b => {
+                self.escape.push(byte);
+                self.escape_started_at = Some(std::time::Instant::now());
+                LineEditResult::Continue
+            }
+            byte if byte.is_ascii_control() => LineEditResult::Continue,
+            byte if byte.is_ascii() => {
+                self.insert_char(byte as char);
+                self.redraw();
+                LineEditResult::Continue
+            }
+            _ => {
+                self.utf8.push(byte);
+                LineEditResult::Continue
+            }
+        }
+    }
+
+    fn try_handle_escape(&mut self) -> bool {
+        match self.escape.as_slice() {
+            [0x1b, b'[', b'D'] => {
+                self.move_left();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b, b'[', b'C'] => {
+                self.move_right();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b, b'[', b'A'] => {
+                self.history_prev();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b, b'[', b'B'] => {
+                self.history_next();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b, b'[', b'H'] | [0x1b, b'O', b'H'] => {
+                self.cursor = 0;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b, b'[', b'F'] | [0x1b, b'O', b'F'] => {
+                self.cursor = self.buffer.len();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b, b'[', b'3', b'~'] => {
+                self.delete_at_cursor();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            [0x1b] | [0x1b, b'['] | [0x1b, b'O'] | [0x1b, b'[', b'3'] => false,
+            _ => {
+                self.escape.clear();
+                self.escape_started_at = None;
+                false
+            }
+        }
+    }
+
+    fn maybe_resolve_pending_escape(&mut self) -> bool {
+        if self.escape.as_slice() != [0x1b] {
+            return false;
+        }
+        let Some(started) = self.escape_started_at else {
+            return false;
+        };
+        if started.elapsed() < std::time::Duration::from_millis(75) {
+            return false;
+        }
+        self.cancel_line();
+        self.redraw();
+        true
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        self.detach_history_nav();
+        self.buffer.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+
+    fn move_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.cursor = self.buffer[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+    }
+
+    fn move_right(&mut self) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        if let Some(ch) = self.buffer[self.cursor..].chars().next() {
+            self.cursor += ch.len_utf8();
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.detach_history_nav();
+        let prev = self.buffer[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        self.buffer.drain(prev..self.cursor);
+        self.cursor = prev;
+    }
+
+    fn delete_at_cursor(&mut self) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        self.detach_history_nav();
+        if let Some(ch) = self.buffer[self.cursor..].chars().next() {
+            let end = self.cursor + ch.len_utf8();
+            self.buffer.drain(self.cursor..end);
+        }
+    }
+
+    fn cancel_line(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.escape.clear();
+        self.utf8.clear();
+        self.history_index = None;
+        self.history_draft = None;
+        self.escape_started_at = None;
+    }
+
+    fn detach_history_nav(&mut self) {
+        if self.history_index.is_some() {
+            self.history_index = None;
+            self.history_draft = None;
+        }
+    }
+
+    fn record_submission(&mut self, line: &str) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self.history.last().is_some_and(|prev| prev == line) {
+            return;
+        }
+        self.history.push(line.to_string());
+    }
+
+    fn history_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        match self.history_index {
+            None => {
+                self.history_draft = Some(self.buffer.clone());
+                self.history_index = Some(self.history.len() - 1);
+            }
+            Some(0) => {}
+            Some(idx) => {
+                self.history_index = Some(idx - 1);
+            }
+        }
+        self.load_history_selection();
+    }
+
+    fn history_next(&mut self) {
+        match self.history_index {
+            None => {}
+            Some(idx) if idx + 1 < self.history.len() => {
+                self.history_index = Some(idx + 1);
+                self.load_history_selection();
+            }
+            Some(_) => {
+                self.history_index = None;
+                self.buffer = self.history_draft.take().unwrap_or_default();
+                self.cursor = self.buffer.len();
+            }
+        }
+    }
+
+    fn load_history_selection(&mut self) {
+        if let Some(idx) = self.history_index {
+            self.buffer = self.history[idx].clone();
+            self.cursor = self.buffer.len();
+        }
+    }
+}
+
+fn read_input_or_bus(bus_name: &str, editor: &mut LineEditor, tunnel_fd: Option<i32>) -> InputEvent {
+    editor.redraw();
+
+    let _raw_mode = match RawModeGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let mut line_buf = String::new();
+            match io::stdin().lock().read_line(&mut line_buf) {
+                Ok(0) => return InputEvent::Eof,
+                Ok(_) => return InputEvent::User(line_buf.trim_end_matches('\n').to_string()),
+                Err(_) => return InputEvent::Eof,
+            }
+        }
+    };
+
+    let mut buf = [0u8; 64];
+
+    loop {
+        if broker::has_pending_messages(bus_name) {
+            editor.clear_display();
+            return InputEvent::Bus;
+        }
+
+        unsafe {
+            let nfds: libc::nfds_t;
+            let mut fds_arr = [
+                libc::pollfd {
+                    fd: 0,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: tunnel_fd.unwrap_or(-1),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            nfds = if tunnel_fd.is_some() { 2 } else { 1 };
+
+            let ready = libc::poll(fds_arr.as_mut_ptr(), nfds, 100);
+            if ready > 0 {
+                if nfds > 1 && (fds_arr[1].revents & libc::POLLIN) != 0 {
+                    match libc::read(
+                        fds_arr[1].fd,
+                        buf.as_mut_ptr() as *mut libc::c_void,
+                        buf.len(),
+                    ) {
+                        n if n > 0 => match editor.feed_bytes(&buf[..n as usize]) {
+                            LineEditResult::Continue => {}
+                            LineEditResult::Submit(line) => return InputEvent::User(line),
+                            LineEditResult::Eof => return InputEvent::Eof,
+                        },
+                        _ => {}
+                    }
+                }
+                if (fds_arr[0].revents & libc::POLLIN) != 0 {
+                    match io::stdin().read(&mut buf) {
+                        Ok(0) => return InputEvent::Eof,
+                        Ok(n) => match editor.feed_bytes(&buf[..n]) {
+                            LineEditResult::Continue => {}
+                            LineEditResult::Submit(line) => return InputEvent::User(line),
+                            LineEditResult::Eof => return InputEvent::Eof,
+                        },
+                        Err(_) => return InputEvent::Eof,
+                    }
+                }
+            } else if ready == 0 {
+                let _ = editor.maybe_resolve_pending_escape();
+            } else if ready < 0 {
+                continue;
+            }
+        }
+    }
+}
 
 fn print_banner(model: Option<&str>, credential: Option<&str>) {
     println!("\x1b[1;36mSidekar REPL\x1b[0m");
     let line2 = match (model, credential) {
-        (Some(m), Some(c)) => format!("\x1b[36mmodel\x1b[0m {m}  \x1b[36mcredential\x1b[0m {c}  \x1b[2m/help commands · /quit exit\x1b[0m"),
-        (Some(m), None) => format!("\x1b[36mmodel\x1b[0m {m}  \x1b[2m/credential <name> to get started · /help for commands\x1b[0m"),
-        (None, Some(c)) => format!("\x1b[36mcredential\x1b[0m {c}  \x1b[2m/model <name> to select a model\x1b[0m"),
-        (None, None) => "\x1b[2m/credential <name> and /model <name> to get started · /help for commands\x1b[0m".to_string(),
+        (Some(m), Some(c)) => format!(
+            "\x1b[36mmodel\x1b[0m {m}  \x1b[36mcredential\x1b[0m {c}  \x1b[2m/help commands · /quit exit\x1b[0m"
+        ),
+        (Some(m), None) => format!(
+            "\x1b[36mmodel\x1b[0m {m}  \x1b[2m/credential <name> to get started · /help for commands\x1b[0m"
+        ),
+        (None, Some(c)) => format!(
+            "\x1b[36mcredential\x1b[0m {c}  \x1b[2m/model <name> to select a model\x1b[0m"
+        ),
+        (None, None) => {
+            "\x1b[2m/credential <name> and /model <name> to get started · /help for commands\x1b[0m"
+                .to_string()
+        }
     };
     println!("{line2}");
     println!();

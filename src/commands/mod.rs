@@ -639,12 +639,12 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "bus-who" => {
             let show_all = args.iter().any(|a| a == "--all" || a == "-a");
-            let bus_state = recovered_bus_state();
+            let bus_state = recovered_bus_state(ctx);
             crate::bus::cmd_who(&bus_state, ctx, show_all)?;
             Ok(())
         }
         "bus-requests" => {
-            let bus_state = recovered_bus_state();
+            let bus_state = recovered_bus_state(ctx);
             let status = args.iter().find_map(|a| a.strip_prefix("--status="));
             let status = match status {
                 Some("all") | None => None,
@@ -667,7 +667,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "bus-replies" => {
-            let bus_state = recovered_bus_state();
+            let bus_state = recovered_bus_state(ctx);
             let limit = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--limit="))
@@ -678,7 +678,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "bus-show" => {
-            let bus_state = recovered_bus_state();
+            let bus_state = recovered_bus_state(ctx);
             let msg_id = args.first().map(String::as_str).unwrap_or_default();
             if msg_id.is_empty() {
                 bail!("Usage: sidekar bus show <msg_id>");
@@ -687,7 +687,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             Ok(())
         }
         "bus-send" => {
-            if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
+            if ctx.agent_name.is_none() {
                 eprintln!(
                     "Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>"
                 );
@@ -727,12 +727,12 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]"
                 );
             }
-            let mut bus_state = recovered_bus_state();
+            let mut bus_state = recovered_bus_state(ctx);
             crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, reply_to)?;
             Ok(())
         }
         "bus-done" => {
-            if std::env::var("SIDEKAR_AGENT_NAME").is_err() {
+            if ctx.agent_name.is_none() {
                 eprintln!(
                     "Warning: Not running inside sidekar wrapper. For full bus features, relaunch with: sidekar <agent-cli>"
                 );
@@ -757,7 +757,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             } else {
                 filtered[2..].join(" ")
             };
-            let mut bus_state = recovered_bus_state();
+            let mut bus_state = recovered_bus_state(ctx);
             crate::bus::cmd_signal_done(
                 &mut bus_state,
                 ctx,
@@ -818,7 +818,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 Some("global") => Some("global"),
                 _ => Some(project_name.as_str()),
             };
-            let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
+            let created_by = ctx.agent_name.clone().unwrap_or_else(|| "cli".into());
             let id = cron::cmd_cron_create(
                 ctx,
                 schedule,
@@ -872,7 +872,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let schedule = "* * * * *";
             let action = json!({"prompt": prompt_text});
             let name_str = format!("loop-{interval}");
-            let created_by = std::env::var("SIDEKAR_AGENT_NAME").unwrap_or_else(|_| "cli".into());
+            let created_by = ctx.agent_name.clone().unwrap_or_else(|| "cli".into());
             let loop_project = crate::scope::resolve_project_name(None);
             let id = cron::cmd_cron_create(
                 ctx,
@@ -911,11 +911,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
     }
 }
 
-/// Build a bus state by recovering identity from SIDEKAR_AGENT_NAME env var + broker lookup.
+/// Build a bus state by recovering identity from the current app context + broker lookup.
 /// Sets `borrowed = true` so the Drop impl won't unregister the PTY wrapper's agent.
-fn recovered_bus_state() -> crate::bus::SidekarBusState {
+fn recovered_bus_state(ctx: &AppContext) -> crate::bus::SidekarBusState {
     let mut state = crate::bus::SidekarBusState::new();
-    if let Ok(name) = std::env::var("SIDEKAR_AGENT_NAME") {
+    if let Some(name) = ctx.agent_name.as_deref() {
         if let Ok(Some(agent)) = crate::broker::find_agent(&name, None) {
             state.identity = Some(agent.id);
             state.pane_unique_id = agent.pane_unique_id;
