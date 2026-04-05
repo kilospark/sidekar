@@ -1,6 +1,5 @@
 ---
 name: sidekar
-version: 1.0.13
 description: |
   Agent utility layer: inter-agent bus, encrypted secrets (KV/TOTP), durable
   memory & tasks, browser/desktop automation, scheduled jobs, repo context,

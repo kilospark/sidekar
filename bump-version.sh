@@ -23,15 +23,10 @@ NEW="${MAJOR}.${MINOR}.${PATCH}"
 
 # Update all version files (JSON manifests)
 sed -i '' "s/\"version\": *\"$CURRENT\"/\"version\": \"$NEW\"/g" \
-  "$DIR/.claude-plugin/plugin.json" \
-  "$DIR/.claude-plugin/marketplace.json" \
   "$DIR/extension/manifest.json"
 
 # Update Cargo.toml version
 sed -i '' "s/^version = \".*\"/version = \"$NEW\"/" "$DIR/Cargo.toml"
-
-# Update SKILL.md version
-sed -i '' "s/^version: .*/version: $NEW/" "$DIR/SKILL.md"
 
 # Update www/version.txt for Vercel deployment
 echo "$NEW" > "$DIR/www/version.txt"
