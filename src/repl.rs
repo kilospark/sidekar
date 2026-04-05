@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
 
 mod editor;
@@ -8,7 +9,10 @@ use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
 use crate::tunnel::tunnel_println;
-use self::editor::{EscCancelWatcher, LineEditor, RawModeGuard, print_banner, read_input_or_bus};
+use self::editor::{
+    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, emit_shared_line,
+    emit_shared_output, print_banner, read_input_or_bus,
+};
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
@@ -199,12 +203,17 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let mut line_editor = LineEditor::with_history(
         session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
     );
+    let mut queued_inputs: VecDeque<String> = VecDeque::new();
 
     loop {
-        let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
-            InputEvent::User(s) => Some(s),
-            InputEvent::Bus => None, // no user text — bus messages trigger the agent
-            InputEvent::Eof => break,
+        let input = if let Some(next) = queued_inputs.pop_front() {
+            Some(next)
+        } else {
+            match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
+                InputEvent::User(s) => Some(s),
+                InputEvent::Bus => None, // no user text — bus messages trigger the agent
+                InputEvent::Eof => break,
+            }
         };
 
         if let Some(ref text) = input {
@@ -467,13 +476,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         // Run agent loop
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let _cancel_watch = EscCancelWatcher::start(cancel.clone(), tunnel_input_fd);
+        let active_prompt =
+            ActivePromptSession::start(std::mem::take(&mut line_editor), cancel.clone(), tunnel_input_fd);
         let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
         let on_event: crate::agent::StreamCallback =
             Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
 
         let pre_len = history.len();
-        let did_compact = match crate::agent::run(
+        let run_result = crate::agent::run(
             prov,
             mdl,
             &system_prompt,
@@ -482,8 +492,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             on_event,
             Some(&cancel),
         )
-        .await
-        {
+        .await;
+        let (returned_editor, mut submitted) = active_prompt.finish();
+        line_editor = returned_editor;
+        queued_inputs.append(&mut submitted);
+
+        let did_compact = match run_result {
             Ok(c) => c,
             Err(e) if e.is::<crate::agent::Cancelled>() => {
                 history.truncate(pre_len);
@@ -693,13 +707,12 @@ impl EventRenderer {
 
     /// Write text to stdout and relay tunnel.
     fn emit(&self, text: &str) {
-        print!("{text}");
-        crate::tunnel::tunnel_send(text.as_bytes().to_vec());
+        emit_shared_output(text);
     }
 
     /// Write text + newline to stdout and relay tunnel.
     fn emitln(&self, text: &str) {
-        tunnel_println(text);
+        emit_shared_line(text);
     }
 
     fn stop_spinner(&mut self) {
@@ -849,16 +862,11 @@ impl Spinner {
                     SPINNER_FRAMES[i % SPINNER_FRAMES.len()],
                     elapsed,
                 );
-                print!("{line}");
-                crate::tunnel::tunnel_send(line.into_bytes());
-                let _ = io::stdout().flush();
+                emit_shared_output(&line);
                 i += 1;
                 std::thread::sleep(std::time::Duration::from_millis(80));
             }
-            let clear = "\r\x1b[K";
-            print!("{clear}");
-            crate::tunnel::tunnel_send(clear.as_bytes().to_vec());
-            let _ = io::stdout().flush();
+            emit_shared_output("\r\x1b[K");
         });
         Self {
             running,

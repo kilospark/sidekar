@@ -1,5 +1,7 @@
 use anyhow::Result;
+use std::collections::VecDeque;
 use std::io::{self, BufRead, Read, Write};
+use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -10,6 +12,58 @@ use super::InputEvent;
 
 const PROMPT_PREFIX: &str = "\x1b[36m›\x1b[0m ";
 const PROMPT_VISIBLE: &str = "› ";
+const ESC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
+
+type SharedEditor = Arc<Mutex<LineEditor>>;
+
+fn emit_raw(text: &str) {
+    print!("{text}");
+    crate::tunnel::tunnel_send(text.as_bytes().to_vec());
+    let _ = io::stdout().flush();
+}
+
+fn active_prompt_slot() -> &'static Mutex<Option<Weak<Mutex<LineEditor>>>> {
+    static SLOT: OnceLock<Mutex<Option<Weak<Mutex<LineEditor>>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn register_active_prompt(editor: &SharedEditor) {
+    if let Ok(mut slot) = active_prompt_slot().lock() {
+        *slot = Some(Arc::downgrade(editor));
+    }
+}
+
+fn clear_active_prompt() {
+    if let Ok(mut slot) = active_prompt_slot().lock() {
+        *slot = None;
+    }
+}
+
+fn with_active_prompt<R>(f: impl FnOnce(&mut LineEditor) -> R) -> Option<R> {
+    let weak = active_prompt_slot().lock().ok()?.clone()?;
+    let editor = weak.upgrade()?;
+    let mut guard = editor.lock().ok()?;
+    Some(f(&mut guard))
+}
+
+pub(super) fn emit_shared_output(text: &str) {
+    if with_active_prompt(|editor| {
+        editor.clear_rendered_prompt_inner();
+        emit_raw(text);
+        editor.redraw_inner();
+    })
+    .is_none()
+    {
+        emit_raw(text);
+    }
+}
+
+pub(super) fn emit_shared_line(text: &str) {
+    let mut line = String::with_capacity(text.len() + 1);
+    line.push_str(text);
+    line.push('\n');
+    emit_shared_output(&line);
+}
 
 pub(super) struct RawModeGuard {
     saved: libc::termios,
@@ -31,7 +85,6 @@ impl RawModeGuard {
         Ok(Self { saved, fd })
     }
 
-    /// Temporarily restore cooked mode (for subprocesses). On drop, raw mode is re-entered.
     pub(super) fn enter_cooked() -> Option<Self> {
         let fd = libc::STDIN_FILENO;
         let mut current: libc::termios = unsafe { std::mem::zeroed() };
@@ -63,23 +116,34 @@ impl EscDetector {
         }
     }
 
-    fn feed_bytes(&mut self, bytes: &[u8], now: std::time::Instant) -> bool {
+    fn feed_bytes(&mut self, bytes: &[u8], now: std::time::Instant) -> Vec<u8> {
+        let mut forwarded = Vec::with_capacity(bytes.len());
         for &byte in bytes {
             if self.pending_escape.is_some() {
                 self.pending_escape = None;
+                if byte == 0x1b {
+                    forwarded.push(0x1b);
+                    self.pending_escape = Some(now);
+                    continue;
+                }
+                forwarded.push(0x1b);
+                forwarded.push(byte);
+                continue;
             }
             if byte == 0x1b {
                 self.pending_escape = Some(now);
+            } else {
+                forwarded.push(byte);
             }
         }
-        false
+        forwarded
     }
 
     fn check_timeout(&mut self, now: std::time::Instant) -> bool {
         let Some(started) = self.pending_escape else {
             return false;
         };
-        if now.duration_since(started) >= std::time::Duration::from_millis(75) {
+        if now.duration_since(started) >= ESC_TIMEOUT {
             self.pending_escape = None;
             return true;
         }
@@ -88,19 +152,23 @@ impl EscDetector {
 }
 
 pub(super) struct EscCancelWatcher {
-    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    running: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
     raw_mode: Option<RawModeGuard>,
 }
 
 impl EscCancelWatcher {
     pub(super) fn start(
-        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
         tunnel_fd: Option<i32>,
     ) -> Self {
         let raw_mode = RawModeGuard::enter().ok();
-        let local_fd = if raw_mode.is_some() { Some(libc::STDIN_FILENO) } else { None };
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let local_fd = if raw_mode.is_some() {
+            Some(libc::STDIN_FILENO)
+        } else {
+            None
+        };
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let running_thread = running.clone();
         let handle = if local_fd.is_none() && tunnel_fd.is_none() {
             None
@@ -145,9 +213,8 @@ impl EscCancelWatcher {
                                     buf.len(),
                                 )
                             };
-                            if n > 0 && detector.feed_bytes(&buf[..n as usize], now) {
-                                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                return;
+                            if n > 0 {
+                                let _ = detector.feed_bytes(&buf[..n as usize], now);
                             }
                         }
                     }
@@ -175,6 +242,158 @@ impl Drop for EscCancelWatcher {
             let _ = handle.join();
         }
         let _ = self.raw_mode.take();
+    }
+}
+
+pub(super) struct ActivePromptSession {
+    editor: Option<SharedEditor>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    raw_mode: Option<RawModeGuard>,
+    submitted_rx: mpsc::Receiver<String>,
+}
+
+impl ActivePromptSession {
+    pub(super) fn start(
+        editor: LineEditor,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        tunnel_fd: Option<i32>,
+    ) -> Self {
+        let editor = Arc::new(Mutex::new(editor));
+        register_active_prompt(&editor);
+        if let Ok(mut guard) = editor.lock() {
+            guard.redraw_inner();
+        }
+
+        let raw_mode = RawModeGuard::enter().ok();
+        let local_fd = if raw_mode.is_some() {
+            Some(libc::STDIN_FILENO)
+        } else {
+            None
+        };
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let running_thread = running.clone();
+        let editor_thread = editor.clone();
+        let (submitted_tx, submitted_rx) = mpsc::channel();
+
+        let handle = if local_fd.is_none() && tunnel_fd.is_none() {
+            None
+        } else {
+            Some(std::thread::spawn(move || {
+                let mut detector = EscDetector::new();
+                let mut buf = [0u8; 64];
+                while running_thread.load(std::sync::atomic::Ordering::Relaxed)
+                    && !cancel.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    let mut fds = [
+                        libc::pollfd {
+                            fd: local_fd.unwrap_or(-1),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: tunnel_fd.unwrap_or(-1),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    let nfds = match (local_fd.is_some(), tunnel_fd.is_some()) {
+                        (true, true) => 2,
+                        (true, false) | (false, true) => 1,
+                        (false, false) => 0,
+                    };
+                    if nfds == 0 {
+                        break;
+                    }
+                    let ready = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 50) };
+                    let now = std::time::Instant::now();
+                    if ready > 0 {
+                        for pollfd in fds.iter().take(nfds as usize) {
+                            if (pollfd.revents & libc::POLLIN) == 0 {
+                                continue;
+                            }
+                            let n = unsafe {
+                                libc::read(
+                                    pollfd.fd,
+                                    buf.as_mut_ptr() as *mut libc::c_void,
+                                    buf.len(),
+                                )
+                            };
+                            if n <= 0 {
+                                continue;
+                            }
+                            let forwarded = detector.feed_bytes(&buf[..n as usize], now);
+                            if forwarded.is_empty() {
+                                continue;
+                            }
+                            if let Ok(mut editor) = editor_thread.lock() {
+                                match editor.feed_bytes(&forwarded) {
+                                    LineEditResult::Continue => {}
+                                    LineEditResult::Submit(line) => {
+                                        let _ = submitted_tx.send(line);
+                                        editor.redraw_inner();
+                                    }
+                                    LineEditResult::Eof => {
+                                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if detector.check_timeout(now) {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }))
+        };
+
+        Self {
+            editor: Some(editor),
+            running,
+            handle,
+            raw_mode,
+            submitted_rx,
+        }
+    }
+
+    pub(super) fn finish(mut self) -> (LineEditor, VecDeque<String>) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        let _ = self.raw_mode.take();
+
+        clear_active_prompt();
+
+        let editor_arc = self.editor.take().expect("active prompt editor");
+        if let Ok(mut guard) = editor_arc.lock() {
+            guard.clear_rendered_prompt_inner();
+        }
+        let editor = Arc::try_unwrap(editor_arc)
+            .ok()
+            .and_then(|mutex| mutex.into_inner().ok())
+            .unwrap_or_default();
+
+        let mut submitted = VecDeque::new();
+        while let Ok(line) = self.submitted_rx.try_recv() {
+            submitted.push_back(line);
+        }
+        (editor, submitted)
+    }
+}
+
+impl Drop for ActivePromptSession {
+    fn drop(&mut self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        let _ = self.raw_mode.take();
+        clear_active_prompt();
     }
 }
 
@@ -206,8 +425,16 @@ pub(super) struct LineEditor {
     history_index: Option<usize>,
     history_draft: Option<String>,
     escape_started_at: Option<std::time::Instant>,
+    preferred_col: Option<usize>,
     rendered_rows: usize,
     rendered_cursor: CursorPos,
+    kill_buffer: String,
+}
+
+impl Default for LineEditor {
+    fn default() -> Self {
+        Self::with_history(Vec::new())
+    }
 }
 
 impl LineEditor {
@@ -221,15 +448,11 @@ impl LineEditor {
             history_index: None,
             history_draft: None,
             escape_started_at: None,
+            preferred_col: None,
             rendered_rows: 0,
             rendered_cursor: CursorPos::default(),
+            kill_buffer: String::new(),
         }
-    }
-
-    fn emit(&self, text: &str) {
-        print!("{text}");
-        crate::tunnel::tunnel_send(text.as_bytes().to_vec());
-        let _ = io::stdout().flush();
     }
 
     fn terminal_columns(&self) -> usize {
@@ -242,7 +465,7 @@ impl LineEditor {
         }
     }
 
-    fn clear_rendered_prompt(&mut self) {
+    fn clear_rendered_prompt_inner(&mut self) {
         if self.rendered_rows == 0 {
             return;
         }
@@ -261,15 +484,15 @@ impl LineEditor {
             clear.push_str(&format!("\x1b[{}A", self.rendered_rows - 1));
         }
         clear.push('\r');
-        self.emit(&clear);
+        emit_raw(&clear);
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
     }
 
-    fn redraw(&mut self) {
+    fn redraw_inner(&mut self) {
         let cols = self.terminal_columns();
         let layout = self.compute_layout(cols);
-        self.clear_rendered_prompt();
+        self.clear_rendered_prompt_inner();
 
         let mut out = format!("\r{}{}", PROMPT_PREFIX, self.buffer);
         out.push_str("\x1b[999D");
@@ -282,13 +505,17 @@ impl LineEditor {
         if layout.cursor.col > 0 {
             out.push_str(&format!("\x1b[{}C", layout.cursor.col));
         }
-        self.emit(&out);
+        emit_raw(&out);
         self.rendered_rows = layout.rows;
         self.rendered_cursor = layout.cursor;
     }
 
+    fn redraw(&mut self) {
+        self.redraw_inner();
+    }
+
     fn clear_display(&mut self) {
-        self.clear_rendered_prompt();
+        self.clear_rendered_prompt_inner();
     }
 
     fn move_to_render_end(&mut self) {
@@ -297,7 +524,7 @@ impl LineEditor {
         }
         let saved_cursor = self.cursor;
         self.cursor = self.buffer.len();
-        self.redraw();
+        self.redraw_inner();
         self.cursor = saved_cursor;
     }
 
@@ -309,22 +536,28 @@ impl LineEditor {
         self.history_index = None;
         self.history_draft = None;
         self.escape_started_at = None;
+        self.preferred_col = None;
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
     }
 
     fn compute_layout(&self, cols: usize) -> RenderLayout {
-        let cols = cols.max(1);
-        let cursor_cells = UnicodeWidthStr::width(PROMPT_VISIBLE)
-            + UnicodeWidthStr::width(&self.buffer[..self.cursor]);
-        let total_cells =
-            UnicodeWidthStr::width(PROMPT_VISIBLE) + UnicodeWidthStr::width(self.buffer.as_str());
-
-        let cursor = visual_cursor_pos(cursor_cells, cols);
-        let end = visual_cursor_pos(total_cells, cols);
-        let rows = occupied_rows(total_cells, cols);
-
-        RenderLayout { rows, cursor, end }
+        let rows = self.wrapped_rows(cols);
+        let cursor_row = wrapped_row_index_by_start(&rows, self.cursor).unwrap_or(0);
+        let end_row = wrapped_row_index_by_start(&rows, self.buffer.len()).unwrap_or(0);
+        let cursor = CursorPos {
+            row: cursor_row,
+            col: self.display_col_for_position(&rows, cursor_row, self.cursor),
+        };
+        let end = CursorPos {
+            row: end_row,
+            col: self.display_col_for_position(&rows, end_row, self.buffer.len()),
+        };
+        RenderLayout {
+            rows: rows.len().max(1),
+            cursor,
+            end,
+        }
     }
 
     fn feed_bytes(&mut self, bytes: &[u8]) -> LineEditResult {
@@ -367,7 +600,7 @@ impl LineEditor {
         match byte {
             b'\r' | b'\n' => {
                 self.move_to_render_end();
-                self.emit("\r\n");
+                emit_raw("\r\n");
                 let submitted = self.buffer.clone();
                 self.record_submission(&submitted);
                 self.reset();
@@ -375,8 +608,8 @@ impl LineEditor {
             }
             0x04 => {
                 if self.buffer.is_empty() {
-                    self.clear_rendered_prompt();
-                    self.emit("\r\n");
+                    self.clear_rendered_prompt_inner();
+                    emit_raw("\r\n");
                     self.reset();
                     LineEditResult::Eof
                 } else {
@@ -386,11 +619,54 @@ impl LineEditor {
                 }
             }
             0x03 => {
-                self.clear_rendered_prompt();
-                self.emit(&format!("\r{}{}", PROMPT_PREFIX, self.buffer));
-                self.emit("\r\n");
                 self.cancel_line();
-                LineEditResult::Eof
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x01 => {
+                self.cursor = 0;
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x05 => {
+                self.cursor = self.buffer.len();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x15 => {
+                self.kill_to_start();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x0b => {
+                self.kill_to_end();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x19 => {
+                self.yank();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x02 => {
+                self.move_left();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x06 => {
+                self.move_right();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x10 => {
+                self.history_prev();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x0e => {
+                self.history_next();
+                self.redraw();
+                LineEditResult::Continue
             }
             0x7f | 0x08 => {
                 self.backspace();
@@ -430,13 +706,13 @@ impl LineEditor {
                 true
             }
             [0x1b, b'[', b'A'] => {
-                self.history_prev();
+                self.move_up();
                 self.escape.clear();
                 self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'B'] => {
-                self.history_next();
+                self.move_down();
                 self.escape.clear();
                 self.escape_started_at = None;
                 true
@@ -475,7 +751,7 @@ impl LineEditor {
         let Some(started) = self.escape_started_at else {
             return false;
         };
-        if started.elapsed() < std::time::Duration::from_millis(75) {
+        if started.elapsed() < ESC_TIMEOUT {
             return false;
         }
         self.cancel_line();
@@ -487,14 +763,57 @@ impl LineEditor {
         self.detach_history_nav();
         self.buffer.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
+        self.preferred_col = None;
     }
 
     fn move_left(&mut self) {
         self.cursor = prev_grapheme_boundary(&self.buffer, self.cursor);
+        self.preferred_col = None;
     }
 
     fn move_right(&mut self) {
         self.cursor = next_grapheme_boundary(&self.buffer, self.cursor);
+        self.preferred_col = None;
+    }
+
+    fn move_up(&mut self) {
+        self.move_up_for_cols(self.terminal_columns());
+    }
+
+    fn move_up_for_cols(&mut self, cols: usize) {
+        let rows = self.wrapped_rows(cols);
+        let Some(row_idx) = wrapped_row_index_by_start(&rows, self.cursor) else {
+            return;
+        };
+        if row_idx == 0 {
+            self.history_prev();
+            return;
+        }
+        let target_col = self
+            .preferred_col
+            .unwrap_or_else(|| self.display_col_for_position(&rows, row_idx, self.cursor));
+        self.move_to_display_col_on_row(&rows, row_idx - 1, target_col);
+        self.preferred_col = Some(target_col);
+    }
+
+    fn move_down(&mut self) {
+        self.move_down_for_cols(self.terminal_columns());
+    }
+
+    fn move_down_for_cols(&mut self, cols: usize) {
+        let rows = self.wrapped_rows(cols);
+        let Some(row_idx) = wrapped_row_index_by_start(&rows, self.cursor) else {
+            return;
+        };
+        if row_idx + 1 >= rows.len() {
+            self.history_next();
+            return;
+        }
+        let target_col = self
+            .preferred_col
+            .unwrap_or_else(|| self.display_col_for_position(&rows, row_idx, self.cursor));
+        self.move_to_display_col_on_row(&rows, row_idx + 1, target_col);
+        self.preferred_col = Some(target_col);
     }
 
     fn backspace(&mut self) {
@@ -505,6 +824,7 @@ impl LineEditor {
         let prev = prev_grapheme_boundary(&self.buffer, self.cursor);
         self.buffer.drain(prev..self.cursor);
         self.cursor = prev;
+        self.preferred_col = None;
     }
 
     fn delete_at_cursor(&mut self) {
@@ -514,6 +834,40 @@ impl LineEditor {
         self.detach_history_nav();
         let end = next_grapheme_boundary(&self.buffer, self.cursor);
         self.buffer.drain(self.cursor..end);
+        self.preferred_col = None;
+    }
+
+    fn kill_to_start(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.detach_history_nav();
+        self.kill_buffer = self.buffer[..self.cursor].to_string();
+        self.buffer.drain(..self.cursor);
+        self.cursor = 0;
+        self.preferred_col = None;
+    }
+
+    fn kill_to_end(&mut self) {
+        if self.cursor >= self.buffer.len() {
+            self.kill_buffer.clear();
+            return;
+        }
+        self.detach_history_nav();
+        self.kill_buffer = self.buffer[self.cursor..].to_string();
+        self.buffer.truncate(self.cursor);
+        self.preferred_col = None;
+    }
+
+    fn yank(&mut self) {
+        if self.kill_buffer.is_empty() {
+            return;
+        }
+        self.detach_history_nav();
+        let insert = self.kill_buffer.clone();
+        self.buffer.insert_str(self.cursor, &insert);
+        self.cursor += insert.len();
+        self.preferred_col = None;
     }
 
     fn cancel_line(&mut self) {
@@ -524,6 +878,7 @@ impl LineEditor {
         self.history_index = None;
         self.history_draft = None;
         self.escape_started_at = None;
+        self.preferred_col = None;
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
     }
@@ -582,32 +937,69 @@ impl LineEditor {
         if let Some(idx) = self.history_index {
             self.buffer = self.history[idx].clone();
             self.cursor = self.buffer.len();
+            self.preferred_col = None;
         }
     }
-}
 
-fn occupied_rows(cells: usize, cols: usize) -> usize {
-    let cols = cols.max(1);
-    if cells == 0 {
-        1
-    } else {
-        (cells.saturating_sub(1) / cols) + 1
+    fn wrapped_rows(&self, cols: usize) -> Vec<std::ops::Range<usize>> {
+        let cols = cols.max(1);
+        let mut rows = Vec::new();
+        let mut row_start = 0usize;
+        let mut used = UnicodeWidthStr::width(PROMPT_VISIBLE).min(cols);
+        for (idx, grapheme) in self.buffer.grapheme_indices(true) {
+            let width = UnicodeWidthStr::width(grapheme);
+            if used + width > cols && row_start < idx {
+                rows.push(row_start..idx);
+                row_start = idx;
+                used = 0;
+            }
+            used += width;
+        }
+        rows.push(row_start..self.buffer.len());
+        rows
+    }
+
+    fn display_col_for_position(
+        &self,
+        rows: &[std::ops::Range<usize>],
+        row_idx: usize,
+        pos: usize,
+    ) -> usize {
+        let row = &rows[row_idx];
+        let prefix = if row_idx == 0 {
+            UnicodeWidthStr::width(PROMPT_VISIBLE)
+        } else {
+            0
+        };
+        prefix + UnicodeWidthStr::width(&self.buffer[row.start..pos])
+    }
+
+    fn move_to_display_col_on_row(
+        &mut self,
+        rows: &[std::ops::Range<usize>],
+        row_idx: usize,
+        target_col: usize,
+    ) {
+        let row = &rows[row_idx];
+        let mut width_so_far = if row_idx == 0 {
+            UnicodeWidthStr::width(PROMPT_VISIBLE)
+        } else {
+            0
+        };
+        for (offset, grapheme) in self.buffer[row.start..row.end].grapheme_indices(true) {
+            width_so_far += UnicodeWidthStr::width(grapheme);
+            if width_so_far > target_col {
+                self.cursor = row.start + offset;
+                return;
+            }
+        }
+        self.cursor = row.end;
     }
 }
 
-fn visual_cursor_pos(cells: usize, cols: usize) -> CursorPos {
-    let cols = cols.max(1);
-    if cells == 0 {
-        return CursorPos::default();
-    }
-    let row = (cells - 1) / cols;
-    let rem = cells % cols;
-    let col = if rem == 0 {
-        cols.saturating_sub(1)
-    } else {
-        rem
-    };
-    CursorPos { row, col }
+fn wrapped_row_index_by_start(rows: &[std::ops::Range<usize>], pos: usize) -> Option<usize> {
+    let idx = rows.partition_point(|range| range.start <= pos);
+    if idx == 0 { None } else { Some(idx - 1) }
 }
 
 fn prev_grapheme_boundary(text: &str, pos: usize) -> usize {
@@ -660,7 +1052,6 @@ pub(super) fn read_input_or_bus(
         }
 
         unsafe {
-            let nfds: libc::nfds_t;
             let mut fds_arr = [
                 libc::pollfd {
                     fd: 0,
@@ -673,7 +1064,7 @@ pub(super) fn read_input_or_bus(
                     revents: 0,
                 },
             ];
-            nfds = if tunnel_fd.is_some() { 2 } else { 1 };
+            let nfds = if tunnel_fd.is_some() { 2 } else { 1 };
 
             let ready = libc::poll(fds_arr.as_mut_ptr(), nfds, 100);
             if ready > 0 {
@@ -741,12 +1132,13 @@ mod tests {
         let start = std::time::Instant::now();
         let mut detector = EscDetector::new();
 
-        detector.feed_bytes(&[0x1b], start);
+        assert!(detector.feed_bytes(&[0x1b], start).is_empty());
         assert!(!detector.check_timeout(start + std::time::Duration::from_millis(20)));
         assert!(detector.check_timeout(start + std::time::Duration::from_millis(100)));
 
         let mut detector = EscDetector::new();
-        detector.feed_bytes(&[0x1b, b'[', b'A'], start);
+        let forwarded = detector.feed_bytes(&[0x1b, b'[', b'A'], start);
+        assert_eq!(forwarded, vec![0x1b, b'[', b'A']);
         assert!(!detector.check_timeout(start + std::time::Duration::from_millis(100)));
     }
 
@@ -758,7 +1150,7 @@ mod tests {
 
         let layout = editor.compute_layout(4);
         assert_eq!(layout.rows, 2);
-        assert_eq!(layout.end, CursorPos { row: 1, col: 3 });
+        assert_eq!(layout.end, CursorPos { row: 1, col: 4 });
         assert_eq!(layout.cursor, layout.end);
     }
 
@@ -809,5 +1201,66 @@ mod tests {
         let layout = editor.compute_layout(3);
         assert_eq!(layout.rows, 2);
         assert_eq!(layout.end.row, 1);
+    }
+
+    #[test]
+    fn up_down_move_between_wrapped_rows_before_history() {
+        let mut editor = LineEditor::with_history(vec!["history-prev".to_string()]);
+        editor.buffer = "abcdef".to_string();
+        editor.cursor = 5;
+
+        editor.move_up_for_cols(4);
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.buffer, "abcdef");
+
+        editor.move_down_for_cols(4);
+        assert_eq!(editor.cursor, 5);
+        assert_eq!(editor.buffer, "abcdef");
+    }
+
+    #[test]
+    fn up_down_fall_back_to_history_at_row_boundaries() {
+        let mut editor = LineEditor::with_history(vec!["history-prev".to_string()]);
+        editor.buffer = "abcdef".to_string();
+        editor.cursor = 1;
+
+        editor.move_up_for_cols(4);
+        assert_eq!(editor.buffer, "history-prev");
+
+        editor.move_down_for_cols(4);
+        assert_eq!(editor.buffer, "abcdef");
+    }
+
+    #[test]
+    fn ctrl_u_ctrl_k_and_yank_work() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "hello world".to_string();
+        editor.cursor = 5;
+
+        editor.kill_to_start();
+        assert_eq!(editor.buffer, " world");
+        assert_eq!(editor.cursor, 0);
+
+        editor.yank();
+        assert_eq!(editor.buffer, "hello world");
+        assert_eq!(editor.cursor, 5);
+
+        editor.kill_to_end();
+        assert_eq!(editor.buffer, "hello");
+        assert_eq!(editor.kill_buffer, " world");
+
+        editor.yank();
+        assert_eq!(editor.buffer, "hello world");
+    }
+
+    #[test]
+    fn ctrl_c_clears_without_eof() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "pending".to_string();
+        editor.cursor = editor.buffer.len();
+        let result = editor.feed_byte(0x03);
+        assert!(matches!(result, LineEditResult::Continue));
+        assert!(editor.buffer.is_empty());
+        assert_eq!(editor.cursor, 0);
     }
 }
