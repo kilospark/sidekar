@@ -37,23 +37,30 @@
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
 
-  // Mobile touch scroll boost — xterm scrolls 1:1 with no momentum; amplify it.
+  // Mobile touch scroll fix — xterm's built-in touch handler converts pixel
+  // delta to lines at ~1 line per cell height, which feels frozen on phones.
+  // Intercept in the capture phase (before xterm) and scroll manually.
   (function () {
-    var vp = term.element && term.element.querySelector(".xterm-viewport");
-    if (!vp) return;
+    var screen = term.element && term.element.querySelector(".xterm-screen");
+    if (!screen) return;
     var touchY = null;
-    var BOOST = 10;
-    vp.addEventListener("touchstart", function (e) {
-      touchY = e.touches.length === 1 ? e.touches[0].clientY : null;
-    }, { passive: true });
-    vp.addEventListener("touchmove", function (e) {
+    var LINE_PX = 18;
+    var MULTIPLIER = 3;
+    screen.addEventListener("touchstart", function (e) {
+      if (e.touches.length === 1) touchY = e.touches[0].clientY;
+    }, { capture: true, passive: true });
+    screen.addEventListener("touchmove", function (e) {
       if (touchY !== null && e.touches.length === 1) {
         var dy = touchY - e.touches[0].clientY;
         touchY = e.touches[0].clientY;
-        vp.scrollTop += dy * BOOST;
+        var lines = Math.round((dy * MULTIPLIER) / LINE_PX);
+        if (lines !== 0) term.scrollLines(lines);
+        e.preventDefault();
+        e.stopPropagation();
       }
-    }, { passive: true });
-    vp.addEventListener("touchend", function () { touchY = null; }, { passive: true });
+    }, { capture: true, passive: false });
+    screen.addEventListener("touchend", function () { touchY = null; },
+      { capture: true, passive: true });
   })();
 
   var terminalWrap = document.getElementById("terminal-wrap");
