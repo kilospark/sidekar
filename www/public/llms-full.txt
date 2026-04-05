@@ -15,8 +15,8 @@ curl -fsSL sidekar.dev/install | sh
 ## Getting started (step by step)
 
 1. **Install:** run the curl command above (binary + `sidekar install` for skills).
-2. **Chrome extension (optional):** load unpacked from `extension/`, run `sidekar login`, sign in from the extension popup, then use `sidekar ext ...` commands.
-3. **`sidekar login` (optional):** device auth against sidekar.dev for remote session access (web dashboard, tunnel workflows).
+2. **Chrome extension (optional):** load unpacked from `extension/`, run `sidekar device login`, sign in from the extension popup, then use `sidekar ext ...` commands.
+3. **`sidekar device login` (optional):** device auth against sidekar.dev for remote session access (web dashboard, tunnel workflows).
 4. **Launch an agent:** `sidekar <agent> [args…]` for any agent CLI on PATH (e.g. `sidekar claude`, `sidekar codex`).
 
 ## Core capabilities (four pillars)
@@ -25,29 +25,29 @@ curl -fsSL sidekar.dev/install | sh
 
 Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read page content. The optional Chrome extension complements CDP for the same automation goals. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed.
 
-**Web search and multi-page reads** (`search`, `readurls`) and **batch** (multi-step sequences) are **use cases** on the browser stack, not separate product pillars.
+**Web search and multi-page reads** (`search`, `read-urls`) and **batch** (multi-step sequences) are **use cases** on the browser stack, not separate product pillars.
 
-**Key tools:** navigate, read, text, axtree, observe, screenshot, click, type, fill, press, scroll, keyboard, search, readurls, batch
+**Key tools:** navigate, read, text, ax-tree, observe, screenshot, click, type, fill, press, scroll, keyboard, search, read-urls, batch
 
 **batch** example (multi-step in one call):
 ```json
 {"actions": [
   {"tool": "click", "target": "--text Continue", "retries": 2},
-  {"tool": "waitfornav"},
+  {"tool": "wait-for-nav"},
   {"tool": "screenshot"}
 ]}
 ```
 
 **Perception escalation order (stop at the first that works):**
 1. `read` - Reader-mode text extraction (articles, docs, search results). Low cost.
-2. `axtree -i` / `observe` - Interactive elements with ref numbers. Low cost.
+2. `ax-tree -i` / `observe` - Interactive elements with ref numbers. Low cost.
 3. `text` - Full page text with refs. Low-medium cost.
 4. `dom` - HTML structure with selectors. Medium cost.
 5. `screenshot` (cropped) - Visual of one element. Medium cost.
 6. `screenshot` (full page) - Full visual. High cost.
 
 **Element targeting priority:**
-1. Refs from axtree/observe/text (click 3, type 5 hello)
+1. Refs from ax-tree/observe/text (click 3, type 5 hello)
 2. Text search (click --text Submit)
 3. CSS selectors (#id, [data-testid="..."])
 4. eval with querySelector
@@ -63,7 +63,7 @@ macOS Accessibility API integration. Find and interact with native app elements,
 
 Agents discover and message each other via a local bus (SQLite-backed). Send requests, broadcast, hand off tasks.
 
-**Key tools:** register, unregister, who, bus_send, bus_done
+**Key tools:** register, unregister, bus who, bus send, bus done
 
 **Message kinds:** request (expects response), response (answers a prior request), fyi (informational)
 
@@ -78,7 +78,7 @@ Watch browser tabs for meaningful changes and run tools on a cron schedule. Reac
 Core tools are always available. Extended tools load on demand via `tools(action: "load", category: "<name>")`:
 
 - **forms**: select, upload, drag, clear, focus, dialog, paste, clipboard, inserttext
-- **nav**: back, forward, reload, waitfor, waitfornav, find, resolve
+- **nav**: back, forward, reload, wait-for, wait-for-nav, find, resolve
 - **debug**: console, network, block, eval, dom, storage, cookies, sw, security
 - **media**: viewport, zoom, grid, media, animations, pdf, download
 - **desktop**: desktop_screenshot, desktop_apps, desktop_windows, desktop_find, desktop_click, desktop_launch, desktop_activate, desktop_quit
@@ -105,7 +105,7 @@ Multiple agents share the same Chrome instance. Each session owns its tabs. Neve
 
 **Search the web:** Call search with query. Results extracted automatically.
 
-**Research multiple pages:** Call readurls with list of URLs. Content extracted in parallel.
+**Research multiple pages:** Call read-urls with a list of URLs. Content extracted in parallel.
 
 **Rich text editors:** click the editor, then use keyboard (not type) to preserve cursor position.
 

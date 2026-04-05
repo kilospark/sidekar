@@ -73,7 +73,7 @@
     if (deviceCount === 0) {
       html +=
         '<div class="dash-hint">' +
-        "<p><strong>Authorize a new device:</strong> on a machine with the sidekar CLI, run <code>sidekar login</code>, then approve the code in the browser (or open <a href=\"/approve\">sidekar.dev/approve</a> while signed in and enter the user code).</p>" +
+        "<p><strong>Authorize a new device:</strong> on a machine with the sidekar CLI, run <code>sidekar device login</code>, then approve the code in the browser (or open <a href=\"/approve\">sidekar.dev/approve</a> while signed in and enter the user code).</p>" +
         "</div>";
     }
     html += "</div>";

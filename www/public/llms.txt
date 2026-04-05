@@ -9,17 +9,17 @@ sidekar is a single binary that gives AI agents real browser and desktop control
 ## Getting started (step by step)
 
 1. **Install:** `curl -fsSL https://sidekar.dev/install | sh` (installs the binary and runs `sidekar install` for agent skills).
-2. **Chrome extension (optional):** Load unpacked from the repo `extension/` directory, run `sidekar login`, sign in from the extension popup, then use `sidekar ext ...` commands. Automates your everyday Chrome profile through the local bridge.
-3. **`sidekar login` (optional):** Authenticate with sidekar.dev to control or attach to sessions from the web dashboard and remote workflows.
+2. **Chrome extension (optional):** Load unpacked from the repo `extension/` directory, run `sidekar device login`, sign in from the extension popup, then use `sidekar ext ...` commands. Automates your everyday Chrome profile through the local bridge.
+3. **`sidekar device login` (optional):** Authenticate this machine with sidekar.dev to control or attach to sessions from the web dashboard and remote workflows.
 4. **Launch an agent:** `sidekar <agent> [args…]` with any agent CLI on your PATH (e.g. `sidekar claude`, `sidekar codex`). Wraps the PTY and agent bus.
 
 ## The four pillars
 
-1. **Browser automation:** Full Chrome DevTools Protocol; optional Chrome extension for the same automation story. Search (`search`), parallel reads (`readurls`), and batch runs are **use cases** on this stack.
+1. **Browser automation:** Full Chrome DevTools Protocol; optional Chrome extension for the same automation story. Search (`search`), parallel reads (`read-urls`), and batch runs are **use cases** on this stack.
 
 2. **Desktop automation:** macOS Accessibility API for native apps, windows, UI elements, and screenshots without requiring the browser.
 
-3. **Agent communication bus:** Local bus (SQLite broker): `who`, `bus_send`, `bus_done`, registration, handoffs.
+3. **Agent communication bus:** Local bus (SQLite broker): `bus who`, `bus send`, `bus done`, registration, handoffs.
 
 4. **Background automation:** Tab monitoring (title/favicon) and cron-scheduled tool runs; results via the bus.
 
