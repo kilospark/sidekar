@@ -91,10 +91,16 @@ pub async fn run(
         // Execute tool calls, build tool_result content blocks
         let mut result_blocks: Vec<ContentBlock> = Vec::new();
         for (id, name, arguments) in &tool_calls {
+            if let Some(c) = cancel
+                && c.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(Cancelled.into());
+            }
             on_event(&StreamEvent::ToolExec { name: name.clone() });
-            let result = tools::execute(name, arguments).await;
+            let result = tools::execute(name, arguments, cancel).await;
             let (content, is_error) = match result {
                 Ok(output) => (truncate_tool_output(&output, 50_000), false),
+                Err(e) if e.is::<Cancelled>() => return Err(e),
                 Err(e) => {
                     crate::broker::try_log_error(
                         "repl",
@@ -145,7 +151,16 @@ async fn consume_stream(
             return Err(Cancelled.into());
         }
 
-        let event = match rx.recv().await {
+        let event = match cancel {
+            Some(c) => {
+                tokio::select! {
+                    _ = wait_for_cancel(c) => return Err(Cancelled.into()),
+                    event = rx.recv() => event,
+                }
+            }
+            None => rx.recv().await,
+        };
+        let event = match event {
             Some(e) => e,
             None => break,
         };
@@ -173,6 +188,15 @@ async fn consume_stream(
     } else {
         crate::broker::try_log_error("repl", "LLM stream ended without a response", None);
         bail!("LLM stream ended without a response")
+    }
+}
+
+async fn wait_for_cancel(cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
 

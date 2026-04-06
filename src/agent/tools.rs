@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::providers::ToolDef;
+use crate::rtk;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDef> {
@@ -26,29 +27,42 @@ pub fn definitions() -> Vec<ToolDef> {
 }
 
 /// Execute a tool call and return the output string.
-pub async fn execute(name: &str, arguments: &Value) -> Result<String> {
+pub async fn execute(
+    name: &str,
+    arguments: &Value,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<String> {
     match name {
-        "bash" | "Bash" => exec_bash(arguments).await,
+        "bash" | "Bash" => exec_bash(arguments, cancel).await,
         _ => bail!("Unknown tool: {name}"),
     }
 }
 
-async fn exec_bash(args: &Value) -> Result<String> {
+async fn exec_bash(
+    args: &Value,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<String> {
     let command = args
         .get("command")
         .and_then(|v| v.as_str())
         .context("bash: missing 'command'")?;
     let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
 
-    // Execute the command
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        tokio::process::Command::new("bash")
-            .arg("-c")
-            .arg(command)
-            .output(),
-    )
-    .await
+    let mut command_proc = tokio::process::Command::new("bash");
+    command_proc.kill_on_drop(true).arg("-c").arg(command);
+    let output_future = command_proc.output();
+
+    let output = match cancel {
+        Some(cancel) => {
+            tokio::select! {
+                _ = wait_for_cancel(cancel) => return Err(super::Cancelled.into()),
+                result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output_future) => {
+                    result
+                }
+            }
+        }
+        None => tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output_future).await,
+    }
     .context("bash: command timed out")?
     .context("bash: failed to execute")?;
 
@@ -67,11 +81,11 @@ async fn exec_bash(args: &Value) -> Result<String> {
         raw.push_str(&stderr);
     }
 
-    // Pipe through sidekar compact filter for token-efficient output.
+    // Pipe through rtk compact filter for token-efficient output.
     // Compacts known tools (git, cargo, npm, cat, grep, etc.).
     // Unknown commands pass through unchanged.
     let result = if !raw.is_empty() {
-        compact_output(command, &raw).await.unwrap_or(raw)
+        rtk::compact_output(command, &raw)
     } else {
         raw
     };
@@ -86,35 +100,48 @@ async fn exec_bash(args: &Value) -> Result<String> {
     Ok(final_result)
 }
 
-/// Pipe raw output through `sidekar compact filter <command>` for token savings.
-async fn compact_output(command: &str, raw: &str) -> Option<String> {
-    let mut child = tokio::process::Command::new("sidekar")
-        .arg("compact")
-        .arg("filter")
-        .args(command.split_whitespace())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-
-    use tokio::io::AsyncWriteExt;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(raw.as_bytes()).await;
-        drop(stdin);
-    }
-
-    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
-        .await
-        .ok()?
-        .ok()?;
-
-    if output.status.success() {
-        let compacted = String::from_utf8_lossy(&output.stdout).to_string();
-        if !compacted.is_empty() {
-            return Some(compacted);
+async fn wait_for_cancel(cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+}
 
-    None
+#[cfg(test)]
+mod tests {
+    use super::execute;
+    use serde_json::json;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn bash_tool_cancels_promptly() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_setter = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_setter.store(true, Ordering::Relaxed);
+        });
+
+        let started = Instant::now();
+        let result = execute(
+            "bash",
+            &json!({
+                "command": "sleep 5",
+                "timeout": 10
+            }),
+            Some(&cancel),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.expect_err("cancelled tool").is::<crate::agent::Cancelled>());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 }
