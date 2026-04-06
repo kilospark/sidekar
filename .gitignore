@@ -4,6 +4,7 @@ sidekar-darwin-arm64
 sidekar-darwin-arm64.tar.gz
 sidekar-darwin-arm64.tar.gz.minisig
 sidekar-extension.zip
+assets/extension.zip
 .vercel
 .DS_Store
 screenshots/
