@@ -36,7 +36,7 @@ pub async fn maybe_compact(
     context_window: u32,
     on_event: &StreamCallback,
 ) -> bool {
-    let threshold = (context_window as usize) * 3 / 4;
+    let threshold = (context_window as usize) * 9 / 10;
     let current = estimate_tokens(history);
 
     if current < threshold {
@@ -113,7 +113,7 @@ async fn compact_history(
 /// Phase 1: Replace old tool result markers and thinking blocks with "[Cleared]".
 /// Keeps the last `keep_recent` messages intact.
 fn phase1_clear_old_results(history: &mut [ChatMessage]) -> usize {
-    let keep_recent = 10;
+    let keep_recent = 6;
     let cutoff = history.len().saturating_sub(keep_recent);
     let mut cleared = 0;
 

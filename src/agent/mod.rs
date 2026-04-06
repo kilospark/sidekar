@@ -1,4 +1,5 @@
 pub mod compaction;
+pub mod context;
 pub mod tools;
 
 use anyhow::{Result, bail};
@@ -57,9 +58,24 @@ pub async fn run(
         // Reassert waiting after any compaction/status output before the model call.
         on_event(&StreamEvent::Waiting);
 
+        // Build a right-sized view of history for this request.
+        // Budget = context_window minus system prompt, tool defs, and response reserve.
+        let system_tokens = system_prompt.len() / 4;
+        let tool_tokens: usize = tool_defs
+            .iter()
+            .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+            .sum::<usize>()
+            / 4;
+        let response_reserve = 16_000;
+        let history_budget = (context_window as usize)
+            .saturating_sub(system_tokens)
+            .saturating_sub(tool_tokens)
+            .saturating_sub(response_reserve);
+        let view = context::prepare_context(history, history_budget);
+
         // Stream LLM response
         let mut rx = match provider
-            .stream(model, system_prompt, history, tool_defs, prompt_cache_key)
+            .stream(model, system_prompt, &view, tool_defs, prompt_cache_key)
             .await
         {
             Ok(rx) => rx,
