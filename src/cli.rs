@@ -5,6 +5,7 @@ pub enum CommandGroup {
     Browser,
     Page,
     Interact,
+    Code,
     Data,
     Desktop,
     Agent,
@@ -19,6 +20,7 @@ impl CommandGroup {
             Self::Browser => "Browser",
             Self::Page => "Page",
             Self::Interact => "Interact",
+            Self::Code => "Code",
             Self::Data => "Data",
             Self::Desktop => "Desktop",
             Self::Agent => "Agent",
@@ -1012,6 +1014,47 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         auto_launch_browser: false,
         ext_routable: false,
     },
+    // ── Code intelligence ────────────────────────────────────────────────
+    CommandSpec {
+        name: "symbols",
+        usage: "<path> [--imports]",
+        summary: "List symbols (functions, structs, classes) in file or directory",
+        group: CommandGroup::Code,
+        aliases: &["syms"],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
+    CommandSpec {
+        name: "definition",
+        usage: "<name> [path]",
+        summary: "Find and show a symbol's full definition",
+        group: CommandGroup::Code,
+        aliases: &["def"],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
+    CommandSpec {
+        name: "references",
+        usage: "<name> [path]",
+        summary: "Find all usage sites of a symbol",
+        group: CommandGroup::Code,
+        aliases: &["refs"],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
+    CommandSpec {
+        name: "structure",
+        usage: "[path]",
+        summary: "Hierarchical symbol tree for a project or file",
+        group: CommandGroup::Code,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
 ];
 
 fn handler_name(public_name: &str) -> &str {
@@ -1028,7 +1071,9 @@ fn handler_name(public_name: &str) -> &str {
 }
 
 fn public_command_spec(name: &str) -> Option<&'static CommandSpec> {
-    COMMAND_SPECS.iter().find(|spec| spec.name == name)
+    COMMAND_SPECS
+        .iter()
+        .find(|spec| spec.name == name || spec.aliases.contains(&name))
 }
 
 pub fn removed_command_replacement(name: &str) -> Option<&'static str> {
@@ -1099,6 +1144,7 @@ pub fn render_help(version: &str) -> String {
         CommandGroup::Browser,
         CommandGroup::Page,
         CommandGroup::Interact,
+        CommandGroup::Code,
         CommandGroup::Data,
         CommandGroup::Desktop,
         CommandGroup::Agent,
