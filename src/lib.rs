@@ -61,6 +61,7 @@ pub mod agent;
 pub mod agent_cli;
 pub mod cdp_proxy;
 pub mod cli;
+pub mod code_intel;
 pub mod commands;
 pub mod config;
 pub mod daemon;

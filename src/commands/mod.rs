@@ -2,6 +2,7 @@ use crate::*;
 
 mod agent_sessions;
 mod batch;
+mod code;
 mod core;
 pub mod cron;
 mod data;
@@ -19,6 +20,7 @@ use crate::rtk::*;
 use crate::tasks::*;
 use agent_sessions::*;
 use batch::*;
+use code::*;
 use core::*;
 use data::*;
 use desktop::*;
@@ -910,6 +912,23 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         // KV store commands
         "kv" => {
             cmd_kv(ctx, args).await?;
+            Ok(())
+        }
+        // ── Code intelligence ────────────────────────────────────────────
+        "symbols" | "syms" => {
+            cmd_symbols(ctx, args)?;
+            Ok(())
+        }
+        "definition" | "def" => {
+            cmd_definition(ctx, args)?;
+            Ok(())
+        }
+        "references" | "refs" => {
+            cmd_references(ctx, args)?;
+            Ok(())
+        }
+        "structure" => {
+            cmd_structure(ctx, args)?;
             Ok(())
         }
         _ => bail!("Unknown command: {command}"),

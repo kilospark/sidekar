@@ -1,11 +1,15 @@
 //! Per-request context view builder.
 //!
-//! Builds an ephemeral, right-sized view of history for each API call without
-//! mutating the canonical history (which stays intact for persistence).
+//! Builds a right-sized view of history for each API call.
+//!
+//! Tool-result aging is applied **in-place** on canonical history so that once a
+//! result is truncated it stays byte-identical on subsequent turns — preserving
+//! the prompt cache prefix.  Thinking eviction and budget trimming remain
+//! ephemeral (view-only).
 //!
 //! Three optimizations applied in order:
-//! 1. Thinking block eviction — strip from all but the last assistant message.
-//! 2. Progressive tool-result aging — shrink old results by distance from tail.
+//! 1. Progressive tool-result aging — **in-place** on canonical history.
+//! 2. Thinking block eviction — strip from all but the last assistant message.
 //! 3. Budget trimming — drop oldest messages if still over token budget.
 
 use crate::providers::{ChatMessage, ContentBlock, Role};
@@ -29,16 +33,35 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         / 4
 }
 
-/// Build an optimised view of `history` that fits within `token_budget`.
-///
-/// The returned vec is ephemeral — send it to the LLM, then discard it.
-/// Canonical history is never modified.
-pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<ChatMessage> {
+/// Age tool results in-place on canonical history, then build an ephemeral view
+/// with thinking eviction and budget trimming.
+pub fn prepare_context(history: &mut Vec<ChatMessage>, token_budget: usize) -> Vec<ChatMessage> {
+    // --- Step 1: Progressive tool-result aging (in-place on canonical history) ---
+    // Applied directly so that once a result is aged, it stays stable across
+    // subsequent turns — the prompt prefix never changes due to aging.
+    // Skip results already aged (prefixed with "[Aged]" or "[" stub marker) to
+    // guarantee byte-stability.
+    let len = history.len();
+    for (i, msg) in history.iter_mut().enumerate() {
+        let distance = len.saturating_sub(1).saturating_sub(i);
+        for block in msg.content.iter_mut() {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                if content.starts_with("[Aged]") || content.starts_with("[Cleared]") {
+                    continue; // already aged — don't re-age
+                }
+                if distance >= 15 && content.len() > 200 {
+                    *content = stub_tool_result(content);
+                } else if distance >= 5 && content.len() > 2048 {
+                    let truncated = truncate(content, 2048).to_string();
+                    *content = format!("[Aged] {truncated}");
+                }
+            }
+        }
+    }
+
+    // --- Step 2: Thinking block eviction (ephemeral, view-only) ---
     let mut view: Vec<ChatMessage> = history.to_vec();
 
-    // --- Step 1: Thinking block eviction ---
-    // Keep thinking only on the last assistant message (the API may use it for
-    // extended-thinking continuation). Strip from everything else.
     let last_assistant_idx = view
         .iter()
         .rposition(|m| m.role == Role::Assistant)
@@ -53,23 +76,7 @@ pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<Chat
     // Drop messages that became empty after stripping.
     view.retain(|m| !m.content.is_empty());
 
-    // --- Step 2: Progressive tool-result aging ---
-    let len = view.len();
-    for (i, msg) in view.iter_mut().enumerate() {
-        let distance = len.saturating_sub(1).saturating_sub(i);
-        for block in msg.content.iter_mut() {
-            if let ContentBlock::ToolResult { content, .. } = block {
-                if distance >= 15 && content.len() > 200 {
-                    *content = stub_tool_result(content);
-                } else if distance >= 5 && content.len() > 2048 {
-                    let truncated = truncate(content, 2048);
-                    *content = format!("[Aged] {truncated}");
-                }
-            }
-        }
-    }
-
-    // --- Step 3: Budget trimming ---
+    // --- Step 3: Budget trimming (ephemeral, view-only) ---
     let est = estimate_tokens(&view);
     if est > token_budget && view.len() > 2 {
         // Protect the first message (may contain session context) and the last 5.
@@ -164,14 +171,14 @@ mod tests {
 
     #[test]
     fn thinking_evicted_except_last_assistant() {
-        let history = vec![
+        let mut history = vec![
             text_msg(Role::User, "hello"),
             thinking_msg("old reasoning", "response 1"),
             text_msg(Role::User, "next"),
             thinking_msg("recent reasoning", "response 2"),
         ];
 
-        let view = prepare_context(&history, 1_000_000);
+        let view = prepare_context(&mut history, 1_000_000);
 
         // First assistant: thinking stripped, only text remains
         let first_asst = view.iter().find(|m| {
@@ -194,7 +201,7 @@ mod tests {
     #[test]
     fn empty_messages_removed_after_eviction() {
         // An assistant message with only a thinking block should be dropped.
-        let history = vec![
+        let mut history = vec![
             text_msg(Role::User, "hello"),
             ChatMessage {
                 role: Role::Assistant,
@@ -207,7 +214,7 @@ mod tests {
             text_msg(Role::Assistant, "final"),
         ];
 
-        let view = prepare_context(&history, 1_000_000);
+        let view = prepare_context(&mut history, 1_000_000);
         // The thinking-only message should be gone.
         assert_eq!(view.len(), 3);
     }
@@ -223,7 +230,7 @@ mod tests {
             history.push(text_msg(Role::Assistant, &format!("resp {i}")));
         }
 
-        let view = prepare_context(&history, 1_000_000);
+        let view = prepare_context(&mut history, 1_000_000);
         let len = view.len();
 
         // Check oldest tool result (distance >= 15) is stubbed
@@ -275,7 +282,7 @@ mod tests {
         }
 
         // Tiny budget forces trimming
-        let view = prepare_context(&history, 10);
+        let view = prepare_context(&mut history, 10);
 
         // Should be significantly trimmed from the original 40 messages
         assert!(view.len() < 40, "should be trimmed, got {} messages", view.len());
@@ -293,13 +300,63 @@ mod tests {
     }
 
     #[test]
+    fn aged_results_stay_stable_across_turns() {
+        let big = "x".repeat(3000);
+        let mut history: Vec<ChatMessage> = Vec::new();
+
+        // Build 20 pairs so some results are well past the aging thresholds.
+        for i in 0..20 {
+            history.push(tool_result_msg(&format!("t{i}"), &big));
+            history.push(text_msg(Role::Assistant, &format!("resp {i}")));
+        }
+
+        // First call — ages in-place
+        prepare_context(&mut history, 1_000_000);
+
+        // Snapshot the canonical history after aging.
+        let snapshot: Vec<String> = history
+            .iter()
+            .flat_map(|m| m.content.iter().filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            }))
+            .collect();
+
+        // Simulate several new turns to shift distances.
+        for i in 0..5 {
+            history.push(text_msg(Role::User, &format!("q{i}")));
+            history.push(text_msg(Role::Assistant, &format!("a{i}")));
+            prepare_context(&mut history, 1_000_000);
+        }
+
+        // All results that were already aged must be byte-identical.
+        let current: Vec<String> = history
+            .iter()
+            .take(40) // original 20 pairs
+            .flat_map(|m| m.content.iter().filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            }))
+            .collect();
+
+        for (i, (before, after)) in snapshot.iter().zip(current.iter()).enumerate() {
+            if before.starts_with("[Aged]") || before.starts_with("[") && before.contains(" bytes]") {
+                assert_eq!(
+                    before, after,
+                    "already-aged tool result t{i} changed on subsequent turn"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn no_changes_when_within_budget() {
-        let history = vec![
+        let mut history = vec![
             text_msg(Role::User, "hello"),
             text_msg(Role::Assistant, "hi"),
         ];
 
-        let view = prepare_context(&history, 1_000_000);
+        let view = prepare_context(&mut history, 1_000_000);
         assert_eq!(view.len(), 2);
     }
 }
