@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::collections::hash_map::Entry;
-use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
 
 mod editor;
@@ -226,17 +225,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let mut line_editor = LineEditor::with_history(
         session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
     );
-    let mut queued_inputs: VecDeque<String> = VecDeque::new();
 
     loop {
-        let input = if let Some(next) = queued_inputs.pop_front() {
-            Some(next)
-        } else {
-            match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
-                InputEvent::User(s) => Some(s),
-                InputEvent::Bus => None, // no user text — bus messages trigger the agent
-                InputEvent::Eof => break,
-            }
+        let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
+            InputEvent::User(s) => Some(s),
+            InputEvent::Bus => None, // no user text — bus messages trigger the agent
+            InputEvent::Eof => break,
         };
 
         if let Some(ref text) = input {
@@ -540,7 +534,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
         let (returned_editor, mut submitted) = active_prompt.finish();
         line_editor = returned_editor;
-        queued_inputs.append(&mut submitted);
+        line_editor.pending_followups.append(&mut submitted);
 
         if crate::runtime::verbose() && run_result.is_ok() {
             repl_status_dim("[turn complete]");
