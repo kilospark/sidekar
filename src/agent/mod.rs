@@ -1,5 +1,6 @@
 pub mod compaction;
 pub mod context;
+pub mod images;
 pub mod tools;
 
 use anyhow::{Result, bail};

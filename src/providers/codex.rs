@@ -81,41 +81,72 @@ fn build_request_body(
     for msg in messages {
         match msg.role {
             Role::User => {
-                // User text messages
-                let text = msg
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let mut pending_parts: Vec<Value> = Vec::new();
 
-                if !text.is_empty() {
-                    input.push(json!({
-                        "type": "message",
-                        "role": "user",
-                        "content": text,
-                    }));
-                }
-
-                // Tool results
-                for block in &msg.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } = block
-                    {
-                        let (call_id, _) = split_tool_call_ids(tool_use_id);
+                fn flush_codex_user_message(input: &mut Vec<Value>, parts: &mut Vec<Value>) {
+                    if parts.is_empty() {
+                        return;
+                    }
+                    let only_plain_text = parts.len() == 1
+                        && parts[0].get("type").and_then(|v| v.as_str()) == Some("input_text");
+                    if only_plain_text {
+                        let t = parts[0]
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         input.push(json!({
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": content,
+                            "type": "message",
+                            "role": "user",
+                            "content": t,
+                        }));
+                    } else {
+                        input.push(json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": parts.clone(),
                         }));
                     }
+                    parts.clear();
                 }
+
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                pending_parts.push(json!({
+                                    "type": "input_text",
+                                    "text": text,
+                                }));
+                            }
+                        }
+                        ContentBlock::Image {
+                            media_type,
+                            data_base64,
+                            ..
+                        } => {
+                            let url = format!("data:{media_type};base64,{data_base64}");
+                            pending_parts.push(json!({
+                                "type": "input_image",
+                                "image_url": url,
+                            }));
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            flush_codex_user_message(&mut input, &mut pending_parts);
+                            let (call_id, _) = split_tool_call_ids(tool_use_id);
+                            input.push(json!({
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": content,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                flush_codex_user_message(&mut input, &mut pending_parts);
             }
             Role::Assistant => {
                 // Text output

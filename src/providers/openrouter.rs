@@ -80,39 +80,67 @@ fn build_request_body(
     for msg in messages {
         match msg.role {
             Role::User => {
-                // Collect text blocks
-                let text: String = msg
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let mut pending_user_parts: Vec<Value> = Vec::new();
 
-                if !text.is_empty() {
-                    api_messages.push(json!({
-                        "role": "user",
-                        "content": text,
-                    }));
-                }
-
-                // Tool results → separate "tool" role messages
-                for block in &msg.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } = block
-                    {
+                fn flush_openrouter_user(api_messages: &mut Vec<Value>, parts: &mut Vec<Value>) {
+                    if parts.is_empty() {
+                        return;
+                    }
+                    let multimodal = parts.len() > 1
+                        || parts.iter().any(|p| {
+                            p.get("type").and_then(|v| v.as_str()) == Some("image_url")
+                        });
+                    if multimodal {
                         api_messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": super::sanitize_id_openai(tool_use_id),
-                            "content": content,
+                            "role": "user",
+                            "content": parts.clone(),
+                        }));
+                    } else if let Some(t) = parts[0].get("text").and_then(|v| v.as_str()) {
+                        api_messages.push(json!({
+                            "role": "user",
+                            "content": t,
                         }));
                     }
+                    parts.clear();
                 }
+
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                pending_user_parts.push(json!({
+                                    "type": "text",
+                                    "text": text,
+                                }));
+                            }
+                        }
+                        ContentBlock::Image {
+                            media_type,
+                            data_base64,
+                            ..
+                        } => {
+                            let url = format!("data:{media_type};base64,{data_base64}");
+                            pending_user_parts.push(json!({
+                                "type": "image_url",
+                                "image_url": { "url": url },
+                            }));
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            flush_openrouter_user(&mut api_messages, &mut pending_user_parts);
+                            api_messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": super::sanitize_id_openai(tool_use_id),
+                                "content": content,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                flush_openrouter_user(&mut api_messages, &mut pending_user_parts);
             }
             Role::Assistant => {
                 let text: String = msg

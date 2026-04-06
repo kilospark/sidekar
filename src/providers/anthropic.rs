@@ -336,6 +336,18 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
                 "content": content,
                 "is_error": is_error,
             }),
+            ContentBlock::Image {
+                media_type,
+                data_base64,
+                ..
+            } => json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data_base64,
+                }
+            }),
         })
         .collect()
 }
@@ -383,6 +395,7 @@ fn compute_fingerprint_from_messages(messages: &[ChatMessage], version: &str) ->
         .and_then(|msg| {
             msg.content.iter().find_map(|block| match block {
                 ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Image { .. } => Some("[image]"),
                 _ => None,
             })
         })
@@ -655,7 +668,7 @@ fn get_or_create_device_id() -> String {
     let mut bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
     let id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let _ = crate::broker::kv_set(KEY, &id);
+    let _ = crate::broker::kv_set(KEY, &id, None);
     id
 }
 
