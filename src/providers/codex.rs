@@ -16,8 +16,9 @@ pub async fn stream(
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
+    prompt_cache_key: Option<&str>,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-    let body = build_request_body(model, system_prompt, messages, tools);
+    let body = build_request_body(model, system_prompt, messages, tools, prompt_cache_key);
     let url = format!("{}/codex/responses", base_url.trim_end_matches('/'));
 
     let mut headers = reqwest::header::HeaderMap::new();
@@ -73,6 +74,7 @@ fn build_request_body(
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
+    prompt_cache_key: Option<&str>,
 ) -> Value {
     let mut input: Vec<Value> = Vec::new();
 
@@ -176,6 +178,10 @@ fn build_request_body(
         "stream": true,
         "store": false,
     });
+
+    if let Some(key) = prompt_cache_key.filter(|key| !key.is_empty()) {
+        body["prompt_cache_key"] = json!(key);
+    }
 
     if !api_tools.is_empty() {
         body["tools"] = json!(api_tools);
@@ -372,10 +378,7 @@ async fn parse_sse_stream(
                 "response.completed" | "response.done" | "response.incomplete" => {
                     if let Some(resp) = data.get("response") {
                         if let Some(u) = resp.get("usage") {
-                            usage.input_tokens =
-                                u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                            usage.output_tokens =
-                                u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            apply_usage(u, &mut usage);
                         }
                         let m = resp.get("model").and_then(|v| v.as_str()).unwrap_or("");
                         if !m.is_empty() {
@@ -480,4 +483,67 @@ fn split_tool_call_ids(stored_id: &str) -> (String, String) {
     let hash = format!("{:x}", xxhash_rust::xxh64::xxh64(stored_id.as_bytes(), 0));
     let short = &hash[..hash.len().min(12)];
     (format!("call_{short}"), format!("fc_{short}"))
+}
+
+fn apply_usage(u: &Value, usage: &mut Usage) {
+    let input_total = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    usage.output_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    let details = u.get("input_tokens_details");
+    usage.cache_read_tokens = details
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    usage.cache_write_tokens = details
+        .and_then(|d| d.get("cache_creation_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    usage.input_tokens = input_total
+        .saturating_sub(usage.cache_read_tokens)
+        .saturating_sub(usage.cache_write_tokens);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_usage, build_request_body};
+    use crate::providers::{ChatMessage, ContentBlock, Role, Usage};
+    use serde_json::json;
+
+    #[test]
+    fn build_request_body_includes_prompt_cache_key() {
+        let body = build_request_body(
+            "gpt-5.4",
+            "system",
+            &[ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+            }],
+            &[],
+            Some("sess-123"),
+        );
+
+        assert_eq!(body.get("prompt_cache_key").and_then(|v| v.as_str()), Some("sess-123"));
+    }
+
+    #[test]
+    fn apply_usage_extracts_cached_token_details() {
+        let usage_json = json!({
+            "input_tokens": 1200,
+            "output_tokens": 55,
+            "input_tokens_details": {
+                "cached_tokens": 400,
+                "cache_creation_tokens": 100
+            }
+        });
+        let mut usage = Usage::default();
+
+        apply_usage(&usage_json, &mut usage);
+
+        assert_eq!(usage.input_tokens, 700);
+        assert_eq!(usage.output_tokens, 55);
+        assert_eq!(usage.cache_read_tokens, 400);
+        assert_eq!(usage.cache_write_tokens, 100);
+    }
 }

@@ -25,6 +25,7 @@ pub async fn run(
     tool_defs: &[ToolDef],
     on_event: StreamCallback,
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    prompt_cache_key: Option<&str>,
 ) -> Result<bool, anyhow::Error> {
     let context_window = crate::providers::fetch_context_window(model, provider).await;
     let mut did_compact = false;
@@ -45,7 +46,7 @@ pub async fn run(
 
         // Stream LLM response
         let mut rx = match provider
-            .stream(model, system_prompt, history, tool_defs)
+            .stream(model, system_prompt, history, tool_defs, prompt_cache_key)
             .await
         {
             Ok(rx) => rx,

@@ -776,13 +776,14 @@ impl Provider {
         system_prompt: &str,
         messages: &[ChatMessage],
         tools: &[ToolDef],
+        prompt_cache_key: Option<&str>,
     ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
         let max_retries = 3u32;
         let mut attempt = 0u32;
 
         loop {
             let result = self
-                .stream_once(model, system_prompt, messages, tools)
+                .stream_once(model, system_prompt, messages, tools, prompt_cache_key)
                 .await;
 
             match &result {
@@ -812,10 +813,20 @@ impl Provider {
         system_prompt: &str,
         messages: &[ChatMessage],
         tools: &[ToolDef],
+        prompt_cache_key: Option<&str>,
     ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
         match self {
             Provider::Anthropic { api_key, base_url } => {
-                anthropic::stream(api_key, base_url, model, system_prompt, messages, tools).await
+                anthropic::stream(
+                    api_key,
+                    base_url,
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                    prompt_cache_key,
+                )
+                .await
             }
             Provider::Codex {
                 api_key,
@@ -830,11 +841,21 @@ impl Provider {
                     system_prompt,
                     messages,
                     tools,
+                    prompt_cache_key,
                 )
                 .await
             }
             Provider::OpenRouter { api_key, base_url } => {
-                openrouter::stream(api_key, base_url, model, system_prompt, messages, tools).await
+                openrouter::stream(
+                    api_key,
+                    base_url,
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                    prompt_cache_key,
+                )
+                .await
             }
         }
     }

@@ -145,6 +145,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             &tool_defs,
             on_event,
             Some(&cancel),
+            Some(&session_id),
         )
         .await?;
 
@@ -492,6 +493,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             &tool_defs,
             on_event,
             Some(&cancel),
+            Some(&session_id),
         )
         .await;
         let (returned_editor, mut submitted) = active_prompt.finish();
@@ -825,10 +827,17 @@ impl EventRenderer {
                 self.emitln("");
                 let _ = io::stdout().flush();
                 let u = &message.usage;
-                self.emitln(&format!(
-                    "\x1b[2m[{} in / {} out tokens]\x1b[0m",
-                    u.input_tokens, u.output_tokens
-                ));
+                if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
+                    self.emitln(&format!(
+                        "\x1b[2m[{} in / {} out / {} cache read / {} cache write tokens]\x1b[0m",
+                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
+                    ));
+                } else {
+                    self.emitln(&format!(
+                        "\x1b[2m[{} in / {} out tokens]\x1b[0m",
+                        u.input_tokens, u.output_tokens
+                    ));
+                }
                 let _ = io::stdout().flush();
             }
             StreamEvent::Error { message } => {

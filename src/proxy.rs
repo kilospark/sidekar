@@ -23,10 +23,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 fn proxy_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".sidekar")
-        .join("proxy")
+    std::env::temp_dir().join(format!("sidekar-proxy-{}", std::process::id()))
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +709,31 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_dir_does_not_depend_on_home() {
+        let _guard = crate::test_home_lock()
+            .lock()
+            .unwrap_or_else(|_| panic!("failed to lock test HOME mutex"));
+        let old_home = std::env::var_os("HOME");
+        let fake_home = std::env::temp_dir().join(format!(
+            "sidekar-proxy-home-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&fake_home).expect("create fake home");
+        unsafe { std::env::set_var("HOME", &fake_home) };
+
+        let dir = proxy_dir();
+
+        match old_home {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&fake_home);
+
+        assert!(dir.starts_with(std::env::temp_dir()));
+        assert!(!dir.starts_with(&fake_home));
+    }
 
     /// Build a client that uses CONNECT proxy (MITM mode).
     async fn mitm_client(port: u16, ca_path: &std::path::Path) -> reqwest::Client {

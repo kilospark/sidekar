@@ -25,6 +25,7 @@ pub async fn stream(
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
+    _prompt_cache_key: Option<&str>,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let is_oauth = api_key.contains("sk-ant-oat");
 
@@ -184,7 +185,7 @@ fn build_request_body(
         Some(api_tools)
     };
 
-    AnthropicRequest {
+    let mut request = AnthropicRequest {
         system: build_system_blocks(system_prompt, messages, is_oauth),
         model: model.to_string(),
         max_tokens,
@@ -192,7 +193,9 @@ fn build_request_body(
         messages: api_messages,
         stream: true,
         tools,
-    }
+    };
+    apply_cache_control(&mut request);
+    request
 }
 
 fn build_system_blocks(
@@ -221,6 +224,83 @@ fn build_system_blocks(
     }
 
     blocks
+}
+
+fn apply_cache_control(request: &mut AnthropicRequest) {
+    let marker = json!({ "type": "ephemeral" });
+    let mut breakpoints_used = 0usize;
+
+    if apply_system_cache_control(&mut request.system, &marker) {
+        breakpoints_used += 1;
+    }
+
+    let remaining = 4usize.saturating_sub(breakpoints_used);
+    if remaining == 0 {
+        return;
+    }
+
+    let mut applied = 0usize;
+    for message in request.messages.iter_mut().rev() {
+        if apply_message_cache_control(message, &marker) {
+            applied += 1;
+            if applied >= remaining {
+                break;
+            }
+        }
+    }
+}
+
+fn apply_system_cache_control(system: &mut [Value], marker: &Value) -> bool {
+    for block in system.iter_mut().rev() {
+        if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+            block["cache_control"] = marker.clone();
+            return true;
+        }
+    }
+    false
+}
+
+fn apply_message_cache_control(message: &mut Value, marker: &Value) -> bool {
+    let Some(content) = message.get_mut("content") else {
+        return false;
+    };
+
+    if let Some(text) = content.as_str() {
+        let text = text.to_string();
+        if text.is_empty() {
+            return false;
+        }
+        *content = json!([{
+            "type": "text",
+            "text": text,
+            "cache_control": marker,
+        }]);
+        return true;
+    }
+
+    let Some(parts) = content.as_array_mut() else {
+        return false;
+    };
+
+    for part in parts.iter_mut().rev() {
+        match part.get("type").and_then(|v| v.as_str()) {
+            Some("text") => {
+                let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if text.is_empty() {
+                    continue;
+                }
+                part["cache_control"] = marker.clone();
+                return true;
+            }
+            Some("tool_result") => {
+                part["cache_control"] = marker.clone();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> {
@@ -596,7 +676,9 @@ fn get_account_uuid() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CCH_PLACEHOLDER, compute_fingerprint, sign_request_body};
+    use super::{CCH_PLACEHOLDER, build_request_body, compute_fingerprint, sign_request_body};
+    use crate::providers::{ChatMessage, ContentBlock, Role};
+    use serde_json::json;
 
     #[test]
     fn fingerprint_matches_reference_example() {
@@ -612,5 +694,115 @@ mod tests {
 
         assert!(!signed.contains(&format!("\"system\":\"{CCH_PLACEHOLDER}\"")));
         assert!(signed.contains(&format!("\"messages\":\"{CCH_PLACEHOLDER}\"")));
+    }
+
+    #[test]
+    fn build_request_body_adds_cache_control_to_system_and_tail_messages() {
+        let body = build_request_body(
+            "claude-sonnet-4-5",
+            "system",
+            &[
+                ChatMessage {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "first".to_string(),
+                    }],
+                },
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "second".to_string(),
+                    }],
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "call_1".to_string(),
+                        content: "tool result".to_string(),
+                        is_error: false,
+                    }],
+                },
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "bash".to_string(),
+                        arguments: json!({"cmd": "pwd"}),
+                    }],
+                },
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "latest".to_string(),
+                    }],
+                },
+            ],
+            &[],
+            16_000,
+            false,
+        );
+
+        assert_eq!(
+            body.system.last().and_then(|block| block.get("cache_control")),
+            Some(&json!({"type": "ephemeral"}))
+        );
+        assert_eq!(body.messages.len(), 5);
+        assert!(body.messages[0].get("content").and_then(|v| v.as_array()).and_then(|parts| {
+            parts.last().and_then(|part| part.get("cache_control"))
+        }).is_none());
+        assert_eq!(
+            body.messages[1]
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|parts| parts.last())
+                .and_then(|part| part.get("cache_control")),
+            Some(&json!({"type": "ephemeral"}))
+        );
+        assert_eq!(
+            body.messages[2]
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|parts| parts.last())
+                .and_then(|part| part.get("cache_control")),
+            Some(&json!({"type": "ephemeral"}))
+        );
+        assert!(body.messages[3].get("content").and_then(|v| v.as_array()).and_then(|parts| {
+            parts.last().and_then(|part| part.get("cache_control"))
+        }).is_none());
+        assert_eq!(
+            body.messages[4]
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|parts| parts.last())
+                .and_then(|part| part.get("cache_control")),
+            Some(&json!({"type": "ephemeral"}))
+        );
+    }
+
+    #[test]
+    fn build_request_body_converts_oauth_string_content_for_cache_control() {
+        let body = build_request_body(
+            "claude-sonnet-4-5",
+            "system",
+            &[ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+            }],
+            &[],
+            16_000,
+            true,
+        );
+
+        let content = body.messages[0]
+            .get("content")
+            .and_then(|v| v.as_array())
+            .expect("oauth text content should be converted to block array");
+        assert_eq!(content[0].get("text").and_then(|v| v.as_str()), Some("hello"));
+        assert_eq!(
+            content[0].get("cache_control"),
+            Some(&json!({"type": "ephemeral"}))
+        );
     }
 }
