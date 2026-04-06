@@ -324,3 +324,466 @@ pub(super) async fn cmd_unlock(ctx: &mut AppContext) -> Result<()> {
     out!(ctx, "{msg}");
     Ok(())
 }
+
+// --- State save/load (cookies + localStorage + sessionStorage) ---
+
+pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let action = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or("");
+    match action {
+        "save" => {
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+
+            // Get current URL/origin
+            let origin_result = runtime_evaluate(&mut cdp, "location.origin", true, false).await?;
+            let origin = origin_result
+                .pointer("/result/value")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let url_result = runtime_evaluate(&mut cdp, "location.href", true, false).await?;
+            let url = url_result
+                .pointer("/result/value")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            // Cookies
+            let cookies_result = cdp.send("Network.getCookies", json!({})).await?;
+            let cookies = cookies_result
+                .get("cookies")
+                .cloned()
+                .unwrap_or(json!([]));
+
+            // localStorage
+            let ls_result = cdp
+                .send(
+                    "DOMStorage.getDOMStorageItems",
+                    json!({"storageId": {"securityOrigin": origin, "isLocalStorage": true}}),
+                )
+                .await;
+            let local_storage = ls_result
+                .ok()
+                .and_then(|r| r.get("entries").cloned())
+                .and_then(|entries| entries.as_array().cloned())
+                .map(|arr| {
+                    let mut map = serde_json::Map::new();
+                    for pair in &arr {
+                        if let Some(pair_arr) = pair.as_array() {
+                            if pair_arr.len() >= 2 {
+                                let k = pair_arr[0].as_str().unwrap_or_default().to_string();
+                                let v = pair_arr[1].as_str().unwrap_or_default().to_string();
+                                map.insert(k, json!(v));
+                            }
+                        }
+                    }
+                    Value::Object(map)
+                })
+                .unwrap_or(json!({}));
+
+            // sessionStorage
+            let ss_result = cdp
+                .send(
+                    "DOMStorage.getDOMStorageItems",
+                    json!({"storageId": {"securityOrigin": origin, "isLocalStorage": false}}),
+                )
+                .await;
+            let session_storage = ss_result
+                .ok()
+                .and_then(|r| r.get("entries").cloned())
+                .and_then(|entries| entries.as_array().cloned())
+                .map(|arr| {
+                    let mut map = serde_json::Map::new();
+                    for pair in &arr {
+                        if let Some(pair_arr) = pair.as_array() {
+                            if pair_arr.len() >= 2 {
+                                let k = pair_arr[0].as_str().unwrap_or_default().to_string();
+                                let v = pair_arr[1].as_str().unwrap_or_default().to_string();
+                                map.insert(k, json!(v));
+                            }
+                        }
+                    }
+                    Value::Object(map)
+                })
+                .unwrap_or(json!({}));
+
+            let state_data = json!({
+                "version": 1,
+                "url": url,
+                "origin": origin,
+                "cookies": cookies,
+                "localStorage": local_storage,
+                "sessionStorage": session_storage,
+            });
+
+            let output_path = args.get(1).map(String::as_str).unwrap_or("");
+            let file = if output_path.is_empty() {
+                let sid = ctx
+                    .current_session_id
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
+                ctx.tmp_dir()
+                    .join(format!("sidekar-state-{sid}.json"))
+            } else {
+                PathBuf::from(output_path)
+            };
+            fs::write(&file, serde_json::to_string_pretty(&state_data)?)
+                .with_context(|| format!("failed writing {}", file.display()))?;
+
+            let cookie_count = cookies.as_array().map(|a| a.len()).unwrap_or(0);
+            let ls_count = local_storage.as_object().map(|m| m.len()).unwrap_or(0);
+            let ss_count = session_storage.as_object().map(|m| m.len()).unwrap_or(0);
+            out!(
+                ctx,
+                "State saved to {}\n  {} cookies, {} localStorage, {} sessionStorage entries",
+                file.display(),
+                cookie_count,
+                ls_count,
+                ss_count
+            );
+            cdp.close().await;
+        }
+        "load" => {
+            let path = args
+                .get(1)
+                .context("Usage: state load <path>")?;
+            let data = fs::read_to_string(path)
+                .with_context(|| format!("failed reading {path}"))?;
+            let state_data: Value = serde_json::from_str(&data)
+                .with_context(|| format!("failed parsing {path}"))?;
+
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+
+            // Restore cookies
+            cdp.send("Network.clearBrowserCookies", json!({})).await?;
+            let mut cookie_count = 0usize;
+            if let Some(cookies) = state_data.get("cookies").and_then(Value::as_array) {
+                for cookie in cookies {
+                    let _ = cdp.send("Network.setCookie", cookie.clone()).await;
+                    cookie_count += 1;
+                }
+            }
+
+            // Navigate to original URL if different
+            let saved_url = state_data
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !saved_url.is_empty() {
+                let current = runtime_evaluate(&mut cdp, "location.href", true, false).await?;
+                let current_url = current
+                    .pointer("/result/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if current_url != saved_url {
+                    runtime_evaluate(
+                        &mut cdp,
+                        &format!("window.location.href = {}", serde_json::to_string(saved_url)?),
+                        false,
+                        false,
+                    )
+                    .await?;
+                    wait_for_ready_state_complete(&mut cdp, Duration::from_secs(10)).await?;
+                }
+            }
+
+            let origin = state_data
+                .get("origin")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            // Restore localStorage
+            let mut ls_count = 0usize;
+            if let Some(ls) = state_data.get("localStorage").and_then(Value::as_object) {
+                for (k, v) in ls {
+                    let val = v.as_str().unwrap_or_default();
+                    let _ = cdp
+                        .send(
+                            "DOMStorage.setDOMStorageItem",
+                            json!({
+                                "storageId": {"securityOrigin": origin, "isLocalStorage": true},
+                                "key": k,
+                                "value": val,
+                            }),
+                        )
+                        .await;
+                    ls_count += 1;
+                }
+            }
+
+            // Restore sessionStorage
+            let mut ss_count = 0usize;
+            if let Some(ss) = state_data.get("sessionStorage").and_then(Value::as_object) {
+                for (k, v) in ss {
+                    let val = v.as_str().unwrap_or_default();
+                    let _ = cdp
+                        .send(
+                            "DOMStorage.setDOMStorageItem",
+                            json!({
+                                "storageId": {"securityOrigin": origin, "isLocalStorage": false},
+                                "key": k,
+                                "value": val,
+                            }),
+                        )
+                        .await;
+                    ss_count += 1;
+                }
+            }
+
+            out!(
+                ctx,
+                "State loaded from {path}\n  {} cookies, {} localStorage, {} sessionStorage entries restored",
+                cookie_count,
+                ls_count,
+                ss_count
+            );
+            cdp.close().await;
+        }
+        _ => bail!("Usage: state <save|load> [path]"),
+    }
+    Ok(())
+}
+
+// --- Auth vault ---
+
+pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let action = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or("");
+    match action {
+        "save" => {
+            let name = args
+                .get(1)
+                .context("Usage: auth save <name> <username> <password> [--url=<url>] [--user-selector=<sel>] [--pass-selector=<sel>]")?;
+            let username = args
+                .get(2)
+                .context("Missing username. Usage: auth save <name> <username> <password>")?;
+            let password = args
+                .get(3)
+                .context("Missing password. Usage: auth save <name> <username> <password>")?;
+            let url = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--url="))
+                .unwrap_or("");
+            let user_sel = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--user-selector="))
+                .unwrap_or("");
+            let pass_sel = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--pass-selector="))
+                .unwrap_or("");
+
+            let entry = json!({
+                "username": username,
+                "password": password,
+                "url": url,
+                "user_selector": user_sel,
+                "pass_selector": pass_sel,
+            });
+            let key = format!("auth:{name}");
+            crate::broker::kv_set(&key, &entry.to_string())?;
+            out!(ctx, "Auth \"{name}\" saved (username: {username})");
+        }
+        "login" => {
+            let name = args
+                .get(1)
+                .context("Usage: auth login <name>")?;
+            let key = format!("auth:{name}");
+            let kv_entry = crate::broker::kv_get(&key)?
+                .ok_or_else(|| anyhow!("No auth entry \"{name}\". Run: auth save {name} <user> <pass>"))?;
+            let entry: Value = serde_json::from_str(&kv_entry.value)
+                .with_context(|| format!("Corrupt auth entry for \"{name}\""))?;
+
+            let username = entry
+                .get("username")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let password = entry
+                .get("password")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let url = entry
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let user_sel = entry
+                .get("user_selector")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let pass_sel = entry
+                .get("pass_selector")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+
+            // Navigate if URL specified
+            if !url.is_empty() {
+                let current = runtime_evaluate(&mut cdp, "location.href", true, false).await?;
+                let current_url = current
+                    .pointer("/result/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !current_url.starts_with(url) {
+                    runtime_evaluate(
+                        &mut cdp,
+                        &format!("window.location.href = {}", serde_json::to_string(url)?),
+                        false,
+                        false,
+                    )
+                    .await?;
+                    wait_for_ready_state_complete(&mut cdp, Duration::from_secs(10)).await?;
+                }
+            }
+
+            let context_id = get_frame_context_id(ctx, &mut cdp).await?;
+
+            // Auto-detect form fields if selectors not stored
+            let (final_user_sel, final_pass_sel) = if user_sel.is_empty() || pass_sel.is_empty() {
+                let detect_js = r#"(() => {
+                    const inputs = document.querySelectorAll('input');
+                    let user = null, pass = null;
+                    for (const inp of inputs) {
+                        if (!inp.offsetParent && !inp.getClientRects().length) continue;
+                        const type = inp.type.toLowerCase();
+                        const hint = (inp.name + inp.id + inp.placeholder + (inp.autocomplete || '')).toLowerCase();
+                        if (type === 'password' && !pass) { pass = inp; continue; }
+                        if (!user && (type === 'email' || (type === 'text' && /user|email|login|account|name/.test(hint)))) user = inp;
+                    }
+                    const sel = (el) => {
+                        if (!el) return '';
+                        if (el.id) return '#' + el.id;
+                        if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+                        return '';
+                    };
+                    return { user: sel(user), pass: sel(pass) };
+                })()"#;
+                let result = runtime_evaluate_with_context(&mut cdp, detect_js, true, true, context_id).await?;
+                let detected = result.pointer("/result/value").cloned().unwrap_or(Value::Null);
+                let u = if user_sel.is_empty() {
+                    detected
+                        .get("user")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                } else {
+                    user_sel.to_string()
+                };
+                let p = if pass_sel.is_empty() {
+                    detected
+                        .get("pass")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                } else {
+                    pass_sel.to_string()
+                };
+                (u, p)
+            } else {
+                (user_sel.to_string(), pass_sel.to_string())
+            };
+
+            if final_user_sel.is_empty() || final_pass_sel.is_empty() {
+                bail!(
+                    "Could not auto-detect login form fields. Use --user-selector and --pass-selector with auth save."
+                );
+            }
+
+            // Fill username
+            type_text_verified(&mut cdp, context_id, &final_user_sel, username).await?;
+            // Fill password
+            type_text_verified(&mut cdp, context_id, &final_pass_sel, password).await?;
+
+            // Find and click submit
+            let submit_js = r#"(() => {
+                const btn = document.querySelector('input[type=submit], button[type=submit]')
+                    || [...document.querySelectorAll('button')].find(b => /log.?in|sign.?in|submit/i.test(b.textContent));
+                if (!btn) return null;
+                const rect = btn.getBoundingClientRect();
+                return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            })()"#;
+            let submit_result =
+                runtime_evaluate_with_context(&mut cdp, submit_js, true, true, context_id).await?;
+            let submit_pos = submit_result
+                .pointer("/result/value")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if let (Some(x), Some(y)) = (
+                submit_pos.get("x").and_then(Value::as_f64),
+                submit_pos.get("y").and_then(Value::as_f64),
+            ) {
+                cdp.send(
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": "mouseMoved", "x": x, "y": y }),
+                )
+                .await?;
+                sleep(Duration::from_millis(80)).await;
+                cdp.send(
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+                )
+                .await?;
+                cdp.send(
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+                )
+                .await?;
+                out!(ctx, "Auth \"{name}\": filled credentials and clicked submit");
+            } else {
+                out!(
+                    ctx,
+                    "Auth \"{name}\": filled credentials (no submit button found — press Enter or click manually)"
+                );
+            }
+            sleep(Duration::from_millis(500)).await;
+            out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+            cdp.close().await;
+        }
+        "list" => {
+            let all = crate::broker::kv_list()?;
+            let auth_entries: Vec<_> = all
+                .iter()
+                .filter(|e| e.key.starts_with("auth:"))
+                .collect();
+            if auth_entries.is_empty() {
+                out!(ctx, "No saved auth entries.");
+            } else {
+                for kv in &auth_entries {
+                    let name = kv.key.strip_prefix("auth:").unwrap_or(&kv.key);
+                    let entry: Value =
+                        serde_json::from_str(&kv.value).unwrap_or(Value::Null);
+                    let user = entry
+                        .get("username")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?");
+                    let url = entry
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if url.is_empty() {
+                        out!(ctx, "  {name} — user: {user}");
+                    } else {
+                        out!(ctx, "  {name} — user: {user} url: {url}");
+                    }
+                }
+            }
+        }
+        "delete" => {
+            let name = args
+                .get(1)
+                .context("Usage: auth delete <name>")?;
+            let key = format!("auth:{name}");
+            crate::broker::kv_delete(&key)?;
+            out!(ctx, "Auth \"{name}\" deleted.");
+        }
+        _ => bail!("Usage: auth <save|login|list|delete> [args]"),
+    }
+    Ok(())
+}

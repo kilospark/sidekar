@@ -2082,6 +2082,7 @@ sidekar screenshot [options]
     --ref=N            Crop to ref number (from ax-tree -i, observe, text)
     --selector=SEL     Crop to CSS selector
     --full             Capture entire scrollable page
+    --annotate         Overlay numbered labels on interactive elements
     --output=PATH      Save to specific file path
     --format=FMT       png or jpeg (default: jpeg)
     --quality=N        JPEG quality 1-100
@@ -2091,6 +2092,7 @@ sidekar screenshot [options]
   Examples:
     sidekar screenshot
     sidekar screenshot --ref=3
+    sidekar screenshot --annotate
     sidekar screenshot --selector=\".modal\" --format=png
     sidekar screenshot --full --output=/tmp/page.png"
         }
@@ -2238,7 +2240,28 @@ sidekar desktop <subcommand> [args...]
             "sidekar observe\n\n  Show interactive elements formatted as ready-to-use commands.\n  Generates ref map. Like 'ax-tree -i' but with command suggestions."
         }
         "find" => {
-            "sidekar find <query>\n\n  Find an element by natural language description.\n\n  Example: sidekar find \"the login button\""
+            "\
+sidekar find <query>
+sidekar find --role <role> [name]
+sidekar find --text <visible text>
+sidekar find --label <label text>
+sidekar find --testid <data-testid>
+
+  Find elements by fuzzy query or structured semantic locators.
+
+  Strategies:
+    <query>        Fuzzy match against element role, name, and value
+    --role         Exact ARIA role match (button, link, textbox, etc.)
+    --text         Find by visible text content (case-insensitive)
+    --label        Find by <label> or aria-label association
+    --testid       Find by data-testid attribute (exact match)
+
+  Examples:
+    sidekar find \"submit button\"
+    sidekar find --role button Submit
+    sidekar find --text \"Sign in\"
+    sidekar find --label Email
+    sidekar find --testid login-form"
         }
         "resolve" => {
             "sidekar resolve <selector>\n\n  Get link/form target URL without clicking.\n  Returns href, action, formAction, src, onclick, target attributes.\n\n  Example: sidekar resolve 3"
@@ -2289,13 +2312,15 @@ sidekar console [action]
 sidekar network [action] [duration] [filter]
 
   Actions:
-    capture [secs] [filter]   Record XHR/fetch requests (default 10s)
-    show                      Re-display last capture
+    capture [secs] [filter]   Record requests with headers/timing (default 10s)
+    show [filter]             Re-display last capture
+    har [output_path]         Export last capture as HAR 1.2
 
   Examples:
     sidekar network capture 15
     sidekar network capture 10 api/users
-    sidekar network show"
+    sidekar network show
+    sidekar network har /tmp/trace.har"
         }
 
         "block" => {
@@ -2967,6 +2992,106 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     sidekar repl -c codex -m o3 -r
     sidekar repl -c claude-1 -r a63dcdc6
     sidekar repl credentials"
+        }
+
+        "geo" => {
+            "\
+sidekar geo <lat> <lng> [accuracy]
+sidekar geo off
+
+  Emulate geolocation for the current page.
+
+  Arguments:
+    <lat>        Latitude (e.g. 37.7749)
+    <lng>        Longitude (e.g. -122.4194)
+    [accuracy]   Accuracy in meters (default: 1.0)
+    off          Clear geolocation override
+
+  Examples:
+    sidekar geo 37.7749 -122.4194
+    sidekar geo 51.5074 -0.1278 100
+    sidekar geo off"
+        }
+
+        "mouse" => {
+            "\
+sidekar mouse <action> [args]
+
+  Raw mouse primitives for fine-grained control.
+
+  Actions:
+    move <x> <y>                Move cursor to coordinates
+    down [left|right|middle]    Press mouse button (default: left)
+    up [left|right|middle]      Release mouse button (default: left)
+    wheel <deltaY> [deltaX]     Scroll wheel (positive = down)
+
+  Mouse position is tracked across calls (move first, then down/up/wheel).
+
+  Examples:
+    sidekar mouse move 100 200
+    sidekar mouse down
+    sidekar mouse up
+    sidekar mouse wheel 300
+    sidekar mouse down right"
+        }
+
+        "state" => {
+            "\
+sidekar state <save|load> [path]
+
+  Save or restore browser state (cookies + localStorage + sessionStorage)
+  as a portable JSON file.
+
+  Subcommands:
+    save [path]    Save current state to file
+    load <path>    Restore state from file (navigates to original URL)
+
+  Examples:
+    sidekar state save /tmp/mysite.json
+    sidekar state load /tmp/mysite.json
+    sidekar state save"
+        }
+
+        "auth" => {
+            "\
+sidekar auth <save|login|list|delete> [args]
+
+  Credential vault with auto-fill. Stored encrypted via KV.
+
+  Subcommands:
+    save <name> <user> <pass> [--url=<url>] [--user-selector=<sel>] [--pass-selector=<sel>]
+    login <name>       Navigate + auto-detect form + fill + submit
+    list               Show saved credentials
+    delete <name>      Remove a credential
+
+  Examples:
+    sidekar auth save github myuser mypass --url=https://github.com/login
+    sidekar auth login github
+    sidekar auth list
+    sidekar auth delete github"
+        }
+
+        "screencast" => {
+            "\
+sidekar screencast <start|stop|frame> [options]
+
+  Live screen capture via CDP Page.screencastFrame.
+
+  Subcommands:
+    start    Begin capturing frames to a temp JPEG file
+    stop     Stop capturing
+    frame    Get the latest captured frame (path + size)
+
+  Options (start only):
+    --fps=N       Target frames per second (default: 2)
+    --quality=N   JPEG quality 1-100 (default: 50)
+    --width=N     Max width (default: 1280)
+    --height=N    Max height (default: 800)
+
+  Examples:
+    sidekar screencast start --fps=5 --quality=70
+    sidekar screencast frame
+    sidekar screencast stop"
         }
 
         _ => {

@@ -1,5 +1,16 @@
 use super::*;
 
+/// Minimal ISO 8601 date from epoch seconds (no chrono dependency).
+fn chrono_lite(epoch_secs: i64) -> String {
+    let date_str = epoch_to_date(epoch_secs);
+    // epoch_to_date returns "YYYY-MM-DD HH:MM:SS UTC"; convert to "YYYY-MM-DDTHH:MM:SS"
+    if date_str.len() >= 19 && date_str.as_bytes()[4] == b'-' {
+        format!("{}T{}", &date_str[..10], &date_str[11..19])
+    } else {
+        date_str
+    }
+}
+
 pub(super) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let action = args
         .first()
@@ -294,16 +305,39 @@ pub(super) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                             .pointer("/request/postData")
                             .and_then(Value::as_str)
                             .map(|s| truncate(s, 2000));
+                        let request_headers = params
+                            .pointer("/request/headers")
+                            .and_then(Value::as_object)
+                            .map(|h| {
+                                h.iter()
+                                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                                    .collect()
+                            });
+                        let wall_ms = now_epoch_ms();
+                        let started_dt = {
+                            let secs = wall_ms / 1000;
+                            let ms = wall_ms % 1000;
+                            format!(
+                                "{}.{:03}Z",
+                                chrono_lite(secs),
+                                ms
+                            )
+                        };
                         requests.push(NetworkRequestLog {
                             id: request_id,
                             method,
                             url,
                             req_type,
-                            time: now_epoch_ms() - start,
+                            time: wall_ms - start,
                             status: None,
                             status_text: None,
                             mime_type: None,
                             post_data,
+                            request_headers,
+                            response_headers: None,
+                            response_size: None,
+                            started_date_time: Some(started_dt),
+                            time_ms: None,
                         });
                     }
                     "Network.responseReceived" => {
@@ -325,6 +359,20 @@ pub(super) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                                 .pointer("/response/mimeType")
                                 .and_then(Value::as_str)
                                 .map(ToString::to_string);
+                            req.response_headers = params
+                                .pointer("/response/headers")
+                                .and_then(Value::as_object)
+                                .map(|h| {
+                                    h.iter()
+                                        .map(|(k, v)| {
+                                            (k.clone(), v.as_str().unwrap_or("").to_string())
+                                        })
+                                        .collect()
+                                });
+                            req.response_size = params
+                                .pointer("/response/encodedDataLength")
+                                .and_then(Value::as_i64);
+                            req.time_ms = Some(now_epoch_ms() - start - req.time.max(0) as i64);
                         }
                     }
                     _ => {}
@@ -403,7 +451,103 @@ pub(super) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                     .unwrap_or_default()
             );
         }
-        _ => bail!("Usage: sidekar network [capture [seconds] [filter]|show [filter]]"),
+        "har" => {
+            if !log_file.exists() {
+                bail!("No captured requests. Run \"network capture\" first.");
+            }
+            let data = fs::read_to_string(&log_file)
+                .with_context(|| format!("failed reading {}", log_file.display()))?;
+            let requests: Vec<NetworkRequestLog> = serde_json::from_str(&data)
+                .with_context(|| format!("failed parsing {}", log_file.display()))?;
+
+            let entries: Vec<Value> = requests
+                .iter()
+                .map(|r| {
+                    let req_headers: Vec<Value> = r
+                        .request_headers
+                        .as_ref()
+                        .map(|h| {
+                            h.iter()
+                                .map(|(k, v)| json!({"name": k, "value": v}))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let resp_headers: Vec<Value> = r
+                        .response_headers
+                        .as_ref()
+                        .map(|h| {
+                            h.iter()
+                                .map(|(k, v)| json!({"name": k, "value": v}))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let wait_ms = r.time_ms.unwrap_or(0);
+                    json!({
+                        "startedDateTime": r.started_date_time.as_deref().unwrap_or(""),
+                        "time": wait_ms,
+                        "request": {
+                            "method": r.method,
+                            "url": r.url,
+                            "httpVersion": "HTTP/1.1",
+                            "headers": req_headers,
+                            "queryString": [],
+                            "cookies": [],
+                            "headersSize": -1,
+                            "bodySize": r.post_data.as_ref().map(|d| d.len() as i64).unwrap_or(-1),
+                            "postData": r.post_data.as_ref().map(|d| json!({"mimeType": "application/x-www-form-urlencoded", "text": d})).unwrap_or(Value::Null),
+                        },
+                        "response": {
+                            "status": r.status.unwrap_or(0),
+                            "statusText": r.status_text.as_deref().unwrap_or(""),
+                            "httpVersion": "HTTP/1.1",
+                            "headers": resp_headers,
+                            "cookies": [],
+                            "content": {
+                                "size": r.response_size.unwrap_or(-1),
+                                "mimeType": r.mime_type.as_deref().unwrap_or(""),
+                            },
+                            "redirectURL": "",
+                            "headersSize": -1,
+                            "bodySize": r.response_size.unwrap_or(-1),
+                        },
+                        "cache": {},
+                        "timings": {
+                            "send": 0,
+                            "wait": wait_ms,
+                            "receive": 0,
+                        },
+                    })
+                })
+                .collect();
+
+            let har = json!({
+                "log": {
+                    "version": "1.2",
+                    "creator": {
+                        "name": "sidekar",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                    "entries": entries,
+                }
+            });
+
+            let output_path = args.get(1).map(String::as_str).unwrap_or("");
+            let har_file = if output_path.is_empty() {
+                ctx.tmp_dir()
+                    .join(format!("sidekar-har-{}.har", ctx.session_id))
+            } else {
+                std::path::PathBuf::from(output_path)
+            };
+            fs::write(&har_file, serde_json::to_string_pretty(&har)?)
+                .with_context(|| format!("failed writing {}", har_file.display()))?;
+            out!(
+                ctx,
+                "HAR 1.2 exported: {} ({} entries)",
+                har_file.display(),
+                entries.len()
+            );
+        }
+        _ => bail!("Usage: sidekar network <capture|show|har> [args]"),
     }
     Ok(())
 }
@@ -1021,6 +1165,51 @@ pub(super) async fn cmd_sw(ctx: &mut AppContext, args: &[String]) -> Result<()> 
     }
 
     cdp.send("ServiceWorker.disable", json!({})).await?;
+    cdp.close().await;
+    Ok(())
+}
+
+// --- Geolocation emulation ---
+
+pub(super) async fn cmd_geo(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        bail!("Usage: geo <lat> <lng> [accuracy]\n       geo off");
+    }
+    let mut cdp = open_cdp(ctx).await?;
+    prepare_cdp(ctx, &mut cdp).await?;
+
+    if args.first().map(String::as_str) == Some("off") {
+        cdp.send("Emulation.clearGeolocationOverride", json!({}))
+            .await?;
+        out!(ctx, "Geolocation override cleared");
+        cdp.close().await;
+        return Ok(());
+    }
+
+    let lat: f64 = args
+        .first()
+        .and_then(|v| v.parse().ok())
+        .context("Invalid latitude")?;
+    let lng: f64 = args
+        .get(1)
+        .and_then(|v| v.parse().ok())
+        .context("Usage: geo <lat> <lng> [accuracy]")?;
+    let accuracy: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1.0);
+
+    // Grant geolocation permission so navigator.geolocation works
+    let _ = cdp
+        .send(
+            "Browser.grantPermissions",
+            json!({ "permissions": ["geolocation"] }),
+        )
+        .await;
+
+    cdp.send(
+        "Emulation.setGeolocationOverride",
+        json!({ "latitude": lat, "longitude": lng, "accuracy": accuracy }),
+    )
+    .await?;
+    out!(ctx, "Geolocation set to ({lat}, {lng}) accuracy={accuracy}m");
     cdp.close().await;
     Ok(())
 }

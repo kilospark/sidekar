@@ -23,6 +23,10 @@ pub struct SessionState {
     pub zoom_level: Option<f64>,
     pub window_id: Option<i64>,
     pub profile: Option<String>,
+    pub mouse_x: Option<f64>,
+    pub mouse_y: Option<f64>,
+    pub mouse_buttons: Option<u8>,
+    pub screencast_active: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -118,6 +122,11 @@ pub struct NetworkRequestLog {
     pub status_text: Option<String>,
     pub mime_type: Option<String>,
     pub post_data: Option<String>,
+    pub request_headers: Option<Vec<(String, String)>>,
+    pub response_headers: Option<Vec<(String, String)>>,
+    pub response_size: Option<i64>,
+    pub started_date_time: Option<String>,
+    pub time_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

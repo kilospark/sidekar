@@ -97,8 +97,20 @@ pub(crate) async fn cmd_observe(ctx: &mut AppContext) -> Result<()> {
 
 pub(crate) async fn cmd_find(ctx: &mut AppContext, query: &str) -> Result<()> {
     if query.trim().is_empty() {
-        bail!("Usage: sidekar find <query>");
+        bail!("Usage: sidekar find <query>\n       find --role <role> [name]\n       find --text <text>\n       find --label <label>\n       find --testid <id>");
     }
+
+    // Detect structured locator flags
+    let parts: Vec<&str> = query.split_whitespace().collect();
+    match parts.first().copied() {
+        Some("--role") => return cmd_find_by_role(ctx, &parts[1..]).await,
+        Some("--text") => return cmd_find_by_text(ctx, &parts[1..].join(" ")).await,
+        Some("--label") => return cmd_find_by_label(ctx, &parts[1..].join(" ")).await,
+        Some("--testid") => return cmd_find_by_testid(ctx, &parts[1..].join(" ")).await,
+        _ => {}
+    }
+
+    // Existing fuzzy search
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
     let data = fetch_interactive_elements(ctx, &mut cdp).await?;
@@ -183,6 +195,201 @@ pub(crate) async fn cmd_find(ctx: &mut AppContext, query: &str) -> Result<()> {
             out!(ctx, "  [{}] {} \"{}\" ({:.2})", r, e.role, e.name, s);
         }
     }
+    cdp.close().await;
+    Ok(())
+}
+
+// --- Semantic locator strategies ---
+
+async fn cmd_find_by_role(ctx: &mut AppContext, args: &[&str]) -> Result<()> {
+    let role = args.first().context("Usage: find --role <role> [name]")?;
+    let name_filter = if args.len() > 1 {
+        Some(args[1..].join(" ").to_lowercase())
+    } else {
+        None
+    };
+    let mut cdp = open_cdp(ctx).await?;
+    prepare_cdp(ctx, &mut cdp).await?;
+    let data = fetch_interactive_elements(ctx, &mut cdp).await?;
+    let role_lower = role.to_lowercase();
+    let matches: Vec<_> = data
+        .elements
+        .iter()
+        .filter(|el| el.role.to_lowercase() == role_lower)
+        .filter(|el| {
+            name_filter
+                .as_ref()
+                .is_none_or(|n| el.name.to_lowercase().contains(n))
+        })
+        .collect();
+    if matches.is_empty() {
+        bail!(
+            "No elements with role \"{role}\"{}. Try: find --role button",
+            name_filter
+                .as_ref()
+                .map(|n| format!(" matching \"{n}\""))
+                .unwrap_or_default()
+        );
+    }
+    for el in &matches {
+        out!(
+            ctx,
+            "[{}] {} \"{}\"",
+            el.ref_id,
+            el.role,
+            truncate(&el.name, 80)
+        );
+    }
+    out!(ctx, "{} match(es)", matches.len());
+    cdp.close().await;
+    Ok(())
+}
+
+async fn cmd_find_by_text(ctx: &mut AppContext, text: &str) -> Result<()> {
+    if text.is_empty() {
+        bail!("Usage: find --text <visible text>");
+    }
+    let mut cdp = open_cdp(ctx).await?;
+    prepare_cdp(ctx, &mut cdp).await?;
+    let context_id = get_frame_context_id(ctx, &mut cdp).await?;
+    let escaped = serde_json::to_string(text)?;
+    let js = format!(
+        r#"(() => {{
+            const text = {escaped};
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const results = [];
+            while (walker.nextNode()) {{
+                if (walker.currentNode.textContent.trim().toLowerCase().includes(text.toLowerCase())) {{
+                    const el = walker.currentNode.parentElement;
+                    if (!el) continue;
+                    const tag = el.tagName.toLowerCase();
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 && rect.height === 0) continue;
+                    results.push({{
+                        tag: tag,
+                        text: el.textContent.trim().slice(0, 100),
+                        selector: el.id ? '#' + el.id : tag + (el.className ? '.' + el.className.split(' ').filter(Boolean).join('.') : ''),
+                    }});
+                    if (results.length >= 5) break;
+                }}
+            }}
+            return results;
+        }})()"#
+    );
+    let result = runtime_evaluate_with_context(&mut cdp, &js, true, true, context_id).await?;
+    let items = result
+        .pointer("/result/value")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        bail!("No elements containing text \"{text}\"");
+    }
+    for item in &items {
+        let tag = item.get("tag").and_then(Value::as_str).unwrap_or("?");
+        let found_text = item.get("text").and_then(Value::as_str).unwrap_or("");
+        let sel = item.get("selector").and_then(Value::as_str).unwrap_or("");
+        out!(ctx, "<{tag}> \"{}\" — {sel}", truncate(found_text, 60));
+    }
+    out!(ctx, "{} match(es)", items.len());
+    cdp.close().await;
+    Ok(())
+}
+
+async fn cmd_find_by_label(ctx: &mut AppContext, label: &str) -> Result<()> {
+    if label.is_empty() {
+        bail!("Usage: find --label <label text>");
+    }
+    let mut cdp = open_cdp(ctx).await?;
+    prepare_cdp(ctx, &mut cdp).await?;
+    let context_id = get_frame_context_id(ctx, &mut cdp).await?;
+    let escaped = serde_json::to_string(label)?;
+    let js = format!(
+        r#"(() => {{
+            const text = {escaped}.toLowerCase();
+            const results = [];
+            // Check <label> elements
+            for (const lbl of document.querySelectorAll('label')) {{
+                if (!lbl.textContent.toLowerCase().includes(text)) continue;
+                let input = lbl.control;
+                if (!input && lbl.htmlFor) input = document.getElementById(lbl.htmlFor);
+                if (!input) input = lbl.querySelector('input,textarea,select');
+                if (input) {{
+                    results.push({{
+                        tag: input.tagName.toLowerCase(),
+                        type: input.type || '',
+                        label: lbl.textContent.trim().slice(0, 80),
+                        selector: input.id ? '#' + input.id : 'input',
+                    }});
+                }}
+            }}
+            // Check aria-label
+            for (const el of document.querySelectorAll('[aria-label]')) {{
+                if (el.getAttribute('aria-label').toLowerCase().includes(text)) {{
+                    results.push({{
+                        tag: el.tagName.toLowerCase(),
+                        type: el.type || '',
+                        label: el.getAttribute('aria-label'),
+                        selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+                    }});
+                }}
+            }}
+            return results.slice(0, 5);
+        }})()"#
+    );
+    let result = runtime_evaluate_with_context(&mut cdp, &js, true, true, context_id).await?;
+    let items = result
+        .pointer("/result/value")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        bail!("No elements with label matching \"{label}\"");
+    }
+    for item in &items {
+        let tag = item.get("tag").and_then(Value::as_str).unwrap_or("?");
+        let found_label = item.get("label").and_then(Value::as_str).unwrap_or("");
+        let sel = item.get("selector").and_then(Value::as_str).unwrap_or("");
+        out!(ctx, "<{tag}> label=\"{}\" — {sel}", truncate(found_label, 60));
+    }
+    out!(ctx, "{} match(es)", items.len());
+    cdp.close().await;
+    Ok(())
+}
+
+async fn cmd_find_by_testid(ctx: &mut AppContext, testid: &str) -> Result<()> {
+    if testid.is_empty() {
+        bail!("Usage: find --testid <data-testid value>");
+    }
+    let mut cdp = open_cdp(ctx).await?;
+    prepare_cdp(ctx, &mut cdp).await?;
+    let context_id = get_frame_context_id(ctx, &mut cdp).await?;
+    let escaped = serde_json::to_string(testid)?;
+    let js = format!(
+        r#"(() => {{
+            const id = {escaped};
+            const el = document.querySelector('[data-testid="' + id + '"]');
+            if (!el) return null;
+            return {{
+                tag: el.tagName.toLowerCase(),
+                text: (el.textContent || '').trim().slice(0, 100),
+                selector: '[data-testid="' + id + '"]',
+            }};
+        }})()"#
+    );
+    let result = runtime_evaluate_with_context(&mut cdp, &js, true, true, context_id).await?;
+    let value = result.pointer("/result/value").cloned().unwrap_or(Value::Null);
+    if value.is_null() {
+        bail!("No element with data-testid=\"{testid}\"");
+    }
+    let tag = value.get("tag").and_then(Value::as_str).unwrap_or("?");
+    let text = value.get("text").and_then(Value::as_str).unwrap_or("");
+    let sel = value.get("selector").and_then(Value::as_str).unwrap_or("");
+    out!(
+        ctx,
+        "<{tag}> testid=\"{testid}\" \"{}\" — {sel}",
+        truncate(text, 60)
+    );
     cdp.close().await;
     Ok(())
 }
