@@ -13,7 +13,7 @@ use proxy_env::ProxyEnvFlags;
 pub(crate) use proxy_env::build_proxy_child_env;
 
 /// Starter prompt passed via each tool’s native “initial prompt” mechanism.
-pub const STARTUP_INJECT: &str = "load sidekar skill. never guess or assume. verify in source — docs can be stale. ask if unclear. no sycophancy — think critically. no shortcuts or quickfixes — find the root cause.";
+pub const STARTUP_INJECT: &str = "never guess or assume. ask if unclear. no sycophancy. think critically. when working on a problem, do not take shortcuts or look for quickfixes. find the root cause. load sidekar skill.";
 
 /// Registry spec: one type per agent **family** (or single binary). No default `proxy_env_flags`.
 pub trait AgentCliSpec: Send + Sync {

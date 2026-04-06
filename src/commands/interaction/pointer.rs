@@ -386,3 +386,89 @@ pub(crate) async fn dispatch_right_click(cdp: &mut CdpClient, x: f64, y: f64) ->
     .await?;
     Ok(())
 }
+
+// --- Raw mouse primitives ---
+
+pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let action = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or("");
+    match action {
+        "move" => {
+            let x: f64 = args.get(1).and_then(|v| v.parse().ok())
+                .context("Usage: mouse move <x> <y>")?;
+            let y: f64 = args.get(2).and_then(|v| v.parse().ok())
+                .context("Usage: mouse move <x> <y>")?;
+            let (x, y) = adjust_coords_for_zoom(ctx, x, y);
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x, "y": y }),
+            )
+            .await?;
+            let mut state = ctx.load_session_state()?;
+            state.mouse_x = Some(x);
+            state.mouse_y = Some(y);
+            ctx.save_session_state(&state)?;
+            out!(ctx, "Mouse moved to ({x}, {y})");
+            cdp.close().await;
+        }
+        "down" => {
+            let button = args.get(1).map(String::as_str).unwrap_or("left");
+            if !matches!(button, "left" | "right" | "middle") {
+                bail!("Invalid button: {button}. Use: left, right, middle");
+            }
+            let state = ctx.load_session_state()?;
+            let x = state.mouse_x.unwrap_or(0.0);
+            let y = state.mouse_y.unwrap_or(0.0);
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": 1 }),
+            )
+            .await?;
+            out!(ctx, "Mouse {button} down at ({x}, {y})");
+            cdp.close().await;
+        }
+        "up" => {
+            let button = args.get(1).map(String::as_str).unwrap_or("left");
+            if !matches!(button, "left" | "right" | "middle") {
+                bail!("Invalid button: {button}. Use: left, right, middle");
+            }
+            let state = ctx.load_session_state()?;
+            let x = state.mouse_x.unwrap_or(0.0);
+            let y = state.mouse_y.unwrap_or(0.0);
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": 1 }),
+            )
+            .await?;
+            out!(ctx, "Mouse {button} up at ({x}, {y})");
+            cdp.close().await;
+        }
+        "wheel" => {
+            let delta_y: f64 = args.get(1).and_then(|v| v.parse().ok())
+                .context("Usage: mouse wheel <deltaY> [deltaX]")?;
+            let delta_x: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let state = ctx.load_session_state()?;
+            let x = state.mouse_x.unwrap_or(0.0);
+            let y = state.mouse_y.unwrap_or(0.0);
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y }),
+            )
+            .await?;
+            out!(ctx, "Mouse wheel deltaY={delta_y} deltaX={delta_x} at ({x}, {y})");
+            cdp.close().await;
+        }
+        _ => bail!("Usage: mouse <move|down|up|wheel> [args]\n  mouse move <x> <y>\n  mouse down [left|right|middle]\n  mouse up [left|right|middle]\n  mouse wheel <deltaY> [deltaX]"),
+    }
+    Ok(())
+}

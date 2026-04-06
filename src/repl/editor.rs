@@ -12,6 +12,8 @@ use super::InputEvent;
 
 const PROMPT_PREFIX: &str = "\x1b[36m›\x1b[0m ";
 const PROMPT_VISIBLE: &str = "› ";
+const CONTINUATION_PREFIX: &str = "\x1b[2m·\x1b[0m ";
+const CONTINUATION_VISIBLE: &str = "· ";
 const ESC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
 
 type SharedEditor = Arc<Mutex<LineEditor>>;
@@ -113,6 +115,8 @@ impl RawModeGuard {
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
             anyhow::bail!("tcsetattr failed: {}", std::io::Error::last_os_error());
         }
+        // Enable bracketed paste mode
+        emit_raw("\x1b[?2004h");
         Ok(Self { saved, fd })
     }
 
@@ -132,6 +136,7 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        emit_raw("\x1b[?2004l");
         unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
     }
 }
@@ -428,6 +433,12 @@ impl Drop for ActivePromptSession {
     }
 }
 
+const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
+fn is_word_separator(ch: char) -> bool {
+    WORD_SEPARATORS.contains(ch)
+}
+
 enum LineEditResult {
     Continue,
     Submit(String),
@@ -461,6 +472,7 @@ pub(super) struct LineEditor {
     rendered_rows: usize,
     rendered_cursor: CursorPos,
     kill_buffer: String,
+    paste_buffer: Option<Vec<u8>>,
 }
 
 impl Default for LineEditor {
@@ -485,6 +497,7 @@ impl LineEditor {
             rendered_rows: 0,
             rendered_cursor: CursorPos::default(),
             kill_buffer: String::new(),
+            paste_buffer: None,
         }
     }
 
@@ -506,28 +519,20 @@ impl LineEditor {
         if self.rendered_cursor.row > 0 {
             clear.push_str(&format!("\x1b[{}A", self.rendered_cursor.row));
         }
-        if self.status_visible {
-            clear.push_str("\x1b[1A");
-        }
         clear.push('\r');
         if self.status_visible {
+            clear.push_str("\x1b[1A\r");
+        }
+
+        let total_rows = self.rendered_rows + usize::from(self.status_visible);
+        for row in 0..total_rows {
             clear.push_str("\x1b[2K");
-            if self.rendered_rows > 0 {
+            if row + 1 < total_rows {
                 clear.push_str("\x1b[1B\r");
             }
         }
-        for row in 0..self.rendered_rows {
-            clear.push_str("\x1b[2K");
-            if row + 1 < self.rendered_rows {
-                clear.push_str("\x1b[1B\r");
-            }
-        }
-        if self.rendered_rows > 1 {
-            clear.push_str(&format!("\x1b[{}A", self.rendered_rows - 1));
-        }
-        if self.status_visible && self.rendered_rows > 0 {
-            clear.push_str("\x1b[1A");
-            clear.push_str("\x1b[1B");
+        if total_rows > 1 {
+            clear.push_str(&format!("\x1b[{}A", total_rows - 1));
         }
         clear.push('\r');
         emit_raw(&clear);
@@ -547,7 +552,19 @@ impl LineEditor {
         let layout = self.compute_layout(cols);
         self.clear_rendered_prompt_inner();
 
-        let mut out = format!("\r{}{}", PROMPT_PREFIX, self.buffer);
+        let rows = self.wrapped_rows(cols);
+        let mut out = String::new();
+        for (i, row) in rows.iter().enumerate() {
+            if i == 0 {
+                out.push_str(&format!("\r{}", PROMPT_PREFIX));
+            } else {
+                out.push_str("\r\n");
+                if row.start > 0 && self.buffer.as_bytes()[row.start - 1] == b'\n' {
+                    out.push_str(CONTINUATION_PREFIX);
+                }
+            }
+            out.push_str(&self.buffer[row.start..row.end]);
+        }
         out.push_str("\x1b[999D");
         if layout.end.row > 0 {
             out.push_str(&format!("\x1b[{}A", layout.end.row));
@@ -593,6 +610,7 @@ impl LineEditor {
         self.status_visible = false;
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
+        self.paste_buffer = None;
     }
 
     fn compute_layout(&self, cols: usize) -> RenderLayout {
@@ -625,6 +643,16 @@ impl LineEditor {
     }
 
     fn feed_byte(&mut self, byte: u8) -> LineEditResult {
+        // Inside bracketed paste: accumulate raw bytes, watch for end marker
+        if self.paste_buffer.is_some() && self.escape.is_empty() && byte != 0x1b {
+            if byte == b'\r' {
+                self.paste_buffer.as_mut().unwrap().push(b'\n');
+            } else {
+                self.paste_buffer.as_mut().unwrap().push(byte);
+            }
+            return LineEditResult::Continue;
+        }
+
         if !self.escape.is_empty() {
             self.escape.push(byte);
             if self.try_handle_escape() {
@@ -678,12 +706,32 @@ impl LineEditor {
                 LineEditResult::Continue
             }
             0x01 => {
-                self.cursor = 0;
+                let bol = self.beginning_of_current_line();
+                if self.cursor == bol && bol > 0 {
+                    // Already at BOL: jump to previous line's BOL
+                    self.cursor = self.buffer[..bol - 1]
+                        .rfind('\n')
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                } else {
+                    self.cursor = bol;
+                }
+                self.preferred_col = None;
                 self.redraw();
                 LineEditResult::Continue
             }
             0x05 => {
-                self.cursor = self.buffer.len();
+                let eol = self.end_of_current_line();
+                if self.cursor == eol && eol < self.buffer.len() {
+                    // Already at EOL: jump to next line's EOL
+                    self.cursor = self.buffer[eol + 1..]
+                        .find('\n')
+                        .map(|i| eol + 1 + i)
+                        .unwrap_or(self.buffer.len());
+                } else {
+                    self.cursor = eol;
+                }
+                self.preferred_col = None;
                 self.redraw();
                 LineEditResult::Continue
             }
@@ -694,6 +742,11 @@ impl LineEditor {
             }
             0x0b => {
                 self.kill_to_end();
+                self.redraw();
+                LineEditResult::Continue
+            }
+            0x17 => {
+                self.delete_backward_word();
                 self.redraw();
                 LineEditResult::Continue
             }
@@ -746,6 +799,41 @@ impl LineEditor {
     }
 
     fn try_handle_escape(&mut self) -> bool {
+        // During paste, only recognize the end marker — dump everything else
+        if self.paste_buffer.is_some() {
+            return match self.escape.as_slice() {
+                [0x1b, b'[', b'2', b'0', b'1', b'~'] => {
+                    if let Some(raw) = self.paste_buffer.take() {
+                        let text = String::from_utf8_lossy(&raw);
+                        if !text.is_empty() {
+                            self.detach_history_nav();
+                            self.buffer.insert_str(self.cursor, &text);
+                            self.cursor += text.len();
+                            self.preferred_col = None;
+                        }
+                    }
+                    self.escape.clear();
+                    self.escape_started_at = None;
+                    true
+                }
+                [0x1b]
+                | [0x1b, b'[']
+                | [0x1b, b'[', b'2']
+                | [0x1b, b'[', b'2', b'0']
+                | [0x1b, b'[', b'2', b'0', b'1'] => false,
+                _ => {
+                    // Not the end marker — dump escape bytes into paste buffer
+                    self.paste_buffer
+                        .as_mut()
+                        .unwrap()
+                        .extend_from_slice(&self.escape);
+                    self.escape.clear();
+                    self.escape_started_at = None;
+                    false
+                }
+            };
+        }
+
         match self.escape.as_slice() {
             [0x1b, b'[', b'D'] => {
                 self.move_left();
@@ -772,13 +860,15 @@ impl LineEditor {
                 true
             }
             [0x1b, b'[', b'H'] | [0x1b, b'O', b'H'] => {
-                self.cursor = 0;
+                self.cursor = self.beginning_of_current_line();
+                self.preferred_col = None;
                 self.escape.clear();
                 self.escape_started_at = None;
                 true
             }
             [0x1b, b'[', b'F'] | [0x1b, b'O', b'F'] => {
-                self.cursor = self.buffer.len();
+                self.cursor = self.end_of_current_line();
+                self.preferred_col = None;
                 self.escape.clear();
                 self.escape_started_at = None;
                 true
@@ -789,7 +879,76 @@ impl LineEditor {
                 self.escape_started_at = None;
                 true
             }
-            [0x1b] | [0x1b, b'['] | [0x1b, b'O'] | [0x1b, b'[', b'3'] => false,
+            // Alt+Enter: insert newline
+            [0x1b, b'\r'] => {
+                self.insert_char('\n');
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Alt+B: word backward
+            [0x1b, b'b'] => {
+                self.cursor = self.beginning_of_previous_word();
+                self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Alt+F: word forward
+            [0x1b, b'f'] => {
+                self.cursor = self.end_of_next_word();
+                self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Alt+D: delete forward word
+            [0x1b, b'd'] => {
+                self.delete_forward_word();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Alt+Backspace: delete backward word
+            [0x1b, 0x7f] => {
+                self.delete_backward_word();
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Ctrl+Left: word backward
+            [0x1b, b'[', b'1', b';', b'5', b'D'] => {
+                self.cursor = self.beginning_of_previous_word();
+                self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Ctrl+Right: word forward
+            [0x1b, b'[', b'1', b';', b'5', b'C'] => {
+                self.cursor = self.end_of_next_word();
+                self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Bracketed paste begin
+            [0x1b, b'[', b'2', b'0', b'0', b'~'] => {
+                self.paste_buffer = Some(Vec::new());
+                self.escape.clear();
+                self.escape_started_at = None;
+                false // no redraw needed
+            }
+            [0x1b]
+            | [0x1b, b'[']
+            | [0x1b, b'O']
+            | [0x1b, b'[', b'3']
+            | [0x1b, b'[', b'1']
+            | [0x1b, b'[', b'1', b';']
+            | [0x1b, b'[', b'1', b';', b'5']
+            | [0x1b, b'[', b'2']
+            | [0x1b, b'[', b'2', b'0']
+            | [0x1b, b'[', b'2', b'0', b'0'] => false,
             _ => {
                 self.escape.clear();
                 self.escape_started_at = None;
@@ -800,6 +959,13 @@ impl LineEditor {
 
     fn maybe_resolve_pending_escape(&mut self) -> bool {
         if self.escape.as_slice() != [0x1b] {
+            return false;
+        }
+        if self.paste_buffer.is_some() {
+            // Lone ESC inside paste — dump to paste buffer, don't cancel
+            self.paste_buffer.as_mut().unwrap().push(0x1b);
+            self.escape.clear();
+            self.escape_started_at = None;
             return false;
         }
         let Some(started) = self.escape_started_at else {
@@ -891,26 +1057,105 @@ impl LineEditor {
         self.preferred_col = None;
     }
 
-    fn kill_to_start(&mut self) {
-        if self.cursor == 0 {
+    fn beginning_of_current_line(&self) -> usize {
+        self.buffer[..self.cursor]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
+    fn end_of_current_line(&self) -> usize {
+        self.buffer[self.cursor..]
+            .find('\n')
+            .map(|i| self.cursor + i)
+            .unwrap_or(self.buffer.len())
+    }
+
+    fn beginning_of_previous_word(&self) -> usize {
+        let prefix = &self.buffer[..self.cursor];
+        let Some((first_non_ws_idx, ch)) =
+            prefix.char_indices().rev().find(|&(_, ch)| !ch.is_whitespace())
+        else {
+            return 0;
+        };
+        let is_sep = is_word_separator(ch);
+        let mut start = first_non_ws_idx;
+        for (idx, ch) in prefix[..first_non_ws_idx].char_indices().rev() {
+            if ch.is_whitespace() || is_word_separator(ch) != is_sep {
+                start = idx + ch.len_utf8();
+                break;
+            }
+            start = idx;
+        }
+        start
+    }
+
+    fn end_of_next_word(&self) -> usize {
+        let suffix = &self.buffer[self.cursor..];
+        let Some(first_non_ws) = suffix.find(|c: char| !c.is_whitespace()) else {
+            return self.buffer.len();
+        };
+        let word_start = self.cursor + first_non_ws;
+        let mut iter = self.buffer[word_start..].char_indices();
+        let Some((_, first_ch)) = iter.next() else {
+            return word_start;
+        };
+        let is_sep = is_word_separator(first_ch);
+        let mut end = self.buffer.len();
+        for (idx, ch) in iter {
+            if ch.is_whitespace() || is_word_separator(ch) != is_sep {
+                end = word_start + idx;
+                break;
+            }
+        }
+        end
+    }
+
+    fn kill_range(&mut self, range: std::ops::Range<usize>) {
+        if range.start >= range.end {
             return;
         }
         self.detach_history_nav();
-        self.kill_buffer = self.buffer[..self.cursor].to_string();
-        self.buffer.drain(..self.cursor);
-        self.cursor = 0;
+        self.kill_buffer = self.buffer[range.clone()].to_string();
+        self.cursor = range.start;
+        self.buffer.drain(range);
         self.preferred_col = None;
     }
 
-    fn kill_to_end(&mut self) {
-        if self.cursor >= self.buffer.len() {
-            self.kill_buffer.clear();
-            return;
+    fn delete_backward_word(&mut self) {
+        let start = self.beginning_of_previous_word();
+        self.kill_range(start..self.cursor);
+    }
+
+    fn delete_forward_word(&mut self) {
+        let end = self.end_of_next_word();
+        if end > self.cursor {
+            self.kill_range(self.cursor..end);
         }
-        self.detach_history_nav();
-        self.kill_buffer = self.buffer[self.cursor..].to_string();
-        self.buffer.truncate(self.cursor);
-        self.preferred_col = None;
+    }
+
+    fn kill_to_start(&mut self) {
+        let bol = self.beginning_of_current_line();
+        if self.cursor == bol {
+            // Already at BOL: kill the preceding newline if any
+            if bol > 0 {
+                self.kill_range(bol - 1..bol);
+            }
+        } else {
+            self.kill_range(bol..self.cursor);
+        }
+    }
+
+    fn kill_to_end(&mut self) {
+        let eol = self.end_of_current_line();
+        if self.cursor == eol {
+            // Already at EOL: kill the trailing newline if any
+            if eol < self.buffer.len() {
+                self.kill_range(self.cursor..eol + 1);
+            }
+        } else {
+            self.kill_range(self.cursor..eol);
+        }
     }
 
     fn yank(&mut self) {
@@ -925,6 +1170,10 @@ impl LineEditor {
     }
 
     fn cancel_line(&mut self) {
+        // Clear the currently rendered prompt before resetting bookkeeping.
+        // Otherwise ESC/Ctrl-C can drop the old text from editor state while
+        // leaving stale characters visible until the next redraw.
+        self.clear_prompt_and_status_inner();
         self.buffer.clear();
         self.cursor = 0;
         self.escape.clear();
@@ -936,6 +1185,7 @@ impl LineEditor {
         self.status_visible = false;
         self.rendered_rows = 0;
         self.rendered_cursor = CursorPos::default();
+        self.paste_buffer = None;
     }
 
     fn detach_history_nav(&mut self) {
@@ -998,10 +1248,18 @@ impl LineEditor {
 
     fn wrapped_rows(&self, cols: usize) -> Vec<std::ops::Range<usize>> {
         let cols = cols.max(1);
+        let prompt_w = UnicodeWidthStr::width(PROMPT_VISIBLE).min(cols);
+        let cont_w = UnicodeWidthStr::width(CONTINUATION_VISIBLE).min(cols);
         let mut rows = Vec::new();
         let mut row_start = 0usize;
-        let mut used = UnicodeWidthStr::width(PROMPT_VISIBLE).min(cols);
+        let mut used = prompt_w;
         for (idx, grapheme) in self.buffer.grapheme_indices(true) {
+            if grapheme == "\n" {
+                rows.push(row_start..idx);
+                row_start = idx + 1;
+                used = cont_w;
+                continue;
+            }
             let width = UnicodeWidthStr::width(grapheme);
             if used + width > cols && row_start < idx {
                 rows.push(row_start..idx);
@@ -1014,6 +1272,18 @@ impl LineEditor {
         rows
     }
 
+    fn row_prefix_width(&self, rows: &[std::ops::Range<usize>], row_idx: usize) -> usize {
+        if row_idx == 0 {
+            UnicodeWidthStr::width(PROMPT_VISIBLE)
+        } else if rows[row_idx].start > 0
+            && self.buffer.as_bytes()[rows[row_idx].start - 1] == b'\n'
+        {
+            UnicodeWidthStr::width(CONTINUATION_VISIBLE)
+        } else {
+            0
+        }
+    }
+
     fn display_col_for_position(
         &self,
         rows: &[std::ops::Range<usize>],
@@ -1021,12 +1291,8 @@ impl LineEditor {
         pos: usize,
     ) -> usize {
         let row = &rows[row_idx];
-        let prefix = if row_idx == 0 {
-            UnicodeWidthStr::width(PROMPT_VISIBLE)
-        } else {
-            0
-        };
-        prefix + UnicodeWidthStr::width(&self.buffer[row.start..pos])
+        self.row_prefix_width(rows, row_idx)
+            + UnicodeWidthStr::width(&self.buffer[row.start..pos])
     }
 
     fn move_to_display_col_on_row(
@@ -1036,11 +1302,7 @@ impl LineEditor {
         target_col: usize,
     ) {
         let row = &rows[row_idx];
-        let mut width_so_far = if row_idx == 0 {
-            UnicodeWidthStr::width(PROMPT_VISIBLE)
-        } else {
-            0
-        };
+        let mut width_so_far = self.row_prefix_width(rows, row_idx);
         for (offset, grapheme) in self.buffer[row.start..row.end].grapheme_indices(true) {
             width_so_far += UnicodeWidthStr::width(grapheme);
             if width_so_far > target_col {
@@ -1317,5 +1579,208 @@ mod tests {
         assert!(matches!(result, LineEditResult::Continue));
         assert!(editor.buffer.is_empty());
         assert_eq!(editor.cursor, 0);
+    }
+
+    // --- Word movement ---
+
+    #[test]
+    fn word_backward_skips_whitespace_then_word() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "hello world".to_string();
+        editor.cursor = editor.buffer.len(); // end
+        assert_eq!(editor.beginning_of_previous_word(), 6); // "world"
+        editor.cursor = 6;
+        assert_eq!(editor.beginning_of_previous_word(), 0); // "hello"
+    }
+
+    #[test]
+    fn word_forward_skips_whitespace_then_word() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "hello world".to_string();
+        editor.cursor = 0;
+        assert_eq!(editor.end_of_next_word(), 5); // past "hello"
+        editor.cursor = 5;
+        assert_eq!(editor.end_of_next_word(), 11); // past "world"
+    }
+
+    #[test]
+    fn word_boundary_stops_at_separator_class_change() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "path/to/file".to_string();
+        editor.cursor = editor.buffer.len();
+        assert_eq!(editor.beginning_of_previous_word(), 8); // "file"
+        editor.cursor = 8;
+        assert_eq!(editor.beginning_of_previous_word(), 7); // "/"
+        editor.cursor = 7;
+        assert_eq!(editor.beginning_of_previous_word(), 5); // "to"
+    }
+
+    #[test]
+    fn delete_backward_word_kills_through_buffer() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "hello world".to_string();
+        editor.cursor = editor.buffer.len();
+        editor.delete_backward_word();
+        assert_eq!(editor.buffer, "hello ");
+        assert_eq!(editor.kill_buffer, "world");
+        // Ctrl+Y recovers it
+        editor.yank();
+        assert_eq!(editor.buffer, "hello world");
+    }
+
+    #[test]
+    fn delete_forward_word_kills_through_buffer() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "hello world".to_string();
+        editor.cursor = 0;
+        editor.delete_forward_word();
+        assert_eq!(editor.buffer, " world");
+        assert_eq!(editor.kill_buffer, "hello");
+    }
+
+    #[test]
+    fn ctrl_w_deletes_backward_word() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "foo bar".to_string();
+        editor.cursor = editor.buffer.len();
+        editor.feed_byte(0x17); // Ctrl+W
+        assert_eq!(editor.buffer, "foo ");
+    }
+
+    // --- Multiline ---
+
+    #[test]
+    fn wrapped_rows_handles_explicit_newlines() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "line1\nline2".to_string();
+        let rows = editor.wrapped_rows(80);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(&editor.buffer[rows[0].clone()], "line1");
+        assert_eq!(&editor.buffer[rows[1].clone()], "line2");
+    }
+
+    #[test]
+    fn wrapped_rows_combines_newlines_and_wrapping() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        // prompt "› " is 2 cols, so with cols=4 we get 2 usable chars on first row
+        // "ab\ncd" → row0="ab", row1="cd" at cols=80
+        // but "abcdef\ngh" at cols=4 → row0="ab", row1="cdef"(wraps), row2="gh"
+        editor.buffer = "ab\ncdefgh".to_string();
+        let rows = editor.wrapped_rows(6);
+        // row 0: "ab" (prompt takes 2, "ab" takes 2, fits in 6)
+        // row 1: starts after \n. cont prefix "· " takes 2 cols, "cdef" takes 4, total 6 → fits
+        // row 2: "gh" wraps from row 1
+        assert_eq!(&editor.buffer[rows[0].clone()], "ab");
+        assert!(rows.len() >= 2);
+        assert_eq!(&editor.buffer[rows[1].clone()], "cdef");
+    }
+
+    #[test]
+    fn kill_to_start_operates_on_current_line() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "first\nsecond".to_string();
+        editor.cursor = 9; // mid "second" → "sec|ond"
+        editor.kill_to_start();
+        assert_eq!(editor.buffer, "first\nond");
+        assert_eq!(editor.kill_buffer, "sec");
+        assert_eq!(editor.cursor, 6); // at start of "ond"
+    }
+
+    #[test]
+    fn kill_to_end_operates_on_current_line() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "first\nsecond".to_string();
+        editor.cursor = 2; // "fi|rst"
+        editor.kill_to_end();
+        assert_eq!(editor.buffer, "fi\nsecond");
+        assert_eq!(editor.kill_buffer, "rst");
+    }
+
+    #[test]
+    fn kill_to_start_at_bol_kills_preceding_newline() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "first\nsecond".to_string();
+        editor.cursor = 6; // start of "second"
+        editor.kill_to_start();
+        assert_eq!(editor.buffer, "firstsecond");
+        assert_eq!(editor.cursor, 5);
+    }
+
+    #[test]
+    fn kill_to_end_at_eol_kills_trailing_newline() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "first\nsecond".to_string();
+        editor.cursor = 5; // end of "first"
+        editor.kill_to_end();
+        assert_eq!(editor.buffer, "firstsecond");
+    }
+
+    #[test]
+    fn ctrl_a_ctrl_e_navigate_current_line() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor.buffer = "first\nsecond".to_string();
+        editor.cursor = 9; // mid "second"
+        assert_eq!(editor.beginning_of_current_line(), 6);
+        assert_eq!(editor.end_of_current_line(), 12);
+    }
+
+    // --- Bracketed paste ---
+
+    #[test]
+    fn bracketed_paste_inserts_text() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        // Begin paste marker: ESC[200~
+        for &b in b"\x1b[200~" {
+            editor.feed_byte(b);
+        }
+        assert!(editor.paste_buffer.is_some());
+        // Paste content
+        for &b in b"pasted text" {
+            editor.feed_byte(b);
+        }
+        // End paste marker: ESC[201~
+        for &b in b"\x1b[201~" {
+            editor.feed_byte(b);
+        }
+        assert!(editor.paste_buffer.is_none());
+        assert_eq!(editor.buffer, "pasted text");
+        assert_eq!(editor.cursor, "pasted text".len());
+    }
+
+    #[test]
+    fn bracketed_paste_with_newlines() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        for &b in b"\x1b[200~line1\rline2\x1b[201~" {
+            editor.feed_byte(b);
+        }
+        assert_eq!(editor.buffer, "line1\nline2");
+    }
+
+    #[test]
+    fn bracketed_paste_ignores_escape_sequences_in_content() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        // Paste content contains ESC[A (arrow up) — should be buffered, not dispatched
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(b"before\x1b[Aafter");
+        bytes.extend_from_slice(b"\x1b[201~");
+        for &b in &bytes {
+            editor.feed_byte(b);
+        }
+        assert_eq!(editor.buffer, "before\x1b[Aafter");
+    }
+
+    #[test]
+    fn bracketed_paste_with_utf8() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        let content = "héllo wörld";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(content.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        for &b in &bytes {
+            editor.feed_byte(b);
+        }
+        assert_eq!(editor.buffer, content);
     }
 }

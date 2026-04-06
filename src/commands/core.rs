@@ -1329,6 +1329,7 @@ pub(super) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Res
     let mut full_page = false;
     let mut output_path: Option<String> = None;
     let mut scale_factor: Option<f64> = None;
+    let mut annotate = false;
 
     for arg in args {
         if let Some(v) = arg.strip_prefix("--output=") {
@@ -1349,6 +1350,8 @@ pub(super) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Res
             pad = v.parse().unwrap_or(48);
         } else if arg == "--full" {
             full_page = true;
+        } else if arg == "--annotate" {
+            annotate = true;
         } else if let Some(v) = arg.strip_prefix("--scale=") {
             scale_factor = v.parse().ok();
         }
@@ -1473,7 +1476,69 @@ pub(super) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Res
         params["captureBeyondViewport"] = json!(true);
     }
 
+    // Inject annotation overlay if --annotate
+    let mut annotation_count = 0usize;
+    if annotate {
+        let data = fetch_interactive_elements(ctx, &mut cdp).await?;
+        if !data.elements.is_empty() {
+            let state = ctx.load_session_state()?;
+            let ref_map = state.ref_map.clone().unwrap_or_default();
+            // Build JS to get bounding boxes and inject overlay
+            let selectors_json: Vec<Value> = data
+                .elements
+                .iter()
+                .filter_map(|el| {
+                    ref_map
+                        .get(&el.ref_id.to_string())
+                        .map(|sel| json!({"ref": el.ref_id, "sel": sel}))
+                })
+                .collect();
+            annotation_count = selectors_json.len();
+            let inject_js = format!(
+                r#"(() => {{
+                    const items = {items};
+                    const overlay = document.createElement('div');
+                    overlay.id = 'sidekar-annotations';
+                    overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;overflow:visible';
+                    for (const item of items) {{
+                        const el = document.querySelector(item.sel);
+                        if (!el) continue;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 && rect.height === 0) continue;
+                        const border = document.createElement('div');
+                        border.style.cssText = `position:fixed;left:${{rect.x}}px;top:${{rect.y}}px;width:${{rect.width}}px;height:${{rect.height}}px;border:2px solid rgba(255,0,0,0.8);border-radius:2px;box-sizing:border-box`;
+                        const label = document.createElement('div');
+                        const above = rect.y > 16;
+                        label.style.cssText = `position:fixed;left:${{rect.x}}px;top:${{above ? rect.y - 16 : rect.y + rect.height + 1}}px;background:rgba(255,0,0,0.85);color:#fff;font:bold 11px/14px monospace;padding:0 3px;border-radius:1px;white-space:nowrap`;
+                        label.textContent = item.ref;
+                        overlay.appendChild(border);
+                        overlay.appendChild(label);
+                    }}
+                    document.body.appendChild(overlay);
+                    return items.length;
+                }})()"#,
+                items = serde_json::to_string(&selectors_json)?
+            );
+            let context_id = get_frame_context_id(ctx, &mut cdp).await?;
+            runtime_evaluate_with_context(&mut cdp, &inject_js, true, false, context_id).await?;
+        }
+    }
+
     let result = cdp.send("Page.captureScreenshot", params.clone()).await?;
+
+    // Remove annotation overlay after capture
+    if annotate && annotation_count > 0 {
+        let context_id = get_frame_context_id(ctx, &mut cdp).await?;
+        let _ = runtime_evaluate_with_context(
+            &mut cdp,
+            "document.getElementById('sidekar-annotations')?.remove()",
+            true,
+            false,
+            context_id,
+        )
+        .await;
+    }
+
     let data = result
         .get("data")
         .and_then(Value::as_str)
@@ -1523,6 +1588,9 @@ pub(super) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Res
         file_kb,
         est_tokens
     );
+    if annotate && annotation_count > 0 {
+        out!(ctx, "Annotated {} interactive elements", annotation_count);
+    }
     if est_tokens > 500 && ref_id.is_none() && selector.is_none() {
         out!(ctx, "Tip: Use ref=N, selector, or --width to reduce cost.");
     }
@@ -1665,6 +1733,184 @@ pub(super) async fn cmd_grid(ctx: &mut AppContext, args: &[String]) -> Result<()
         out!(ctx, "Grid overlay applied.");
     }
 
+    Ok(())
+}
+
+// --- Screencast / live preview ---
+
+pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let action = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or("");
+    match action {
+        "start" => {
+            let quality: u32 = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--quality="))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50);
+            let every_nth: u32 = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--fps="))
+                .and_then(|v| v.parse::<u32>().ok())
+                .map(|fps| if fps > 0 { 30 / fps.min(30) } else { 15 })
+                .unwrap_or(15);
+            let max_width: u32 = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--width="))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1280);
+            let max_height: u32 = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--height="))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(800);
+
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+            cdp.send(
+                "Page.startScreencast",
+                json!({
+                    "format": "jpeg",
+                    "quality": quality,
+                    "maxWidth": max_width,
+                    "maxHeight": max_height,
+                    "everyNthFrame": every_nth,
+                }),
+            )
+            .await?;
+
+            // Drain initial frame(s) and write to temp file
+            let sid = ctx
+                .current_session_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            let frame_path = ctx
+                .tmp_dir()
+                .join(format!("sidekar-screencast-{sid}.jpg"));
+            let mut frames_received = 0u32;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                let remain = deadline.saturating_duration_since(Instant::now());
+                let Some(event) = cdp.next_event(remain).await? else {
+                    break;
+                };
+                if event
+                    .get("method")
+                    .and_then(Value::as_str)
+                    == Some("Page.screencastFrame")
+                {
+                    if let Some(params) = event.get("params") {
+                        let session_id = params
+                            .get("sessionId")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0);
+                        if let Some(data) = params.get("data").and_then(Value::as_str) {
+                            if let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(data)
+                            {
+                                let _ = fs::write(&frame_path, &bytes);
+                                frames_received += 1;
+                            }
+                        }
+                        let _ = cdp
+                            .send(
+                                "Page.screencastFrameAck",
+                                json!({ "sessionId": session_id }),
+                            )
+                            .await;
+                    }
+                    break; // Got first frame
+                }
+            }
+
+            let mut state = ctx.load_session_state()?;
+            state.screencast_active = Some(true);
+            ctx.save_session_state(&state)?;
+
+            if frames_received > 0 {
+                out!(
+                    ctx,
+                    "Screencast started. Latest frame: {}",
+                    frame_path.display()
+                );
+            } else {
+                out!(ctx, "Screencast started (no initial frame captured).");
+            }
+            cdp.close().await;
+        }
+        "stop" => {
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+            cdp.send("Page.stopScreencast", json!({})).await?;
+            let mut state = ctx.load_session_state()?;
+            state.screencast_active = Some(false);
+            ctx.save_session_state(&state)?;
+            out!(ctx, "Screencast stopped.");
+            cdp.close().await;
+        }
+        "frame" => {
+            let mut cdp = open_cdp(ctx).await?;
+            prepare_cdp(ctx, &mut cdp).await?;
+
+            let sid = ctx
+                .current_session_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            let frame_path = ctx
+                .tmp_dir()
+                .join(format!("sidekar-screencast-{sid}.jpg"));
+
+            // Drain pending frames to get the latest
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut got_frame = false;
+            while Instant::now() < deadline {
+                let remain = deadline.saturating_duration_since(Instant::now());
+                let Some(event) = cdp.next_event(remain).await? else {
+                    break;
+                };
+                if event
+                    .get("method")
+                    .and_then(Value::as_str)
+                    == Some("Page.screencastFrame")
+                {
+                    if let Some(params) = event.get("params") {
+                        let session_id = params
+                            .get("sessionId")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0);
+                        if let Some(data) = params.get("data").and_then(Value::as_str) {
+                            if let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(data)
+                            {
+                                let _ = fs::write(&frame_path, &bytes);
+                                got_frame = true;
+                            }
+                        }
+                        let _ = cdp
+                            .send(
+                                "Page.screencastFrameAck",
+                                json!({ "sessionId": session_id }),
+                            )
+                            .await;
+                    }
+                    break;
+                }
+            }
+
+            if got_frame || frame_path.exists() {
+                let size = fs::metadata(&frame_path)
+                    .map(|m| human_size(m.len()))
+                    .unwrap_or_else(|_| "?".to_string());
+                out!(ctx, "Frame: {} ({})", frame_path.display(), size);
+            } else {
+                bail!("No screencast frame available. Run: screencast start");
+            }
+            cdp.close().await;
+        }
+        _ => bail!("Usage: screencast <start|stop|frame> [--fps=N] [--quality=N] [--width=N] [--height=N]"),
+    }
     Ok(())
 }
 
