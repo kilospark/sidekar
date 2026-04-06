@@ -587,7 +587,7 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                 "pass_selector": pass_sel,
             });
             let key = format!("auth:{name}");
-            crate::broker::kv_set(&key, &entry.to_string())?;
+            crate::broker::kv_set(&key, &entry.to_string(), None)?;
             out!(ctx, "Auth \"{name}\" saved (username: {username})");
         }
         "login" => {
@@ -747,7 +747,7 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
             cdp.close().await;
         }
         "list" => {
-            let all = crate::broker::kv_list()?;
+            let all = crate::broker::kv_list(None)?;
             let auth_entries: Vec<_> = all
                 .iter()
                 .filter(|e| e.key.starts_with("auth:"))

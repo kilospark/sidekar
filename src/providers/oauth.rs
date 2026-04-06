@@ -57,7 +57,7 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
 
 /// List all stored credential nicknames.
 pub fn list_credentials() -> Vec<(String, String)> {
-    let entries = crate::broker::kv_list().unwrap_or_default();
+    let entries = crate::broker::kv_list(None).unwrap_or_default();
     entries
         .into_iter()
         .filter_map(|e| {
@@ -806,7 +806,7 @@ fn open_browser(url: &str) -> Result<()> {
 
 fn save_credentials(key: &str, creds: &OAuthCredentials) -> Result<()> {
     let json = serde_json::to_string(creds)?;
-    crate::broker::kv_set(key, &json)
+    crate::broker::kv_set(key, &json, None)
 }
 
 fn load_credentials(key: &str) -> Result<Option<OAuthCredentials>> {

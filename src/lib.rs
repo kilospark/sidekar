@@ -63,6 +63,7 @@ pub mod cdp_proxy;
 pub mod cli;
 pub mod code_intel;
 pub mod commands;
+pub mod doc_intel;
 pub mod config;
 pub mod daemon;
 pub mod desktop;
@@ -2879,15 +2880,33 @@ sidekar unpack [path|-] [--to=json|yaml|csv]
 
         "kv" => {
             "\
-sidekar kv <set|get|list|delete> [args...]
+sidekar kv <subcommand> [args...]
 
-  Encrypted key-value storage for secrets and other agent state.
+  Encrypted key-value store with tags, versioning, and secret exec.
+
+  Subcommands:
+    set <key> <value> [--tag=a,b]   Store a value (optionally tagged)
+    get <key>                       Retrieve a value
+    list [--tag=TAG]                List entries (optionally filter by tag)
+    delete <key>                    Delete a key and its history
+    tag <add|remove> <key> <tags>   Add or remove tags on an entry
+    history <key>                   Show version history
+    rollback <key> <version>        Restore a previous version
+    exec [--keys=K1,K2] [--tag=TAG] <cmd> [args...]
+                                    Run command with secrets as env vars
+
+  Exec injects KV values as environment variables, expands $KEY in args,
+  and masks secret values in output with [REDACTED].
 
   Examples:
-    sidekar kv set github_token abc123
-    sidekar kv get github_token
-    sidekar kv list
-    sidekar kv delete github_token"
+    sidekar kv set STRIPE_KEY sk-abc --tag=api,prod
+    sidekar kv list --tag=api
+    sidekar kv tag add STRIPE_KEY billing
+    sidekar kv set STRIPE_KEY sk-xyz
+    sidekar kv history STRIPE_KEY
+    sidekar kv rollback STRIPE_KEY 1
+    sidekar kv exec --keys=STRIPE_KEY curl -H \"Bearer $STRIPE_KEY\" https://api.stripe.com
+    sidekar kv exec --tag=api env"
         }
 
         "install" => {
@@ -3093,6 +3112,30 @@ sidekar screencast <start|stop|frame> [options]
     sidekar screencast start --fps=5 --quality=70
     sidekar screencast frame
     sidekar screencast stop"
+        }
+
+        "doc" => {
+            "\
+sidekar doc <subcommand> [args...]
+
+  Markdown document intelligence — the prose counterpart of symbols/definition/references.
+
+  Subcommands:
+    outline <file>              Heading hierarchy with line numbers
+    section <heading> [path]    Extract full text under a heading
+    search <query> [path]       Keyword search across markdown sections
+    map [path]                  Multi-file heading overview
+
+  Section searches by case-insensitive substring match on heading text.
+  Search matches all query terms (AND) within each line.
+  Path defaults to current directory for section/search/map.
+
+  Examples:
+    sidekar doc outline README.md
+    sidekar doc section Architecture README.md
+    sidekar doc section \"Getting Started\"
+    sidekar doc search \"browser automation\" .
+    sidekar doc map docs/"
         }
 
         _ => {
