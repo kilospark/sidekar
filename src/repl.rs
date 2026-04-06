@@ -132,9 +132,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let _cancel_watch = EscCancelWatcher::start(cancel.clone(), tunnel_input_fd);
-        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
+        let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+        let renderer_for_events = renderer.clone();
         let on_event: crate::agent::StreamCallback =
-            Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
+            Box::new(move |event: &StreamEvent| {
+                if let Ok(mut guard) = renderer_for_events.lock() {
+                    guard.render(event);
+                }
+            });
 
         let pre_len = history.len();
         let did_compact = crate::agent::run(
@@ -148,6 +153,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Some(&session_id),
         )
         .await?;
+        if let Ok(mut guard) = renderer.lock() {
+            guard.teardown();
+        }
 
         if did_compact {
             let _ = session::replace_history(&session_id, &history);
@@ -305,11 +313,15 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                 let cancel = std::sync::Arc::new(
                                     std::sync::atomic::AtomicBool::new(false),
                                 );
-                                let renderer =
-                                    std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
+                                let renderer = std::sync::Arc::new(std::sync::Mutex::new(
+                                    EventRenderer::new(cancel.clone()),
+                                ));
+                                let renderer_for_events = renderer.clone();
                                 let on_event: crate::agent::StreamCallback =
                                     Box::new(move |event: &StreamEvent| {
-                                        renderer.borrow_mut().render(event)
+                                        if let Ok(mut guard) = renderer_for_events.lock() {
+                                            guard.render(event);
+                                        }
                                     });
                                 let changed = crate::agent::compaction::compact_now(
                                     prov,
@@ -318,6 +330,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                     &on_event,
                                 )
                                 .await;
+                                if let Ok(mut guard) = renderer.lock() {
+                                    guard.teardown();
+                                }
                                 if changed {
                                     let _ = session::replace_history(&session_id, &history);
                                     tunnel_println("\x1b[2m[session compacted]\x1b[0m");
@@ -480,9 +495,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let active_prompt =
             ActivePromptSession::start(std::mem::take(&mut line_editor), cancel.clone(), tunnel_input_fd);
-        let renderer = std::cell::RefCell::new(EventRenderer::new(cancel.clone()));
+        let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+        let renderer_for_events = renderer.clone();
         let on_event: crate::agent::StreamCallback =
-            Box::new(move |event: &StreamEvent| renderer.borrow_mut().render(event));
+            Box::new(move |event: &StreamEvent| {
+                if let Ok(mut guard) = renderer_for_events.lock() {
+                    guard.render(event);
+                }
+            });
 
         let pre_len = history.len();
         let run_result = crate::agent::run(
@@ -496,6 +516,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Some(&session_id),
         )
         .await;
+        if let Ok(mut guard) = renderer.lock() {
+            guard.teardown();
+        }
         let (returned_editor, mut submitted) = active_prompt.finish();
         line_editor = returned_editor;
         queued_inputs.append(&mut submitted);
@@ -729,6 +752,11 @@ impl EventRenderer {
         }
     }
 
+    fn teardown(&mut self) {
+        self.stop_spinner();
+        self.clear_partial_preview();
+    }
+
     fn flush_md_lines(&mut self) {
         let lines = self.md.commit_complete_lines();
         if lines.is_empty() {
@@ -847,6 +875,12 @@ impl EventRenderer {
                 let _ = io::stdout().flush();
             }
         }
+    }
+}
+
+impl Drop for EventRenderer {
+    fn drop(&mut self) {
+        self.teardown();
     }
 }
 
