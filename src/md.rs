@@ -106,7 +106,7 @@ impl MarkdownStream {
 
 /// Parse markdown and return ANSI-formatted lines.
 fn render_markdown(source: &str) -> Vec<String> {
-    let opts = Options::ENABLE_STRIKETHROUGH;
+    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let parser = Parser::new_ext(source, opts);
 
     let mut lines: Vec<String> = Vec::new();
@@ -118,6 +118,9 @@ fn render_markdown(source: &str) -> Vec<String> {
     let mut in_heading = false;
     let mut list_depth: usize = 0;
     let mut ordered_indices: Vec<u64> = Vec::new();
+    let mut table_cells: Vec<String> = Vec::new();
+    let mut table_cell_buf = String::new();
+    let mut in_table = false;
 
     for event in parser {
         match event {
@@ -182,6 +185,18 @@ fn render_markdown(source: &str) -> Vec<String> {
                     };
                     current_line.push_str(&format!("{indent}{marker}"));
                 }
+                Tag::Table(_) => {
+                    in_table = true;
+                    if !lines.is_empty() {
+                        push_line(&mut lines, &mut current_line);
+                    }
+                }
+                Tag::TableHead | Tag::TableRow => {
+                    table_cells.clear();
+                }
+                Tag::TableCell => {
+                    table_cell_buf.clear();
+                }
                 Tag::Paragraph => {
                     // Add blank line before paragraph if there's prior content
                     // (but not for the first paragraph, and not inside list items)
@@ -238,6 +253,37 @@ fn render_markdown(source: &str) -> Vec<String> {
                     list_depth = list_depth.saturating_sub(1);
                     ordered_indices.pop();
                 }
+                TagEnd::Table => {
+                    in_table = false;
+                }
+                TagEnd::TableHead => {
+                    let row = format!(
+                        "{DIM}|{RESET} {BOLD}{}{RESET} {DIM}|{RESET}",
+                        table_cells.join(&format!(" {DIM}|{RESET} {BOLD}"))
+                    );
+                    current_line.push_str(&row);
+                    push_line(&mut lines, &mut current_line);
+                    let sep = table_cells
+                        .iter()
+                        .map(|c| "-".repeat(c.chars().count().max(3)))
+                        .collect::<Vec<_>>()
+                        .join(&format!("-{DIM}|{RESET}-"));
+                    current_line.push_str(&format!("{DIM}|{RESET}-{sep}-{DIM}|{RESET}"));
+                    push_line(&mut lines, &mut current_line);
+                    table_cells.clear();
+                }
+                TagEnd::TableRow => {
+                    let row = format!(
+                        "{DIM}|{RESET} {} {DIM}|{RESET}",
+                        table_cells.join(&format!(" {DIM}|{RESET} "))
+                    );
+                    current_line.push_str(&row);
+                    push_line(&mut lines, &mut current_line);
+                    table_cells.clear();
+                }
+                TagEnd::TableCell => {
+                    table_cells.push(std::mem::take(&mut table_cell_buf));
+                }
                 TagEnd::Item => {}
                 TagEnd::Paragraph => {
                     push_line(&mut lines, &mut current_line);
@@ -247,17 +293,23 @@ fn render_markdown(source: &str) -> Vec<String> {
             Event::Text(text) => {
                 if in_code_block {
                     code_block_buf.push_str(&text);
+                } else if in_table {
+                    table_cell_buf.push_str(&text);
                 } else {
                     current_line.push_str(&text);
                 }
             }
             Event::Code(code) => {
-                current_line.push_str(&format!("{CYAN}`{code}`{RESET}"));
-                // Re-apply active styles after reset
-                if in_heading {
-                    current_line.push_str(&format!("{BOLD}{YELLOW}"));
+                if in_table {
+                    table_cell_buf.push_str(&format!("`{code}`"));
+                } else {
+                    current_line.push_str(&format!("{CYAN}`{code}`{RESET}"));
+                    // Re-apply active styles after reset
+                    if in_heading {
+                        current_line.push_str(&format!("{BOLD}{YELLOW}"));
+                    }
+                    reapply_inline_styles(&mut current_line, &style_stack);
                 }
-                reapply_inline_styles(&mut current_line, &style_stack);
             }
             Event::SoftBreak => {
                 current_line.push(' ');
@@ -379,5 +431,20 @@ mod tests {
         let preview = stream.preview_partial_line().expect("partial preview");
         assert!(preview.contains("Hello"));
         assert!(preview.contains("world"));
+    }
+
+    #[test]
+    fn renders_table() {
+        let md = "| Symbol | Price | Change |\n|--------|-------|--------|\n| AAPL | 150 | +2% |\n| GOOG | 2800 | -1% |\n";
+        let lines = render_markdown(md);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("Symbol"));
+        assert!(lines[0].contains("Price"));
+        assert!(lines[0].contains("Change"));
+        assert!(lines[1].contains("---"));
+        assert!(lines[2].contains("AAPL"));
+        assert!(lines[2].contains("150"));
+        assert!(lines[3].contains("GOOG"));
+        assert!(lines[3].contains("2800"));
     }
 }

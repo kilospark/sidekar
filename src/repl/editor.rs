@@ -684,7 +684,6 @@ impl LineEditor {
                 self.move_to_render_end();
                 emit_raw("\r\n");
                 let submitted = self.buffer.clone();
-                self.record_submission(&submitted);
                 self.reset();
                 LineEditResult::Submit(submitted)
             }
@@ -1195,7 +1194,7 @@ impl LineEditor {
         }
     }
 
-    fn record_submission(&mut self, line: &str) {
+    pub(super) fn push_history(&mut self, line: &str) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return;

@@ -245,18 +245,21 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 continue;
             }
 
+            // Record to both in-memory (for up-arrow) and SQLite (for next session)
+            line_editor.push_history(text);
+            let _ = session::append_input_history(
+                &scope_root,
+                &scope_name,
+                text,
+                REPL_INPUT_HISTORY_LIMIT,
+            );
+
             // Shell escape: "! cmd" runs cmd in a subprocess
             if let Some(cmd) = trimmed.strip_prefix('!') {
                 let cmd = cmd.trim();
                 if cmd.is_empty() {
                     tunnel_println("\x1b[2mUsage: ! <command>\x1b[0m");
                 } else {
-                    let _ = session::append_input_history(
-                        &scope_root,
-                        &scope_name,
-                        text,
-                        REPL_INPUT_HISTORY_LIMIT,
-                    );
                     // Restore terminal to cooked mode for the subprocess
                     let _guard = RawModeGuard::enter_cooked();
                     let status = std::process::Command::new("sh")
@@ -281,13 +284,6 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 }
                 continue;
             }
-
-            let _ = session::append_input_history(
-                &scope_root,
-                &scope_name,
-                text,
-                REPL_INPUT_HISTORY_LIMIT,
-            );
 
             // Slash commands
             let slash_ctx = SlashContext {
