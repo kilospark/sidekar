@@ -227,6 +227,7 @@ async fn phase2_summarize(
             "You are a precise conversation summarizer. Output only the structured summary.",
             &summary_messages,
             &[],
+            None,
         )
         .await?;
 

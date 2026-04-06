@@ -14,6 +14,7 @@ pub async fn stream(
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
+    _prompt_cache_key: Option<&str>,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let body = build_request_body(model, system_prompt, messages, tools);
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
@@ -185,6 +186,8 @@ fn build_request_body(
         body["tool_choice"] = json!("auto");
     }
 
+    maybe_add_anthropic_cache_control(model, &mut body);
+
     body
 }
 
@@ -233,12 +236,7 @@ async fn parse_sse_stream(
 
             // Usage (present in final chunk when stream_options.include_usage is set)
             if let Some(u) = data.get("usage") {
-                usage.input_tokens =
-                    u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                usage.output_tokens = u
-                    .get("completion_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                apply_usage(u, &mut usage);
             }
 
             let choices = match data.get("choices").and_then(|v| v.as_array()) {
@@ -369,4 +367,125 @@ async fn parse_sse_stream(
     });
 
     Ok(())
+}
+
+fn supports_anthropic_cache_control(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("claude")
+}
+
+fn maybe_add_anthropic_cache_control(model: &str, body: &mut Value) {
+    if !supports_anthropic_cache_control(model) {
+        return;
+    }
+
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+
+    for msg in messages.iter_mut().rev() {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+
+        let Some(content) = msg.get_mut("content") else {
+            continue;
+        };
+
+        if let Some(text) = content.as_str() {
+            *content = json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": {"type": "ephemeral"},
+            }]);
+            return;
+        }
+
+        let Some(parts) = content.as_array_mut() else {
+            continue;
+        };
+
+        for part in parts.iter_mut().rev() {
+            if part.get("type").and_then(|v| v.as_str()) == Some("text") {
+                part["cache_control"] = json!({"type": "ephemeral"});
+                return;
+            }
+        }
+    }
+}
+
+fn apply_usage(u: &Value, usage: &mut Usage) {
+    let prompt_total = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    usage.output_tokens = u
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    let details = u.get("prompt_tokens_details");
+    usage.cache_read_tokens = details
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    usage.cache_write_tokens = details
+        .and_then(|d| d.get("cache_write_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    usage.input_tokens = prompt_total
+        .saturating_sub(usage.cache_read_tokens)
+        .saturating_sub(usage.cache_write_tokens);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_usage, build_request_body};
+    use crate::providers::{ChatMessage, ContentBlock, Role, Usage};
+    use serde_json::json;
+
+    #[test]
+    fn build_request_body_adds_openrouter_cache_control_for_claude() {
+        let body = build_request_body(
+            "anthropic/claude-sonnet-4-5",
+            "system",
+            &[ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+            }],
+            &[],
+        );
+
+        let messages = body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+        let content = messages[1]
+            .get("content")
+            .and_then(|v| v.as_array())
+            .expect("content array");
+        assert_eq!(
+            content[0].get("cache_control"),
+            Some(&json!({"type": "ephemeral"}))
+        );
+    }
+
+    #[test]
+    fn apply_usage_extracts_cached_tokens() {
+        let usage_json = json!({
+            "prompt_tokens": 900,
+            "completion_tokens": 42,
+            "prompt_tokens_details": {
+                "cached_tokens": 300,
+                "cache_write_tokens": 50
+            }
+        });
+        let mut usage = Usage::default();
+
+        apply_usage(&usage_json, &mut usage);
+
+        assert_eq!(usage.input_tokens, 550);
+        assert_eq!(usage.output_tokens, 42);
+        assert_eq!(usage.cache_read_tokens, 300);
+        assert_eq!(usage.cache_write_tokens, 50);
+    }
 }
