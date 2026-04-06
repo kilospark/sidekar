@@ -2958,7 +2958,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
     -p <prompt>      Initial prompt (skip interactive input for first turn)
     -r [session_id]  Resume a session (picker if no ID; prefix match)
-    --verbose        Show raw API request/response logging
+    --verbose        API request/response logging and `[turn complete]` after each agent run
 
   Providers:
     claude     Claude (Anthropic) — OAuth device flow

@@ -295,10 +295,13 @@ async fn parse_sse_stream(
                                     index: pending_tool_calls.len(),
                                 });
                             }
+                            let prior_args =
+                                std::mem::take(&mut pending_tool_calls[tc_index].arguments);
+                            let merged_args = format!("{prior_args}{initial_args}");
                             pending_tool_calls[tc_index] = PendingToolCall {
                                 id: id.to_string(),
                                 name: name.clone(),
-                                arguments: initial_args.clone(),
+                                arguments: merged_args,
                                 index: tc_index,
                             };
 
@@ -321,10 +324,19 @@ async fn parse_sse_stream(
                             .and_then(|f| f.get("arguments"))
                             .and_then(|v| v.as_str())
                         {
-                            // Argument delta for existing tool call
-                            if tc_index < pending_tool_calls.len() {
-                                pending_tool_calls[tc_index].arguments.push_str(args_delta);
+                            // Argument deltas may arrive before the chunk that includes id (OpenAI-style).
+                            while pending_tool_calls.len() <= tc_index {
+                                pending_tool_calls.push(PendingToolCall {
+                                    id: String::new(),
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                    index: pending_tool_calls.len(),
+                                });
                             }
+                            pending_tool_calls[tc_index].index = tc_index;
+                            pending_tool_calls[tc_index]
+                                .arguments
+                                .push_str(args_delta);
                             let _ = tx.send(StreamEvent::ToolCallDelta {
                                 index: tc_index,
                                 delta: args_delta.to_string(),

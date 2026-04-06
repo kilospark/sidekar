@@ -221,6 +221,7 @@ async fn phase2_summarize(
         }],
     }];
 
+    on_event(&StreamEvent::Connecting);
     let mut rx = provider
         .stream(
             model,
@@ -236,11 +237,18 @@ async fn phase2_summarize(
     while let Some(event) = rx.recv().await {
         match &event {
             StreamEvent::TextDelta { delta } => {
+                on_event(&event);
                 summary_text.push_str(delta);
+            }
+            StreamEvent::ThinkingDelta { .. } => {
+                on_event(&event);
             }
             StreamEvent::Error { message } => {
                 on_event(&event);
                 last_error = Some(message.clone());
+            }
+            StreamEvent::Done { .. } => {
+                on_event(&event);
             }
             _ => {}
         }
