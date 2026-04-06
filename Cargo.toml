@@ -51,6 +51,7 @@ webpki-roots = "1"
 pulldown-cmark = "0.13.3"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["async"] }
