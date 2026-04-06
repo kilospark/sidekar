@@ -27,7 +27,7 @@ pub async fn run(
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
     prompt_cache_key: Option<&str>,
 ) -> Result<bool, anyhow::Error> {
-    let context_window = crate::providers::fetch_context_window(model, provider).await;
+    let mut context_window: Option<u32> = None;
     let mut did_compact = false;
 
     loop {
@@ -37,11 +37,24 @@ pub async fn run(
             return Err(Cancelled.into());
         }
 
+        // Show activity immediately, even if we need a models API lookup to
+        // discover context limits on the first turn.
+        on_event(&StreamEvent::Waiting);
+
+        let context_window = match context_window {
+            Some(v) => v,
+            None => {
+                let v = crate::providers::fetch_context_window(model, provider).await;
+                context_window = Some(v);
+                v
+            }
+        };
+
         // Auto-compact if context is getting large
         did_compact |=
             compaction::maybe_compact(provider, model, history, context_window, &on_event).await;
 
-        // Signal UI to show waiting indicator
+        // Reassert waiting after any compaction/status output before the model call.
         on_event(&StreamEvent::Waiting);
 
         // Stream LLM response
