@@ -42,6 +42,7 @@ impl MarkdownStream {
     }
 
     /// Render complete lines (up to last newline) and return only newly committed lines.
+    /// Withholds trailing pipe-lines until a separator confirms them as a table.
     pub fn commit_complete_lines(&mut self) -> Vec<String> {
         let last_nl = match self.buffer.rfind('\n') {
             Some(i) => i,
@@ -49,7 +50,12 @@ impl MarkdownStream {
         };
 
         let source = &self.buffer[..=last_nl];
-        let rendered = render_markdown(source);
+        let safe = safe_commit_end(source);
+        if safe == 0 {
+            return Vec::new();
+        }
+
+        let rendered = render_markdown(&source[..safe]);
 
         if self.committed_line_count >= rendered.len() {
             return Vec::new();
@@ -102,6 +108,51 @@ impl MarkdownStream {
             None
         }
     }
+}
+
+/// Find the safe byte offset to commit up to, withholding trailing pipe-lines
+/// that could be an unconfirmed table (header without separator yet).
+fn safe_commit_end(source: &str) -> usize {
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return source.len();
+    }
+
+    // Scan backward to find trailing block of pipe-lines
+    let mut pipe_start = lines.len();
+    while pipe_start > 0 && lines[pipe_start - 1].trim_start().starts_with('|') {
+        pipe_start -= 1;
+    }
+
+    if pipe_start == lines.len() {
+        // No trailing pipe lines
+        return source.len();
+    }
+
+    // Check if the pipe block contains a separator (confirmed table)
+    let has_separator = lines[pipe_start..].iter().any(|l| {
+        let t = l.trim();
+        t.starts_with('|')
+            && t.len() > 2
+            && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+    });
+
+    if has_separator {
+        return source.len();
+    }
+
+    // Withhold the unconfirmed pipe block — find byte offset of pipe_start line
+    if pipe_start == 0 {
+        return 0;
+    }
+    let mut offset = 0;
+    for (i, line) in source.lines().enumerate() {
+        if i == pipe_start {
+            break;
+        }
+        offset += line.len() + 1; // +1 for the newline
+    }
+    offset
 }
 
 /// Parse markdown and return ANSI-formatted lines.
@@ -446,5 +497,33 @@ mod tests {
         assert!(lines[2].contains("150"));
         assert!(lines[3].contains("GOOG"));
         assert!(lines[3].contains("2800"));
+    }
+
+    #[test]
+    fn streaming_table_withheld_until_separator() {
+        let mut stream = MarkdownStream::new();
+
+        // Header line arrives — should be withheld (no separator yet)
+        stream.push("**Plays:**\n\n| Ticker | What |\n");
+        let lines = stream.commit_complete_lines();
+        assert!(!lines.is_empty());
+        assert!(lines.iter().any(|l| l.contains("Plays:")));
+        // The pipe line must NOT be committed yet
+        assert!(!lines.iter().any(|l| l.contains("Ticker")));
+
+        // Separator arrives — now table is confirmed, header + separator emitted
+        stream.push("|--------|------|\n");
+        let lines = stream.commit_complete_lines();
+        assert!(lines.iter().any(|l| l.contains("Ticker")));
+        assert!(lines.iter().any(|l| l.contains("---")));
+
+        // Data row
+        stream.push("| AGQ | 2x Silver |\n");
+        let lines = stream.commit_complete_lines();
+        assert!(lines.iter().any(|l| l.contains("AGQ")));
+
+        // Finalize
+        let lines = stream.finalize();
+        assert!(lines.is_empty() || lines.iter().all(|l| l.is_empty()));
     }
 }

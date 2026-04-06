@@ -103,7 +103,7 @@ pub struct RelayHttp;
 impl Transport for RelayHttp {
     fn deliver(&self, target: &str, message: &str, from: &str) -> Result<DeliveryResult> {
         let token = crate::auth::auth_token()
-            .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar login"))?;
+            .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar device login"))?;
         let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));
         let target = target.to_string();
         let from = from.to_string();
@@ -146,7 +146,7 @@ impl Transport for RelayHttp {
 
 pub fn deliver_relay_envelope(target: &str, envelope: &Envelope) -> Result<DeliveryResult> {
     let token = crate::auth::auth_token()
-        .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar login"))?;
+        .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar device login"))?;
     let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));
     let target = target.to_string();
     let payload = serde_json::json!({

@@ -235,10 +235,42 @@ impl DaemonState {
     }
 }
 
+/// Kill the previously registered daemon (if any) and any orphaned relaunch helpers.
+fn kill_orphaned_daemons() {
+    let my_pid = std::process::id() as i32;
+
+    // Kill the daemon registered in the PID file
+    if let Some(old_pid) = get_pid() {
+        if old_pid != my_pid {
+            unsafe { libc::kill(old_pid, libc::SIGTERM); }
+            // Brief wait for cleanup
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // Kill orphaned relaunch helpers (they match "sidekar daemon relaunch")
+    if let Ok(output) = std::process::Command::new("pgrep")
+        .args(["-f", "sidekar daemon relaunch"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Ok(pid) = line.trim().parse::<i32>() {
+                if pid != my_pid {
+                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                }
+            }
+        }
+    }
+}
+
 /// Run the daemon (called by `sidekar daemon run`).
 pub async fn run() -> Result<()> {
     // Ensure data dir exists
     std::fs::create_dir_all(data_dir())?;
+
+    // Kill orphaned sidekar daemon processes (stale relaunch helpers, etc.)
+    kill_orphaned_daemons();
 
     // Clean up stale socket
     let sock_path = socket_path();
@@ -299,6 +331,8 @@ pub async fn run() -> Result<()> {
             (Err(_), Err(_)) => std::future::pending::<()>().await,
         }
         eprintln!("Daemon shutting down...");
+        // Deregister discover port so extension doesn't connect to a dead daemon
+        crate::api_client::deregister_discover_port().await;
         let _ = std::fs::remove_file(&shutdown_pid);
         let _ = std::fs::remove_file(&shutdown_sock);
         std::process::exit(0);
@@ -425,9 +459,13 @@ async fn housekeeping_loop(http_port: u16) {
     let mut update_interval =
         tokio::time::interval(std::time::Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
 
-    // Skip first tick (fires immediately)
+    // Skip first tick for sweep/update (fires immediately), but DO run
+    // discover heartbeat right away so the extension can find us.
     sweep_interval.tick().await;
     update_interval.tick().await;
+    if http_port > 0 {
+        discover_heartbeat(http_port).await;
+    }
 
     loop {
         tokio::select! {
@@ -621,7 +659,7 @@ async fn handle_ext_websocket(
     }
 
     // Wait for bridge_register
-    let (ext_token, agent_id) = loop {
+    let (ext_token, agent_id, browser_name) = loop {
         match ws_rx.next().await {
             Some(Ok(Message::Text(text))) => {
                 if let Ok(val) = serde_json::from_str::<Value>(&text) {
@@ -635,7 +673,12 @@ async fn handle_ext_websocket(
                             .get("agent_id")
                             .and_then(|v| v.as_str())
                             .map(String::from);
-                        break (token, aid);
+                        let browser = val
+                            .get("browser")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Chrome")
+                            .to_string();
+                        break (token, aid, browser);
                     }
                 }
             }
@@ -646,36 +689,58 @@ async fn handle_ext_websocket(
     // Verify ext token
     let cli_logged_in = crate::auth::auth_token().is_some();
     let user_id = if ext_token.is_empty() {
-        None
+        let fail = json!({
+            "type": "auth_fail",
+            "reason": "No extension token — sign in from the extension popup.",
+            "cli_logged_in": cli_logged_in,
+        });
+        let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
+        return;
     } else {
+        use crate::ext::VerifyResult;
         match tokio::task::spawn_blocking({
             let token = ext_token.clone();
             move || crate::ext::verify_ext_token(&token)
         })
         .await
         {
-            Ok(Ok(uid)) => Some(uid),
-            _ => None,
+            Ok(VerifyResult::Ok(uid)) => uid,
+            Ok(VerifyResult::InvalidToken(reason)) => {
+                // Token is definitively bad — tell extension to clear it
+                let fail = json!({
+                    "type": "auth_fail",
+                    "reason": reason,
+                    "clear_token": true,
+                    "cli_logged_in": cli_logged_in,
+                });
+                let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
+                return;
+            }
+            Ok(VerifyResult::TransientError(reason)) => {
+                // Transient — do NOT tell extension to clear token
+                let fail = json!({
+                    "type": "auth_fail",
+                    "reason": reason,
+                    "cli_logged_in": cli_logged_in,
+                });
+                let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
+                return;
+            }
+            Err(_) => {
+                let fail = json!({
+                    "type": "auth_fail",
+                    "reason": "Internal error during verification — retrying.",
+                    "cli_logged_in": cli_logged_in,
+                });
+                let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
+                return;
+            }
         }
     };
 
-    if user_id.is_none() {
-        let reason = if ext_token.is_empty() {
-            "No extension token — sign in from the extension popup."
-        } else if !cli_logged_in {
-            "CLI not logged in. Run: sidekar login"
-        } else {
-            "Extension token verification failed — try signing in again."
-        };
-        let fail = json!({"type": "auth_fail", "reason": reason, "cli_logged_in": cli_logged_in});
-        let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
-        return;
-    }
-
-    let user_id = user_id.unwrap();
-
     let (conn_id, mut bridge_rx, profile) =
-        crate::ext::register_bridge_ws(&ext_state, user_id.clone(), agent_id).await;
+        crate::ext::register_bridge_ws(&ext_state, user_id.clone(), agent_id, browser_name.clone())
+            .await;
 
     let ok = json!({"type": "auth_ok", "cli_logged_in": cli_logged_in, "profile": profile});
     if ws_tx
@@ -688,7 +753,7 @@ async fn handle_ext_websocket(
     }
 
     eprintln!(
-        "[sidekar] Extension bridge connected via WebSocket (conn: {conn_id}, user: {user_id})"
+        "[sidekar] Extension bridge connected via WebSocket (conn: {conn_id}, browser: {browser_name}, user: {user_id})"
     );
 
     // Keepalive task — send pings via bridge_tx, check last_contact for timeout
@@ -773,6 +838,8 @@ async fn discover_heartbeat(port: u16) {
     if crate::auth::auth_token().is_none() {
         return;
     }
+    // Clear all old ports first, then register ours — prevents stale entries
+    crate::api_client::deregister_discover_port().await;
     if let Err(e) = crate::api_client::register_discover_port(port).await {
         if crate::runtime::verbose() {
             eprintln!("sidekar: discover heartbeat failed: {e:#}");

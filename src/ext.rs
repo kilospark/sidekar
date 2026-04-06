@@ -24,30 +24,42 @@ pub const EXTENSION_ZIP: &[u8] = include_bytes!("../assets/extension.zip");
 /// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
 const TIMEOUT_SECS: u64 = 180;
 
-/// Token verification cache to avoid network call on every extension connect
-struct TokenCache {
+/// Token verification cache keyed by ext_token prefix (first 16 chars).
+/// Avoids network call on every extension reconnect.
+struct CacheEntry {
     user_id: String,
     expires_at: u64,
 }
 
-static TOKEN_CACHE: std::sync::OnceLock<TokenCache> = std::sync::OnceLock::new();
+static TOKEN_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, CacheEntry>>> =
+    std::sync::OnceLock::new();
 
-fn get_cached_user_id(_ext_token: &str) -> Option<String> {
-    TOKEN_CACHE.get().and_then(|cache| {
-        if cache.expires_at > epoch_secs() {
-            Some(cache.user_id.clone())
-        } else {
-            None
-        }
-    })
+fn token_cache_key(ext_token: &str) -> String {
+    ext_token.chars().take(16).collect()
 }
 
-fn set_cached_user_id(user_id: String) {
-    let expires_at = epoch_secs() + 300; // 5 minute TTL
-    let _ = TOKEN_CACHE.set(TokenCache {
-        user_id,
-        expires_at,
-    });
+fn get_cached_user_id(ext_token: &str) -> Option<String> {
+    let map = TOKEN_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let map = map.lock().ok()?;
+    let entry = map.get(&token_cache_key(ext_token))?;
+    if entry.expires_at > epoch_secs() {
+        Some(entry.user_id.clone())
+    } else {
+        None
+    }
+}
+
+fn set_cached_user_id(ext_token: &str, user_id: String) {
+    let map = TOKEN_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(mut map) = map.lock() {
+        // Evict expired entries
+        let now = epoch_secs();
+        map.retain(|_, v| v.expires_at > now);
+        map.insert(token_cache_key(ext_token), CacheEntry {
+            user_id,
+            expires_at: now + 300,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +74,7 @@ pub struct ExtConnection {
     pub last_contact: u64,
     pub owner_agent_id: Option<String>,
     pub profile: String,
+    pub browser: String,
 }
 
 /// A registered DOM watcher. Watch events are delivered via broker to `deliver_to`.
@@ -96,49 +109,76 @@ fn ext_api_base() -> String {
     std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
 }
 
-pub fn verify_ext_token(ext_token: &str) -> Result<String> {
+/// Verification outcome with structured error classification.
+pub enum VerifyResult {
+    /// Token verified, user_id returned.
+    Ok(String),
+    /// Token is definitively invalid — extension should clear it.
+    InvalidToken(String),
+    /// Transient/network error — extension should retry, NOT clear token.
+    TransientError(String),
+}
+
+pub fn verify_ext_token(ext_token: &str) -> VerifyResult {
     // Try cache first
     if let Some(cached_user_id) = get_cached_user_id(ext_token) {
-        return Ok(cached_user_id);
+        return VerifyResult::Ok(cached_user_id);
     }
 
-    let device_token = auth::auth_token().ok_or_else(|| anyhow!("Run `sidekar login`"))?;
+    let device_token = match auth::auth_token() {
+        Some(t) => t,
+        None => return VerifyResult::TransientError("CLI not logged in. Run: sidekar device login".into()),
+    };
 
-    let client = reqwest::blocking::Client::builder()
+    let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return VerifyResult::TransientError(format!("HTTP client error: {e}")),
+    };
 
     let url = format!("{}/api/auth/device?action=ext-verify", ext_api_base());
-    let resp = client
+    let resp = match client
         .post(&url)
         .header("Authorization", format!("Bearer {}", device_token))
         .json(&json!({ "ext_token": ext_token }))
         .send()
-        .context("Failed to contact sidekar.dev for token verification")?;
+    {
+        Ok(r) => r,
+        Err(e) => return VerifyResult::TransientError(format!("Cannot reach sidekar.dev: {e}")),
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
-        bail!("Token verification failed: HTTP {status} — {body}");
+        // 401 with "invalid ext token" or "invalid device token" = definitive
+        if status.as_u16() == 401 {
+            return VerifyResult::InvalidToken(format!("Token rejected by server ({status})"));
+        }
+        // Other HTTP errors are transient
+        return VerifyResult::TransientError(format!("Server error: HTTP {status} — {body}"));
     }
 
-    let data: Value = resp.json().context("Invalid response from verify-ext")?;
+    let data: Value = match resp.json() {
+        Ok(d) => d,
+        Err(e) => return VerifyResult::TransientError(format!("Invalid response: {e}")),
+    };
 
     let matched = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
     if !matched {
-        bail!("Extension token and CLI token belong to different users");
+        return VerifyResult::InvalidToken("Extension token and CLI token belong to different users".into());
     }
 
-    let user_id = data
-        .get("user_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("No user_id in verification response"))?;
+    let user_id = match data.get("user_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return VerifyResult::TransientError("No user_id in verification response".into()),
+    };
 
     // Cache the result
-    set_cached_user_id(user_id.clone());
+    set_cached_user_id(ext_token, user_id.clone());
 
-    Ok(user_id)
+    VerifyResult::Ok(user_id)
 }
 
 type SharedState = Arc<Mutex<ExtState>>;
@@ -268,13 +308,14 @@ pub async fn register_bridge_ws(
     state: &SharedExtState,
     user_id: String,
     agent_id: Option<String>,
+    browser: String,
 ) -> (u64, mpsc::UnboundedReceiver<String>, String) {
     let now = epoch_secs();
     let (bridge_tx, bridge_rx) = mpsc::unbounded_channel::<String>();
     let mut s = state.lock().await;
     let cid = s.next_connection_id;
     s.next_connection_id = cid.wrapping_add(1);
-    let profile = format!("profile-{cid}");
+    let profile = browser.to_lowercase();
     s.connections.insert(
         cid,
         ExtConnection {
@@ -284,6 +325,7 @@ pub async fn register_bridge_ws(
             last_contact: now,
             owner_agent_id: agent_id,
             profile: profile.clone(),
+            browser,
         },
     );
     (cid, bridge_rx, profile)
@@ -344,6 +386,7 @@ pub async fn get_status(state: &SharedExtState) -> Value {
             json!({
                 "id": id,
                 "profile": c.profile,
+                "browser": c.browser,
                 "user_id": c.verified_user_id,
                 "owner": c.owner_agent_id,
             })
@@ -572,9 +615,9 @@ fn show_status() -> Result<()> {
             println!("{} connection(s):", list.len());
             for c in list {
                 let id = c.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let profile = c.get("profile").and_then(|v| v.as_str()).unwrap_or("?");
+                let browser = c.get("browser").and_then(|v| v.as_str()).unwrap_or("?");
                 let owner = c.get("owner").and_then(|v| v.as_str());
-                print!("  [{id}] {profile}");
+                print!("  [{id}] {browser}");
                 if let Some(o) = owner {
                     print!(" (owner: {o})");
                 }

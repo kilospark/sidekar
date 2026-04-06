@@ -79,13 +79,14 @@ h1 { font-size: 20px; margin-bottom: 8px; }
     errorMsg.textContent = msg;
   }
 
-  function showSuccess(token) {
+  function showSuccess(token, profile) {
     loadingEl.style.display = "none";
     successEl.style.display = "block";
     tokenEl.setAttribute("data-token", token);
+    if (profile) tokenEl.setAttribute("data-profile", JSON.stringify(profile));
     tokenEl.style.display = "block";
     // Also broadcast via postMessage for the extension to pick up
-    window.postMessage({ type: "sidekar-ext-token", token: token }, "*");
+    window.postMessage({ type: "sidekar-ext-token", token: token, profile: profile }, "*");
   }
 
   try {
@@ -108,7 +109,7 @@ h1 { font-size: 20px; margin-bottom: 8px; }
 
     const data = await resp.json();
     if (data.token) {
-      showSuccess(data.token);
+      showSuccess(data.token, data.profile);
     } else {
       showError("No token received. Please try again.");
     }

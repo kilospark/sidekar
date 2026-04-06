@@ -458,7 +458,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                 tunnel_println("Relay: \x1b[32mon\x1b[0m");
                             } else {
                                 tunnel_println(
-                                    "\x1b[31mFailed to start relay. Are you logged in? (sidekar login)\x1b[0m",
+                                    "\x1b[31mFailed to start relay. Are you logged in? (sidekar device login)\x1b[0m",
                                 );
                             }
                         }
@@ -625,7 +625,7 @@ async fn start_relay(
         None => {
             broker::try_log_error(
                 "relay",
-                "skipped: no device token; run: sidekar login",
+                "skipped: no device token; run: sidekar device login",
                 None,
             );
             return (None, None);
@@ -941,8 +941,10 @@ struct Spinner {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-const SPINNER_FRAMES: &[&str] = &["∙", "○", "●", "○"];
-const SPINNER_COLOR: &str = "\x1b[34m";
+const SPINNER_FRAMES: &[&str] = &[
+    "[    ]", "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]", "[    ]",
+];
+const SPINNER_COLOR: &str = "\x1b[36m";
 
 impl Spinner {
     fn start_with_label(label: String) -> Self {
@@ -953,13 +955,13 @@ impl Spinner {
             let label_part = if label.is_empty() {
                 String::new()
             } else {
-                format!(" \x1b[36m{label}\x1b[0m")
+                format!(" {label}")
             };
             let mut i = 0;
             while r.load(std::sync::atomic::Ordering::Relaxed) {
                 let elapsed = started.elapsed().as_secs_f32();
                 let line = format!(
-                    "{SPINNER_COLOR}{}\x1b[0m \x1b[2m{:.1}s\x1b[0m{label_part}",
+                    "{SPINNER_COLOR}{} {:.1}s{label_part}\x1b[0m",
                     SPINNER_FRAMES[i % SPINNER_FRAMES.len()],
                     elapsed,
                 );

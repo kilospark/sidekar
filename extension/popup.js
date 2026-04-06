@@ -11,9 +11,9 @@ const loggedInSection = document.getElementById("logged-in-section");
 
 function loginCommandMarkup(copied = false) {
   if (copied) {
-    return `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
+    return `sidekar device login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
   }
-  return `sidekar login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  return `sidekar device login <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 }
 
 function createCopyCommand() {
@@ -21,7 +21,7 @@ function createCopyCommand() {
   cmdCopy.className = "cmd-copy";
   cmdCopy.innerHTML = loginCommandMarkup(false);
   cmdCopy.onclick = () => {
-    navigator.clipboard.writeText("sidekar login").then(() => {
+    navigator.clipboard.writeText("sidekar device login").then(() => {
       cmdCopy.classList.add("copied");
       cmdCopy.innerHTML = loginCommandMarkup(true);
       setTimeout(() => {
@@ -88,13 +88,13 @@ function applyStatus(res) {
     return;
   }
   if (res && res.cliLoggedIn) {
-    status.textContent = "CLI authenticated";
-    status.className = "connected";
+    status.textContent = "CLI authenticated, connecting...";
+    status.className = "pending";
   } else {
     renderCliLoginAction();
   }
 
-  // Check if error is about needing to run sidekar login
+  // Check if error is about needing to run sidekar device login
   const needsLogin = res && res.lastError && (
     res.lastError.includes("login") ||
     res.lastError.includes("token")
@@ -133,11 +133,13 @@ function refreshStatus() {
 }
 
 function updateAuthUI() {
-  chrome.storage.local.get(["extToken"], (data) => {
+  chrome.storage.local.get(["extToken", "extProfile"], (data) => {
     if (data.extToken) {
       authSection.style.display = "none";
       loggedInSection.style.display = "block";
-      extStatus.textContent = "Signed in";
+      const p = data.extProfile;
+      const label = p && (p.login || p.email) ? `Signed in as ${p.login || p.email}` : "Signed in";
+      extStatus.textContent = label;
       extStatus.className = "connected";
     } else {
       authSection.style.display = "block";
@@ -165,7 +167,7 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 });
 
-// --- GitHub OAuth Login ---
+// --- OAuth Login ---
 
 loginBtn.addEventListener("click", () => {
   // Delegate to background script (survives popup closing)
@@ -175,7 +177,7 @@ loginBtn.addEventListener("click", () => {
 // --- Logout ---
 
 logoutBtn.addEventListener("click", () => {
-  chrome.storage.local.remove(["extToken"], () => {
+  chrome.storage.local.remove(["extToken", "extProfile"], () => {
     chrome.runtime.sendMessage({ type: "reconnect" }, () => {
       updateAuthUI();
       refreshStatus();
