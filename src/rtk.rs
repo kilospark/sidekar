@@ -321,9 +321,16 @@ pub fn compact_output(command: &str, output: &str) -> String {
         }
         lines = normalize_blank_lines(lines);
         if let Some(max_lines) = filter.max_lines {
-            if lines.len() > max_lines {
-                lines.truncate(max_lines);
-                lines.push(format!("... (truncated to {} lines)", max_lines));
+            let total = lines.len();
+            if total > max_lines {
+                let head = max_lines / 2;
+                let tail = max_lines - head;
+                let omitted = total - head - tail;
+                let mut truncated = Vec::with_capacity(max_lines + 1);
+                truncated.extend_from_slice(&lines[..head]);
+                truncated.push(format!("... ({omitted} lines omitted) ..."));
+                truncated.extend_from_slice(&lines[total - tail..]);
+                lines = truncated;
             }
         }
         if lines.is_empty() {
@@ -335,6 +342,11 @@ pub fn compact_output(command: &str, output: &str) -> String {
     generic_compact(output)
 }
 
+/// Max lines for unrecognized commands. Budget is split 50/50 between
+/// head (first lines) and tail (last lines), with an omission marker
+/// in between — matching the Codex middle-truncation approach.
+const GENERIC_MAX_LINES: usize = 200;
+
 fn generic_compact(output: &str) -> String {
     let stripped = ANSI_RE.replace_all(output, "").to_string();
     let lines: Vec<String> = stripped
@@ -342,7 +354,18 @@ fn generic_compact(output: &str) -> String {
         .map(|line| line.trim_end().to_string())
         .collect();
     let lines = normalize_blank_lines(dedupe_repeated_lines(lines));
-    lines.join("\n")
+    let total = lines.len();
+    if total <= GENERIC_MAX_LINES {
+        return lines.join("\n");
+    }
+    let head = GENERIC_MAX_LINES / 2;
+    let tail = GENERIC_MAX_LINES - head;
+    let omitted = total - head - tail;
+    let mut result = Vec::with_capacity(GENERIC_MAX_LINES + 1);
+    result.extend_from_slice(&lines[..head]);
+    result.push(format!("... ({omitted} lines omitted) ..."));
+    result.extend_from_slice(&lines[total - tail..]);
+    result.join("\n")
 }
 
 fn normalize_blank_lines(lines: Vec<String>) -> Vec<String> {

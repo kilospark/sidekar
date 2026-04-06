@@ -261,20 +261,26 @@ async fn parse_sse_stream(
                             .to_string();
                         let index = next_tool_index;
                         next_tool_index += 1;
+                        let _ = tx.send(StreamEvent::ToolCallStart {
+                            index,
+                            id: call_id.clone(),
+                            name: name.clone(),
+                        });
+                        if !partial_json.is_empty() {
+                            let _ = tx.send(StreamEvent::ToolCallDelta {
+                                index,
+                                delta: partial_json.clone(),
+                            });
+                        }
                         pending_tool_calls.insert(
                             item_id,
                             PendingToolCall {
-                                call_id: call_id.clone(),
+                                call_id,
                                 index,
                                 partial_json,
                                 name: name.clone(),
                             },
                         );
-                        let _ = tx.send(StreamEvent::ToolCallStart {
-                            index,
-                            id: call_id,
-                            name: name.clone(),
-                        });
                     }
                 }
 

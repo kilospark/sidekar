@@ -298,7 +298,7 @@ async fn parse_sse_stream(
                             pending_tool_calls[tc_index] = PendingToolCall {
                                 id: id.to_string(),
                                 name: name.clone(),
-                                arguments: initial_args,
+                                arguments: initial_args.clone(),
                                 index: tc_index,
                             };
 
@@ -307,6 +307,15 @@ async fn parse_sse_stream(
                                 id: id.to_string(),
                                 name,
                             });
+                            // OpenAI-style chunks often include the first slice of `arguments` on the
+                            // same frame as `id`; without a ToolCallDelta the REPL never accumulates args
+                            // for the ToolCallEnd summary line.
+                            if !initial_args.is_empty() {
+                                let _ = tx.send(StreamEvent::ToolCallDelta {
+                                    index: tc_index,
+                                    delta: initial_args,
+                                });
+                            }
                         } else if let Some(args_delta) = tc
                             .get("function")
                             .and_then(|f| f.get("arguments"))

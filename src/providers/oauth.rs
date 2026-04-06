@@ -525,39 +525,57 @@ async fn pkce_login(
 
     server.abort();
 
-    // Exchange code for tokens (Anthropic expects JSON, not form-encoded)
+    // Exchange code for tokens with retry on transient server errors
     let client = reqwest::Client::new();
-    let resp = client
-        .post(token_url)
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "grant_type": "authorization_code",
-            "client_id": client_id,
-            "code": code,
-            "redirect_uri": callback,
-            "code_verifier": verifier,
-            "state": state,
-        }))
-        .send()
-        .await
-        .context("Failed to exchange OAuth code")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        bail!("Token exchange failed ({}): {}", status, body);
+    let body = serde_json::json!({
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "code": code,
+        "redirect_uri": callback,
+        "code_verifier": verifier,
+        "state": state,
+    });
+    let mut last_err = None;
+    for attempt in 0..3u32 {
+        match client
+            .post(token_url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    let token_resp: TokenResponse =
+                        resp.json().await.context("Invalid token response")?;
+                    eprintln!("Logged in to {provider_name}.");
+                    return Ok(OAuthCredentials {
+                        access_token: token_resp.access_token,
+                        refresh_token: token_resp.refresh_token,
+                        expires_at: now_secs() + token_resp.expires_in,
+                        metadata: serde_json::Value::Null,
+                    });
+                }
+                let resp_body = resp.text().await.unwrap_or_default();
+                if status.is_client_error() {
+                    bail!("Token exchange failed ({}): {}", status, resp_body);
+                }
+                last_err = Some(anyhow::anyhow!(
+                    "Token exchange failed ({}): {}",
+                    status,
+                    resp_body
+                ));
+            }
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt))).await;
+        }
     }
-
-    let token_resp: TokenResponse = resp.json().await.context("Invalid token response")?;
-
-    eprintln!("Logged in to {provider_name}.");
-
-    Ok(OAuthCredentials {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token,
-        expires_at: now_secs() + token_resp.expires_in,
-        metadata: serde_json::Value::Null,
-    })
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Token exchange failed after retries")))
 }
 
 async fn refresh_token_generic(
@@ -567,32 +585,50 @@ async fn refresh_token_generic(
     metadata: serde_json::Value,
 ) -> Result<OAuthCredentials> {
     let client = reqwest::Client::new();
-    let resp = client
-        .post(token_url)
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "refresh_token": refresh_token,
-        }))
-        .send()
-        .await
-        .context("Token refresh request failed")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        bail!("Token refresh failed ({}): {}", status, body);
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+    });
+    let mut last_err = None;
+    for attempt in 0..3u32 {
+        match client
+            .post(token_url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    let token_resp: TokenResponse = resp.json().await?;
+                    return Ok(OAuthCredentials {
+                        access_token: token_resp.access_token,
+                        refresh_token: token_resp.refresh_token,
+                        expires_at: now_secs() + token_resp.expires_in,
+                        metadata,
+                    });
+                }
+                let resp_body = resp.text().await.unwrap_or_default();
+                if status.is_client_error() {
+                    bail!("Token refresh failed ({}): {}", status, resp_body);
+                }
+                last_err = Some(anyhow::anyhow!(
+                    "Token refresh failed ({}): {}",
+                    status,
+                    resp_body
+                ));
+            }
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt))).await;
+        }
     }
-
-    let token_resp: TokenResponse = resp.json().await?;
-
-    Ok(OAuthCredentials {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token,
-        expires_at: now_secs() + token_resp.expires_in,
-        metadata,
-    })
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Token refresh failed after retries")))
 }
 
 // ---------------------------------------------------------------------------

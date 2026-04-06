@@ -125,7 +125,11 @@ pub async fn run(
             {
                 return Err(Cancelled.into());
             }
-            on_event(&StreamEvent::ToolExec { name: name.clone() });
+            let arguments_json = serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string());
+            on_event(&StreamEvent::ToolExec {
+                name: name.clone(),
+                arguments_json,
+            });
             let result = tools::execute(name, arguments, cancel).await;
             let (content, is_error) = match result {
                 Ok(output) => (truncate_tool_output(&output, 50_000), false),

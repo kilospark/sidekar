@@ -91,7 +91,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         broker::try_log_error("bus", &format!("registration failed: {e}"), None);
     }
 
-    crate::bus::set_terminal_title(&format!("{nick} ({bus_name}) — sidekar repl"));
+    crate::bus::set_terminal_title(&format!("{nick} — sidekar repl"));
 
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
@@ -238,6 +238,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 if cmd.is_empty() {
                     tunnel_println("\x1b[2mUsage: ! <command>\x1b[0m");
                 } else {
+                    let _ = session::append_input_history(
+                        &scope_root,
+                        &scope_name,
+                        text,
+                        REPL_INPUT_HISTORY_LIMIT,
+                    );
                     // Restore terminal to cooked mode for the subprocess
                     let _guard = RawModeGuard::enter_cooked();
                     let status = std::process::Command::new("sh")
@@ -801,9 +807,18 @@ impl EventRenderer {
             StreamEvent::Idle => {
                 self.stop_spinner();
             }
-            StreamEvent::ToolExec { name } => {
+            StreamEvent::ToolExec {
+                name,
+                arguments_json,
+            } => {
                 self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label(format!("running {name}")));
+                let detail = extract_tool_summary(name, arguments_json);
+                let label = if detail.is_empty() {
+                    format!("running {name}")
+                } else {
+                    format!("running {name} {detail}")
+                };
+                self.spinner = Some(Spinner::start_with_label(label));
             }
             StreamEvent::TextDelta { delta } => {
                 self.stop_spinner();

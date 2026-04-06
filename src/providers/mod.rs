@@ -271,6 +271,8 @@ pub enum StreamEvent {
     /// Emitted before a tool executes so the UI can show progress.
     ToolExec {
         name: String,
+        /// JSON object for the tool input (same as in the assistant message), for UI summaries.
+        arguments_json: String,
     },
     /// Emitted when context compaction (LLM summarization) is in progress.
     Compacting,
