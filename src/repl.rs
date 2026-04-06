@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use std::io::{self, BufRead, Write};
 
 mod editor;
+mod user_turn;
 
 use crate::broker;
 use crate::message::AgentId;
@@ -10,8 +11,8 @@ use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEv
 use crate::session;
 use crate::tunnel::tunnel_println;
 use self::editor::{
-    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, clear_transient_status,
-    emit_shared_line, emit_transient_status, print_banner, read_input_or_bus,
+    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, SubmittedLine,
+    clear_transient_status, emit_shared_line, emit_transient_status, print_banner, read_input_or_bus,
 };
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
@@ -233,18 +234,34 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             InputEvent::Eof => break,
         };
 
-        if let Some(ref text) = input {
-            let trimmed = text.trim();
+        let mut staged_user_content: Option<Vec<ContentBlock>> = None;
+
+        if let Some(ref sub) = input {
+            let trimmed = sub.text.trim();
             if trimmed.is_empty() {
                 continue;
             }
 
+            let mut content = match user_turn::build_user_turn_content(&sub.text, &sub.image_paths) {
+                Ok(c) if !c.is_empty() => c,
+                Ok(_) => continue,
+                Err(e) => {
+                    tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m"));
+                    continue;
+                }
+            };
+            if let Err(e) = user_turn::finalize_multimodal_for_api(&mut content) {
+                tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m"));
+                continue;
+            }
+            staged_user_content = Some(content);
+
             // Record to both in-memory (for up-arrow) and SQLite (for next session)
-            line_editor.push_history(text);
+            line_editor.push_history(&sub.text);
             let _ = session::append_input_history(
                 &scope_root,
                 &scope_name,
-                text,
+                &sub.text,
                 REPL_INPUT_HISTORY_LIMIT,
             );
 
@@ -494,14 +511,15 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             continue;
         }
 
-        // Add user message (if any)
-        if let Some(text) = input {
+        // Add user message (if any) — persisted only after a successful agent turn (see below).
+        let mut had_staged_user = false;
+        if let Some(content) = staged_user_content {
             let user_msg = ChatMessage {
                 role: Role::User,
-                content: vec![ContentBlock::Text { text }],
+                content,
             };
-            let _ = session::append_message(&session_id, &user_msg);
             history.push(user_msg);
+            had_staged_user = true;
         }
 
         // Run agent loop
@@ -536,7 +554,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         line_editor = returned_editor;
         line_editor.pending_followups.append(&mut submitted);
 
-        if crate::runtime::verbose() && run_result.is_ok() {
+        let run_ok = run_result.is_ok();
+        if run_ok {
+            crate::agent::images::strip_user_image_blobs_from_history(&mut history);
+        }
+
+        if crate::runtime::verbose() && run_ok {
             repl_status_dim("[turn complete]");
         }
 
@@ -554,9 +577,16 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             }
         };
 
-        // Persist: full replace only after compaction, otherwise just append new messages
+        // Persist: full replace only after compaction; otherwise append this turn (user only after success).
         if did_compact {
             let _ = session::replace_history(&session_id, &history);
+        } else if run_ok {
+            if had_staged_user {
+                let _ = session::append_message(&session_id, &history[pre_len - 1]);
+            }
+            for msg in &history[pre_len..] {
+                let _ = session::append_message(&session_id, msg);
+            }
         } else if pre_len < history.len() {
             for msg in &history[pre_len..] {
                 let _ = session::append_message(&session_id, msg);
@@ -1394,8 +1424,8 @@ fn inject_bus_messages(bus_name: &str, history: &mut Vec<ChatMessage>, session_i
 
 /// What `read_input_or_bus` returned.
 enum InputEvent {
-    /// User typed a line.
-    User(String),
+    /// User typed a line (optional pasted image attachments).
+    User(SubmittedLine),
     /// One or more bus messages arrived while idle.
     Bus,
     /// EOF / error.

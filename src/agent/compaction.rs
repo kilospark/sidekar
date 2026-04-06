@@ -19,6 +19,7 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::Thinking { thinking, .. } => thinking.len(),
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
+                    ContentBlock::Image { data_base64, .. } => data_base64.len(),
                 })
                 .sum::<usize>()
         })
@@ -195,6 +196,9 @@ async fn phase2_summarize(
                     ));
                 }
                 ContentBlock::Thinking { .. } => {}
+                ContentBlock::Image { .. } => {
+                    summary_input.push_str(&format!("{role}: [image attachment]\n"));
+                }
             }
         }
     }

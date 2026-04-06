@@ -165,6 +165,16 @@ pub enum ContentBlock {
         content: String,
         is_error: bool,
     },
+    /// Local image bytes as base64 (e.g. from REPL paste of an image path). Serialized per provider.
+    /// `source_path` is the on-disk location for one-turn-only handoff: after a successful turn we
+    /// drop `data_base64` and keep path text so the model can re-read via tools.
+    #[serde(rename = "image")]
+    Image {
+        media_type: String,
+        data_base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

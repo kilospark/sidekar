@@ -1,6 +1,9 @@
 use anyhow::Result;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::path::PathBuf;
+
+use regex::Regex;
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -9,6 +12,13 @@ use unicode_width::UnicodeWidthStr;
 use crate::broker;
 
 use super::InputEvent;
+
+/// One submitted REPL line (possibly with pasted image attachments).
+#[derive(Debug, Clone)]
+pub struct SubmittedLine {
+    pub text: String,
+    pub image_paths: Vec<PathBuf>,
+}
 
 const PROMPT_PREFIX: &str = "\x1b[36m›\x1b[0m ";
 const PROMPT_VISIBLE: &str = "› ";
@@ -286,7 +296,7 @@ pub(super) struct ActivePromptSession {
     running: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
     raw_mode: Option<RawModeGuard>,
-    submitted_rx: mpsc::Receiver<String>,
+    submitted_rx: mpsc::Receiver<SubmittedLine>,
 }
 
 impl ActivePromptSession {
@@ -359,7 +369,10 @@ impl ActivePromptSession {
                                         let line = line
                                             .trim_end_matches(|c| c == '\r' || c == '\n')
                                             .to_string();
-                                        let _ = submitted_tx.send(line);
+                                        let _ = submitted_tx.send(SubmittedLine {
+                                            text: line,
+                                            image_paths: Vec::new(),
+                                        });
                                     }
                                     Err(_) => return,
                                 }
@@ -414,7 +427,7 @@ impl ActivePromptSession {
         }
     }
 
-    pub(super) fn finish(mut self) -> (LineEditor, VecDeque<String>) {
+    pub(super) fn finish(mut self) -> (LineEditor, VecDeque<SubmittedLine>) {
         self.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
@@ -434,8 +447,8 @@ impl ActivePromptSession {
             .unwrap_or_default();
 
         let mut submitted = VecDeque::new();
-        while let Ok(line) = self.submitted_rx.try_recv() {
-            submitted.push_back(line);
+        while let Ok(sub) = self.submitted_rx.try_recv() {
+            submitted.push_back(sub);
         }
         (editor, submitted)
     }
@@ -457,6 +470,19 @@ const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 fn is_word_separator(ch: char) -> bool {
     WORD_SEPARATORS.contains(ch)
+}
+
+fn renumber_pending_image_labels(text: &str, offset: usize) -> String {
+    if offset == 0 {
+        return text.to_string();
+    }
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\[Image #(\d+)\]").expect("regex"));
+    re.replace_all(text, |caps: &regex::Captures| {
+        let n: usize = caps[1].parse().unwrap_or(0);
+        format!("[Image #{}]", offset + n)
+    })
+    .into_owned()
 }
 
 fn truncate_preview_to_width(s: &str, max_display_width: usize) -> String {
@@ -482,7 +508,7 @@ fn truncate_preview_to_width(s: &str, max_display_width: usize) -> String {
 
 enum LineEditResult {
     Continue,
-    Submit(String),
+    Submit(SubmittedLine),
     Eof,
 }
 
@@ -515,9 +541,11 @@ pub(super) struct LineEditor {
     kill_buffer: String,
     paste_buffer: Option<Vec<u8>>,
     /// Lines completed inside a single `read()` chunk (or across bursts); drained before blocking again.
-    pending_submits: VecDeque<String>,
+    pending_submits: VecDeque<SubmittedLine>,
     /// Submitted while the agent was running; shown on the row above the prompt, pulled with ↑ on the top line.
-    pub(super) pending_followups: VecDeque<String>,
+    pub(super) pending_followups: VecDeque<SubmittedLine>,
+    /// Pasted/dragged image paths; text uses `[Image #N]` matching 1-based indices here.
+    attached_images: Vec<PathBuf>,
     rendered_pending_rows: usize,
 }
 
@@ -546,19 +574,20 @@ impl LineEditor {
             paste_buffer: None,
             pending_submits: VecDeque::new(),
             pending_followups: VecDeque::new(),
+            attached_images: Vec::new(),
             rendered_pending_rows: 0,
         }
     }
 
     /// Returns a line that was already completed from a prior `process_input_bytes` burst.
-    pub(super) fn take_next_pending_submit(&mut self) -> Option<String> {
+    pub(super) fn take_next_pending_submit(&mut self) -> Option<SubmittedLine> {
         self.pending_submits.pop_front()
     }
 
     /// Feeds every byte in `bytes`, invoking `on_submit` for each completed line. Stops on EOF (empty buffer + Ctrl-D).
     pub(super) fn process_input_bytes<F>(&mut self, bytes: &[u8], mut on_submit: F) -> Result<(), ()>
     where
-        F: FnMut(&mut Self, String),
+        F: FnMut(&mut Self, SubmittedLine),
     {
         for &byte in bytes {
             match self.feed_byte(byte) {
@@ -570,6 +599,34 @@ impl LineEditor {
             }
         }
         Ok(())
+    }
+
+    fn insert_pasted_text(&mut self, text: &str) {
+        let t = text.trim_end_matches('\0');
+        if !t.contains('\n') && t.len() < 16_384 {
+            if let Some(pb) = super::user_turn::normalize_pasted_path(t.trim()) {
+                if image::image_dimensions(&pb).is_ok() {
+                    self.attach_image(pb);
+                    return;
+                }
+            }
+        }
+        if !t.is_empty() {
+            self.detach_history_nav();
+            self.buffer.insert_str(self.cursor, t);
+            self.cursor += t.len();
+            self.preferred_col = None;
+        }
+    }
+
+    fn attach_image(&mut self, path: PathBuf) {
+        let n = self.attached_images.len() + 1;
+        let label = format!("[Image #{n}] ");
+        self.detach_history_nav();
+        self.buffer.insert_str(self.cursor, &label);
+        self.cursor += label.len();
+        self.attached_images.push(path);
+        self.preferred_col = None;
     }
 
     fn terminal_columns(&self) -> usize {
@@ -587,7 +644,7 @@ impl LineEditor {
         if n == 0 {
             return None;
         }
-        let head = self.pending_followups.front()?.as_str();
+        let head = self.pending_followups.front()?.text.as_str();
         let prefix_plain = format!("↑ {n} queued — ");
         let pw = UnicodeWidthStr::width(prefix_plain.as_str());
         let budget = cols.saturating_sub(pw);
@@ -603,12 +660,21 @@ impl LineEditor {
             return;
         }
         self.detach_history_nav();
-        let merged = self
-            .pending_followups
-            .drain(..)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let items: Vec<SubmittedLine> = self.pending_followups.drain(..).collect();
+        let mut merged = String::new();
+        let mut paths = Vec::new();
+        let mut offset = 0usize;
+        for (i, sub) in items.into_iter().enumerate() {
+            if i > 0 {
+                merged.push('\n');
+            }
+            merged.push_str(&renumber_pending_image_labels(&sub.text, offset));
+            let n = sub.image_paths.len();
+            paths.extend(sub.image_paths);
+            offset += n;
+        }
         self.buffer = merged;
+        self.attached_images = paths;
         self.cursor = self.buffer.len();
         self.preferred_col = None;
     }
@@ -725,6 +791,7 @@ impl LineEditor {
         self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
         self.paste_buffer = None;
+        self.attached_images.clear();
     }
 
     fn compute_layout(&self, cols: usize) -> RenderLayout {
@@ -787,9 +854,10 @@ impl LineEditor {
             b'\r' | b'\n' => {
                 self.move_to_render_end();
                 emit_raw("\r\n");
-                let submitted = self.buffer.clone();
+                let text = self.buffer.clone();
+                let image_paths = std::mem::take(&mut self.attached_images);
                 self.reset();
-                LineEditResult::Submit(submitted)
+                LineEditResult::Submit(SubmittedLine { text, image_paths })
             }
             0x04 => {
                 if self.buffer.is_empty() {
@@ -909,10 +977,7 @@ impl LineEditor {
                     if let Some(raw) = self.paste_buffer.take() {
                         let text = String::from_utf8_lossy(&raw);
                         if !text.is_empty() {
-                            self.detach_history_nav();
-                            self.buffer.insert_str(self.cursor, &text);
-                            self.cursor += text.len();
-                            self.preferred_col = None;
+                            self.insert_pasted_text(text.trim_end_matches('\0'));
                         }
                     }
                     self.escape.clear();
@@ -1319,6 +1384,7 @@ impl LineEditor {
         self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
         self.paste_buffer = None;
+        self.attached_images.clear();
     }
 
     fn detach_history_nav(&mut self) {
@@ -1487,7 +1553,12 @@ pub(super) fn read_input_or_bus(
             let mut line_buf = String::new();
             match io::stdin().lock().read_line(&mut line_buf) {
                 Ok(0) => return InputEvent::Eof,
-                Ok(_) => return InputEvent::User(line_buf.trim_end_matches('\n').to_string()),
+                Ok(_) => {
+                    return InputEvent::User(SubmittedLine {
+                        text: line_buf.trim_end_matches('\n').to_string(),
+                        image_paths: Vec::new(),
+                    });
+                }
                 Err(_) => return InputEvent::Eof,
             }
         }
@@ -1607,17 +1678,22 @@ mod tests {
                 lines.push(line);
             })
             .unwrap();
-        assert_eq!(lines, vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(lines[0].text, "first");
+        assert_eq!(lines[1].text, "second");
         assert!(editor.buffer.is_empty());
     }
 
     #[test]
     fn up_on_top_row_pulls_all_pending_followups_at_once() {
         let mut editor = LineEditor::with_history(Vec::new());
-        editor
-            .pending_followups
-            .push_back("queued a".to_string());
-        editor.pending_followups.push_back("queued b".to_string());
+        editor.pending_followups.push_back(SubmittedLine {
+            text: "queued a".into(),
+            image_paths: Vec::new(),
+        });
+        editor.pending_followups.push_back(SubmittedLine {
+            text: "queued b".into(),
+            image_paths: Vec::new(),
+        });
         editor.move_up_for_cols(80);
         assert_eq!(editor.buffer, "queued a\nqueued b");
         assert!(editor.pending_followups.is_empty());
