@@ -5,9 +5,9 @@ MV3 extension that connects to the local `sidekar` bridge so terminal agents can
 ## Install
 
 1. Build or install the `sidekar` binary (`cargo build --release` from the repo root).
-2. Log in: `sidekar login` (this also installs native messaging for the extension).
+2. Log in: `sidekar device login` (this also installs native messaging for the extension).
 3. Chrome → **Extensions** → enable **Developer mode** → **Load unpacked** → select this `extension/` directory.
-4. Click the Sidekar toolbar icon → **Login with GitHub**.
+4. Click the Sidekar toolbar icon → **Sign in**.
 
 The extension auto-discovers the local bridge via native messaging—no port configuration needed.
 

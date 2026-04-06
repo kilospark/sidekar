@@ -14,7 +14,7 @@ let awaitListeners = new Map(); // id → resolve callback
 
 function clearStoredExtToken() {
   return new Promise((resolve) => {
-    chrome.storage.local.remove(["extToken"], () => resolve());
+    chrome.storage.local.remove(["extToken", "extProfile"], () => resolve());
   });
 }
 
@@ -141,10 +141,23 @@ async function connect() {
 
     // Welcome message
     if (msg.type === "welcome") {
+      const ua = navigator.userAgent || "";
+      const brands = (navigator.userAgentData && navigator.userAgentData.brands || [])
+        .map((b) => b.brand.toLowerCase());
+
+      let browser = "Chrome";
+      if (typeof navigator.brave !== "undefined") browser = "Brave";
+      else if (ua.includes("Vivaldi/")) browser = "Vivaldi";
+      else if (brands.some((b) => b.includes("opera")) || ua.includes("OPR/")) browser = "Opera";
+      else if (ua.includes("Edg/") || brands.some((b) => b.includes("microsoft edge"))) browser = "Edge";
+      else if (ua.includes("YaBrowser/") || brands.some((b) => b.includes("yandex"))) browser = "Yandex";
+      else if (ua.includes("SamsungBrowser/")) browser = "Samsung";
+      else if (ua.includes("Chromium/")) browser = "Chromium";
       sendWs({
         type: "bridge_register",
         version: chrome.runtime.getManifest().version,
         token: extToken,
+        browser,
       });
       return;
     }
@@ -162,7 +175,8 @@ async function connect() {
       cliLoggedIn = msg.cli_logged_in === true;
       const reason = msg.reason || "Authentication failed.";
       lastConnectError = reason;
-      if (reason.includes("invalid ext token") || reason.includes("expired")) {
+      // Only clear token when server explicitly says it's invalid
+      if (msg.clear_token === true) {
         await clearStoredExtToken();
         lastConnectError = "Extension session expired — sign in again from the extension popup.";
       }
@@ -194,6 +208,7 @@ async function connect() {
     console.log("[sidekar] WS disconnected");
     ws = null;
     authenticated = false;
+    cliLoggedIn = false;
     if (!lastConnectError) {
       lastConnectError = "Daemon disconnected.";
     }
@@ -2061,7 +2076,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 const CALLBACK_URL = "https://sidekar.dev/ext-callback";
 
 function startOAuthFlow() {
-  const authUrl = "https://sidekar.dev/api/auth/github?redirect=/ext-callback";
+  const authUrl = "https://sidekar.dev/login?redirect=/ext-callback";
 
   chrome.tabs.create({ url: authUrl, active: true }, (tab) => {
     const authTabId = tab.id;
@@ -2084,7 +2099,12 @@ function startOAuthFlow() {
             target: { tabId: authTabId },
             func: () => {
               const el = document.getElementById("ext-token");
-              return el ? el.getAttribute("data-token") : null;
+              if (!el) return null;
+              const token = el.getAttribute("data-token");
+              const profileStr = el.getAttribute("data-profile");
+              let profile = null;
+              try { profile = profileStr ? JSON.parse(profileStr) : null; } catch {}
+              return { token, profile };
             },
           },
           (results) => {
@@ -2093,14 +2113,18 @@ function startOAuthFlow() {
               return;
             }
 
-            const token =
+            const data =
               results && results[0] && results[0].result
                 ? results[0].result
                 : null;
+            const token = data && data.token;
+            const profile = data && data.profile;
 
             if (token && token.length > 0) {
               console.log("[sidekar] Got token from callback page");
-              chrome.storage.local.set({ extToken: token }, () => {
+              const toStore = { extToken: token };
+              if (profile) toStore.extProfile = profile;
+              chrome.storage.local.set(toStore, () => {
                 if (ws) {
                   try { ws.close(); } catch {}
                 }

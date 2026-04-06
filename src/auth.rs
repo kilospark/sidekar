@@ -120,7 +120,7 @@ pub async fn device_auth_flow() -> Result<()> {
         if let Some(status) = poll_data["status"].as_str() {
             match status {
                 "pending" => continue,
-                "expired" => bail!("Device code expired. Run `sidekar login` again."),
+                "expired" => bail!("Device code expired. Run `sidekar device login` again."),
                 _ => {}
             }
         }

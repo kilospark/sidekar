@@ -371,7 +371,7 @@ async fn do_self_update(version: &str) -> Result<()> {
 /// List devices registered to the current user.
 pub async fn list_devices() -> Result<Value> {
     let token =
-        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
+        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar device login"))?;
 
     let url = format!("{}/api/auth/devices", api_base());
     let mut last_err = None;
@@ -388,7 +388,7 @@ pub async fn list_devices() -> Result<Value> {
                     return resp.json().await.context("Invalid response");
                 }
                 if status == reqwest::StatusCode::UNAUTHORIZED {
-                    bail!("Session expired. Run: sidekar login");
+                    bail!("Session expired. Run: sidekar device login");
                 }
                 if status.is_client_error() {
                     bail!("Failed to fetch devices: HTTP {}", status);
@@ -411,7 +411,7 @@ pub async fn list_devices() -> Result<Value> {
 /// List active sessions for the current user.
 pub async fn list_sessions() -> Result<Value> {
     let token =
-        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
+        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar device login"))?;
 
     let url = format!("{}/api/sessions", api_base());
     let mut last_err = None;
@@ -428,7 +428,7 @@ pub async fn list_sessions() -> Result<Value> {
                     return resp.json().await.context("Invalid response");
                 }
                 if status == reqwest::StatusCode::UNAUTHORIZED {
-                    bail!("Session expired. Run: sidekar login");
+                    bail!("Session expired. Run: sidekar device login");
                 }
                 if status.is_client_error() {
                     bail!("Failed to fetch sessions: HTTP {}", status);
@@ -486,6 +486,19 @@ pub async fn register_discover_port(port: u16) -> Result<()> {
         MAX_RETRIES,
         last_err
     ))
+}
+
+/// Deregister all discover ports for this user (called on daemon shutdown).
+pub async fn deregister_discover_port() {
+    let Some(token) = crate::auth::auth_token() else {
+        return;
+    };
+    let url = format!("{}/api/sessions?discover", api_base());
+    let _ = HTTP_CLIENT_SHORT_TIMEOUT
+        .delete(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await;
 }
 
 fn verify_signature(binary: &[u8], signature: &[u8]) -> Result<()> {

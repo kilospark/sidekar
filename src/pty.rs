@@ -504,7 +504,7 @@ pub async fn run_agent(
             } else {
                 crate::broker::try_log_error(
                     "relay",
-                    "skipped: no device token; run: sidekar login",
+                    "skipped: no device token; run: sidekar device login",
                     Some(&relay_policy_text),
                 );
                 None

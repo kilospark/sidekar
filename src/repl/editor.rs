@@ -915,18 +915,41 @@ impl LineEditor {
                 self.escape_started_at = None;
                 true
             }
-            // Ctrl+Left: word backward
-            [0x1b, b'[', b'1', b';', b'5', b'D'] => {
+            // Ctrl+Left / Option+Left: word backward
+            [0x1b, b'[', b'1', b';', b'5' | b'3', b'D'] => {
                 self.cursor = self.beginning_of_previous_word();
                 self.preferred_col = None;
                 self.escape.clear();
                 self.escape_started_at = None;
                 true
             }
-            // Ctrl+Right: word forward
-            [0x1b, b'[', b'1', b';', b'5', b'C'] => {
+            // Ctrl+Right / Option+Right: word forward
+            [0x1b, b'[', b'1', b';', b'5' | b'3', b'C'] => {
                 self.cursor = self.end_of_next_word();
                 self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Cmd+Left / Shift+Left: beginning of line
+            [0x1b, b'[', b'1', b';', b'9' | b'2', b'D'] => {
+                self.cursor = self.beginning_of_current_line();
+                self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Cmd+Right / Shift+Right: end of line
+            [0x1b, b'[', b'1', b';', b'9' | b'2', b'C'] => {
+                self.cursor = self.end_of_current_line();
+                self.preferred_col = None;
+                self.escape.clear();
+                self.escape_started_at = None;
+                true
+            }
+            // Option+Delete: delete forward word
+            [0x1b, b'[', b'3', b';', b'3', b'~'] => {
+                self.delete_forward_word();
                 self.escape.clear();
                 self.escape_started_at = None;
                 true
@@ -942,9 +965,11 @@ impl LineEditor {
             | [0x1b, b'[']
             | [0x1b, b'O']
             | [0x1b, b'[', b'3']
+            | [0x1b, b'[', b'3', b';']
+            | [0x1b, b'[', b'3', b';', b'3']
             | [0x1b, b'[', b'1']
             | [0x1b, b'[', b'1', b';']
-            | [0x1b, b'[', b'1', b';', b'5']
+            | [0x1b, b'[', b'1', b';', b'2' | b'3' | b'5' | b'9']
             | [0x1b, b'[', b'2']
             | [0x1b, b'[', b'2', b'0']
             | [0x1b, b'[', b'2', b'0', b'0'] => false,

@@ -139,16 +139,36 @@ async function generateExtToken(req, res) {
   const token = randomBytes(32).toString("hex");
   const tokenHash = createHash("sha256").update(token).digest("hex");
 
-  await db.collection("ext_tokens").updateOne(
-    { user_id: user.sub },
-    {
-      $set: { token_hash: tokenHash, updated_at: new Date() },
-      $setOnInsert: { created_at: new Date() },
-    },
-    { upsert: true }
-  );
+  // Each sign-in creates a new token (multiple browsers can coexist).
+  // Clean up old tokens for this user (keep at most 10).
+  const existing = await db.collection("ext_tokens")
+    .find({ user_id: user.sub })
+    .sort({ created_at: -1 })
+    .skip(9)
+    .toArray();
+  if (existing.length > 0) {
+    await db.collection("ext_tokens").deleteMany({
+      _id: { $in: existing.map((d) => d._id) },
+    });
+  }
 
-  res.json({ token });
+  await db.collection("ext_tokens").insertOne({
+    user_id: user.sub,
+    token_hash: tokenHash,
+    created_at: new Date(),
+  });
+
+  // Fetch user profile for extension display
+  const userDoc = await db.collection("users").findOne({ _id: new ObjectId(user.sub) });
+  const profile = {};
+  if (userDoc) {
+    if (userDoc.login) profile.login = userDoc.login;
+    if (userDoc.email) profile.email = userDoc.email;
+    if (userDoc.github_id) profile.provider = "github";
+    else if (userDoc.google_id) profile.provider = "google";
+  }
+
+  res.json({ token, profile });
 }
 
 async function verifyExtToken(req, res) {
