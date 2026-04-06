@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::VecDeque;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -302,7 +302,12 @@ impl ActivePromptSession {
         }
 
         let raw_mode = RawModeGuard::enter().ok();
-        let local_fd = if raw_mode.is_some() {
+        let use_raw_stdin = raw_mode.is_some();
+        // While the agent runs, keep draining user input like Codex queues when `is_task_running()`:
+        // poll stdin whenever we have a TTY, raw mode, or a tunnel (relay may share the session).
+        let poll_stdin =
+            use_raw_stdin || io::stdin().is_terminal() || tunnel_fd.is_some();
+        let stdin_poll_fd = if poll_stdin {
             Some(libc::STDIN_FILENO)
         } else {
             None
@@ -312,7 +317,9 @@ impl ActivePromptSession {
         let editor_thread = editor.clone();
         let (submitted_tx, submitted_rx) = mpsc::channel();
 
-        let handle = if local_fd.is_none() && tunnel_fd.is_none() {
+        let nfds: libc::nfds_t = (stdin_poll_fd.is_some() as u32 + tunnel_fd.is_some() as u32)
+            as libc::nfds_t;
+        let handle = if nfds == 0 {
             None
         } else {
             Some(std::thread::spawn(move || {
@@ -323,7 +330,7 @@ impl ActivePromptSession {
                 {
                     let mut fds = [
                         libc::pollfd {
-                            fd: local_fd.unwrap_or(-1),
+                            fd: stdin_poll_fd.unwrap_or(-1),
                             events: libc::POLLIN,
                             revents: 0,
                         },
@@ -333,14 +340,6 @@ impl ActivePromptSession {
                             revents: 0,
                         },
                     ];
-                    let nfds = match (local_fd.is_some(), tunnel_fd.is_some()) {
-                        (true, true) => 2,
-                        (true, false) | (false, true) => 1,
-                        (false, false) => 0,
-                    };
-                    if nfds == 0 {
-                        break;
-                    }
                     let ready = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 50) };
                     let now = std::time::Instant::now();
                     if ready > 0 {
@@ -348,6 +347,29 @@ impl ActivePromptSession {
                             if (pollfd.revents & libc::POLLIN) == 0 {
                                 continue;
                             }
+                            let is_stdin = stdin_poll_fd.is_some_and(|fd| fd == pollfd.fd);
+                            let is_tunnel =
+                                tunnel_fd.is_some_and(|fd| fd == pollfd.fd);
+
+                            if is_stdin && !use_raw_stdin {
+                                let mut line = String::new();
+                                match io::stdin().lock().read_line(&mut line) {
+                                    Ok(0) => return,
+                                    Ok(_) => {
+                                        let line = line
+                                            .trim_end_matches(|c| c == '\r' || c == '\n')
+                                            .to_string();
+                                        let _ = submitted_tx.send(line);
+                                    }
+                                    Err(_) => return,
+                                }
+                                continue;
+                            }
+
+                            if !is_tunnel && !is_stdin {
+                                continue;
+                            }
+
                             let n = unsafe {
                                 libc::read(
                                     pollfd.fd,
@@ -358,26 +380,24 @@ impl ActivePromptSession {
                             if n <= 0 {
                                 continue;
                             }
-                            let forwarded = detector.feed_bytes(&buf[..n as usize], now);
+                            let chunk = &buf[..n as usize];
+                            let forwarded = detector.feed_bytes(chunk, now);
                             if forwarded.is_empty() {
                                 continue;
                             }
                             if let Ok(mut editor) = editor_thread.lock() {
-                                match editor.feed_bytes(&forwarded) {
-                                    LineEditResult::Continue => {}
-                                    LineEditResult::Submit(line) => {
-                                        let _ = submitted_tx.send(line);
-                                        editor.redraw_inner();
-                                    }
-                                    LineEditResult::Eof => {
-                                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                                        return;
-                                    }
+                                let r = editor.process_input_bytes(&forwarded, |ed, line| {
+                                    let _ = submitted_tx.send(line);
+                                    ed.redraw_inner();
+                                });
+                                if r.is_err() {
+                                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    return;
                                 }
                             }
                         }
                     }
-                    if detector.check_timeout(now) {
+                    if use_raw_stdin && detector.check_timeout(now) {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
@@ -439,6 +459,27 @@ fn is_word_separator(ch: char) -> bool {
     WORD_SEPARATORS.contains(ch)
 }
 
+fn truncate_preview_to_width(s: &str, max_display_width: usize) -> String {
+    if max_display_width == 0 {
+        return String::new();
+    }
+    let mut used = 0usize;
+    let mut out = String::new();
+    let ellipsis_w = UnicodeWidthStr::width("…");
+    for g in s.graphemes(true) {
+        let gw = UnicodeWidthStr::width(g);
+        if used + gw > max_display_width {
+            if used + ellipsis_w <= max_display_width {
+                out.push('…');
+            }
+            break;
+        }
+        out.push_str(g);
+        used += gw;
+    }
+    out
+}
+
 enum LineEditResult {
     Continue,
     Submit(String),
@@ -473,6 +514,11 @@ pub(super) struct LineEditor {
     rendered_cursor: CursorPos,
     kill_buffer: String,
     paste_buffer: Option<Vec<u8>>,
+    /// Lines completed inside a single `read()` chunk (or across bursts); drained before blocking again.
+    pending_submits: VecDeque<String>,
+    /// Submitted while the agent was running; shown on the row above the prompt, pulled with ↑ on the top line.
+    pub(super) pending_followups: VecDeque<String>,
+    rendered_pending_rows: usize,
 }
 
 impl Default for LineEditor {
@@ -498,7 +544,32 @@ impl LineEditor {
             rendered_cursor: CursorPos::default(),
             kill_buffer: String::new(),
             paste_buffer: None,
+            pending_submits: VecDeque::new(),
+            pending_followups: VecDeque::new(),
+            rendered_pending_rows: 0,
         }
+    }
+
+    /// Returns a line that was already completed from a prior `process_input_bytes` burst.
+    pub(super) fn take_next_pending_submit(&mut self) -> Option<String> {
+        self.pending_submits.pop_front()
+    }
+
+    /// Feeds every byte in `bytes`, invoking `on_submit` for each completed line. Stops on EOF (empty buffer + Ctrl-D).
+    pub(super) fn process_input_bytes<F>(&mut self, bytes: &[u8], mut on_submit: F) -> Result<(), ()>
+    where
+        F: FnMut(&mut Self, String),
+    {
+        for &byte in bytes {
+            match self.feed_byte(byte) {
+                LineEditResult::Continue => {}
+                LineEditResult::Submit(line) => {
+                    on_submit(self, line);
+                }
+                LineEditResult::Eof => return Err(()),
+            }
+        }
+        Ok(())
     }
 
     fn terminal_columns(&self) -> usize {
@@ -511,20 +582,53 @@ impl LineEditor {
         }
     }
 
+    fn pending_bar_line(&self, cols: usize) -> Option<String> {
+        let n = self.pending_followups.len();
+        if n == 0 {
+            return None;
+        }
+        let head = self.pending_followups.front()?.as_str();
+        let prefix_plain = format!("↑ {n} queued — ");
+        let pw = UnicodeWidthStr::width(prefix_plain.as_str());
+        let budget = cols.saturating_sub(pw);
+        let preview = truncate_preview_to_width(head, budget);
+        Some(format!(
+            "\x1b[2m{prefix_plain}{preview}\x1b[0m"
+        ))
+    }
+
+    /// Drain every queued follow-up into the buffer at once (joined with newlines), replacing the current draft.
+    fn pull_all_pending_into_buffer(&mut self) {
+        if self.pending_followups.is_empty() {
+            return;
+        }
+        self.detach_history_nav();
+        let merged = self
+            .pending_followups
+            .drain(..)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.buffer = merged;
+        self.cursor = self.buffer.len();
+        self.preferred_col = None;
+    }
+
     fn clear_prompt_and_status_inner(&mut self) {
-        if self.rendered_rows == 0 && !self.status_visible {
+        if self.rendered_rows == 0 && self.rendered_pending_rows == 0 && !self.status_visible {
             return;
         }
         let mut clear = String::new();
-        if self.rendered_cursor.row > 0 {
-            clear.push_str(&format!("\x1b[{}A", self.rendered_cursor.row));
+        let cursor_up = self.rendered_pending_rows + self.rendered_cursor.row;
+        if cursor_up > 0 {
+            clear.push_str(&format!("\x1b[{}A", cursor_up));
         }
         clear.push('\r');
         if self.status_visible {
             clear.push_str("\x1b[1A\r");
         }
 
-        let total_rows = self.rendered_rows + usize::from(self.status_visible);
+        let total_rows =
+            self.rendered_pending_rows + self.rendered_rows + usize::from(self.status_visible);
         for row in 0..total_rows {
             clear.push_str("\x1b[2K");
             if row + 1 < total_rows {
@@ -537,6 +641,7 @@ impl LineEditor {
         clear.push('\r');
         emit_raw(&clear);
         self.rendered_rows = 0;
+        self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
     }
 
@@ -552,8 +657,15 @@ impl LineEditor {
         let layout = self.compute_layout(cols);
         self.clear_rendered_prompt_inner();
 
+        let pending_bar = self.pending_bar_line(cols);
+        let pending_rows = usize::from(pending_bar.is_some());
         let rows = self.wrapped_rows(cols);
         let mut out = String::new();
+        if let Some(ref bar) = pending_bar {
+            out.push_str("\r");
+            out.push_str(bar);
+            out.push_str("\r\n");
+        }
         for (i, row) in rows.iter().enumerate() {
             if i == 0 {
                 out.push_str(&format!("\r{}", PROMPT_PREFIX));
@@ -577,6 +689,7 @@ impl LineEditor {
         }
         emit_raw(&out);
         self.rendered_rows = layout.rows;
+        self.rendered_pending_rows = pending_rows;
         self.rendered_cursor = layout.cursor;
     }
 
@@ -609,6 +722,7 @@ impl LineEditor {
         self.preferred_col = None;
         self.status_visible = false;
         self.rendered_rows = 0;
+        self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
         self.paste_buffer = None;
     }
@@ -630,16 +744,6 @@ impl LineEditor {
             cursor,
             end,
         }
-    }
-
-    fn feed_bytes(&mut self, bytes: &[u8]) -> LineEditResult {
-        for &byte in bytes {
-            let result = self.feed_byte(byte);
-            if !matches!(result, LineEditResult::Continue) {
-                return result;
-            }
-        }
-        LineEditResult::Continue
     }
 
     fn feed_byte(&mut self, byte: u8) -> LineEditResult {
@@ -1030,7 +1134,11 @@ impl LineEditor {
             return;
         };
         if row_idx == 0 {
-            self.history_prev();
+            if !self.pending_followups.is_empty() {
+                self.pull_all_pending_into_buffer();
+            } else {
+                self.history_prev();
+            }
             return;
         }
         let target_col = self
@@ -1208,6 +1316,7 @@ impl LineEditor {
         self.preferred_col = None;
         self.status_visible = false;
         self.rendered_rows = 0;
+        self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
         self.paste_buffer = None;
     }
@@ -1387,6 +1496,10 @@ pub(super) fn read_input_or_bus(
     let mut buf = [0u8; 64];
 
     loop {
+        if let Some(line) = editor.take_next_pending_submit() {
+            return InputEvent::User(line);
+        }
+
         if broker::has_pending_messages(bus_name) {
             editor.clear_display();
             return InputEvent::Bus;
@@ -1405,7 +1518,7 @@ pub(super) fn read_input_or_bus(
                     revents: 0,
                 },
             ];
-            let nfds = if tunnel_fd.is_some() { 2 } else { 1 };
+            let nfds: libc::nfds_t = if tunnel_fd.is_some() { 2 } else { 1 };
 
             let ready = libc::poll(fds_arr.as_mut_ptr(), nfds, 100);
             if ready > 0 {
@@ -1415,22 +1528,40 @@ pub(super) fn read_input_or_bus(
                         buf.as_mut_ptr() as *mut libc::c_void,
                         buf.len(),
                     ) {
-                        n if n > 0 => match editor.feed_bytes(&buf[..n as usize]) {
-                            LineEditResult::Continue => {}
-                            LineEditResult::Submit(line) => return InputEvent::User(line),
-                            LineEditResult::Eof => return InputEvent::Eof,
-                        },
+                        n if n > 0 => {
+                            if editor
+                                .process_input_bytes(&buf[..n as usize], |ed, line| {
+                                    ed.pending_submits.push_back(line);
+                                    ed.redraw_inner();
+                                })
+                                .is_err()
+                            {
+                                return InputEvent::Eof;
+                            }
+                            if let Some(line) = editor.take_next_pending_submit() {
+                                return InputEvent::User(line);
+                            }
+                        }
                         _ => {}
                     }
                 }
                 if (fds_arr[0].revents & libc::POLLIN) != 0 {
                     match io::stdin().read(&mut buf) {
                         Ok(0) => return InputEvent::Eof,
-                        Ok(n) => match editor.feed_bytes(&buf[..n]) {
-                            LineEditResult::Continue => {}
-                            LineEditResult::Submit(line) => return InputEvent::User(line),
-                            LineEditResult::Eof => return InputEvent::Eof,
-                        },
+                        Ok(n) => {
+                            if editor
+                                .process_input_bytes(&buf[..n], |ed, line| {
+                                    ed.pending_submits.push_back(line);
+                                    ed.redraw_inner();
+                                })
+                                .is_err()
+                            {
+                                return InputEvent::Eof;
+                            }
+                            if let Some(line) = editor.take_next_pending_submit() {
+                                return InputEvent::User(line);
+                            }
+                        }
                         Err(_) => return InputEvent::Eof,
                     }
                 }
@@ -1447,17 +1578,16 @@ pub(super) fn print_banner(model: Option<&str>, credential: Option<&str>) {
     println!("\x1b[1;36mSidekar REPL\x1b[0m");
     let line2 = match (model, credential) {
         (Some(m), Some(c)) => format!(
-            "\x1b[36mmodel\x1b[0m {m}  \x1b[36mcredential\x1b[0m {c}  \x1b[2m/help commands · /quit exit\x1b[0m"
+            "\x1b[36mmodel\x1b[0m {m}  \x1b[36mcredential\x1b[0m {c}  \x1b[2m/help · /quit · ↑ pulls queued input\x1b[0m"
         ),
         (Some(m), None) => format!(
-            "\x1b[36mmodel\x1b[0m {m}  \x1b[2m/credential <name> to get started · /help for commands\x1b[0m"
+            "\x1b[36mmodel\x1b[0m {m}  \x1b[2m/credential <name> · /help · ↑ pulls queued input\x1b[0m"
         ),
         (None, Some(c)) => format!(
-            "\x1b[36mcredential\x1b[0m {c}  \x1b[2m/model <name> to select a model\x1b[0m"
+            "\x1b[36mcredential\x1b[0m {c}  \x1b[2m/model <name> · ↑ pulls queued input\x1b[0m"
         ),
         (None, None) => {
-            "\x1b[2m/credential <name> and /model <name> to get started · /help for commands\x1b[0m"
-                .to_string()
+            "\x1b[2m/credential + /model to start · /help · ↑ pulls queued input\x1b[0m".to_string()
         }
     };
     println!("{line2}");
@@ -1467,6 +1597,31 @@ pub(super) fn print_banner(model: Option<&str>, credential: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_input_bytes_emits_every_line_in_one_chunk() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        let mut lines = Vec::new();
+        editor
+            .process_input_bytes(b"first\nsecond\n", |_, line| {
+                lines.push(line);
+            })
+            .unwrap();
+        assert_eq!(lines, vec!["first".to_string(), "second".to_string()]);
+        assert!(editor.buffer.is_empty());
+    }
+
+    #[test]
+    fn up_on_top_row_pulls_all_pending_followups_at_once() {
+        let mut editor = LineEditor::with_history(Vec::new());
+        editor
+            .pending_followups
+            .push_back("queued a".to_string());
+        editor.pending_followups.push_back("queued b".to_string());
+        editor.move_up_for_cols(80);
+        assert_eq!(editor.buffer, "queued a\nqueued b");
+        assert!(editor.pending_followups.is_empty());
+    }
 
     #[test]
     fn esc_detector_only_cancels_lone_escape_after_timeout() {
