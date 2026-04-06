@@ -45,6 +45,7 @@ pub async fn run(
         let context_window = match context_window {
             Some(v) => v,
             None => {
+                on_event(&StreamEvent::ResolvingContext);
                 let v = crate::providers::fetch_context_window(model, provider).await;
                 context_window = Some(v);
                 v
@@ -73,6 +74,7 @@ pub async fn run(
             .saturating_sub(response_reserve);
         let view = context::prepare_context(history, history_budget);
 
+        on_event(&StreamEvent::Connecting);
         // Stream LLM response
         let mut rx = match provider
             .stream(model, system_prompt, &view, tool_defs, prompt_cache_key)

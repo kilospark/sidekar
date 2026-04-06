@@ -268,6 +268,10 @@ pub struct ToolDef {
 pub enum StreamEvent {
     /// Emitted before each API call so the UI can show a waiting indicator.
     Waiting,
+    /// Resolving model context limits (first turn only; may call the provider API).
+    ResolvingContext,
+    /// Opening the HTTP/SSE stream to the model (after the request is built).
+    Connecting,
     /// Emitted before a tool executes so the UI can show progress.
     ToolExec {
         name: String,

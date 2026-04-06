@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
 
@@ -15,6 +16,10 @@ use self::editor::{
 };
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
+
+fn repl_status_dim(msg: &str) {
+    tunnel_println(&format!("\x1b[2m{msg}\x1b[0m"));
+}
 
 /// REPL options parsed from CLI flags.
 pub struct ReplOptions {
@@ -48,7 +53,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     // Build provider if credential is available
     let mut provider: Option<Provider> = match cred_name.as_deref() {
-        Some(name) => Some(build_provider(name).await?),
+        Some(name) => {
+            repl_status_dim(&format!("Loading credential `{name}`…"));
+            Some(build_provider(name).await?)
+        }
         None => None,
     };
 
@@ -142,7 +150,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             });
 
         let pre_len = history.len();
-        let did_compact = crate::agent::run(
+        let run_result = crate::agent::run(
             prov,
             mdl,
             &system_prompt,
@@ -152,11 +160,16 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Some(&cancel),
             Some(&session_id),
         )
-        .await?;
+        .await;
         if let Ok(mut guard) = renderer.lock() {
             guard.teardown();
         }
 
+        if crate::runtime::verbose() && run_result.is_ok() {
+            repl_status_dim("[turn complete]");
+        }
+
+        let did_compact = run_result?;
         if did_compact {
             let _ = session::replace_history(&session_id, &history);
         } else if pre_len < history.len() {
@@ -405,6 +418,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                         continue;
                     }
                     SlashResult::SetCredential(name) => {
+                        repl_status_dim(&format!("Resolving credential `{name}`…"));
                         match build_provider(&name).await {
                             Ok(prov) => {
                                 let pt = prov.provider_type().to_string();
@@ -485,7 +499,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         };
 
         // Inject pending bus messages as steering
-        inject_bus_messages(&bus_name, &mut history, &session_id);
+        let bus_injected = inject_bus_messages(&bus_name, &mut history, &session_id);
+        if input.is_none() && bus_injected == 0 {
+            continue;
+        }
 
         // Add user message (if any)
         if let Some(text) = input {
@@ -528,6 +545,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let (returned_editor, mut submitted) = active_prompt.finish();
         line_editor = returned_editor;
         queued_inputs.append(&mut submitted);
+
+        if crate::runtime::verbose() && run_result.is_ok() {
+            repl_status_dim("[turn complete]");
+        }
 
         let did_compact = match run_result {
             Ok(c) => c,
@@ -614,6 +635,7 @@ async fn start_relay(
             return (None, None);
         }
     };
+    repl_status_dim("Connecting web relay…");
     let (cols, rows) = terminal_size().unwrap_or((80, 24));
     let (tx, rx) =
         match crate::tunnel::connect(&token, bus_name, "sidekar-repl", cwd, nick, cols, rows).await
@@ -758,6 +780,11 @@ impl EventRenderer {
         }
     }
 
+    fn set_status_spinner(&mut self, label: &str) {
+        self.stop_spinner();
+        self.spinner = Some(Spinner::start_with_label(label.to_string()));
+    }
+
     fn teardown(&mut self) {
         self.stop_spinner();
         self.clear_partial_preview();
@@ -797,12 +824,16 @@ impl EventRenderer {
     fn render(&mut self, event: &StreamEvent) {
         match event {
             StreamEvent::Waiting => {
-                self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label("thinking".to_string()));
+                self.set_status_spinner("thinking");
+            }
+            StreamEvent::ResolvingContext => {
+                self.set_status_spinner("resolving context");
+            }
+            StreamEvent::Connecting => {
+                self.set_status_spinner("connecting to model");
             }
             StreamEvent::Compacting => {
-                self.stop_spinner();
-                self.spinner = Some(Spinner::start_with_label("compacting context".to_string()));
+                self.set_status_spinner("compacting context");
             }
             StreamEvent::Idle => {
                 self.stop_spinner();
@@ -816,7 +847,7 @@ impl EventRenderer {
                 let label = if detail.is_empty() {
                     format!("running {name}")
                 } else {
-                    format!("running {name} {detail}")
+                    format!("running {name} — {detail}")
                 };
                 self.spinner = Some(Spinner::start_with_label(label));
             }
@@ -838,22 +869,32 @@ impl EventRenderer {
                     self.emitln(&line);
                 }
                 let _ = io::stdout().flush();
-                self.tool_args.insert(*index, (name.clone(), String::new()));
+                match self.tool_args.entry(*index) {
+                    Entry::Vacant(v) => {
+                        v.insert((name.clone(), String::new()));
+                    }
+                    Entry::Occupied(mut o) => {
+                        o.get_mut().0 = name.clone();
+                    }
+                }
                 self.spinner = Some(Spinner::start_with_label(format!("preparing {name}")));
             }
             StreamEvent::ToolCallDelta { index, delta } => {
-                if let Some((_, args)) = self.tool_args.get_mut(index) {
-                    args.push_str(delta);
-                }
+                let (_, args) = self
+                    .tool_args
+                    .entry(*index)
+                    .or_insert_with(|| (String::new(), String::new()));
+                args.push_str(delta);
                 if self.spinner.is_none() {
                     self.spinner = Some(Spinner::start_with_label("preparing tool".to_string()));
                 }
             }
             StreamEvent::ToolCallEnd { index } => {
                 if let Some((name, args_json)) = self.tool_args.remove(index) {
-                    let detail = extract_tool_summary(&name, &args_json);
+                    let display_name = if name.is_empty() { "tool" } else { name.as_str() };
+                    let detail = extract_tool_summary(display_name, &args_json);
                     self.emitln(&format!(
-                        "\n\x1b[2m└─\x1b[0m \x1b[36m{name}\x1b[0m \x1b[2m{detail}\x1b[0m"
+                        "\n\x1b[2m└─\x1b[0m \x1b[36m{display_name}\x1b[0m \x1b[2m{detail}\x1b[0m"
                     ));
                     let _ = io::stdout().flush();
                 }
@@ -1296,7 +1337,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
             tunnel_println("  /session     — List and switch sessions");
             tunnel_println("  /compact     — Compact older session context now");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
-            tunnel_println("  /verbose     — Toggle verbose API logging (on/off)");
+            tunnel_println("  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)");
             tunnel_println("  /quit        — Exit REPL");
             tunnel_println("  /help        — Show this help");
             tunnel_println("");
@@ -1336,20 +1377,23 @@ fn is_known_slash_command(cmd: &str) -> bool {
 // Bus integration
 // ---------------------------------------------------------------------------
 
-fn inject_bus_messages(bus_name: &str, history: &mut Vec<ChatMessage>, session_id: &str) {
-    if let Ok(messages) = broker::poll_messages(bus_name) {
-        for msg in messages {
-            let text = format!("[Bus message from {}]: {}", msg.sender, msg.body);
-            let display = format!("\x1b[33m[bus] {} says: {}\x1b[0m", msg.sender, msg.body);
-            tunnel_println(&display);
-            let steering = ChatMessage {
-                role: Role::User,
-                content: vec![ContentBlock::Text { text }],
-            };
-            let _ = session::append_message(session_id, &steering);
-            history.push(steering);
-        }
+fn inject_bus_messages(bus_name: &str, history: &mut Vec<ChatMessage>, session_id: &str) -> usize {
+    let Ok(messages) = broker::poll_messages(bus_name) else {
+        return 0;
+    };
+    let n = messages.len();
+    for msg in messages {
+        let text = format!("[Bus message from {}]: {}", msg.sender, msg.body);
+        let display = format!("\x1b[33m[bus] {} says: {}\x1b[0m", msg.sender, msg.body);
+        tunnel_println(&display);
+        let steering = ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text }],
+        };
+        let _ = session::append_message(session_id, &steering);
+        history.push(steering);
     }
+    n
 }
 
 // ---------------------------------------------------------------------------
