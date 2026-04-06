@@ -317,7 +317,7 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
         });
 
         // Store whatever nickname we got assigned
-        let _ = broker::kv_set(&nick_key, &picked);
+        let _ = broker::kv_set(&nick_key, &picked, None);
         picked
     } else {
         // Standalone - no project, just pick random

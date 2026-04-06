@@ -906,8 +906,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "kv",
-        usage: "<subcommand>",
-        summary: "Manage encrypted key-value storage",
+        usage: "<set|get|list|delete|tag|history|rollback|exec>",
+        summary: "Encrypted KV store with tags, versioning, and secret exec",
         group: CommandGroup::Account,
         aliases: &[],
         requires_session: false,
@@ -1049,6 +1049,17 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         name: "structure",
         usage: "[path]",
         summary: "Hierarchical symbol tree for a project or file",
+        group: CommandGroup::Code,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
+    // ── Document intelligence ───────────────────────────────────────────
+    CommandSpec {
+        name: "doc",
+        usage: "<outline|section|search|map> [args]",
+        summary: "Markdown document intelligence (outline, sections, search)",
         group: CommandGroup::Code,
         aliases: &[],
         requires_session: false,

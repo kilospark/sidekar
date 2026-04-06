@@ -4,6 +4,7 @@ mod agent_sessions;
 mod batch;
 mod code;
 mod core;
+mod doc;
 pub mod cron;
 mod data;
 mod desktop;
@@ -23,6 +24,7 @@ use batch::*;
 use code::*;
 use core::*;
 use data::*;
+use doc::*;
 use desktop::*;
 use interaction::*;
 use kv::*;
@@ -929,6 +931,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "structure" => {
             cmd_structure(ctx, args)?;
+            Ok(())
+        }
+        // ── Document intelligence ────────────────────────────────────────
+        "doc" => {
+            cmd_doc(ctx, args)?;
             Ok(())
         }
         _ => bail!("Unknown command: {command}"),
