@@ -267,19 +267,59 @@ async fn do_self_update(version: &str) -> Result<()> {
     let url = format!("{}/download/{version}/{asset}.tar.gz", api_base());
     let sig_url = format!("{}.minisig", url);
 
-    let resp = HTTP_CLIENT_DOWNLOAD.get(&url).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        bail!("Download failed: HTTP {status} from {url}");
-    }
-    let bytes = resp.bytes().await?;
+    let bytes = {
+        let mut last_err = None;
+        let mut result = None;
+        for attempt in 0..MAX_RETRIES {
+            match HTTP_CLIENT_DOWNLOAD.get(&url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        match resp.bytes().await {
+                            Ok(b) => { result = Some(b); break; }
+                            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+                        }
+                    } else if status.is_client_error() {
+                        bail!("Download failed: HTTP {status} from {url}");
+                    } else {
+                        last_err = Some(anyhow::anyhow!("Download failed: HTTP {status} from {url}"));
+                    }
+                }
+                Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+            }
+            if attempt < MAX_RETRIES - 1 {
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+            }
+        }
+        result.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("Download failed after retries")))?
+    };
 
-    let sig_resp = HTTP_CLIENT_DOWNLOAD.get(&sig_url).send().await?;
-    let sig_status = sig_resp.status();
-    if !sig_status.is_success() {
-        bail!("Signature download failed: HTTP {sig_status} from {sig_url}");
-    }
-    let sig_bytes = sig_resp.bytes().await?;
+    let sig_bytes = {
+        let mut last_err = None;
+        let mut result = None;
+        for attempt in 0..MAX_RETRIES {
+            match HTTP_CLIENT_DOWNLOAD.get(&sig_url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        match resp.bytes().await {
+                            Ok(b) => { result = Some(b); break; }
+                            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+                        }
+                    } else if status.is_client_error() {
+                        bail!("Signature download failed: HTTP {status} from {sig_url}");
+                    } else {
+                        last_err = Some(anyhow::anyhow!("Signature download failed: HTTP {status} from {sig_url}"));
+                    }
+                }
+                Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+            }
+            if attempt < MAX_RETRIES - 1 {
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+            }
+        }
+        result.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("Signature download failed after retries")))?
+    };
 
     verify_signature(&bytes, &sig_bytes).context("Signature verification failed")?;
 
@@ -334,22 +374,38 @@ pub async fn list_devices() -> Result<Value> {
         crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
 
     let url = format!("{}/api/auth/devices", api_base());
-    let resp = HTTP_CLIENT
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await
-        .context("Failed to fetch devices")?;
-
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        bail!("Session expired. Run: sidekar login");
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match HTTP_CLIENT
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return resp.json().await.context("Invalid response");
+                }
+                if status == reqwest::StatusCode::UNAUTHORIZED {
+                    bail!("Session expired. Run: sidekar login");
+                }
+                if status.is_client_error() {
+                    bail!("Failed to fetch devices: HTTP {}", status);
+                }
+                last_err = Some(anyhow::anyhow!("Failed to fetch devices: HTTP {}", status));
+            }
+            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+        }
+        if attempt < MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+        }
     }
-    if !status.is_success() {
-        bail!("Failed to fetch devices: HTTP {}", status);
-    }
-
-    resp.json().await.context("Invalid response")
+    Err(anyhow!(
+        "list_devices failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_err
+    ))
 }
 
 /// List active sessions for the current user.
@@ -358,42 +414,78 @@ pub async fn list_sessions() -> Result<Value> {
         crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar login"))?;
 
     let url = format!("{}/api/sessions", api_base());
-    let resp = HTTP_CLIENT
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await
-        .context("Failed to fetch sessions")?;
-
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        bail!("Session expired. Run: sidekar login");
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match HTTP_CLIENT
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return resp.json().await.context("Invalid response");
+                }
+                if status == reqwest::StatusCode::UNAUTHORIZED {
+                    bail!("Session expired. Run: sidekar login");
+                }
+                if status.is_client_error() {
+                    bail!("Failed to fetch sessions: HTTP {}", status);
+                }
+                last_err = Some(anyhow::anyhow!("Failed to fetch sessions: HTTP {}", status));
+            }
+            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+        }
+        if attempt < MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+        }
     }
-    if !status.is_success() {
-        bail!("Failed to fetch sessions: HTTP {}", status);
-    }
-
-    resp.json().await.context("Invalid response")
+    Err(anyhow!(
+        "list_sessions failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_err
+    ))
 }
 
 /// Register this daemon's HTTP port with the discover API.
 pub async fn register_discover_port(port: u16) -> Result<()> {
     let token = crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in"))?;
     let url = format!("{}/api/sessions?discover", api_base());
-    let resp = HTTP_CLIENT_SHORT_TIMEOUT
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .json(&json!({"port": port}))
-        .send()
-        .await
-        .context("discover register failed")?;
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        bail!("Session expired");
+    let payload = json!({"port": port});
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match HTTP_CLIENT_SHORT_TIMEOUT
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return Ok(());
+                }
+                if status == reqwest::StatusCode::UNAUTHORIZED {
+                    bail!("Session expired");
+                }
+                if status.is_client_error() {
+                    bail!("discover register: HTTP {}", status);
+                }
+                last_err = Some(anyhow::anyhow!("discover register: HTTP {}", status));
+            }
+            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
+        }
+        if attempt < MAX_RETRIES - 1 {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+        }
     }
-    if !resp.status().is_success() {
-        bail!("discover register: HTTP {}", resp.status());
-    }
-    Ok(())
+    Err(anyhow!(
+        "discover register failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_err
+    ))
 }
 
 fn verify_signature(binary: &[u8], signature: &[u8]) -> Result<()> {
