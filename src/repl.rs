@@ -431,8 +431,11 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                 let pt = prov.provider_type().to_string();
                                 provider = Some(prov);
                                 cred_name = Some(name.clone());
+                                let email_info = providers::oauth::credential_email(&name)
+                                    .map(|e| format!(" <{e}>"))
+                                    .unwrap_or_default();
                                 tunnel_println(&format!(
-                                    "Credential set: \x1b[1m{name}\x1b[0m ({pt})"
+                                    "Credential set: \x1b[1m{name}\x1b[0m ({pt}){email_info}"
                                 ));
                                 if model.is_none() {
                                     tunnel_println(
@@ -1267,7 +1270,10 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                         tunnel_println("Stored credentials (pick to switch):");
                         for (i, (name, provider)) in creds.iter().enumerate() {
                             let marker = if *name == current { " (current)" } else { "" };
-                            tunnel_println(&format!("  [{i}] {name} ({provider}){marker}"));
+                            let email = providers::oauth::credential_email(name)
+                                .map(|e| format!(" <{e}>"))
+                                .unwrap_or_default();
+                            tunnel_println(&format!("  [{i}] {name} ({provider}){email}{marker}"));
                         }
                         print!("Enter number or Enter: ");
                         let _ = io::stdout().flush();
@@ -1293,6 +1299,39 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                         }
                     }
                 }
+                Some("delete") => {
+                    let creds = providers::oauth::list_credentials();
+                    if creds.is_empty() {
+                        tunnel_println("No credentials stored.");
+                        SlashResult::Continue
+                    } else {
+                        tunnel_println("Delete which credential?");
+                        for (i, (name, provider)) in creds.iter().enumerate() {
+                            let email = providers::oauth::credential_email(name)
+                                .map(|e| format!(" <{e}>"))
+                                .unwrap_or_default();
+                            tunnel_println(&format!("  [{i}] {name} ({provider}){email}"));
+                        }
+                        print!("Enter number or Enter to cancel: ");
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        if io::stdin().lock().read_line(&mut line).is_ok() {
+                            let choice = line.trim();
+                            if let Ok(idx) = choice.parse::<usize>() {
+                                if let Some((name, _)) = creds.get(idx) {
+                                    let kv_key = providers::oauth::kv_key_for(name);
+                                    let _ = crate::broker::kv_delete(&kv_key);
+                                    tunnel_println(&format!("Deleted credential '{name}'."));
+                                } else {
+                                    tunnel_println("Invalid.");
+                                }
+                            } else if !choice.is_empty() {
+                                tunnel_println("Invalid.");
+                            }
+                        }
+                        SlashResult::Continue
+                    }
+                }
                 Some(name) => SlashResult::SetCredential(name.to_string()),
                 None => {
                     if cred_name != "(none)" {
@@ -1300,7 +1339,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                     } else {
                         tunnel_println("No credential set.");
                     }
-                    tunnel_println("\x1b[2mUse /credential list to select.\x1b[0m");
+                    tunnel_println("\x1b[2mUse /credential list | delete to select.\x1b[0m");
                     SlashResult::Continue
                 }
             }
