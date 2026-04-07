@@ -10,6 +10,16 @@ use crate::providers::{
     AssistantResponse, ChatMessage, ContentBlock, Provider, Role, StopReason, StreamEvent, ToolDef,
 };
 
+static ERROR_DISPLAYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_error_displayed(b: bool) {
+    ERROR_DISPLAYED.store(b, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn take_error_displayed() -> bool {
+    ERROR_DISPLAYED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Callback for streaming events to the REPL.
 pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send>;
 
@@ -96,6 +106,7 @@ pub async fn run(
                 on_event(&StreamEvent::Error {
                     message: format!("{e:#}"),
                 });
+                set_error_displayed(true);
                 return Err(e);
             }
         };
@@ -219,6 +230,7 @@ async fn consume_stream(
             StreamEvent::Error { message } => {
                 on_event(&event);
                 last_error = Some(message.clone());
+                set_error_displayed(true);
             }
             _ => {
                 on_event(&event);
