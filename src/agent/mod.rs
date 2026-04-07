@@ -76,11 +76,21 @@ pub async fn run(
         let view = context::prepare_context(history, history_budget);
 
         on_event(&StreamEvent::Connecting);
-        // Stream LLM response
-        let mut rx = match provider
-            .stream(model, system_prompt, &view, tool_defs, prompt_cache_key)
-            .await
-        {
+        // Stream LLM response — select against cancel so Esc works during connection.
+        let stream_result = match cancel {
+            Some(c) => {
+                tokio::select! {
+                    _ = wait_for_cancel(c) => return Err(Cancelled.into()),
+                    result = provider.stream(model, system_prompt, &view, tool_defs, prompt_cache_key) => result,
+                }
+            }
+            None => {
+                provider
+                    .stream(model, system_prompt, &view, tool_defs, prompt_cache_key)
+                    .await
+            }
+        };
+        let mut rx = match stream_result {
             Ok(rx) => rx,
             Err(e) => {
                 on_event(&StreamEvent::Error {
