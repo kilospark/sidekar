@@ -1,10 +1,21 @@
 import SwiftUI
+import UIKit
+
+struct KeyboardPaddingModifier: ViewModifier {
+    let keyboardHeight: CGFloat
+    func body(content: Content) -> some View {
+        content
+            .padding(.bottom, keyboardHeight)
+    }
+}
 
 struct TerminalContainerView: View {
     let session: Session
     @EnvironmentObject var authService: AuthService
     @StateObject private var wsManager: WebSocketManager
     @Environment(\.scenePhase) private var scenePhase
+    @State private var keyboardHeight: CGFloat = 0
+    @FocusState private var isInputFocused: Bool
 
     init(session: Session) {
         self.session = session
@@ -17,8 +28,8 @@ struct TerminalContainerView: View {
     var body: some View {
         VStack(spacing: 0) {
             statusBar
-            TerminalViewWrapper(wsManager: wsManager)
-                .ignoresSafeArea(.keyboard)
+            TerminalViewWrapper(wsManager: wsManager, isFocused: $isInputFocused)
+                .modifier(KeyboardPaddingModifier(keyboardHeight: keyboardHeight))
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(session.name)
@@ -29,14 +40,35 @@ struct TerminalContainerView: View {
             if let jwt = authService.validJWT() {
                 wsManager.connect(jwt: jwt)
             }
+            setupKeyboardObservers()
         }
         .onDisappear {
             wsManager.disconnect()
+            NotificationCenter.default.removeObserver(self)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active, let jwt = authService.validJWT() {
                 wsManager.reconnectIfNeeded(jwt: jwt)
             }
+        }
+    }
+
+    private func setupKeyboardObservers() {
+        NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillShowNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                keyboardHeight = keyboardFrame.height
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillHideNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            keyboardHeight = 0
         }
     }
 

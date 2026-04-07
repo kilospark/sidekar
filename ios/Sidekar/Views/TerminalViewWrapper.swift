@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TerminalViewWrapper: UIViewRepresentable {
     @ObservedObject var wsManager: WebSocketManager
+    var isFocused: FocusState<Bool>.Binding?
 
     func makeUIView(context: Context) -> TerminalView {
         let tv = TerminalView(frame: .zero)
