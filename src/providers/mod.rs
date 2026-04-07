@@ -16,17 +16,39 @@ pub fn is_verbose() -> bool {
     VERBOSE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+const MAX_STRING_LEN: usize = 256;
+
+fn compact_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) if s.len() > MAX_STRING_LEN => {
+            serde_json::Value::String(format!("<{} bytes>", s.len()))
+        }
+        serde_json::Value::Object(map) => {
+            let mut new_map = serde_json::Map::new();
+            for (k, v) in map {
+                new_map.insert(k.clone(), compact_json(v));
+            }
+            serde_json::Value::Object(new_map)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(compact_json).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
 pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {
     if !is_verbose() {
         return;
     }
 
+    let compacted = compact_json(body);
     crate::tunnel::tunnel_println("\x1b[2m--- API Request ---");
     crate::tunnel::tunnel_println(&format!("POST {url}"));
     crate::tunnel::tunnel_println(&format!("Headers: {headers:?}"));
     crate::tunnel::tunnel_println(&format!(
         "Body: {}",
-        serde_json::to_string_pretty(body).unwrap_or_default()
+        serde_json::to_string_pretty(&compacted).unwrap_or_default()
     ));
     crate::tunnel::tunnel_println("---\x1b[0m");
 }
