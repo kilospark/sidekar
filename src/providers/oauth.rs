@@ -55,6 +55,29 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
     }
 }
 
+/// Get the email/identity stored in a credential's metadata.
+pub fn credential_email(nickname: &str) -> Option<String> {
+    let key = format!("oauth:{nickname}");
+    let entry = crate::broker::kv_get(&key).ok()??;
+    let creds: OAuthCredentials = serde_json::from_str(&entry.value).ok()?;
+    let email = creds
+        .metadata
+        .get("email")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    if email.is_some() {
+        return email;
+    }
+    // Fallback to name
+    creds
+        .metadata
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
 /// List all stored credential nicknames.
 pub fn list_credentials() -> Vec<(String, String)> {
     let entries = crate::broker::kv_list(None).unwrap_or_default();
@@ -346,6 +369,8 @@ fn anthropic_login()
             creds.metadata = serde_json::json!({
                 "account_uuid": profile.account_uuid,
                 "organization_uuid": profile.organization_uuid,
+                "email": profile.email,
+                "name": profile.name,
             });
         }
 
@@ -356,6 +381,8 @@ fn anthropic_login()
 struct AnthropicProfile {
     account_uuid: String,
     organization_uuid: String,
+    email: String,
+    name: String,
 }
 
 async fn fetch_anthropic_profile(access_token: &str) -> Option<AnthropicProfile> {
@@ -374,10 +401,30 @@ async fn fetch_anthropic_profile(access_token: &str) -> Option<AnthropicProfile>
     }
 
     let data: serde_json::Value = resp.json().await.ok()?;
-    let account_uuid = data
-        .get("account")
+    if crate::runtime::verbose() {
+        eprintln!("[verbose] Anthropic profile response: {data}");
+    }
+    let account = data.get("account");
+    let account_uuid = account
         .and_then(|a| a.get("uuid"))
         .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    // Try common field names for email
+    let email = account
+        .and_then(|a| {
+            a.get("email_address")
+                .or_else(|| a.get("email"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    let name = account
+        .and_then(|a| {
+            a.get("full_name")
+                .or_else(|| a.get("name"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("")
         .to_string();
     let organization_uuid = data
@@ -390,6 +437,8 @@ async fn fetch_anthropic_profile(access_token: &str) -> Option<AnthropicProfile>
     Some(AnthropicProfile {
         account_uuid,
         organization_uuid,
+        email,
+        name,
     })
 }
 
@@ -433,9 +482,27 @@ fn codex_login()
         )
         .await?;
 
-        // Extract account_id from JWT access token
-        let account_id = extract_codex_account_id(&creds.access_token).unwrap_or_default();
-        creds.metadata = serde_json::json!({ "account_id": account_id });
+        // Extract account_id and email from JWT access token
+        let jwt = decode_jwt_payload(&creds.access_token);
+        let account_id = jwt
+            .as_ref()
+            .and_then(|j| {
+                j.get("https://api.openai.com/auth")
+                    .and_then(|auth| auth.get("chatgpt_account_id"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        let email = jwt
+            .as_ref()
+            .and_then(|j| {
+                j.get("email")
+                    .or_else(|| j.get("https://api.openai.com/profile").and_then(|p| p.get("email")))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        creds.metadata = serde_json::json!({ "account_id": account_id, "email": email });
 
         Ok(creds)
     })
@@ -450,30 +517,46 @@ fn refresh_token_codex(
         let mut new_creds =
             refresh_token_generic(CODEX_CLIENT_ID, CODEX_TOKEN_URL, &refresh_token, metadata)
                 .await?;
-        // Re-extract account_id from new token
-        let account_id = extract_codex_account_id(&new_creds.access_token).unwrap_or_default();
-        new_creds.metadata = serde_json::json!({ "account_id": account_id });
+        // Re-extract account_id and email from new token
+        let jwt = decode_jwt_payload(&new_creds.access_token);
+        let account_id = jwt
+            .as_ref()
+            .and_then(|j| {
+                j.get("https://api.openai.com/auth")
+                    .and_then(|auth| auth.get("chatgpt_account_id"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        let email = jwt
+            .as_ref()
+            .and_then(|j| {
+                j.get("email")
+                    .or_else(|| j.get("https://api.openai.com/profile").and_then(|p| p.get("email")))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        new_creds.metadata = serde_json::json!({ "account_id": account_id, "email": email });
         Ok(new_creds)
     })
 }
 
-/// Decode JWT payload and extract chatgpt_account_id.
-fn extract_codex_account_id(token: &str) -> Option<String> {
+/// Decode JWT payload (base64url) and return as JSON value.
+fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return None;
     }
-    // Decode base64url payload
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(parts[1])
         .ok()?;
     let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    // Account ID is nested under "https://api.openai.com/auth"
-    json.get("https://api.openai.com/auth")
-        .and_then(|auth| auth.get("chatgpt_account_id"))
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    if crate::runtime::verbose() {
+        eprintln!("[verbose] JWT payload: {json}");
+    }
+    Some(json)
 }
 
 // ---------------------------------------------------------------------------
