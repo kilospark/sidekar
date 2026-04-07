@@ -89,6 +89,7 @@ pub(super) fn emit_transient_status(text: &str) {
     })
     .is_none()
     {
+        emit_raw("\r\x1b[2K");
         emit_raw(text);
     }
 }
