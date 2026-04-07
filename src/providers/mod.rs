@@ -43,14 +43,20 @@ pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json:
     }
 
     let compacted = compact_json(body);
-    crate::tunnel::tunnel_println("\x1b[2m--- API Request ---");
-    crate::tunnel::tunnel_println(&format!("POST {url}"));
-    crate::tunnel::tunnel_println(&format!("Headers: {headers:?}"));
-    crate::tunnel::tunnel_println(&format!(
-        "Body: {}",
-        serde_json::to_string_pretty(&compacted).unwrap_or_default()
-    ));
-    crate::tunnel::tunnel_println("---\x1b[0m");
+    let json_str = serde_json::to_string_pretty(&compacted).unwrap_or_default();
+
+    print_verbose_line("\x1b[2m--- API Request ---");
+    print_verbose_line(&format!("POST {url}"));
+    print_verbose_line(&format!("Headers: {headers:?}"));
+    print_verbose_line("Body:");
+    for line in json_str.lines() {
+        print_verbose_line(&format!("  {line}"));
+    }
+    print_verbose_line("---\x1b[0m");
+}
+
+fn print_verbose_line(line: &str) {
+    crate::tunnel::tunnel_println(line);
 }
 
 pub(super) fn log_api_error(status: StatusCode, text: &str) {
@@ -58,9 +64,11 @@ pub(super) fn log_api_error(status: StatusCode, text: &str) {
         return;
     }
 
-    crate::tunnel::tunnel_println(&format!(
-        "\x1b[2m--- API Error {status} ---\n{text}\n---\x1b[0m"
-    ));
+    print_verbose_line(&format!("\x1b[2m--- API Error {status} ---"));
+    for line in text.lines() {
+        print_verbose_line(line);
+    }
+    print_verbose_line("---\x1b[0m");
 }
 
 #[derive(Debug, Clone)]
