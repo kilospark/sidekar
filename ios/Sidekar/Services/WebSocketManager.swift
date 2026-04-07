@@ -27,9 +27,18 @@ class WebSocketManager: ObservableObject {
     private var expectScrollbackBytes = 0
     private var isShutdown = false
 
+    private var dataBuffer: [Data] = []
+    private var drainTimer: Timer?
+    private let bufferLock = NSLock()
+    private let drainInterval: TimeInterval = 0.02
+
     init(sessionId: String, relayURL: String) {
         self.sessionId = sessionId
         self.relayURL = relayURL
+    }
+
+    deinit {
+        drainTimer?.invalidate()
     }
 
     func connect(jwt: String) {
@@ -64,6 +73,11 @@ class WebSocketManager: ObservableObject {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         connectionState = .disconnected
+        drainTimer?.invalidate()
+        drainTimer = nil
+        bufferLock.lock()
+        dataBuffer.removeAll()
+        bufferLock.unlock()
     }
 
     func reconnectIfNeeded(jwt: String) {
@@ -119,7 +133,42 @@ class WebSocketManager: ObservableObject {
         if expectScrollbackBytes > 0 {
             expectScrollbackBytes = 0
         }
-        dataDelegate?.didReceiveTerminalData(data)
+        bufferData(data)
+    }
+
+    private func bufferData(_ data: Data) {
+        bufferLock.lock()
+        dataBuffer.append(data)
+        bufferLock.unlock()
+
+        if drainTimer == nil {
+            startDrainTimer()
+        }
+    }
+
+    private func startDrainTimer() {
+        drainTimer = Timer.scheduledTimer(withTimeInterval: drainInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.drainBuffer()
+            }
+        }
+        RunLoop.main.add(drainTimer!, forMode: .default)
+    }
+
+    private func drainBuffer() {
+        bufferLock.lock()
+        let buffer = dataBuffer
+        dataBuffer.removeAll()
+        bufferLock.unlock()
+
+        for data in buffer {
+            dataDelegate?.didReceiveTerminalData(data)
+        }
+
+        if buffer.isEmpty && drainTimer != nil {
+            drainTimer?.invalidate()
+            drainTimer = nil
+        }
     }
 
     private func handleDisconnect(error: Error, jwt: String) {
