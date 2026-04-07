@@ -3,7 +3,7 @@ import SwiftUI
 
 struct TerminalViewWrapper: UIViewRepresentable {
     @ObservedObject var wsManager: WebSocketManager
-    var isFocused: FocusState<Bool>.Binding?
+    @Binding var requestResign: Bool
 
     func makeUIView(context: Context) -> TerminalView {
         let tv = TerminalView(frame: .zero)
@@ -15,14 +15,15 @@ struct TerminalViewWrapper: UIViewRepresentable {
         context.coordinator.terminalView = tv
         wsManager.dataDelegate = context.coordinator
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            tv.becomeFirstResponder()
-        }
-
         return tv
     }
 
     func updateUIView(_ tv: TerminalView, context: Context) {
+        if requestResign {
+            tv.resignFirstResponder()
+            DispatchQueue.main.async { requestResign = false }
+        }
+
         let cols = wsManager.terminalCols
         let rows = wsManager.terminalRows
         let terminal = tv.getTerminal()

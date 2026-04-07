@@ -147,12 +147,12 @@ class WebSocketManager: ObservableObject {
     }
 
     private func startDrainTimer() {
-        drainTimer = Timer.scheduledTimer(withTimeInterval: drainInterval, repeats: true) { [weak self] _ in
+        drainTimer = Timer(timeInterval: drainInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.drainBuffer()
             }
         }
-        RunLoop.main.add(drainTimer!, forMode: .default)
+        RunLoop.main.add(drainTimer!, forMode: .common)
     }
 
     private func drainBuffer() {
