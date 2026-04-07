@@ -574,8 +574,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 false
             }
             Err(e) => {
-                tunnel_println(&format!("\x1b[31mError: {e:#}\x1b[0m"));
-                broker::try_log_error("repl", &format!("{e:#}"), None);
+                if !crate::agent::take_error_displayed() {
+                    tunnel_println(&format!("\x1b[31mError: {e:#}\x1b[0m"));
+                    broker::try_log_error("repl", &format!("{e:#}"), None);
+                }
                 false
             }
         };
