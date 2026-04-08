@@ -2390,7 +2390,7 @@ sidekar desktop <subcommand> [args...]
     sidekar desktop click --app Finder \"New Folder\""
         }
 
-        "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
+        "tabs" => "sidekar tabs [--json]\n\n  List all tabs owned by this session.\n\n  Options:\n    --json    Output as JSON array",
         "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
         "new-tab" => "sidekar new-tab [url]\n\n  Open a new tab, optionally navigating to URL.",
         "close" => "sidekar close\n\n  Close the current tab. If tabs remain, select the next one explicitly with 'sidekar tab <id>'.",
@@ -2701,7 +2701,7 @@ sidekar proxy <log|show|clear> [options]
 sidekar bus <who|requests|replies|show|send|done> [args...]
 
   Agent bus subcommands:
-    who [--all]
+    who [--all] [--json]
     requests [--status=open|answered|timed-out|cancelled|all] [--limit=N]
     replies [--msg-id=<request_id>] [--limit=N]
     show <msg_id>
@@ -3068,7 +3068,7 @@ sidekar kv <subcommand> [args...]
   Subcommands:
     set <key> <value> [--tag=a,b]   Store a value (optionally tagged)
     get <key>                       Retrieve a value
-    list [--tag=TAG]                List entries (optionally filter by tag)
+    list [--tag=TAG] [--json]       List entries (optionally filter by tag)
     delete <key>                    Delete a key and its history
     tag <add|remove> <key> <tags>   Add or remove tags on an entry
     history <key>                   Show version history
@@ -3076,7 +3076,7 @@ sidekar kv <subcommand> [args...]
     exec [--keys=K1,K2] [--tag=TAG] <cmd> [args...]
                                     Run command with secrets as env vars
 
-  Exec injects KV values as environment variables, expands $KEY in args,
+  Exec injects KV values as environment variables (not argv)
   and masks secret values in output with [REDACTED].
 
   Examples:

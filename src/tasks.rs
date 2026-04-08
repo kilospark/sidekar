@@ -73,8 +73,44 @@ fn cmd_tasks_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .unwrap_or(50);
     let (scope_view, project) = parse_task_view_scope(args)?;
 
+    let json_output = args.iter().any(|a| a == "--json");
     let conn = crate::broker::open_db()?;
     let rows = load_tasks(&conn, &status, limit, scope_view, project.as_deref())?;
+
+    if json_output {
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .filter(|row| {
+                let unfinished = unfinished_dependency_count(&conn, row.id).unwrap_or(0);
+                if ready_only && unfinished > 0 {
+                    return false;
+                }
+                if blocked_only && unfinished == 0 {
+                    return false;
+                }
+                true
+            })
+            .map(|row| {
+                let unfinished = unfinished_dependency_count(&conn, row.id).unwrap_or(0);
+                serde_json::json!({
+                    "id": row.id,
+                    "title": row.title,
+                    "status": row.status,
+                    "priority": row.priority,
+                    "scope": row.scope,
+                    "project": row.project,
+                    "blocked_by": unfinished,
+                })
+            })
+            .collect();
+        out!(
+            ctx,
+            "{}",
+            serde_json::to_string_pretty(&items).unwrap_or_default()
+        );
+        return Ok(());
+    }
+
     let mut printed = false;
     for row in rows {
         let unfinished = unfinished_dependency_count(&conn, row.id)?;
