@@ -3326,7 +3326,8 @@ sidekar doc <subcommand> [args...]
             return;
         }
     };
-    println!("{}", colorize_command_help(help));
+    let text = colorize_command_help(help);
+    println!("{}", crate::runtime::maybe_strip_ansi(&text));
 }
 
 /// Colorize per-command help text with ANSI codes.

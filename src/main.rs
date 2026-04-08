@@ -101,6 +101,18 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    // `sidekar --json` with no command: output version/info as JSON
+    if args.len() == 1 && args[0] == "--json" {
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": "sidekar",
+                "version": env!("CARGO_PKG_VERSION"),
+            })
+        );
+        return Ok(());
+    }
+
     let raw_command = args.remove(0);
     let command = sidekar::canonical_command_name(&raw_command)
         .unwrap_or(raw_command.as_str())
@@ -115,6 +127,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         } else {
             print_help();
         }
+        return Ok(());
+    }
+    // `sidekar <command> --help` → show help for that command
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_command_help(&command);
         return Ok(());
     }
     if command == "skill" {
