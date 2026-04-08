@@ -51,7 +51,14 @@ pub fn cmd_symbols(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         }
         for child in &s.children {
             if let Some(sig) = &child.signature {
-                out!(ctx, "  {:<6} {}  {}:{}", child.kind, sig, rel, child.line_start + 1);
+                out!(
+                    ctx,
+                    "  {:<6} {}  {}:{}",
+                    child.kind,
+                    sig,
+                    rel,
+                    child.line_start + 1
+                );
             } else {
                 out!(
                     ctx,
@@ -140,7 +147,14 @@ pub fn cmd_references(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     out!(ctx, "{} references to '{name}':", refs.len());
     for r in &refs {
         let rel = rel_path(&root, &r.file);
-        out!(ctx, "  {}:{}:{} {}", rel, r.line + 1, r.column + 1, r.context);
+        out!(
+            ctx,
+            "  {}:{}:{} {}",
+            rel,
+            r.line + 1,
+            r.column + 1,
+            r.context
+        );
     }
     Ok(())
 }

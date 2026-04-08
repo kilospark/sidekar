@@ -172,14 +172,7 @@ static GEMINI: Gemini = Gemini;
 static OPENCODE: OpenCode = OpenCode;
 static PI: Pi = Pi;
 
-static REGISTRY: &[&dyn AgentCliSpec] = &[
-    &CLAUDE,
-    &CODEX,
-    &CURSOR_FAMILY,
-    &GEMINI,
-    &OPENCODE,
-    &PI,
-];
+static REGISTRY: &[&dyn AgentCliSpec] = &[&CLAUDE, &CODEX, &CURSOR_FAMILY, &GEMINI, &OPENCODE, &PI];
 
 pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
     REGISTRY

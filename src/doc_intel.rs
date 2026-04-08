@@ -9,9 +9,9 @@ use std::path::Path;
 /// A heading in a markdown document.
 #[derive(Debug, Clone)]
 pub struct Heading {
-    pub level: u8,       // 1–6
-    pub text: String,    // heading text (inline content flattened)
-    pub line: usize,     // 1-based line number
+    pub level: u8,    // 1–6
+    pub text: String, // heading text (inline content flattened)
+    pub line: usize,  // 1-based line number
     pub byte_start: usize,
 }
 
@@ -19,8 +19,8 @@ pub struct Heading {
 #[derive(Debug, Clone)]
 pub struct Section {
     pub heading: Heading,
-    pub body: String,       // raw markdown lines under this heading
-    pub line_end: usize,    // 1-based line of last line in section
+    pub body: String,    // raw markdown lines under this heading
+    pub line_end: usize, // 1-based line of last line in section
 }
 
 /// A search hit within a section.
@@ -29,8 +29,8 @@ pub struct SearchHit {
     pub file: String,
     pub heading: String,
     pub heading_level: u8,
-    pub line: usize,        // line of the match within the section
-    pub context: String,    // the matching line
+    pub line: usize,     // line of the match within the section
+    pub context: String, // the matching line
 }
 
 // ─── Outline ────────────────────────────────────────────────────────────────
@@ -102,10 +102,7 @@ fn build_sections(source: &str) -> Vec<Section> {
 
         // Collect body lines (skip the heading line itself)
         let body = if body_start < total_lines {
-            lines[body_start..body_end]
-                .join("\n")
-                .trim()
-                .to_string()
+            lines[body_start..body_end].join("\n").trim().to_string()
         } else {
             String::new()
         };

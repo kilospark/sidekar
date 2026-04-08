@@ -141,7 +141,11 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert!(result.expect_err("cancelled tool").is::<crate::agent::Cancelled>());
+        assert!(
+            result
+                .expect_err("cancelled tool")
+                .is::<crate::agent::Cancelled>()
+        );
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

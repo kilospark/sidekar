@@ -328,10 +328,7 @@ pub(super) async fn cmd_unlock(ctx: &mut AppContext) -> Result<()> {
 // --- State save/load (cookies + localStorage + sessionStorage) ---
 
 pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let action = args
-        .first()
-        .map(String::as_str)
-        .unwrap_or("");
+    let action = args.first().map(String::as_str).unwrap_or("");
     match action {
         "save" => {
             let mut cdp = open_cdp(ctx).await?;
@@ -353,10 +350,7 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
 
             // Cookies
             let cookies_result = cdp.send("Network.getCookies", json!({})).await?;
-            let cookies = cookies_result
-                .get("cookies")
-                .cloned()
-                .unwrap_or(json!([]));
+            let cookies = cookies_result.get("cookies").cloned().unwrap_or(json!([]));
 
             // localStorage
             let ls_result = cdp
@@ -425,8 +419,7 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
                     .current_session_id
                     .clone()
                     .unwrap_or_else(|| "default".to_string());
-                ctx.tmp_dir()
-                    .join(format!("sidekar-state-{sid}.json"))
+                ctx.tmp_dir().join(format!("sidekar-state-{sid}.json"))
             } else {
                 PathBuf::from(output_path)
             };
@@ -447,13 +440,11 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
             cdp.close().await;
         }
         "load" => {
-            let path = args
-                .get(1)
-                .context("Usage: state load <path>")?;
-            let data = fs::read_to_string(path)
-                .with_context(|| format!("failed reading {path}"))?;
-            let state_data: Value = serde_json::from_str(&data)
-                .with_context(|| format!("failed parsing {path}"))?;
+            let path = args.get(1).context("Usage: state load <path>")?;
+            let data =
+                fs::read_to_string(path).with_context(|| format!("failed reading {path}"))?;
+            let state_data: Value =
+                serde_json::from_str(&data).with_context(|| format!("failed parsing {path}"))?;
 
             let mut cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut cdp).await?;
@@ -482,7 +473,10 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
                 if current_url != saved_url {
                     runtime_evaluate(
                         &mut cdp,
-                        &format!("window.location.href = {}", serde_json::to_string(saved_url)?),
+                        &format!(
+                            "window.location.href = {}",
+                            serde_json::to_string(saved_url)?
+                        ),
                         false,
                         false,
                     )
@@ -551,10 +545,7 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
 // --- Auth vault ---
 
 pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let action = args
-        .first()
-        .map(String::as_str)
-        .unwrap_or("");
+    let action = args.first().map(String::as_str).unwrap_or("");
     match action {
         "save" => {
             let name = args
@@ -591,12 +582,11 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
             out!(ctx, "Auth \"{name}\" saved (username: {username})");
         }
         "login" => {
-            let name = args
-                .get(1)
-                .context("Usage: auth login <name>")?;
+            let name = args.get(1).context("Usage: auth login <name>")?;
             let key = format!("auth:{name}");
-            let kv_entry = crate::broker::kv_get(&key)?
-                .ok_or_else(|| anyhow!("No auth entry \"{name}\". Run: auth save {name} <user> <pass>"))?;
+            let kv_entry = crate::broker::kv_get(&key)?.ok_or_else(|| {
+                anyhow!("No auth entry \"{name}\". Run: auth save {name} <user> <pass>")
+            })?;
             let entry: Value = serde_json::from_str(&kv_entry.value)
                 .with_context(|| format!("Corrupt auth entry for \"{name}\""))?;
 
@@ -608,10 +598,7 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                 .get("password")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let url = entry
-                .get("url")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let url = entry.get("url").and_then(Value::as_str).unwrap_or_default();
             let user_sel = entry
                 .get("user_selector")
                 .and_then(Value::as_str)
@@ -665,8 +652,13 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                     };
                     return { user: sel(user), pass: sel(pass) };
                 })()"#;
-                let result = runtime_evaluate_with_context(&mut cdp, detect_js, true, true, context_id).await?;
-                let detected = result.pointer("/result/value").cloned().unwrap_or(Value::Null);
+                let result =
+                    runtime_evaluate_with_context(&mut cdp, detect_js, true, true, context_id)
+                        .await?;
+                let detected = result
+                    .pointer("/result/value")
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let u = if user_sel.is_empty() {
                     detected
                         .get("user")
@@ -735,7 +727,10 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                     json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
                 )
                 .await?;
-                out!(ctx, "Auth \"{name}\": filled credentials and clicked submit");
+                out!(
+                    ctx,
+                    "Auth \"{name}\": filled credentials and clicked submit"
+                );
             } else {
                 out!(
                     ctx,
@@ -748,25 +743,15 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
         }
         "list" => {
             let all = crate::broker::kv_list(None)?;
-            let auth_entries: Vec<_> = all
-                .iter()
-                .filter(|e| e.key.starts_with("auth:"))
-                .collect();
+            let auth_entries: Vec<_> = all.iter().filter(|e| e.key.starts_with("auth:")).collect();
             if auth_entries.is_empty() {
                 out!(ctx, "No saved auth entries.");
             } else {
                 for kv in &auth_entries {
                     let name = kv.key.strip_prefix("auth:").unwrap_or(&kv.key);
-                    let entry: Value =
-                        serde_json::from_str(&kv.value).unwrap_or(Value::Null);
-                    let user = entry
-                        .get("username")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?");
-                    let url = entry
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
+                    let entry: Value = serde_json::from_str(&kv.value).unwrap_or(Value::Null);
+                    let user = entry.get("username").and_then(Value::as_str).unwrap_or("?");
+                    let url = entry.get("url").and_then(Value::as_str).unwrap_or("");
                     if url.is_empty() {
                         out!(ctx, "  {name} — user: {user}");
                     } else {
@@ -776,9 +761,7 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
             }
         }
         "delete" => {
-            let name = args
-                .get(1)
-                .context("Usage: auth delete <name>")?;
+            let name = args.get(1).context("Usage: auth delete <name>")?;
             let key = format!("auth:{name}");
             crate::broker::kv_delete(&key)?;
             out!(ctx, "Auth \"{name}\" deleted.");

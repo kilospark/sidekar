@@ -295,9 +295,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .unwrap_or(0)
         > 0;
     if !has_tags {
-        conn.execute_batch(
-            "ALTER TABLE kv_store ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';",
-        )?;
+        conn.execute_batch("ALTER TABLE kv_store ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';")?;
     }
 
     // KV version history
@@ -1895,10 +1893,7 @@ pub fn kv_rollback(key: &str, target_version: i64) -> Result<()> {
 }
 
 /// Get all KV entries matching given keys or tags (for exec injection).
-pub fn kv_get_for_exec(
-    keys: &[String],
-    filter_tag: Option<&str>,
-) -> Result<Vec<KvEntry>> {
+pub fn kv_get_for_exec(keys: &[String], filter_tag: Option<&str>) -> Result<Vec<KvEntry>> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
 
@@ -2220,7 +2215,8 @@ pub fn proxy_log_recent(limit: usize) -> Result<Vec<ProxyLogRow>> {
             duration_ms: row.get(10)?,
         })
     })?;
-    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
 }
 
 pub fn proxy_log_detail(id: i64) -> Result<Option<ProxyLogRow>> {
@@ -2260,7 +2256,10 @@ pub fn proxy_log_clear() -> Result<u64> {
 pub fn proxy_log_prune(max_age_secs: i64) -> Result<u64> {
     let conn = open()?;
     let cutoff = crate::message::epoch_secs() as i64 - max_age_secs;
-    let count = conn.execute("DELETE FROM proxy_log WHERE created_at < ?1", params![cutoff])?;
+    let count = conn.execute(
+        "DELETE FROM proxy_log WHERE created_at < ?1",
+        params![cutoff],
+    )?;
     Ok(count as u64)
 }
 

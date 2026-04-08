@@ -98,9 +98,7 @@ pub fn prepare_context(history: &mut Vec<ChatMessage>, token_budget: usize) -> V
             trimmed.push(ChatMessage {
                 role: Role::User,
                 content: vec![ContentBlock::Text {
-                    text: format!(
-                        "[{dropped} earlier messages removed to fit context budget]"
-                    ),
+                    text: format!("[{dropped} earlier messages removed to fit context budget]"),
                 }],
             });
             trimmed.extend(view[drop_from..].iter().cloned());
@@ -182,19 +180,30 @@ mod tests {
         let view = prepare_context(&mut history, 1_000_000);
 
         // First assistant: thinking stripped, only text remains
-        let first_asst = view.iter().find(|m| {
-            m.role == Role::Assistant
-                && m.content.iter().any(|b| matches!(b, ContentBlock::Text { text } if text == "response 1"))
-        }).expect("first assistant message should exist");
+        let first_asst = view
+            .iter()
+            .find(|m| {
+                m.role == Role::Assistant
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Text { text } if text == "response 1"))
+            })
+            .expect("first assistant message should exist");
         assert!(
-            !first_asst.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })),
+            !first_asst
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Thinking { .. })),
             "thinking should be stripped from non-last assistant"
         );
 
         // Last assistant: thinking preserved
         let last_asst = view.last().unwrap();
         assert!(
-            last_asst.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })),
+            last_asst
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Thinking { .. })),
             "thinking should be preserved on last assistant"
         );
     }
@@ -286,7 +295,11 @@ mod tests {
         let view = prepare_context(&mut history, 10);
 
         // Should be significantly trimmed from the original 40 messages
-        assert!(view.len() < 40, "should be trimmed, got {} messages", view.len());
+        assert!(
+            view.len() < 40,
+            "should be trimmed, got {} messages",
+            view.len()
+        );
 
         // Check for the budget marker
         let has_marker = view.iter().any(|m| {
@@ -317,10 +330,12 @@ mod tests {
         // Snapshot the canonical history after aging.
         let snapshot: Vec<String> = history
             .iter()
-            .flat_map(|m| m.content.iter().filter_map(|b| match b {
-                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-                _ => None,
-            }))
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+            })
             .collect();
 
         // Simulate several new turns to shift distances.
@@ -334,14 +349,17 @@ mod tests {
         let current: Vec<String> = history
             .iter()
             .take(40) // original 20 pairs
-            .flat_map(|m| m.content.iter().filter_map(|b| match b {
-                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-                _ => None,
-            }))
+            .flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+            })
             .collect();
 
         for (i, (before, after)) in snapshot.iter().zip(current.iter()).enumerate() {
-            if before.starts_with("[Aged]") || before.starts_with("[") && before.contains(" bytes]") {
+            if before.starts_with("[Aged]") || before.starts_with("[") && before.contains(" bytes]")
+            {
                 assert_eq!(
                     before, after,
                     "already-aged tool result t{i} changed on subsequent turn"

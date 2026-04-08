@@ -97,7 +97,9 @@ pub(crate) async fn cmd_observe(ctx: &mut AppContext) -> Result<()> {
 
 pub(crate) async fn cmd_find(ctx: &mut AppContext, query: &str) -> Result<()> {
     if query.trim().is_empty() {
-        bail!("Usage: sidekar find <query>\n       find --role <role> [name]\n       find --text <text>\n       find --label <label>\n       find --testid <id>");
+        bail!(
+            "Usage: sidekar find <query>\n       find --role <role> [name]\n       find --text <text>\n       find --label <label>\n       find --testid <id>"
+        );
     }
 
     // Detect structured locator flags
@@ -350,7 +352,11 @@ async fn cmd_find_by_label(ctx: &mut AppContext, label: &str) -> Result<()> {
         let tag = item.get("tag").and_then(Value::as_str).unwrap_or("?");
         let found_label = item.get("label").and_then(Value::as_str).unwrap_or("");
         let sel = item.get("selector").and_then(Value::as_str).unwrap_or("");
-        out!(ctx, "<{tag}> label=\"{}\" — {sel}", truncate(found_label, 60));
+        out!(
+            ctx,
+            "<{tag}> label=\"{}\" — {sel}",
+            truncate(found_label, 60)
+        );
     }
     out!(ctx, "{} match(es)", items.len());
     cdp.close().await;
@@ -378,7 +384,10 @@ async fn cmd_find_by_testid(ctx: &mut AppContext, testid: &str) -> Result<()> {
         }})()"#
     );
     let result = runtime_evaluate_with_context(&mut cdp, &js, true, true, context_id).await?;
-    let value = result.pointer("/result/value").cloned().unwrap_or(Value::Null);
+    let value = result
+        .pointer("/result/value")
+        .cloned()
+        .unwrap_or(Value::Null);
     if value.is_null() {
         bail!("No element with data-testid=\"{testid}\"");
     }

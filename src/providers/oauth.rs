@@ -497,7 +497,10 @@ fn codex_login()
             .as_ref()
             .and_then(|j| {
                 j.get("email")
-                    .or_else(|| j.get("https://api.openai.com/profile").and_then(|p| p.get("email")))
+                    .or_else(|| {
+                        j.get("https://api.openai.com/profile")
+                            .and_then(|p| p.get("email"))
+                    })
                     .and_then(|v| v.as_str())
             })
             .unwrap_or("")
@@ -532,7 +535,10 @@ fn refresh_token_codex(
             .as_ref()
             .and_then(|j| {
                 j.get("email")
-                    .or_else(|| j.get("https://api.openai.com/profile").and_then(|p| p.get("email")))
+                    .or_else(|| {
+                        j.get("https://api.openai.com/profile")
+                            .and_then(|p| p.get("email"))
+                    })
                     .and_then(|v| v.as_str())
             })
             .unwrap_or("")

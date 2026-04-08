@@ -79,7 +79,12 @@ pub fn shutdown_poller() {
 }
 
 /// Start the background poller thread. Returns immediately.
-pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>, input_state: Arc<UserInputState>) {
+pub fn start_poller(
+    agent_name: String,
+    pty_fd: Arc<OwnedFd>,
+    input_state: Arc<UserInputState>,
+    child_pid: i32,
+) {
     POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
 
     std::thread::spawn(move || {
@@ -97,7 +102,7 @@ pub fn start_poller(agent_name: String, pty_fd: Arc<OwnedFd>, input_state: Arc<U
             match broker::poll_messages(&agent_name) {
                 Ok(messages) => {
                     for msg in messages {
-                        deliver_to_pty(&pty_fd, &input_state, &msg.body);
+                        deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
                     }
                 }
                 Err(_) => {} // SQLite busy or locked, retry next poll
@@ -203,22 +208,72 @@ fn is_recipient_alive(recipient_name: &str) -> bool {
     true
 }
 
-fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str) {
+fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, child_pid: i32) {
     let raw_fd = fd.as_raw_fd();
 
     // Do not inject while the user is actively typing or has a pending line.
+    let mut waited = 0u32;
     while !input_state.is_idle() || input_state.has_pending_line() {
         if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             return;
+        }
+        waited += 1;
+        if waited % 50 == 0 {
+            // Log every 5s while blocked (50 * 100ms)
+            crate::broker::try_log_event(
+                "debug",
+                "poller",
+                &format!(
+                    "inject blocked: idle={} pending_line={} waited={}s msg_len={}",
+                    input_state.is_idle(),
+                    input_state.has_pending_line(),
+                    waited / 10,
+                    message.len(),
+                ),
+                None,
+            );
         }
         std::thread::sleep(INJECT_CHECK_INTERVAL);
     }
 
     // Write message text
-    let _ = write_all_raw(raw_fd, message.as_bytes());
+    if let Err(e) = write_all_raw(raw_fd, message.as_bytes()) {
+        crate::broker::try_log_event(
+            "error",
+            "poller",
+            &format!("inject write failed: {e}"),
+            None,
+        );
+        return;
+    }
     // Brief pause then send Enter (CR)
     std::thread::sleep(Duration::from_millis(150));
-    let _ = write_all_raw(raw_fd, b"\r");
+    if let Err(e) = write_all_raw(raw_fd, b"\r") {
+        crate::broker::try_log_event(
+            "error",
+            "poller",
+            &format!("inject CR write failed: {e}"),
+            None,
+        );
+        return;
+    }
+
+    // Wake up the agent's event loop. Some agents (Claude Code / Node.js)
+    // don't notice new bytes in the PTY slave input buffer until an event
+    // kicks their I/O loop. SIGWINCH is harmless — the agent re-queries
+    // terminal size (a no-op) and processes pending stdin in the same cycle.
+    unsafe { libc::kill(child_pid, libc::SIGWINCH) };
+
+    crate::broker::try_log_event(
+        "debug",
+        "poller",
+        &format!(
+            "injected {}B + CR + SIGWINCH (waited={}s)",
+            message.len(),
+            waited / 10,
+        ),
+        None,
+    );
 }
 
 fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {

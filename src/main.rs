@@ -635,19 +635,12 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // is connected and authenticated.
     // Extension routing: only use when NOT inside a PTY wrapper.
     // PTY agents must use their own CDP-launched Chrome for session isolation.
-    // Now checks at send time rather than dispatch time to avoid race condition.
     let in_pty = sidekar::runtime::pty_mode();
-    if !in_pty && sidekar::is_ext_routable_command(&command) {
-        // Don't check availability here - let send_command handle it and fallback on failure
+    if !in_pty && sidekar::is_ext_routable_command(&command) && sidekar::ext::is_ext_auto_routable()
+    {
         let default_tab = tab_id_from_global_flag(&override_tab_id);
-        let ext_result = sidekar::ext::send_cli_command(&command, &args, default_tab).await;
-        match ext_result {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                // Extension failed - fall back to CDP
-                eprintln!("Extension not available ({}), using CDP", e);
-            }
-        }
+        sidekar::ext::send_cli_command(&command, &args, default_tab).await?;
+        return Ok(());
     }
 
     let mut ctx = AppContext::new()?;

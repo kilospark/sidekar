@@ -242,7 +242,9 @@ fn kill_orphaned_daemons() {
     // Kill the daemon registered in the PID file
     if let Some(old_pid) = get_pid() {
         if old_pid != my_pid {
-            unsafe { libc::kill(old_pid, libc::SIGTERM); }
+            unsafe {
+                libc::kill(old_pid, libc::SIGTERM);
+            }
             // Brief wait for cleanup
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
@@ -257,7 +259,9 @@ fn kill_orphaned_daemons() {
         for line in stdout.lines() {
             if let Ok(pid) = line.trim().parse::<i32>() {
                 if pid != my_pid {
-                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
                 }
             }
         }
@@ -770,8 +774,7 @@ async fn handle_ext_websocket(
                 let s = ka_state.lock().await;
                 match s.connections.get(&ka_conn_id) {
                     Some(conn) => {
-                        let busy =
-                            !conn.pending.is_empty() || conn.cli_exec_inflight > 0;
+                        let busy = !conn.pending.is_empty() || conn.cli_exec_inflight > 0;
                         should_disconnect = !busy && now - conn.last_contact > 30;
                         if !should_disconnect {
                             let ping =
@@ -996,7 +999,7 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
                 let s = state.lock().await;
                 s.ext_state.clone()
             };
-            let result = crate::ext::forward_command(
+            let routed = crate::ext::forward_command(
                 &ext_state,
                 ext_cmd,
                 agent_id,
@@ -1004,42 +1007,36 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
                 target_profile,
             )
             .await;
+            let (mut final_result, routed_conn_id, routed_profile) = match routed {
+                Ok(routed) => (routed.response, routed.conn_id, routed.profile),
+                Err(e) => return json!({"error": e.to_string()}),
+            };
 
             // Post-process: maintain watch registry.
-            if inner_cmd == "watch" && result.get("error").is_none() {
+            if inner_cmd == "watch" {
                 if let (Some(wid), Some(sel), Some(dest)) = (
-                    result
+                    final_result
                         .get("watchId")
                         .and_then(|v| v.as_str())
                         .map(String::from),
-                    result
+                    final_result
                         .get("selector")
                         .and_then(|v| v.as_str())
                         .map(String::from)
                         .or(inner_selector),
                     deliver_to,
                 ) {
-                    // Find which connection ended up servicing this watch.
-                    let (conn_id, profile) = {
-                        let s = ext_state.lock().await;
-                        if let Some(cid) = target_conn {
-                            let profile = s
-                                .connections
-                                .get(&cid)
-                                .map(|c| c.profile.clone())
-                                .unwrap_or_default();
-                            (cid, profile)
-                        } else {
-                            s.connections
-                                .iter()
-                                .next()
-                                .map(|(k, c)| (*k, c.profile.clone()))
-                                .unwrap_or((0, String::new()))
-                        }
-                    };
-                    crate::ext::register_watch(&ext_state, wid, sel, dest, conn_id, profile).await;
+                    crate::ext::register_watch(
+                        &ext_state,
+                        wid,
+                        sel,
+                        dest,
+                        routed_conn_id,
+                        routed_profile.clone(),
+                    )
+                    .await;
                 }
-            } else if inner_cmd == "unwatch" && result.get("error").is_none() {
+            } else if inner_cmd == "unwatch" {
                 if let Some(wid) = inner_watch_id {
                     crate::ext::remove_watch(&ext_state, &wid).await;
                 } else {
@@ -1050,7 +1047,6 @@ async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
             }
 
             // Annotate the response with deliver_to so the CLI can display it.
-            let mut final_result = result;
             if inner_cmd == "watch" && final_result.is_object() {
                 if let Some(dest) = final_result
                     .get("watchId")

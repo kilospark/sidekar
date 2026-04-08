@@ -237,8 +237,7 @@ macro_rules! query_cache {
 }
 
 query_cache!(
-    Q_RUST, Q_PYTHON, Q_JS, Q_TS, Q_TSX, Q_GO, Q_JAVA,
-    Q_C, Q_CPP, Q_RUBY, Q_BASH, Q_CSHARP,
+    Q_RUST, Q_PYTHON, Q_JS, Q_TS, Q_TSX, Q_GO, Q_JAVA, Q_C, Q_CPP, Q_RUBY, Q_BASH, Q_CSHARP,
 );
 
 fn compiled_query(lang: &Lang, is_tsx: bool) -> Result<&'static tree_sitter::Query> {
@@ -258,9 +257,8 @@ fn compiled_query(lang: &Lang, is_tsx: bool) -> Result<&'static tree_sitter::Que
         (Lang::CSharp, _) => (&Q_CSHARP, CSHARP_QUERY),
     };
 
-    let result = cache.get_or_init(|| {
-        tree_sitter::Query::new(&ts_lang, source).map_err(|e| format!("{e}"))
-    });
+    let result =
+        cache.get_or_init(|| tree_sitter::Query::new(&ts_lang, source).map_err(|e| format!("{e}")));
 
     result
         .as_ref()
@@ -272,7 +270,9 @@ fn compiled_query(lang: &Lang, is_tsx: bool) -> Result<&'static tree_sitter::Que
 fn parse_source(lang: &Lang, source: &[u8], is_tsx: bool) -> Result<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&lang.ts_language(is_tsx))?;
-    parser.parse(source, None).ok_or_else(|| anyhow!("parse failed"))
+    parser
+        .parse(source, None)
+        .ok_or_else(|| anyhow!("parse failed"))
 }
 
 // ── Symbol extraction ────────────────────────────────────────────────────────
@@ -305,7 +305,11 @@ fn extract_signature(node: tree_sitter::Node, source: &[u8], lang: &Lang) -> Opt
     } else {
         text.lines().next().unwrap_or(text).trim()
     };
-    if sig.is_empty() { None } else { Some(sig.to_string()) }
+    if sig.is_empty() {
+        None
+    } else {
+        Some(sig.to_string())
+    }
 }
 
 fn extract_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
@@ -501,8 +505,7 @@ pub fn find_definition(root: &Path, name: &str) -> Result<Vec<Symbol>> {
         .filter(|s| {
             s.kind != SymbolKind::Import
                 && s.kind != SymbolKind::Variable
-                && (s.name == name
-                    || s.children.iter().any(|c| c.name == name))
+                && (s.name == name || s.children.iter().any(|c| c.name == name))
         })
         .flat_map(|s| {
             // If a child matches, return the child instead
@@ -670,7 +673,13 @@ pub fn format_references(refs: &[Reference], root: &Path) -> String {
     let mut out = String::new();
     for r in refs {
         let rel = pathdiff(root, &r.file);
-        out.push_str(&format!("{}:{}:{} {}\n", rel, r.line + 1, r.column + 1, r.context));
+        out.push_str(&format!(
+            "{}:{}:{} {}\n",
+            rel,
+            r.line + 1,
+            r.column + 1,
+            r.context
+        ));
     }
     out
 }

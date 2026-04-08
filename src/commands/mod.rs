@@ -4,10 +4,10 @@ mod agent_sessions;
 mod batch;
 mod code;
 mod core;
-mod doc;
 pub mod cron;
 mod data;
 mod desktop;
+mod doc;
 mod interaction;
 pub mod kv;
 pub mod monitor;
@@ -24,8 +24,8 @@ use batch::*;
 use code::*;
 use core::*;
 use data::*;
-use doc::*;
 use desktop::*;
+use doc::*;
 use interaction::*;
 use kv::*;
 use monitor::*;
@@ -637,7 +637,8 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             match sub {
                 "log" => cmd_proxy_log(ctx, &args[1..])?,
                 "show" => {
-                    let id = args.get(1)
+                    let id = args
+                        .get(1)
                         .and_then(|s| s.parse::<i64>().ok())
                         .ok_or_else(|| anyhow::anyhow!("Usage: sidekar proxy show <id>"))?;
                     cmd_proxy_show(ctx, id)?;
@@ -1003,7 +1004,10 @@ fn cmd_proxy_log(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     let rows = crate::broker::proxy_log_recent(limit)?;
     if rows.is_empty() {
-        out!(ctx, "No proxy log entries. Run an agent with --proxy to capture payloads.");
+        out!(
+            ctx,
+            "No proxy log entries. Run an agent with --proxy to capture payloads."
+        );
         return Ok(());
     }
 
@@ -1024,7 +1028,11 @@ fn cmd_proxy_log(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 })
             })
             .collect();
-        out!(ctx, "{}", serde_json::to_string_pretty(&entries).unwrap_or_default());
+        out!(
+            ctx,
+            "{}",
+            serde_json::to_string_pretty(&entries).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -1114,9 +1122,18 @@ fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
     if let Some(usage) = extract_usage_from_sse(&row.response_body) {
         // Anthropic format
         if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_read = usage
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_write = usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             lines.push(format!("Tokens: {input} in / {output} out"));
             if cache_read > 0 || cache_write > 0 {
                 lines.push(format!("Cache: {cache_read} read / {cache_write} write"));
@@ -1124,7 +1141,10 @@ fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
         }
         // OpenAI format
         if let Some(prompt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-            let completion = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let completion = usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             lines.push(format!("Tokens: {prompt} prompt / {completion} completion"));
         }
     }
@@ -1152,7 +1172,10 @@ fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
     let resp_text = String::from_utf8_lossy(&row.response_body);
     // For large responses, show only the last 4KB (usage is at the end)
     if resp_text.len() > 4096 {
-        lines.push(format!("[... {} total, showing last 4KB ...]", format_bytes(resp_text.len())));
+        lines.push(format!(
+            "[... {} total, showing last 4KB ...]",
+            format_bytes(resp_text.len())
+        ));
         // Find a char boundary at or after the target offset
         let target = resp_text.len() - 4096;
         let start = (target..resp_text.len())

@@ -55,10 +55,13 @@ fn set_cached_user_id(ext_token: &str, user_id: String) {
         // Evict expired entries
         let now = epoch_secs();
         map.retain(|_, v| v.expires_at > now);
-        map.insert(token_cache_key(ext_token), CacheEntry {
-            user_id,
-            expires_at: now + 300,
-        });
+        map.insert(
+            token_cache_key(ext_token),
+            CacheEntry {
+                user_id,
+                expires_at: now + 300,
+            },
+        );
     }
 }
 
@@ -129,7 +132,11 @@ pub fn verify_ext_token(ext_token: &str) -> VerifyResult {
 
     let device_token = match auth::auth_token() {
         Some(t) => t,
-        None => return VerifyResult::TransientError("CLI not logged in. Run: sidekar device login".into()),
+        None => {
+            return VerifyResult::TransientError(
+                "CLI not logged in. Run: sidekar device login".into(),
+            );
+        }
     };
 
     let client = match reqwest::blocking::Client::builder()
@@ -169,7 +176,9 @@ pub fn verify_ext_token(ext_token: &str) -> VerifyResult {
 
     let matched = data.get("match").and_then(|v| v.as_bool()).unwrap_or(false);
     if !matched {
-        return VerifyResult::InvalidToken("Extension token and CLI token belong to different users".into());
+        return VerifyResult::InvalidToken(
+            "Extension token and CLI token belong to different users".into(),
+        );
     }
 
     let user_id = match data.get("user_id").and_then(|v| v.as_str()) {
@@ -371,14 +380,20 @@ pub async fn resolve_pending(state: &SharedExtState, connection_id: u64, val: Va
 
 /// Send a command to the extension via the shared state.
 /// Used by daemon to forward ext commands from unix socket.
+pub struct RoutedCommandResult {
+    pub response: Value,
+    pub conn_id: u64,
+    pub profile: String,
+}
+
 pub async fn forward_command(
     state: &SharedExtState,
     command: Value,
     agent_id: Option<String>,
     target_conn: Option<u64>,
     target_profile: Option<String>,
-) -> Value {
-    match send_command(
+) -> Result<RoutedCommandResult> {
+    send_command(
         state,
         command,
         agent_id.as_deref(),
@@ -386,10 +401,6 @@ pub async fn forward_command(
         target_profile.as_deref(),
     )
     .await
-    {
-        Ok(v) => v,
-        Err(e) => json!({"error": e.to_string()}),
-    }
 }
 
 /// Get extension connection status.
@@ -425,14 +436,13 @@ async fn send_command(
     agent_id: Option<&str>,
     target_conn: Option<u64>,
     target_profile: Option<&str>,
-) -> Result<Value> {
+) -> Result<RoutedCommandResult> {
     let id = format!("{:08x}", rand::random::<u32>());
     let mut msg = command;
     msg.as_object_mut().unwrap().insert("id".into(), json!(id));
 
     let (tx, rx) = oneshot::channel();
-
-    {
+    let (conn_id, profile) = {
         let mut s = state.lock().await;
         if s.connections.is_empty() {
             bail!("Extension not connected. Is Chrome running with the Sidekar extension?");
@@ -471,36 +481,54 @@ async fn send_command(
                 let unowned = s
                     .connections
                     .iter()
-                    .find(|(_, c)| c.owner_agent_id.is_none())
-                    .map(|(id, _)| *id);
-                match unowned {
-                    Some(cid) => {
+                    .filter(|(_, c)| c.owner_agent_id.is_none())
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                match unowned.as_slice() {
+                    [cid] => {
                         s.connections.get_mut(&cid).unwrap().owner_agent_id =
                             Some(req_agent.to_string());
-                        cid
+                        *cid
                     }
-                    None => *s.connections.keys().next().unwrap(),
+                    [] => bail!(
+                        "No unowned extension connection available for agent '{req_agent}'. Use `sidekar ext status` and rerun with `--conn`."
+                    ),
+                    _ => bail!(
+                        "Multiple unowned extension connections are available. Rerun with `--conn` or `--profile`."
+                    ),
                 }
             }
         } else {
-            *s.connections.keys().next().unwrap()
+            if s.connections.len() == 1 {
+                *s.connections.keys().next().unwrap()
+            } else {
+                bail!(
+                    "Multiple extension connections are available. Rerun with `--conn` or `--profile`."
+                );
+            }
         };
 
         let conn = s.connections.get_mut(&conn_id).unwrap();
+        let profile = conn.profile.clone();
         conn.pending.insert(id.clone(), tx);
         let text = serde_json::to_string(&msg)?;
         if conn.bridge_tx.send(text).is_err() {
             conn.pending.remove(&id);
             bail!("Failed to send to extension bridge");
         }
-    }
+        (conn_id, profile)
+    };
 
     match tokio::time::timeout(std::time::Duration::from_secs(TIMEOUT_SECS), rx).await {
-        Ok(Ok(val)) => Ok(val),
+        Ok(Ok(val)) => Ok(RoutedCommandResult {
+            response: val,
+            conn_id,
+            profile,
+        }),
         Ok(Err(_)) => bail!("Extension response channel closed"),
         Err(_) => {
             let mut s = state.lock().await;
-            for conn in s.connections.values_mut() {
+            if let Some(conn) = s.connections.get_mut(&conn_id) {
                 conn.pending.remove(&id);
             }
             bail!("Extension command timed out ({TIMEOUT_SECS}s)")
@@ -526,6 +554,31 @@ pub fn is_ext_available() -> bool {
                     .get("authenticated")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+pub fn is_ext_auto_routable() -> bool {
+    if !crate::daemon::is_running() {
+        return false;
+    }
+    crate::daemon::send_command(&json!({"type": "ext_status"}))
+        .ok()
+        .and_then(|val| {
+            let connected = val
+                .get("connected")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let authenticated = val
+                .get("authenticated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let count = val
+                .get("connections")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
+                .unwrap_or(0);
+            Some(connected && authenticated && count == 1)
         })
         .unwrap_or(false)
 }

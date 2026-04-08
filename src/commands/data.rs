@@ -317,11 +317,7 @@ pub(super) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                         let started_dt = {
                             let secs = wall_ms / 1000;
                             let ms = wall_ms % 1000;
-                            format!(
-                                "{}.{:03}Z",
-                                chrono_lite(secs),
-                                ms
-                            )
+                            format!("{}.{:03}Z", chrono_lite(secs), ms)
                         };
                         requests.push(NetworkRequestLog {
                             id: request_id,
@@ -1209,7 +1205,10 @@ pub(super) async fn cmd_geo(ctx: &mut AppContext, args: &[String]) -> Result<()>
         json!({ "latitude": lat, "longitude": lng, "accuracy": accuracy }),
     )
     .await?;
-    out!(ctx, "Geolocation set to ({lat}, {lng}) accuracy={accuracy}m");
+    out!(
+        ctx,
+        "Geolocation set to ({lat}, {lng}) accuracy={accuracy}m"
+    );
     cdp.close().await;
     Ok(())
 }
