@@ -286,7 +286,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "frames" => cmd_frames(ctx).await,
         "frame" => cmd_frame(ctx, args.first().map(String::as_str)).await,
         "download" => cmd_download(ctx, args).await,
-        "tabs" => cmd_tabs(ctx).await,
+        "tabs" => cmd_tabs(ctx, args).await,
         "tab" => {
             let id = args.first().cloned().context("Usage: sidekar tab <id>")?;
             cmd_tab(ctx, &id).await
@@ -378,6 +378,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 "list" => {
                     let mut limit = 50usize;
                     let mut level_filter: Option<&str> = None;
+                    let json_output = args.iter().any(|a| a == "--json");
                     for arg in args.iter().skip(1) {
                         if let Some(lvl) = arg.strip_prefix("--level=") {
                             level_filter = Some(lvl);
@@ -386,6 +387,29 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                         }
                     }
                     let rows = crate::broker::events_recent(limit, level_filter)?;
+
+                    if json_output {
+                        let items: Vec<serde_json::Value> = rows
+                            .iter()
+                            .map(|r| {
+                                serde_json::json!({
+                                    "id": r.id,
+                                    "created_at": r.created_at,
+                                    "level": r.level,
+                                    "source": r.source,
+                                    "message": r.message,
+                                    "details": r.details,
+                                })
+                            })
+                            .collect();
+                        out!(
+                            ctx,
+                            "{}",
+                            serde_json::to_string_pretty(&items).unwrap_or_default()
+                        );
+                        return Ok(());
+                    }
+
                     if rows.is_empty() {
                         out!(ctx, "No events.");
                         return Ok(());
@@ -664,8 +688,9 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "bus-who" => {
             let show_all = args.iter().any(|a| a == "--all" || a == "-a");
+            let json_output = args.iter().any(|a| a == "--json");
             let bus_state = recovered_bus_state(ctx);
-            crate::bus::cmd_who(&bus_state, ctx, show_all)?;
+            crate::bus::cmd_who(&bus_state, ctx, show_all, json_output)?;
             Ok(())
         }
         "bus-requests" => {

@@ -768,7 +768,12 @@ fn send_directed_envelope(
 
 // --- Tool handlers ---
 
-pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) -> Result<()> {
+pub fn cmd_who(
+    state: &SidekarBusState,
+    ctx: &mut AppContext,
+    show_all: bool,
+    json_output: bool,
+) -> Result<()> {
     let my_name = state.name().unwrap_or("unknown");
 
     let agents = if show_all {
@@ -779,6 +784,28 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
             None => broker::list_agents(None).unwrap_or_default(),
         }
     };
+
+    if json_output {
+        let entries: Vec<serde_json::Value> = agents
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.id.name,
+                    "nick": a.id.nick,
+                    "pane": a.id.pane,
+                    "channel": a.id.session,
+                    "cwd": a.cwd,
+                    "is_you": a.id.name == my_name,
+                })
+            })
+            .collect();
+        out!(
+            ctx,
+            "{}",
+            serde_json::to_string_pretty(&entries).unwrap_or_default()
+        );
+        return Ok(());
+    }
 
     if agents.is_empty() {
         if show_all {
@@ -793,11 +820,12 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
     // Group agents by channel when showing all
     let format_agent = |a: &broker::BrokerAgent| -> String {
         let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick =
-            a.id.nick
-                .as_deref()
-                .map(|n| format!(" \"{n}\""))
-                .unwrap_or_default();
+        let nick = a
+            .id
+            .nick
+            .as_deref()
+            .map(|n| format!(" \"{n}\""))
+            .unwrap_or_default();
         let pane = a.id.pane.as_deref().unwrap_or("?");
         let cwd = a
             .cwd

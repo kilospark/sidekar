@@ -82,7 +82,27 @@ async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .and_then(|i| args.get(i + 1).cloned())
         });
 
+    let json_output = args.iter().any(|a| a == "--json");
     let entries = crate::broker::kv_list(filter_tag.as_deref())?;
+
+    if json_output {
+        let items: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "key": e.key,
+                    "value": e.value,
+                    "tags": e.tags,
+                })
+            })
+            .collect();
+        out!(
+            ctx,
+            "{}",
+            serde_json::to_string_pretty(&items).unwrap_or_default()
+        );
+        return Ok(());
+    }
 
     if entries.is_empty() {
         out!(ctx, "No KV entries.");

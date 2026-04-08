@@ -1006,7 +1006,8 @@ pub(super) async fn cmd_press(ctx: &mut AppContext, key: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn cmd_tabs(ctx: &mut AppContext) -> Result<()> {
+pub(super) async fn cmd_tabs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let json_output = args.iter().any(|a| a == "--json");
     let all_tabs = get_debug_tabs(ctx).await?;
     let state = ctx.load_session_state()?;
     let owned_ids = state
@@ -1018,6 +1019,26 @@ pub(super) async fn cmd_tabs(ctx: &mut AppContext) -> Result<()> {
         .into_iter()
         .filter(|t| owned_ids.contains(&t.id))
         .collect::<Vec<_>>();
+
+    if json_output {
+        let items: Vec<serde_json::Value> = owned
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "url": t.url,
+                    "active": state.active_tab_id.as_deref() == Some(t.id.as_str()),
+                })
+            })
+            .collect();
+        out!(
+            ctx,
+            "{}",
+            serde_json::to_string_pretty(&items).unwrap_or_default()
+        );
+        return Ok(());
+    }
 
     if owned.is_empty() {
         out!(ctx, "No tabs owned by this session.");
