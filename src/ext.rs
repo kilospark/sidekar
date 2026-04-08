@@ -70,6 +70,8 @@ fn set_cached_user_id(ext_token: &str, user_id: String) {
 pub struct ExtConnection {
     pub bridge_tx: mpsc::UnboundedSender<String>,
     pub pending: HashMap<String, oneshot::Sender<Value>>,
+    /// Extension-initiated `cli_exec` work running in the daemon (inserttext / keyboard).
+    pub cli_exec_inflight: u32,
     pub verified_user_id: String,
     pub last_contact: u64,
     pub owner_agent_id: Option<String>,
@@ -321,6 +323,7 @@ pub async fn register_bridge_ws(
         ExtConnection {
             bridge_tx,
             pending: HashMap::new(),
+            cli_exec_inflight: 0,
             verified_user_id: user_id,
             last_contact: now,
             owner_agent_id: agent_id,
@@ -336,6 +339,20 @@ pub async fn touch_connection(state: &SharedExtState, connection_id: u64) {
     let mut s = state.lock().await;
     if let Some(conn) = s.connections.get_mut(&connection_id) {
         conn.last_contact = epoch_secs();
+    }
+}
+
+pub async fn cli_exec_begin(state: &SharedExtState, connection_id: u64) {
+    let mut s = state.lock().await;
+    if let Some(conn) = s.connections.get_mut(&connection_id) {
+        conn.cli_exec_inflight = conn.cli_exec_inflight.saturating_add(1);
+    }
+}
+
+pub async fn cli_exec_end(state: &SharedExtState, connection_id: u64) {
+    let mut s = state.lock().await;
+    if let Some(conn) = s.connections.get_mut(&connection_id) {
+        conn.cli_exec_inflight = conn.cli_exec_inflight.saturating_sub(1);
     }
 }
 

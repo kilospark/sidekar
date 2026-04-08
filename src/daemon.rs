@@ -770,7 +770,9 @@ async fn handle_ext_websocket(
                 let s = ka_state.lock().await;
                 match s.connections.get(&ka_conn_id) {
                     Some(conn) => {
-                        should_disconnect = now - conn.last_contact > 30;
+                        let busy =
+                            !conn.pending.is_empty() || conn.cli_exec_inflight > 0;
+                        should_disconnect = !busy && now - conn.last_contact > 30;
                         if !should_disconnect {
                             let ping =
                                 serde_json::to_string(&json!({"type":"ping"})).unwrap_or_default();
@@ -818,6 +820,88 @@ async fn handle_ext_websocket(
                                         eprintln!("[sidekar] watch event delivery failed: {e}");
                                     }
                                 }
+                                continue;
+                            }
+                            if msg_type == "cli_exec" {
+                                let id = val
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                if id.is_empty() {
+                                    continue;
+                                }
+                                let cmd = val
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let text = val
+                                    .get("text")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let bridge_tx = {
+                                    let s = ext_state.lock().await;
+                                    s.connections
+                                        .get(&conn_id)
+                                        .map(|c| c.bridge_tx.clone())
+                                };
+                                let Some(bridge_tx) = bridge_tx else {
+                                    continue;
+                                };
+                                let ext_st = ext_state.clone();
+                                let cid = conn_id;
+                                tokio::spawn(async move {
+                                    crate::ext::cli_exec_begin(&ext_st, cid).await;
+                                    let reply = match async {
+                                        let mut ctx = crate::AppContext::new()?;
+                                        let mode = match cmd.as_str() {
+                                            "inserttext" => {
+                                                crate::commands::dispatch(
+                                                    &mut ctx,
+                                                    "inserttext",
+                                                    &[text.clone()],
+                                                )
+                                                .await?;
+                                                "cli-insertText"
+                                            }
+                                            "keyboard" => {
+                                                crate::commands::dispatch(
+                                                    &mut ctx,
+                                                    "keyboard",
+                                                    &[text.clone()],
+                                                )
+                                                .await?;
+                                                "cli-keyboard"
+                                            }
+                                            _ => bail!("unknown cli_exec command: {cmd}"),
+                                        };
+                                        Ok::<_, anyhow::Error>(mode.to_string())
+                                    }
+                                    .await
+                                    {
+                                        Ok(mode) => json!({
+                                            "id": id,
+                                            "ok": true,
+                                            "mode": mode,
+                                        }),
+                                        Err(e) => json!({
+                                            "id": id,
+                                            "ok": false,
+                                            "error": format!("{e:#}"),
+                                        }),
+                                    };
+                                    let line = match serde_json::to_string(&reply) {
+                                        Ok(mut s) => {
+                                            s.push('\n');
+                                            s
+                                        }
+                                        Err(_) => r#"{"ok":false,"error":"serialize"}"#.to_string(),
+                                    };
+                                    let _ = bridge_tx.send(line);
+                                    crate::ext::cli_exec_end(&ext_st, cid).await;
+                                });
                                 continue;
                             }
                             crate::ext::resolve_pending(&ext_state, conn_id, val).await;
