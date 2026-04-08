@@ -37,6 +37,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     } else {
         false
     };
+
+    // Parse global --quiet / -q flag
+    if let Some(pos) = args.iter().position(|a| a == "--quiet" || a == "-q") {
+        args.remove(pos);
+        sidekar::runtime::set_quiet(true);
+    }
+
     sidekar::runtime::init(verbose_flag);
 
     let saw_relay = args.iter().any(|a| a == "--relay");
@@ -535,6 +542,108 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         }
     }
 
+    if command == "browser-sessions" {
+        let ctx = AppContext::new()?;
+        let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+        match sub {
+            "list" => {
+                let sessions = sidekar::list_browser_sessions(&ctx)?;
+                if sessions.is_empty() {
+                    println!("No browser sessions.");
+                } else {
+                    println!(
+                        "{:<10} {:<10} {:<12} {:<6} {:<10} {}",
+                        "ID", "BROWSER", "PROFILE", "TABS", "ACTIVE", "UPDATED"
+                    );
+                    for s in sessions {
+                        let browser = s.browser_name.as_deref().unwrap_or("-");
+                        let profile = s.profile.as_deref().unwrap_or("default");
+                        let active = s.active_tab_id.as_deref().unwrap_or("-");
+                        let updated = s
+                            .updated_at
+                            .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| format_age(d.as_secs_f64()))
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{:<10} {:<10} {:<12} {:<6} {:<10} {}",
+                            s.session_id,
+                            browser,
+                            profile,
+                            s.tabs.len(),
+                            active,
+                            updated
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            "show" => {
+                let session_id = args
+                    .get(1)
+                    .context("Usage: sidekar browser-sessions show <sessionId>")?;
+                let session = sidekar::get_browser_session(&ctx, session_id)?;
+                println!("id: {}", session.session_id);
+                println!(
+                    "browser: {}",
+                    session.browser_name.as_deref().unwrap_or("-")
+                );
+                println!(
+                    "profile: {}",
+                    session.profile.as_deref().unwrap_or("default")
+                );
+                println!(
+                    "host: {}",
+                    session.host.as_deref().unwrap_or(sidekar::DEFAULT_CDP_HOST)
+                );
+                println!(
+                    "port: {}",
+                    session
+                        .port
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                );
+                println!(
+                    "active_tab: {}",
+                    session.active_tab_id.as_deref().unwrap_or("-")
+                );
+                println!(
+                    "tabs: {}",
+                    if session.tabs.is_empty() {
+                        "-".to_string()
+                    } else {
+                        session.tabs.join(", ")
+                    }
+                );
+                println!(
+                    "window_id: {}",
+                    session
+                        .window_id
+                        .map(|w| w.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                );
+                println!("state_file: {}", session.state_path.display());
+                println!(
+                    "updated: {}",
+                    session
+                        .updated_at
+                        .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| format_age(d.as_secs_f64()))
+                        .unwrap_or_else(|| "-".to_string())
+                );
+                println!();
+                println!(
+                    "Run commands with: sidekar run {} <command> [args...]",
+                    session.session_id
+                );
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Usage: sidekar browser-sessions <list|show>");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Daemon
     if command == "daemon" {
         let sub = args.first().map(|s| s.as_str()).unwrap_or("");
@@ -603,7 +712,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             eprintln!("  status                       Connection status");
             eprintln!("  stop                         Stop daemon");
             eprintln!();
-            eprintln!("Flags: --conn <id>, --profile <name>, --tab <id>");
+            eprintln!(
+                "Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands)"
+            );
             std::process::exit(1);
         }
         let sub_args = if args.len() > 1 {
@@ -629,18 +740,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
     if !sidekar::is_known_command(&command) {
         bail!("Unknown command: {command}");
-    }
-
-    // Auto-route eligible browser commands through the Chrome extension when it
-    // is connected and authenticated.
-    // Extension routing: only use when NOT inside a PTY wrapper.
-    // PTY agents must use their own CDP-launched Chrome for session isolation.
-    let in_pty = sidekar::runtime::pty_mode();
-    if !in_pty && sidekar::is_ext_routable_command(&command) && sidekar::ext::is_ext_auto_routable()
-    {
-        let default_tab = tab_id_from_global_flag(&override_tab_id);
-        sidekar::ext::send_cli_command(&command, &args, default_tab).await?;
-        return Ok(());
     }
 
     let mut ctx = AppContext::new()?;
@@ -732,23 +831,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
     } else if sidekar::command_requires_session(&command) {
-        if ctx.auto_discover_last_session().is_err() {
-            let in_pty = sidekar::runtime::pty_mode();
-            if in_pty && sidekar::command_should_auto_launch_browser(&command) {
-                if sidekar::runtime::verbose() {
-                    sidekar::broker::try_log_event(
-                        "debug",
-                        "pty",
-                        "auto_launch_browser",
-                        Some(&format!("command={command}")),
-                    );
-                }
-                commands::dispatch(&mut ctx, "launch", &[]).await?;
-                ctx.output.clear();
-            } else {
-                bail!("No active session. Run: sidekar launch");
-            }
-        }
+        bail!(
+            "Command '{command}' requires an explicit browser session. Create one with `sidekar launch` or `sidekar connect`, list sessions with `sidekar browser-sessions list`, then rerun with `sidekar run <sessionId> {command} ...`."
+        );
     }
 
     commands::dispatch(&mut ctx, &command, &args).await?;
