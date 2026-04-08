@@ -885,6 +885,16 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         ext_routable: false,
     },
     CommandSpec {
+        name: "browser-sessions",
+        usage: "<list|show>",
+        summary: "List or inspect explicit local browser sessions",
+        group: CommandGroup::Browser,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
+    CommandSpec {
         name: "totp",
         usage: "<subcommand>",
         summary: "Manage stored TOTP secrets",
@@ -926,8 +936,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "run",
-        usage: "<sid>",
-        summary: "Run command(s) from /tmp/sidekar-command-<sid>.json",
+        usage: "<sessionId> [command args...]",
+        summary: "Run a command or command file against an explicit browser session",
         group: CommandGroup::System,
         aliases: &[],
         requires_session: false,
@@ -1207,6 +1217,18 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(out, "{YELLOW}{BOLD}Global Flags{RST}");
     let _ = writeln!(
         out,
+        "  {GREEN}--verbose{RST}           {DIM}Show debug output and API request details{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--quiet{RST}, {GREEN}-q{RST}          {DIM}Suppress non-essential output{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--json{RST}              {DIM}Machine-readable JSON output (where supported){RST}"
+    );
+    let _ = writeln!(
+        out,
         "  {GREEN}--proxy{RST}             {DIM}Enable MITM proxy for sidekar <agent>{RST}"
     );
     let _ = writeln!(
@@ -1228,6 +1250,11 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(
         out,
         "  {GREEN}--{RST}                  {DIM}End sidekar flags; pass remaining args to agent{RST}"
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{DIM}Respects NO_COLOR env var. ANSI colors are stripped when output is piped.{RST}"
     );
     out
 }

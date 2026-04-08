@@ -1125,14 +1125,17 @@ pub(super) async fn cmd_close(ctx: &mut AppContext) -> Result<()> {
 
     http_put_text(ctx, &format!("/json/close/{tab_id}")).await?;
     state.tabs.retain(|id| id != &tab_id);
-    state.active_tab_id = state.tabs.last().cloned();
+    state.active_tab_id = None;
     ctx.save_session_state(&state)?;
 
     out!(ctx, "Closed tab {tab_id}");
-    if let Some(active) = state.active_tab_id {
-        out!(ctx, "Active tab is now: {active}");
-    } else {
+    if state.tabs.is_empty() {
         out!(ctx, "No tabs remaining in this session.");
+    } else {
+        out!(
+            ctx,
+            "No active tab is selected now. Choose one explicitly with: sidekar tab <id>"
+        );
     }
 
     Ok(())

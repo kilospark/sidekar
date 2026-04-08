@@ -185,7 +185,12 @@ impl AppContext {
     }
 
     pub fn drain_output(&mut self) -> String {
-        std::mem::take(&mut self.output)
+        let raw = std::mem::take(&mut self.output);
+        if crate::runtime::color() {
+            raw
+        } else {
+            crate::runtime::strip_ansi(&raw)
+        }
     }
 
     /// Persistent data directory: ~/.sidekar/
@@ -290,19 +295,12 @@ impl AppContext {
         let mut state = if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("failed reading {}", path.display()))?;
-            match serde_json::from_str::<SessionState>(&content) {
-                Ok(s) => s,
-                Err(e) => {
-                    wlog!(
-                        "Corrupt session state at {}, resetting: {e}",
-                        path.display()
-                    );
-                    let _ = fs::remove_file(&path);
-                    SessionState::default()
-                }
-            }
-        } else {
+            serde_json::from_str::<SessionState>(&content)
+                .with_context(|| format!("corrupt browser session state at {}", path.display()))?
+        } else if self.override_tab_id.is_some() {
             SessionState::default()
+        } else {
+            bail!("Unknown browser session: {session_id}. Use `sidekar browser-sessions list`.")
         };
 
         if state.session_id.is_empty() {
@@ -358,6 +356,168 @@ impl AppContext {
             self.cdp_host = host;
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BrowserSessionInfo {
+    pub session_id: String,
+    pub active_tab_id: Option<String>,
+    pub tabs: Vec<String>,
+    pub port: Option<u16>,
+    pub host: Option<String>,
+    pub browser_name: Option<String>,
+    pub profile: Option<String>,
+    pub window_id: Option<i64>,
+    pub state_path: PathBuf,
+    pub updated_at: Option<SystemTime>,
+}
+
+fn read_browser_session_state(path: &Path) -> Result<BrowserSessionInfo> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed reading {}", path.display()))?;
+    let state = serde_json::from_str::<SessionState>(&content)
+        .with_context(|| format!("corrupt browser session state at {}", path.display()))?;
+    let file_id = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("state-"))
+        .and_then(|name| name.strip_suffix(".json"))
+        .unwrap_or_default()
+        .to_string();
+    let session_id = if state.session_id.is_empty() {
+        file_id
+    } else {
+        state.session_id.clone()
+    };
+    let updated_at = fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    Ok(BrowserSessionInfo {
+        session_id,
+        active_tab_id: state.active_tab_id,
+        tabs: state.tabs,
+        port: state.port,
+        host: state.host,
+        browser_name: state.browser_name,
+        profile: state.profile,
+        window_id: state.window_id,
+        state_path: path.to_path_buf(),
+        updated_at,
+    })
+}
+
+pub fn list_browser_sessions(ctx: &AppContext) -> Result<Vec<BrowserSessionInfo>> {
+    let mut sessions = Vec::new();
+    let data_dir = ctx.data_dir();
+    let entries = match fs::read_dir(&data_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(sessions),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed listing {}", data_dir.display()));
+        }
+    };
+
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("failed reading entry in {}", data_dir.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("state-") || !name.ends_with(".json") {
+            continue;
+        }
+        match read_browser_session_state(&entry.path()) {
+            Ok(info) => sessions.push(info),
+            Err(err) => {
+                wlog!("skipping browser session {}: {err}", entry.path().display());
+            }
+        }
+    }
+
+    sessions.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    Ok(sessions)
+}
+
+pub fn get_browser_session(ctx: &AppContext, session_id: &str) -> Result<BrowserSessionInfo> {
+    let path = ctx.session_state_file(session_id);
+    if !path.exists() {
+        bail!("Unknown browser session: {session_id}. Use `sidekar browser-sessions list`.")
+    }
+    read_browser_session_state(&path)
+}
+
+#[cfg(test)]
+mod browser_session_tests {
+    use super::*;
+
+    fn with_temp_home(test: impl FnOnce(&mut AppContext)) {
+        let _guard = test_home_lock().lock().unwrap();
+        let old_home = env::var_os("HOME");
+        let temp_home =
+            env::temp_dir().join(format!("sidekar-browser-test-{}", rand::random::<u32>()));
+        fs::create_dir_all(&temp_home).unwrap();
+        unsafe {
+            env::set_var("HOME", &temp_home);
+        }
+
+        let mut ctx = AppContext::new().unwrap();
+        test(&mut ctx);
+
+        if let Some(old_home) = old_home {
+            unsafe {
+                env::set_var("HOME", old_home);
+            }
+        } else {
+            unsafe {
+                env::remove_var("HOME");
+            }
+        }
+        let _ = fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn list_browser_sessions_reads_saved_state() {
+        with_temp_home(|ctx| {
+            ctx.set_current_session("deadbeef".to_string());
+            ctx.save_session_state(&SessionState {
+                session_id: "deadbeef".to_string(),
+                active_tab_id: Some("101".to_string()),
+                tabs: vec!["101".to_string(), "202".to_string()],
+                port: Some(9222),
+                browser_name: Some("Chrome".to_string()),
+                profile: Some("testing".to_string()),
+                ..SessionState::default()
+            })
+            .unwrap();
+
+            let sessions = list_browser_sessions(ctx).unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].session_id, "deadbeef");
+            assert_eq!(sessions[0].active_tab_id.as_deref(), Some("101"));
+            assert_eq!(sessions[0].tabs.len(), 2);
+            assert_eq!(sessions[0].profile.as_deref(), Some("testing"));
+        });
+    }
+
+    #[test]
+    fn load_session_state_errors_for_unknown_explicit_session() {
+        with_temp_home(|ctx| {
+            ctx.set_current_session("missing123".to_string());
+            let err = ctx.load_session_state().unwrap_err().to_string();
+            assert!(err.contains("Unknown browser session: missing123"));
+        });
+    }
+
+    #[test]
+    fn load_session_state_allows_missing_state_in_tab_override_mode() {
+        with_temp_home(|ctx| {
+            ctx.set_current_session("tab-1234".to_string());
+            ctx.override_tab_id = Some("1234".to_string());
+            let state = ctx.load_session_state().unwrap();
+            assert_eq!(state.session_id, "tab-1234");
+        });
     }
 }
 
@@ -728,6 +888,27 @@ async fn open_cdp_once(ctx: &mut AppContext) -> Result<CdpClient> {
 }
 
 pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
+    fn format_tab_candidates(tabs: &[DebugTab], owned_ids: &[String]) -> String {
+        let owned = tabs
+            .iter()
+            .filter(|t| owned_ids.iter().any(|id| id == &t.id))
+            .take(5)
+            .map(|t| {
+                let label = t
+                    .title
+                    .as_deref()
+                    .or(t.url.as_deref())
+                    .unwrap_or("(untitled)");
+                format!("{} ({label})", t.id)
+            })
+            .collect::<Vec<_>>();
+        if owned.is_empty() {
+            "none".to_string()
+        } else {
+            owned.join(", ")
+        }
+    }
+
     // --tab override: connect directly to the specified tab, bypassing session
     if let Some(ref target_id) = ctx.override_tab_id {
         let tabs = get_debug_tabs(ctx).await?;
@@ -755,93 +936,41 @@ pub async fn connect_to_tab(ctx: &mut AppContext) -> Result<DebugTab> {
             before - state.tabs.len()
         );
     }
+    ctx.save_session_state(&state)?;
 
-    let mut tab = None;
-    if let Some(active_id) = state.active_tab_id.clone() {
-        tab = tabs
+    let selected = if let Some(active_id) = state.active_tab_id.clone() {
+        let tab = tabs
             .iter()
             .find(|t| t.id == active_id && t.web_socket_debugger_url.is_some())
             .cloned();
-        if tab.is_none() {
-            for owned_id in &state.tabs {
-                if let Some(found) = tabs
-                    .iter()
-                    .find(|t| t.id == *owned_id && t.web_socket_debugger_url.is_some())
-                    .cloned()
-                {
-                    wlog!(
-                        "Active tab {} lost, falling back to owned tab {}",
-                        active_id,
-                        found.id
-                    );
-                    tab = Some(found);
-                    break;
-                }
-            }
-        }
-    }
 
-    // If no owned tab was found, verify we're talking to the right Chrome
-    // before creating a replacement. If the CDP port is serving another agent's
-    // browser, bail instead of silently creating tabs in the wrong instance.
-    let selected = match tab {
-        Some(t) => t,
-        None => {
-            // Check if any of Chrome's current tabs are from a different session
-            // (i.e., another agent owns tabs on this port). If so, refuse to create.
-            let other_sessions = other_sessions_on_port(ctx, &state).await;
-            if !other_sessions.is_empty() {
+        if let Some(tab) = tab {
+            tab
+        } else {
+            state.active_tab_id = None;
+            ctx.save_session_state(&state)?;
+            if state.tabs.is_empty() {
                 bail!(
-                    "All tabs for this session were closed. Other session(s) ({}) \
-                     are using the same browser on port {}. \
-                     Run `sidekar new-tab` to create a tab, or `sidekar launch` for a fresh browser.",
-                    other_sessions.join(", "),
-                    ctx.cdp_port,
+                    "Active tab {active_id} is gone and this session has no remaining tabs. Run `sidekar new-tab` or pass `--tab <id>`."
                 );
             }
-            wlog!("Session tab lost — auto-creating replacement tab");
-            let new_tab = create_new_tab(ctx, None).await?;
-            state.tabs.push(new_tab.id.clone());
-            new_tab
+            let remaining = format_tab_candidates(&tabs, &state.tabs);
+            bail!(
+                "Active tab {active_id} is gone. Remaining session tabs: {remaining}. Run `sidekar tab <id>` or pass `--tab <id>`."
+            );
         }
+    } else if state.tabs.is_empty() {
+        bail!("No active tab for this session. Run `sidekar new-tab` or pass `--tab <id>`.");
+    } else {
+        let remaining = format_tab_candidates(&tabs, &state.tabs);
+        bail!(
+            "No active tab is selected for this session. Remaining session tabs: {remaining}. Run `sidekar tab <id>` or pass `--tab <id>`."
+        );
     };
     state.active_tab_id = Some(selected.id.clone());
     ctx.save_session_state(&state)?;
 
     Ok(selected)
-}
-
-/// Check if any other sidekar sessions own tabs on the same CDP port.
-/// Returns session IDs of any sessions whose tabs are found on this port.
-async fn other_sessions_on_port(ctx: &AppContext, current_state: &SessionState) -> Vec<String> {
-    let current_sid = current_state.session_id.clone();
-    let data_dir = ctx.data_dir();
-
-    // Scan all state files looking for sessions that share our port
-    let mut others = Vec::new();
-    if let Ok(entries) = fs::read_dir(&data_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.starts_with("state-") || !name_str.ends_with(".json") {
-                continue;
-            }
-            if let Ok(content) = fs::read_to_string(entry.path()) {
-                if let Ok(state) = serde_json::from_str::<SessionState>(&content) {
-                    if state.session_id == current_sid || state.session_id.is_empty() {
-                        continue;
-                    }
-                    // Same port?
-                    let port_matches = state.port.map_or(false, |p| p == ctx.cdp_port);
-                    let host_matches = state.host.as_deref().map_or(true, |h| h == ctx.cdp_host);
-                    if port_matches && host_matches && !state.tabs.is_empty() {
-                        others.push(state.session_id);
-                    }
-                }
-            }
-        }
-    }
-    others
 }
 
 /// Verify Chrome's CDP is fully operational: HTTP + WebSocket + Browser.getVersion.
@@ -2206,6 +2335,36 @@ sidekar connect
     sidekar connect"
         }
 
+        "browser-sessions" => {
+            "\
+sidekar browser-sessions <list|show> [sessionId]
+
+  Inspect local browser sessions used by `sidekar run`.
+
+  Subcommands:
+    list               List known browser session IDs and summaries
+    show <sessionId>   Show one browser session in detail
+
+  Examples:
+    sidekar browser-sessions list
+    sidekar browser-sessions show a1b2c3d4"
+        }
+
+        "run" => {
+            "\
+sidekar run <sessionId> [command args...]
+
+  Run a command or command file against an explicit browser session.
+
+  Without an inline command, Sidekar reads /tmp/sidekar-command-<sessionId>.json.
+  With an inline command, Sidekar executes it directly against that session.
+
+  Examples:
+    sidekar browser-sessions list
+    sidekar run a1b2c3d4 tabs
+    sidekar run a1b2c3d4 click 7"
+        }
+
         "desktop" => {
             "\
 sidekar desktop <subcommand> [args...]
@@ -2234,7 +2393,7 @@ sidekar desktop <subcommand> [args...]
         "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
         "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
         "new-tab" => "sidekar new-tab [url]\n\n  Open a new tab, optionally navigating to URL.",
-        "close" => "sidekar close\n\n  Close the current tab and switch to the next.",
+        "close" => "sidekar close\n\n  Close the current tab. If tabs remain, select the next one explicitly with 'sidekar tab <id>'.",
         "back" => "sidekar back\n\n  Go back in browser history.",
         "forward" => "sidekar forward\n\n  Go forward in browser history.",
         "reload" => "sidekar reload\n\n  Reload the current page.",
@@ -2976,7 +3135,7 @@ sidekar ext <subcommand> [args...]
     unwatch [watchId]                 Remove watcher(s)
     watchers                          List active watchers
 
-  Flags: --conn <id>, --profile <name>, --tab <id>
+  Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands)
   Management: status, stop
 
   Examples:
@@ -3286,5 +3445,6 @@ fn colorize_command_help(help: &str) -> String {
 }
 
 pub fn print_help() {
-    println!("{}", crate::cli::render_help(env!("CARGO_PKG_VERSION")));
+    let text = crate::cli::render_help(env!("CARGO_PKG_VERSION"));
+    println!("{}", crate::runtime::maybe_strip_ansi(&text));
 }

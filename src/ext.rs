@@ -429,11 +429,11 @@ pub async fn get_status(state: &SharedExtState) -> Value {
 }
 
 /// Pick a connection and send a command.
-/// Priority: target_conn > target_profile > agent ownership > first available.
+/// Priority: target_conn > target_profile > single available connection.
 async fn send_command(
     state: &SharedState,
     command: Value,
-    agent_id: Option<&str>,
+    _agent_id: Option<&str>,
     target_conn: Option<u64>,
     target_profile: Option<&str>,
 ) -> Result<RoutedCommandResult> {
@@ -467,36 +467,6 @@ async fn send_command(
                 None => bail!(
                     "No connection matching profile '{profile}'. Use `sidekar ext status` to list."
                 ),
-            }
-        } else if let Some(req_agent) = agent_id {
-            // Find connection owned by this agent
-            let owned = s
-                .connections
-                .iter()
-                .find(|(_, c)| c.owner_agent_id.as_deref() == Some(req_agent))
-                .map(|(id, _)| *id);
-            if let Some(cid) = owned {
-                cid
-            } else {
-                let unowned = s
-                    .connections
-                    .iter()
-                    .filter(|(_, c)| c.owner_agent_id.is_none())
-                    .map(|(id, _)| *id)
-                    .collect::<Vec<_>>();
-                match unowned.as_slice() {
-                    [cid] => {
-                        s.connections.get_mut(&cid).unwrap().owner_agent_id =
-                            Some(req_agent.to_string());
-                        *cid
-                    }
-                    [] => bail!(
-                        "No unowned extension connection available for agent '{req_agent}'. Use `sidekar ext status` and rerun with `--conn`."
-                    ),
-                    _ => bail!(
-                        "Multiple unowned extension connections are available. Rerun with `--conn` or `--profile`."
-                    ),
-                }
             }
         } else {
             if s.connections.len() == 1 {
@@ -537,9 +507,6 @@ async fn send_command(
 }
 
 /// Check if the extension is connected and authenticated (blocking, 500ms max).
-///
-/// Used by the auto-routing logic in main.rs to decide whether browser commands
-/// should be routed through the Chrome extension instead of CDP.
 pub fn is_ext_available() -> bool {
     if !crate::daemon::is_running() {
         return false;
@@ -554,31 +521,6 @@ pub fn is_ext_available() -> bool {
                     .get("authenticated")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
-        })
-        .unwrap_or(false)
-}
-
-pub fn is_ext_auto_routable() -> bool {
-    if !crate::daemon::is_running() {
-        return false;
-    }
-    crate::daemon::send_command(&json!({"type": "ext_status"}))
-        .ok()
-        .and_then(|val| {
-            let connected = val
-                .get("connected")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let authenticated = val
-                .get("authenticated")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let count = val
-                .get("connections")
-                .and_then(|v| v.as_array())
-                .map(|v| v.len())
-                .unwrap_or(0);
-            Some(connected && authenticated && count == 1)
         })
         .unwrap_or(false)
 }
@@ -748,37 +690,38 @@ fn extract_extension() -> Result<()> {
 }
 
 fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Result<Value> {
-    // Explicit tab id in subcommand args wins over global `--tab`.
-    fn tab_from_arg_or_default(explicit: Option<u64>, default_tab: Option<u64>) -> Option<u64> {
-        explicit.or(default_tab)
+    fn require_tab(command: &str, explicit: Option<u64>, default_tab: Option<u64>) -> Result<u64> {
+        explicit.or(default_tab).ok_or_else(|| {
+            anyhow!(
+                "sidekar ext {command} requires an explicit tab ID. Pass `--tab <id>` or the command's [tab_id] argument."
+            )
+        })
     }
 
     match command {
         "tabs" => Ok(json!({"command": "tabs"})),
         "read" => {
-            let tab_id = tab_from_arg_or_default(
+            let tab_id = require_tab(
+                "read",
                 args.first().and_then(|s| s.parse::<u64>().ok()),
                 default_tab,
-            );
+            )?;
             let mut cmd = json!({"command": "read"});
-            if let Some(id) = tab_id {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "screenshot" => {
-            let tab_id = tab_from_arg_or_default(
+            let tab_id = require_tab(
+                "screenshot",
                 args.first().and_then(|s| s.parse::<u64>().ok()),
                 default_tab,
-            );
+            )?;
             let mut cmd = json!({"command": "screenshot"});
-            if let Some(id) = tab_id {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "click" => {
@@ -786,25 +729,23 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow!("Usage: sidekar ext click <selector|text:...>"))?;
+            let tab_id = require_tab("click", None, default_tab)?;
             let mut cmd = json!({"command": "click", "target": target});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "type" => {
             if args.len() < 2 {
                 bail!("Usage: sidekar ext type <selector> <text>");
             }
+            let tab_id = require_tab("type", None, default_tab)?;
             let mut cmd =
                 json!({"command": "type", "selector": args[0], "text": args[1..].join(" ")});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "paste" => {
@@ -849,6 +790,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
                     "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]"
                 );
             }
+            let tab_id = require_tab("paste", None, default_tab)?;
             let mut cmd = json!({"command": "paste", "text": text.unwrap_or_default()});
             if let Some(html) = html {
                 cmd.as_object_mut()
@@ -860,37 +802,33 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
                     .unwrap()
                     .insert("selector".into(), json!(selector));
             }
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "set-value" => {
             if args.len() < 2 {
                 bail!("Usage: sidekar ext set-value <selector> <text>");
             }
+            let tab_id = require_tab("set-value", None, default_tab)?;
             let mut cmd =
                 json!({"command": "setvalue", "selector": args[0], "text": args[1..].join(" ")});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "ax-tree" => {
-            let tab_id = tab_from_arg_or_default(
+            let tab_id = require_tab(
+                "ax-tree",
                 args.first().and_then(|s| s.parse::<u64>().ok()),
                 default_tab,
-            );
+            )?;
             let mut cmd = json!({"command": "axtree"});
-            if let Some(id) = tab_id {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "eval" => {
@@ -898,12 +836,11 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             if code.is_empty() {
                 bail!("Usage: sidekar ext eval <javascript>");
             }
+            let tab_id = require_tab("eval", None, default_tab)?;
             let mut cmd = json!({"command": "eval", "code": code});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "eval-page" => {
@@ -911,12 +848,11 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             if code.is_empty() {
                 bail!("Usage: sidekar ext eval-page <javascript>");
             }
+            let tab_id = require_tab("eval-page", None, default_tab)?;
             let mut cmd = json!({"command": "evalpage", "code": code});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "navigate" => {
@@ -924,16 +860,15 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
                 bail!("Usage: sidekar ext navigate <url> [tab_id]");
             }
             let url = &args[0];
-            let tab_id = tab_from_arg_or_default(
+            let tab_id = require_tab(
+                "navigate",
                 args.get(1).and_then(|s| s.parse::<u64>().ok()),
                 default_tab,
-            );
+            )?;
             let mut cmd = json!({"command": "navigate", "url": url});
-            if let Some(id) = tab_id {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "new-tab" => {
@@ -944,26 +879,24 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             Ok(json!({"command": "newtab", "url": url}))
         }
         "close" => {
-            let tab_id = tab_from_arg_or_default(
+            let tab_id = require_tab(
+                "close",
                 args.first().and_then(|s| s.parse::<u64>().ok()),
                 default_tab,
-            );
+            )?;
             let mut cmd = json!({"command": "close"});
-            if let Some(id) = tab_id {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "scroll" => {
             let direction = args.first().map(|s| s.as_str()).unwrap_or("down");
+            let tab_id = require_tab("scroll", None, default_tab)?;
             let mut cmd = json!({"command": "scroll", "direction": direction});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "history" => {
@@ -976,12 +909,11 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow!("Usage: sidekar ext watch <selector> [--tab <id>]"))?;
+            let tab_id = require_tab("watch", None, default_tab)?;
             let mut cmd = json!({"command": "watch", "selector": selector});
-            if let Some(id) = default_tab {
-                cmd.as_object_mut()
-                    .unwrap()
-                    .insert("tabId".into(), json!(id));
-            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
             Ok(cmd)
         }
         "unwatch" => {
@@ -998,6 +930,41 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
         _ => bail!(
             "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, context, status, stop"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_command;
+
+    #[test]
+    fn ext_read_requires_explicit_tab() {
+        let err = build_command("read", &[], None).unwrap_err().to_string();
+        assert!(err.contains("requires an explicit tab ID"));
+    }
+
+    #[test]
+    fn ext_click_uses_global_tab_override() {
+        let cmd = build_command("click", &[String::from("text:OK")], Some(42)).unwrap();
+        assert_eq!(cmd.get("tabId").and_then(|v| v.as_u64()), Some(42));
+    }
+
+    #[test]
+    fn ext_navigate_accepts_positional_tab() {
+        let cmd = build_command(
+            "navigate",
+            &[String::from("https://example.com"), String::from("77")],
+            None,
+        )
+        .unwrap();
+        assert_eq!(cmd.get("tabId").and_then(|v| v.as_u64()), Some(77));
+    }
+
+    #[test]
+    fn ext_tabs_does_not_require_tab() {
+        let cmd = build_command("tabs", &[], None).unwrap();
+        assert_eq!(cmd.get("command").and_then(|v| v.as_str()), Some("tabs"));
+        assert!(cmd.get("tabId").is_none());
     }
 }
 
