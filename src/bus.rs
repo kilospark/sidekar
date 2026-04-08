@@ -781,34 +781,49 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
     };
 
     if agents.is_empty() {
-        let scope = state.channel().unwrap_or("any channel");
-        out!(ctx, "No agents on \"{scope}\".");
+        if show_all {
+            out!(ctx, "No agents on any channel.");
+        } else {
+            let scope = state.channel().unwrap_or("any channel");
+            out!(ctx, "No agents on \"{scope}\".");
+        }
         return Ok(());
     }
 
-    let channel_label = state.channel().unwrap_or("all");
-    let mut lines: Vec<String> = Vec::new();
-
-    for a in &agents {
+    // Group agents by channel when showing all
+    let format_agent = |a: &broker::BrokerAgent| -> String {
         let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick =
-            a.id.nick
-                .as_deref()
-                .map(|n| format!(" \"{n}\""))
-                .unwrap_or_default();
+        let nick = a.id.nick.as_deref()
+            .map(|n| format!(" \"{n}\""))
+            .unwrap_or_default();
         let pane = a.id.pane.as_deref().unwrap_or("?");
-        let cwd = a
-            .cwd
-            .as_deref()
+        let cwd = a.cwd.as_deref()
             .map(|c| format!(", cwd: {c}"))
             .unwrap_or_default();
-        lines.push(format!(
-            "- {}{}{} (pane {}{})",
-            a.id.name, nick, you, pane, cwd
-        ));
-    }
+        format!("- {}{}{} (pane {}{})", a.id.name, nick, you, pane, cwd)
+    };
 
-    out!(ctx, "Channel \"{channel_label}\":\n{}", lines.join("\n"));
+    if show_all {
+        // Group by channel
+        let mut by_channel: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for a in &agents {
+            let ch = a.id.session.clone().unwrap_or_else(|| "unknown".into());
+            by_channel.entry(ch).or_default().push(format_agent(a));
+        }
+        let mut out_lines = Vec::new();
+        for (ch, lines) in &by_channel {
+            out_lines.push(format!("Channel \"{ch}\":"));
+            for l in lines {
+                out_lines.push(l.clone());
+            }
+        }
+        out!(ctx, "{}", out_lines.join("\n"));
+    } else {
+        let channel_label = state.channel().unwrap_or("all");
+        let lines: Vec<String> = agents.iter().map(|a| format_agent(a)).collect();
+        out!(ctx, "Channel \"{channel_label}\":\n{}", lines.join("\n"));
+    }
     Ok(())
 }
 

@@ -16,9 +16,90 @@ pub fn is_verbose() -> bool {
     VERBOSE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {
+    if !is_verbose() {
+        return;
+    }
+
+    let body_size = serde_json::to_string(body).map(|s| s.len()).unwrap_or(0);
+
+    print_verbose_line("\x1b[2m--- API Request ---");
+    print_verbose_line(&format!("POST {url}"));
+
+    // Headers: one per line, redact auth values
+    for (name, value) in headers.iter() {
+        let val = value.to_str().unwrap_or("<binary>");
+        let display = match name.as_str() {
+            "authorization" | "x-api-key" => {
+                if val.len() > 12 {
+                    format!("{}...{}", &val[..8], &val[val.len() - 4..])
+                } else {
+                    "***".to_string()
+                }
+            }
+            _ => val.to_string(),
+        };
+        print_verbose_line(&format!("  {name}: {display}"));
+    }
+
+    // Body summary: extract useful fields instead of dumping raw JSON
+    let model = body.get("model").and_then(|v| v.as_str()).unwrap_or("?");
+    let max_tokens = body
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into());
+
+    let system_summary = match body.get("system") {
+        Some(serde_json::Value::Array(arr)) => {
+            let total: usize = arr
+                .iter()
+                .map(|b| {
+                    b.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                })
+                .sum();
+            format!("{} blocks, {} bytes", arr.len(), total)
+        }
+        Some(serde_json::Value::String(s)) => format!("{} bytes", s.len()),
+        _ => "none".into(),
+    };
+
+    let msg_count = body
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    let tool_count = body
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    print_verbose_line(&format!("  model: {model}"));
+    print_verbose_line(&format!("  max_tokens: {max_tokens}"));
+    print_verbose_line(&format!("  system: {system_summary}"));
+    print_verbose_line(&format!("  messages: {msg_count}"));
+    if tool_count > 0 {
+        print_verbose_line(&format!("  tools: {tool_count}"));
+    }
+    print_verbose_line(&format!("  body size: {}", format_bytes(body_size)));
+
+    // Full body with long strings truncated
+    let compacted = compact_json(body);
+    let json_str = serde_json::to_string_pretty(&compacted).unwrap_or_default();
+    for line in json_str.lines() {
+        print_verbose_line(&format!("  {line}"));
+    }
+    print_verbose_line("---\x1b[0m");
+}
+
 const MAX_STRING_LEN: usize = 256;
 
-fn compact_json(value: &serde_json::Value) -> serde_json::Value {
+pub fn compact_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) if s.len() > MAX_STRING_LEN => {
             serde_json::Value::String(format!("<{} bytes>", s.len()))
@@ -37,22 +118,14 @@ fn compact_json(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {
-    if !is_verbose() {
-        return;
+fn format_bytes(n: usize) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
     }
-
-    let compacted = compact_json(body);
-    let json_str = serde_json::to_string_pretty(&compacted).unwrap_or_default();
-
-    print_verbose_line("\x1b[2m--- API Request ---");
-    print_verbose_line(&format!("POST {url}"));
-    print_verbose_line(&format!("Headers: {headers:?}"));
-    print_verbose_line("Body:");
-    for line in json_str.lines() {
-        print_verbose_line(&format!("  {line}"));
-    }
-    print_verbose_line("---\x1b[0m");
 }
 
 fn print_verbose_line(line: &str) {

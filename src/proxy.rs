@@ -153,6 +153,42 @@ struct ProxyState {
     tls_connector: tokio_rustls::TlsConnector,
     host_cache: RwLock<HashMap<String, Arc<CachedCert>>>,
     verbose: bool,
+    log_tx: tokio::sync::mpsc::UnboundedSender<ProxyLogEntry>,
+}
+
+struct ProxyLogEntry {
+    method: String,
+    path: String,
+    upstream_host: String,
+    request_headers: Vec<(String, String)>,
+    request_body: Vec<u8>,
+    response_status: u16,
+    response_headers: Vec<(String, String)>,
+    response_body: Vec<u8>,
+    duration_ms: u64,
+}
+
+const MAX_RESPONSE_CAPTURE: usize = 10 * 1024 * 1024; // 10MB
+
+async fn proxy_log_writer(mut rx: tokio::sync::mpsc::UnboundedReceiver<ProxyLogEntry>) {
+    while let Some(entry) = rx.recv().await {
+        let _ = tokio::task::spawn_blocking(move || {
+            let req_hdrs = serde_json::to_string(&entry.request_headers).unwrap_or_default();
+            let resp_hdrs = serde_json::to_string(&entry.response_headers).unwrap_or_default();
+            let _ = crate::broker::proxy_log_insert(&crate::broker::ProxyLogEntry {
+                method: entry.method,
+                path: entry.path,
+                upstream_host: entry.upstream_host,
+                request_headers: req_hdrs,
+                request_body: entry.request_body,
+                response_status: entry.response_status,
+                response_headers: resp_hdrs,
+                response_body: entry.response_body,
+                duration_ms: entry.duration_ms,
+            });
+        })
+        .await;
+    }
 }
 
 /// Ephemeral ports are reused quickly; parallel tests (or back-to-back `start()`)
@@ -197,12 +233,19 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     let ca_pem_path = dir.join(format!("ca-{port}-{seq}.pem"));
     std::fs::write(&ca_pem_path, ca_cert.pem())?;
 
+    let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(proxy_log_writer(log_rx));
+
+    // Prune entries older than 7 days on startup
+    let _ = tokio::task::spawn_blocking(|| crate::broker::proxy_log_prune(7 * 86400)).await;
+
     let state = Arc::new(ProxyState {
         ca_cert,
         ca_key,
         tls_connector,
         host_cache: RwLock::new(HashMap::new()),
         verbose,
+        log_tx,
     });
 
     if verbose {
@@ -270,6 +313,7 @@ async fn handle_connection(state: Arc<ProxyState>, stream: TcpStream) -> Result<
 // ---------------------------------------------------------------------------
 
 async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) -> Result<()> {
+    let start_time = std::time::Instant::now();
     let (client_read, mut client_write) = tokio::io::split(stream);
     let mut reader = BufReader::new(client_read);
 
@@ -386,10 +430,7 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
     upstream_write.flush().await?;
 
     if is_websocket {
-        // WebSocket: bidirectional pipe after forwarding the upgrade request.
-        // The upstream sends back 101 Switching Protocols, then both sides
-        // exchange WebSocket frames — just pipe everything.
-        // Use the BufReader directly (it may have buffered data from the client).
+        // WebSocket: bidirectional pipe — skip payload logging
         let mut client_reader = reader;
         let mut upstream_reader = upstream_read;
         tokio::select! {
@@ -397,8 +438,35 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
             r = tokio::io::copy(&mut upstream_reader, &mut client_write) => { let _ = r; }
         }
     } else {
-        // HTTP: stream response back to client unchanged
+        // HTTP: parse response status + headers, then stream body with tee
         let mut upstream_reader = BufReader::new(upstream_read);
+
+        // Response status line
+        let mut response_line = String::new();
+        upstream_reader.read_line(&mut response_line).await?;
+        client_write.write_all(response_line.as_bytes()).await?;
+        let response_status = response_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        // Response headers
+        let mut resp_headers: Vec<(String, String)> = Vec::new();
+        loop {
+            let mut line = String::new();
+            upstream_reader.read_line(&mut line).await?;
+            client_write.write_all(line.as_bytes()).await?;
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                resp_headers.push((k.trim().to_string(), v.trim().to_string()));
+            }
+        }
+
+        // Stream body, teeing to accumulator for logging
+        let mut response_buf: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 8192];
         loop {
             let n = upstream_reader.read(&mut buf).await?;
@@ -407,7 +475,22 @@ async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) ->
             }
             client_write.write_all(&buf[..n]).await?;
             client_write.flush().await?;
+            if response_buf.len() + n <= MAX_RESPONSE_CAPTURE {
+                response_buf.extend_from_slice(&buf[..n]);
+            }
         }
+
+        let _ = state.log_tx.send(ProxyLogEntry {
+            method: method.to_string(),
+            path: path.to_string(),
+            upstream_host: upstream_host.to_string(),
+            request_headers: parsed_headers.clone(),
+            request_body: body,
+            response_status,
+            response_headers: resp_headers,
+            response_body: response_buf,
+            duration_ms: start_time.elapsed().as_millis() as u64,
+        });
     }
 
     Ok(())
@@ -509,6 +592,8 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
 
     // Parse and forward HTTP requests inside the decrypted tunnel.
     loop {
+        let req_start = std::time::Instant::now();
+
         // Read request line from client
         let mut request_line = String::new();
         match client_reader.read_line(&mut request_line).await {
@@ -525,6 +610,7 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
 
         // Read headers
         let mut raw_headers: Vec<String> = Vec::new();
+        let mut parsed_headers: Vec<(String, String)> = Vec::new();
         let mut content_length: usize = 0;
         let mut is_websocket = false;
         loop {
@@ -538,6 +624,7 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
             }
             if let Some((k, v)) = line.split_once(':') {
                 let kl = k.trim().to_lowercase();
+                parsed_headers.push((k.trim().to_string(), v.trim().to_string()));
                 if kl == "content-length" {
                     content_length = v.trim().parse().unwrap_or(0);
                 }
@@ -621,15 +708,21 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
             break;
         }
 
-        // Stream response back to client unchanged
+        // Stream response back to client, capturing for log
         let mut response_line = String::new();
         match server_reader.read_line(&mut response_line).await {
             Ok(0) | Err(_) => break,
             _ => {}
         }
         client_write.write_all(response_line.as_bytes()).await?;
+        let response_status = response_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
 
         // Read and forward response headers
+        let mut resp_headers: Vec<(String, String)> = Vec::new();
         let mut resp_content_length: Option<usize> = None;
         let mut is_chunked = false;
         loop {
@@ -644,6 +737,7 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
             }
             if let Some((k, v)) = line.split_once(':') {
                 let kl = k.trim().to_lowercase();
+                resp_headers.push((k.trim().to_string(), v.trim().to_string()));
                 if kl == "content-length" {
                     resp_content_length = v.trim().parse().ok();
                 }
@@ -653,7 +747,8 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
             }
         }
 
-        // Forward response body
+        // Forward response body, teeing to accumulator
+        let mut response_buf: Vec<u8> = Vec::new();
         if let Some(len) = resp_content_length {
             let mut remaining = len;
             let mut buf = vec![0u8; 8192];
@@ -664,6 +759,9 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
                     Ok(n) => n,
                 };
                 client_write.write_all(&buf[..n]).await?;
+                if response_buf.len() + n <= MAX_RESPONSE_CAPTURE {
+                    response_buf.extend_from_slice(&buf[..n]);
+                }
                 remaining -= n;
             }
         } else if is_chunked {
@@ -677,7 +775,6 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
                 client_write.write_all(chunk_line.as_bytes()).await?;
                 let chunk_size = usize::from_str_radix(chunk_line.trim(), 16).unwrap_or(0);
                 if chunk_size == 0 {
-                    // Terminal chunk — read trailing \r\n
                     let mut trail = String::new();
                     let _ = server_reader.read_line(&mut trail).await;
                     client_write.write_all(trail.as_bytes()).await?;
@@ -692,15 +789,29 @@ async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStream) -> Resu
                         Ok(n) => n,
                     };
                     client_write.write_all(&buf[..n]).await?;
+                    if response_buf.len() + n <= MAX_RESPONSE_CAPTURE {
+                        response_buf.extend_from_slice(&buf[..n]);
+                    }
                     remaining -= n;
                 }
-                // Read trailing \r\n after chunk data
                 let mut trail = String::new();
                 let _ = server_reader.read_line(&mut trail).await;
                 client_write.write_all(trail.as_bytes()).await?;
             }
         }
         client_write.flush().await?;
+
+        let _ = state.log_tx.send(ProxyLogEntry {
+            method: method.to_string(),
+            path: path.to_string(),
+            upstream_host: host.clone(),
+            request_headers: parsed_headers,
+            request_body: body,
+            response_status,
+            response_headers: resp_headers,
+            response_body: response_buf,
+            duration_ms: req_start.elapsed().as_millis() as u64,
+        });
     }
 
     Ok(())

@@ -616,7 +616,6 @@ async fn pkce_login(
         "code": code,
         "redirect_uri": callback,
         "code_verifier": verifier,
-        "state": state,
     });
     let mut last_err = None;
     for attempt in 0..3u32 {

@@ -261,7 +261,13 @@ impl EscCancelWatcher {
                                 )
                             };
                             if n > 0 {
-                                let _ = detector.feed_bytes(&buf[..n as usize], now);
+                                let bytes = &buf[..n as usize];
+                                // Ctrl+C (0x03): immediate cancel, same as bare ESC
+                                if bytes.contains(&0x03) {
+                                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    return;
+                                }
+                                let _ = detector.feed_bytes(bytes, now);
                             }
                         }
                     }
@@ -873,9 +879,10 @@ impl LineEditor {
                 }
             }
             0x03 => {
+                // Ctrl+C: exit REPL (like /quit)
                 self.cancel_line();
                 self.redraw();
-                LineEditResult::Continue
+                LineEditResult::Eof
             }
             0x01 => {
                 let bol = self.beginning_of_current_line();
@@ -1827,12 +1834,12 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_clears_without_eof() {
+    fn ctrl_c_exits_repl() {
         let mut editor = LineEditor::with_history(Vec::new());
         editor.buffer = "pending".to_string();
         editor.cursor = editor.buffer.len();
         let result = editor.feed_byte(0x03);
-        assert!(matches!(result, LineEditResult::Continue));
+        assert!(matches!(result, LineEditResult::Eof));
         assert!(editor.buffer.is_empty());
         assert_eq!(editor.cursor, 0);
     }

@@ -2517,12 +2517,32 @@ sidekar grid [spec]
         "minimize" => "sidekar minimize\n\n  Minimize the browser window (macOS).",
         "kill" => "sidekar kill\n\n  Kill the custom profile browser session.",
 
+        "proxy" => {
+            "\
+sidekar proxy <log|show|clear> [options]
+
+  View request/response payloads captured by the proxy (--proxy flag).
+  Payloads are stored in SQLite, auto-pruned after 7 days.
+
+  Subcommands:
+    log [--last=N] [--json]   List recent API calls (default: last 20)
+    show <id>                 Full request/response detail with token usage
+    clear                     Delete all stored payloads
+
+  Examples:
+    sidekar proxy log
+    sidekar proxy log --last=5
+    sidekar proxy log --json
+    sidekar proxy show 42
+    sidekar proxy clear"
+        }
+
         "bus" => {
             "\
 sidekar bus <who|requests|replies|show|send|done> [args...]
 
   Agent bus subcommands:
-    who
+    who [--all]
     requests [--status=open|answered|timed-out|cancelled|all] [--limit=N]
     replies [--msg-id=<request_id>] [--limit=N]
     show <msg_id>
@@ -2534,6 +2554,7 @@ sidekar bus <who|requests|replies|show|send|done> [args...]
 
   Examples:
     sidekar bus who
+    sidekar bus who --all
     sidekar bus requests --status=open
     sidekar bus replies --msg-id=msg_123
     sidekar bus show msg_123
