@@ -2847,12 +2847,13 @@ sidekar event <list|clear> [--level=error|debug|info] [N]
 
         "daemon" => {
             "\
-sidekar daemon [run|stop|restart|status]
+sidekar daemon [start|stop|restart|status]
 
   Manage the background Sidekar daemon used by long-running subsystems.
 
   Examples:
     sidekar daemon
+    sidekar daemon start
     sidekar daemon status
     sidekar daemon restart
     sidekar daemon stop"

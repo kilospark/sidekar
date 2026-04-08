@@ -74,7 +74,7 @@ pub fn ensure_running() -> Result<()> {
     let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
     let child = std::process::Command::new(exe)
         .arg("daemon")
-        .arg("run")
+        .arg("start")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .stdin(std::process::Stdio::null())
@@ -131,7 +131,7 @@ pub async fn relaunch_after_exit(old_pid: i32) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         if !process_exists(old_pid) {
-            return run().await;
+            return start().await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
@@ -216,7 +216,7 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Daemon process (runs when `sidekar daemon run` is invoked)
+// Daemon process (runs when `sidekar daemon start` is invoked)
 // ---------------------------------------------------------------------------
 
 struct DaemonState {
@@ -264,8 +264,8 @@ fn kill_orphaned_daemons() {
     }
 }
 
-/// Run the daemon (called by `sidekar daemon run`).
-pub async fn run() -> Result<()> {
+/// Run the daemon (called by `sidekar daemon start`).
+pub async fn start() -> Result<()> {
     // Ensure data dir exists
     std::fs::create_dir_all(data_dir())?;
 

@@ -936,7 +936,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "daemon",
-        usage: "[run|stop|restart|status]",
+        usage: "[start|stop|restart|status]",
         summary: "Manage the Sidekar background daemon",
         group: CommandGroup::System,
         aliases: &[],
