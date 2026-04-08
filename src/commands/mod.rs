@@ -632,6 +632,21 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             cmd_compact(ctx, args)?;
             Ok(())
         }
+        "proxy" => {
+            let sub = args.first().map(String::as_str).unwrap_or("log");
+            match sub {
+                "log" => cmd_proxy_log(ctx, &args[1..])?,
+                "show" => {
+                    let id = args.get(1)
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .ok_or_else(|| anyhow::anyhow!("Usage: sidekar proxy show <id>"))?;
+                    cmd_proxy_show(ctx, id)?;
+                }
+                "clear" => cmd_proxy_clear(ctx)?,
+                _ => bail!("Usage: sidekar proxy <log|show|clear> [--last=N] [--json]"),
+            }
+            Ok(())
+        }
         // Bus tools — stateless CLI versions that recover identity from env/broker
         "bus" => {
             let sub = args.first().map(String::as_str).unwrap_or("");
@@ -962,4 +977,191 @@ fn recovered_bus_state(ctx: &AppContext) -> crate::bus::SidekarBusState {
     // Fallback: try inheriting from parent PTY registration
     state.do_register(None);
     state
+}
+
+// ---------------------------------------------------------------------------
+// Proxy log commands
+// ---------------------------------------------------------------------------
+
+fn format_bytes(n: usize) -> String {
+    if n < 1024 {
+        format!("{n}B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1}KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", n as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn cmd_proxy_log(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let limit = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--last="))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(20);
+    let json_output = args.iter().any(|a| a == "--json");
+
+    let rows = crate::broker::proxy_log_recent(limit)?;
+    if rows.is_empty() {
+        out!(ctx, "No proxy log entries. Run an agent with --proxy to capture payloads.");
+        return Ok(());
+    }
+
+    if json_output {
+        let entries: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "created_at": r.created_at,
+                    "method": r.method,
+                    "path": r.path,
+                    "upstream_host": r.upstream_host,
+                    "response_status": r.response_status,
+                    "duration_ms": r.duration_ms,
+                    "request_size": r.request_body.len(),
+                    "response_size": r.response_body.len(),
+                })
+            })
+            .collect();
+        out!(ctx, "{}", serde_json::to_string_pretty(&entries).unwrap_or_default());
+        return Ok(());
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
+        "ID", "TIME", "METHOD", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ", "RESP"
+    ));
+    for r in &rows {
+        let time = {
+            let secs = r.created_at % 86400;
+            let h = secs / 3600;
+            let m = (secs % 3600) / 60;
+            let s = secs % 60;
+            format!("{h:02}:{m:02}:{s:02}")
+        };
+        let path_short = if r.path.len() > 20 {
+            format!("{}...", &r.path[..17])
+        } else {
+            r.path.clone()
+        };
+        let host_short = if r.upstream_host.len() > 20 {
+            format!("{}...", &r.upstream_host[..17])
+        } else {
+            r.upstream_host.clone()
+        };
+        lines.push(format!(
+            "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
+            r.id,
+            time,
+            r.method,
+            path_short,
+            host_short,
+            r.response_status,
+            r.duration_ms,
+            format_bytes(r.request_body.len()),
+            format_bytes(r.response_body.len()),
+        ));
+    }
+    out!(ctx, "{}", lines.join("\n"));
+    Ok(())
+}
+
+fn extract_usage_from_sse(body: &[u8]) -> Option<serde_json::Value> {
+    let text = std::str::from_utf8(body).ok()?;
+    // Scan for the last "usage" object in SSE events
+    let mut last_usage = None;
+    for line in text.lines() {
+        let data = line.strip_prefix("data: ")?;
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+            if val.get("usage").is_some() {
+                last_usage = val.get("usage").cloned();
+            }
+        }
+    }
+    last_usage
+}
+
+fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
+    let row = crate::broker::proxy_log_detail(id)?
+        .ok_or_else(|| anyhow::anyhow!("No proxy log entry with id {id}"))?;
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Request #{} — {} {} → {} ({}, {}ms)",
+        row.id, row.method, row.path, row.upstream_host, row.response_status, row.duration_ms
+    ));
+
+    // Extract model from request body
+    if let Ok(req_json) = serde_json::from_slice::<serde_json::Value>(&row.request_body) {
+        if let Some(model) = req_json.get("model").and_then(|v| v.as_str()) {
+            lines.push(format!("Model: {model}"));
+        }
+        if let Some(msgs) = req_json.get("messages").and_then(|v| v.as_array()) {
+            lines.push(format!("Messages: {}", msgs.len()));
+        }
+        if let Some(tools) = req_json.get("tools").and_then(|v| v.as_array()) {
+            if !tools.is_empty() {
+                lines.push(format!("Tools: {}", tools.len()));
+            }
+        }
+    }
+
+    // Extract token usage from response (SSE stream)
+    if let Some(usage) = extract_usage_from_sse(&row.response_body) {
+        // Anthropic format
+        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            lines.push(format!("Tokens: {input} in / {output} out"));
+            if cache_read > 0 || cache_write > 0 {
+                lines.push(format!("Cache: {cache_read} read / {cache_write} write"));
+            }
+        }
+        // OpenAI format
+        if let Some(prompt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
+            let completion = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            lines.push(format!("Tokens: {prompt} prompt / {completion} completion"));
+        }
+    }
+
+    lines.push(format!(
+        "Request body: {} | Response body: {}",
+        format_bytes(row.request_body.len()),
+        format_bytes(row.response_body.len()),
+    ));
+
+    // Print request body (compact JSON)
+    lines.push(String::new());
+    lines.push("--- Request Body ---".to_string());
+    if let Ok(req_json) = serde_json::from_slice::<serde_json::Value>(&row.request_body) {
+        let compact = crate::providers::compact_json(&req_json);
+        lines.push(serde_json::to_string_pretty(&compact).unwrap_or_default());
+    } else {
+        let text = String::from_utf8_lossy(&row.request_body);
+        lines.push(text.into_owned());
+    }
+
+    // Print response body (raw SSE or JSON)
+    lines.push(String::new());
+    lines.push("--- Response Body ---".to_string());
+    let resp_text = String::from_utf8_lossy(&row.response_body);
+    // For large responses, show only the last 4KB (usage is at the end)
+    if resp_text.len() > 4096 {
+        lines.push(format!("[... {} total, showing last 4KB ...]", format_bytes(resp_text.len())));
+        lines.push(resp_text[resp_text.len() - 4096..].to_string());
+    } else {
+        lines.push(resp_text.into_owned());
+    }
+
+    out!(ctx, "{}", lines.join("\n"));
+    Ok(())
+}
+
+fn cmd_proxy_clear(ctx: &mut AppContext) -> Result<()> {
+    let count = crate::broker::proxy_log_clear()?;
+    out!(ctx, "Deleted {count} proxy log entries.");
+    Ok(())
 }

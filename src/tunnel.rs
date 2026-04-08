@@ -10,6 +10,7 @@
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -49,13 +50,15 @@ pub fn has_output_tunnel() -> bool {
 }
 
 /// Print a line to stdout and, if a tunnel is registered, to web viewers.
-/// Bare `\n` in `text` is converted to `\r\n` for the terminal emulator.
+/// Uses `\r\n` line endings so output is correct in raw terminal mode
+/// (cfmakeraw clears OPOST, which disables the kernel's `\n` → `\r\n` translation).
 pub fn tunnel_println(text: &str) {
-    println!("{text}");
+    // Normalize embedded newlines to \r\n, then append a final \r\n
+    let normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
+    print!("{normalized}\r\n");
+    let _ = std::io::stdout().flush();
     if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
-        // Normalize line endings: \r\n → \n → \r\n to avoid \r\r\n
-        let converted = text.replace("\r\n", "\n").replace('\n', "\r\n");
-        let mut data = converted.into_bytes();
+        let mut data = normalized.into_bytes();
         data.extend_from_slice(b"\r\n");
         tx.send_data(data);
     }

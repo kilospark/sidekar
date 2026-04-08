@@ -765,6 +765,16 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         ext_routable: false,
     },
     CommandSpec {
+        name: "proxy",
+        usage: "<log|show|clear> [--last=N] [--json]",
+        summary: "View captured proxy request/response payloads",
+        group: CommandGroup::System,
+        aliases: &[],
+        requires_session: false,
+        auto_launch_browser: false,
+        ext_routable: false,
+    },
+    CommandSpec {
         name: "bus",
         usage: "<who|requests|replies|show|send|done> [args]",
         summary: "Agent bus subcommands",

@@ -35,6 +35,15 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         profile
     };
 
+    // Headless browsers use a separate profile directory so they never
+    // collide with a visible browser on the same profile name.  Chrome
+    // locks the user-data-dir, so two modes can't share one directory.
+    let profile = if headless {
+        format!("{profile}.headless")
+    } else {
+        profile
+    };
+
     ctx.current_profile = profile.clone();
 
     let user_data_dir = ctx.chrome_profile_dir_for(&profile);
@@ -55,6 +64,7 @@ pub(super) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
                         }
                     }
                 }
+                ctx.headless = headless;
                 ctx.launch_browser_name = detect_browser_from_port(ctx).await;
                 out!(ctx, "Browser already running.");
                 cmd_connect(ctx).await?;
