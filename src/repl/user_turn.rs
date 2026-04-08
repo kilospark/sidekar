@@ -124,9 +124,7 @@ pub fn build_user_turn_content(
         if !before.is_empty() {
             blocks.push(ContentBlock::Text { text: before });
         }
-        let idx: usize = cap[1]
-            .parse()
-            .context("invalid [Image #N] index")?;
+        let idx: usize = cap[1].parse().context("invalid [Image #N] index")?;
         if idx == 0 || idx > ordered_paths.len() {
             anyhow::bail!(
                 "[Image #{idx}] does not match an attachment (you have {} attached)",
@@ -150,10 +148,8 @@ mod tests {
 
     #[test]
     fn bare_image_path_yields_image_block() {
-        let png = std::env::temp_dir().join(format!(
-            "sidekar_repl_img_test_{}.png",
-            std::process::id()
-        ));
+        let png =
+            std::env::temp_dir().join(format!("sidekar_repl_img_test_{}.png", std::process::id()));
         let one_pixel: [u8; 67] = [
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
             0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,

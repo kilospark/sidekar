@@ -827,10 +827,8 @@ mod tests {
             .lock()
             .unwrap_or_else(|_| panic!("failed to lock test HOME mutex"));
         let old_home = std::env::var_os("HOME");
-        let fake_home = std::env::temp_dir().join(format!(
-            "sidekar-proxy-home-test-{}",
-            std::process::id()
-        ));
+        let fake_home =
+            std::env::temp_dir().join(format!("sidekar-proxy-home-test-{}", std::process::id()));
         std::fs::create_dir_all(&fake_home).expect("create fake home");
         unsafe { std::env::set_var("HOME", &fake_home) };
 

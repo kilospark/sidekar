@@ -90,10 +90,7 @@ fn build_request_body(
                     let only_plain_text = parts.len() == 1
                         && parts[0].get("type").and_then(|v| v.as_str()) == Some("input_text");
                     if only_plain_text {
-                        let t = parts[0]
-                            .get("text")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let t = parts[0].get("text").and_then(|v| v.as_str()).unwrap_or("");
                         input.push(json!({
                             "type": "message",
                             "role": "user",
@@ -561,7 +558,10 @@ mod tests {
             Some("sess-123"),
         );
 
-        assert_eq!(body.get("prompt_cache_key").and_then(|v| v.as_str()), Some("sess-123"));
+        assert_eq!(
+            body.get("prompt_cache_key").and_then(|v| v.as_str()),
+            Some("sess-123")
+        );
     }
 
     #[test]

@@ -229,7 +229,9 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     let cmd_args = &args[cmd_start..];
     if cmd_args.is_empty() {
-        bail!("No command specified. Usage: sidekar kv exec [--keys=K1,K2] [--tag=TAG] <command> [args...]");
+        bail!(
+            "No command specified. Usage: sidekar kv exec [--keys=K1,K2] [--tag=TAG] <command> [args...]"
+        );
     }
 
     let entries = crate::broker::kv_get_for_exec(&keys, filter_tag.as_deref())?;
@@ -259,7 +261,9 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         cmd.env(k, v);
     }
 
-    let child = cmd.spawn().map_err(|e| anyhow!("Failed to spawn '{}': {}", program, e))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("Failed to spawn '{}': {}", program, e))?;
     let output = child
         .wait_with_output()
         .map_err(|e| anyhow!("Failed to wait for '{}': {}", program, e))?;

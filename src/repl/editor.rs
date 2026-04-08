@@ -322,8 +322,7 @@ impl ActivePromptSession {
         let use_raw_stdin = raw_mode.is_some();
         // While the agent runs, keep draining user input like Codex queues when `is_task_running()`:
         // poll stdin whenever we have a TTY, raw mode, or a tunnel (relay may share the session).
-        let poll_stdin =
-            use_raw_stdin || io::stdin().is_terminal() || tunnel_fd.is_some();
+        let poll_stdin = use_raw_stdin || io::stdin().is_terminal() || tunnel_fd.is_some();
         let stdin_poll_fd = if poll_stdin {
             Some(libc::STDIN_FILENO)
         } else {
@@ -334,8 +333,8 @@ impl ActivePromptSession {
         let editor_thread = editor.clone();
         let (submitted_tx, submitted_rx) = mpsc::channel();
 
-        let nfds: libc::nfds_t = (stdin_poll_fd.is_some() as u32 + tunnel_fd.is_some() as u32)
-            as libc::nfds_t;
+        let nfds: libc::nfds_t =
+            (stdin_poll_fd.is_some() as u32 + tunnel_fd.is_some() as u32) as libc::nfds_t;
         let handle = if nfds == 0 {
             None
         } else {
@@ -365,8 +364,7 @@ impl ActivePromptSession {
                                 continue;
                             }
                             let is_stdin = stdin_poll_fd.is_some_and(|fd| fd == pollfd.fd);
-                            let is_tunnel =
-                                tunnel_fd.is_some_and(|fd| fd == pollfd.fd);
+                            let is_tunnel = tunnel_fd.is_some_and(|fd| fd == pollfd.fd);
 
                             if is_stdin && !use_raw_stdin {
                                 let mut line = String::new();
@@ -592,7 +590,11 @@ impl LineEditor {
     }
 
     /// Feeds every byte in `bytes`, invoking `on_submit` for each completed line. Stops on EOF (empty buffer + Ctrl-D).
-    pub(super) fn process_input_bytes<F>(&mut self, bytes: &[u8], mut on_submit: F) -> Result<(), ()>
+    pub(super) fn process_input_bytes<F>(
+        &mut self,
+        bytes: &[u8],
+        mut on_submit: F,
+    ) -> Result<(), ()>
     where
         F: FnMut(&mut Self, SubmittedLine),
     {
@@ -656,9 +658,7 @@ impl LineEditor {
         let pw = UnicodeWidthStr::width(prefix_plain.as_str());
         let budget = cols.saturating_sub(pw);
         let preview = truncate_preview_to_width(head, budget);
-        Some(format!(
-            "\x1b[2m{prefix_plain}{preview}\x1b[0m"
-        ))
+        Some(format!("\x1b[2m{prefix_plain}{preview}\x1b[0m"))
     }
 
     /// Drain every queued follow-up into the buffer at once (joined with newlines), replacing the current draft.
@@ -1278,8 +1278,10 @@ impl LineEditor {
 
     fn beginning_of_previous_word(&self) -> usize {
         let prefix = &self.buffer[..self.cursor];
-        let Some((first_non_ws_idx, ch)) =
-            prefix.char_indices().rev().find(|&(_, ch)| !ch.is_whitespace())
+        let Some((first_non_ws_idx, ch)) = prefix
+            .char_indices()
+            .rev()
+            .find(|&(_, ch)| !ch.is_whitespace())
         else {
             return 0;
         };
@@ -1498,8 +1500,7 @@ impl LineEditor {
         pos: usize,
     ) -> usize {
         let row = &rows[row_idx];
-        self.row_prefix_width(rows, row_idx)
-            + UnicodeWidthStr::width(&self.buffer[row.start..pos])
+        self.row_prefix_width(rows, row_idx) + UnicodeWidthStr::width(&self.buffer[row.start..pos])
     }
 
     fn move_to_display_col_on_row(

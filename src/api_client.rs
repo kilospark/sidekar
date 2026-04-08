@@ -276,22 +276,28 @@ async fn do_self_update(version: &str) -> Result<()> {
                     let status = resp.status();
                     if status.is_success() {
                         match resp.bytes().await {
-                            Ok(b) => { result = Some(b); break; }
+                            Ok(b) => {
+                                result = Some(b);
+                                break;
+                            }
                             Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
                         }
                     } else if status.is_client_error() {
                         bail!("Download failed: HTTP {status} from {url}");
                     } else {
-                        last_err = Some(anyhow::anyhow!("Download failed: HTTP {status} from {url}"));
+                        last_err =
+                            Some(anyhow::anyhow!("Download failed: HTTP {status} from {url}"));
                     }
                 }
                 Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
             }
             if attempt < MAX_RETRIES - 1 {
-                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1)))
+                    .await;
             }
         }
-        result.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("Download failed after retries")))?
+        result
+            .ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("Download failed after retries")))?
     };
 
     let sig_bytes = {
@@ -303,22 +309,30 @@ async fn do_self_update(version: &str) -> Result<()> {
                     let status = resp.status();
                     if status.is_success() {
                         match resp.bytes().await {
-                            Ok(b) => { result = Some(b); break; }
+                            Ok(b) => {
+                                result = Some(b);
+                                break;
+                            }
                             Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
                         }
                     } else if status.is_client_error() {
                         bail!("Signature download failed: HTTP {status} from {sig_url}");
                     } else {
-                        last_err = Some(anyhow::anyhow!("Signature download failed: HTTP {status} from {sig_url}"));
+                        last_err = Some(anyhow::anyhow!(
+                            "Signature download failed: HTTP {status} from {sig_url}"
+                        ));
                     }
                 }
                 Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
             }
             if attempt < MAX_RETRIES - 1 {
-                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1)))
+                    .await;
             }
         }
-        result.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("Signature download failed after retries")))?
+        result.ok_or_else(|| {
+            last_err.unwrap_or_else(|| anyhow!("Signature download failed after retries"))
+        })?
     };
 
     verify_signature(&bytes, &sig_bytes).context("Signature verification failed")?;
@@ -370,8 +384,8 @@ async fn do_self_update(version: &str) -> Result<()> {
 
 /// List devices registered to the current user.
 pub async fn list_devices() -> Result<Value> {
-    let token =
-        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar device login"))?;
+    let token = crate::auth::auth_token()
+        .ok_or_else(|| anyhow!("Not logged in. Run: sidekar device login"))?;
 
     let url = format!("{}/api/auth/devices", api_base());
     let mut last_err = None;
@@ -410,8 +424,8 @@ pub async fn list_devices() -> Result<Value> {
 
 /// List active sessions for the current user.
 pub async fn list_sessions() -> Result<Value> {
-    let token =
-        crate::auth::auth_token().ok_or_else(|| anyhow!("Not logged in. Run: sidekar device login"))?;
+    let token = crate::auth::auth_token()
+        .ok_or_else(|| anyhow!("Not logged in. Run: sidekar device login"))?;
 
     let url = format!("{}/api/sessions", api_base());
     let mut last_err = None;

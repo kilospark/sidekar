@@ -5,15 +5,16 @@ use std::io::{self, BufRead, Write};
 mod editor;
 mod user_turn;
 
+use self::editor::{
+    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, SubmittedLine,
+    clear_transient_status, emit_shared_line, emit_transient_status, print_banner,
+    read_input_or_bus,
+};
 use crate::broker;
 use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
 use crate::tunnel::tunnel_println;
-use self::editor::{
-    ActivePromptSession, EscCancelWatcher, LineEditor, RawModeGuard, SubmittedLine,
-    clear_transient_status, emit_shared_line, emit_transient_status, print_banner, read_input_or_bus,
-};
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
@@ -140,14 +141,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let _cancel_watch = EscCancelWatcher::start(cancel.clone(), tunnel_input_fd);
-        let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+        let renderer =
+            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
         let renderer_for_events = renderer.clone();
-        let on_event: crate::agent::StreamCallback =
-            Box::new(move |event: &StreamEvent| {
-                if let Ok(mut guard) = renderer_for_events.lock() {
-                    guard.render(event);
-                }
-            });
+        let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
+            if let Ok(mut guard) = renderer_for_events.lock() {
+                guard.render(event);
+            }
+        });
 
         let pre_len = history.len();
         let run_result = crate::agent::run(
@@ -242,7 +243,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 continue;
             }
 
-            let mut content = match user_turn::build_user_turn_content(&sub.text, &sub.image_paths) {
+            let mut content = match user_turn::build_user_turn_content(&sub.text, &sub.image_paths)
+            {
                 Ok(c) if !c.is_empty() => c,
                 Ok(_) => continue,
                 Err(e) => {
@@ -336,9 +338,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                                     );
                                     continue;
                                 };
-                                let cancel = std::sync::Arc::new(
-                                    std::sync::atomic::AtomicBool::new(false),
-                                );
+                                let cancel =
+                                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                                 let renderer = std::sync::Arc::new(std::sync::Mutex::new(
                                     EventRenderer::new(cancel.clone()),
                                 ));
@@ -527,16 +528,19 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         // Run agent loop
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let active_prompt =
-            ActivePromptSession::start(std::mem::take(&mut line_editor), cancel.clone(), tunnel_input_fd);
-        let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+        let active_prompt = ActivePromptSession::start(
+            std::mem::take(&mut line_editor),
+            cancel.clone(),
+            tunnel_input_fd,
+        );
+        let renderer =
+            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
         let renderer_for_events = renderer.clone();
-        let on_event: crate::agent::StreamCallback =
-            Box::new(move |event: &StreamEvent| {
-                if let Ok(mut guard) = renderer_for_events.lock() {
-                    guard.render(event);
-                }
-            });
+        let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
+            if let Ok(mut guard) = renderer_for_events.lock() {
+                guard.render(event);
+            }
+        });
 
         let pre_len = history.len();
         let run_result = crate::agent::run(
@@ -916,7 +920,11 @@ impl EventRenderer {
             }
             StreamEvent::ToolCallEnd { index } => {
                 if let Some((name, args_json)) = self.tool_args.remove(index) {
-                    let display_name = if name.is_empty() { "tool" } else { name.as_str() };
+                    let display_name = if name.is_empty() {
+                        "tool"
+                    } else {
+                        name.as_str()
+                    };
                     let detail = extract_tool_summary(display_name, &args_json);
                     self.emitln(&format!(
                         "\n\x1b[2m└─\x1b[0m \x1b[36m{display_name}\x1b[0m \x1b[2m{detail}\x1b[0m"
@@ -1030,8 +1038,8 @@ fn extract_tool_summary(name: &str, args_json: &str) -> String {
         _ => {
             // For other tools, show first string field or truncated args
             if let Some(obj) = args.as_object()
-            && let Some((_, v)) = obj.iter().next()
-            && let Some(s) = v.as_str()
+                && let Some((_, v)) = obj.iter().next()
+                && let Some(s) = v.as_str()
             {
                 return truncate_display(s, 120);
             }
@@ -1197,9 +1205,16 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                     tunnel_println("No sessions found.");
                     SlashResult::Continue
                 } else {
-                    if let Some(current_idx) = sessions.iter().position(|s| s.id == *current_session) {
+                    if let Some(current_idx) =
+                        sessions.iter().position(|s| s.id == *current_session)
+                    {
                         let current = sessions.swap_remove(current_idx);
-                        tunnel_println(&format!("Current: {} ({} msgs, {})", &current.id[..8], session::message_count(&current.id).unwrap_or(0), current.model));
+                        tunnel_println(&format!(
+                            "Current: {} ({} msgs, {})",
+                            &current.id[..8],
+                            session::message_count(&current.id).unwrap_or(0),
+                            current.model
+                        ));
                     }
                     if sessions.is_empty() {
                         tunnel_println("No other sessions.");
@@ -1257,7 +1272,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                     SlashResult::Continue
                 }
             }
-        },
+        }
         "/credential" => {
             let parts: Vec<_> = input.split_whitespace().collect();
             let arg = parts.get(1).copied();
@@ -1323,8 +1338,12 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                                 if let Some((name, _)) = creds.get(idx) {
                                     let kv_key = providers::oauth::kv_key_for(name);
                                     match crate::broker::kv_delete(&kv_key) {
-                                        Ok(_) => tunnel_println(&format!("Deleted credential '{name}'.")),
-                                        Err(e) => tunnel_println(&format!("Failed to delete credential '{name}': {e}")),
+                                        Ok(_) => {
+                                            tunnel_println(&format!("Deleted credential '{name}'."))
+                                        }
+                                        Err(e) => tunnel_println(&format!(
+                                            "Failed to delete credential '{name}': {e}"
+                                        )),
                                     }
                                 } else {
                                     tunnel_println("Invalid.");
@@ -1347,7 +1366,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                     SlashResult::Continue
                 }
             }
-        },
+        }
         "/compact" => SlashResult::NeedProvider(SlashAsync::Compact),
         "/relay" => {
             let arg = input.split_whitespace().nth(1).unwrap_or("");
@@ -1368,7 +1387,7 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                     SlashResult::Continue
                 }
             }
-        },
+        }
         "/verbose" => {
             let arg = input.split_whitespace().nth(1).unwrap_or("");
             match arg {
@@ -1402,7 +1421,9 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
             tunnel_println("  /session     — List and switch sessions");
             tunnel_println("  /compact     — Compact older session context now");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
-            tunnel_println("  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)");
+            tunnel_println(
+                "  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)",
+            );
             tunnel_println("  /quit        — Exit REPL");
             tunnel_println("  /help        — Show this help");
             tunnel_println("");

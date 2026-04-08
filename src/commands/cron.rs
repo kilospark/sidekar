@@ -959,11 +959,7 @@ async fn execute_cron_job(
             if let Some(ref channel) = inherited_channel {
                 bash.env("SIDEKAR_CHANNEL", channel);
             }
-            let result = tokio::time::timeout(
-                timeout,
-                bash.output(),
-            )
-            .await;
+            let result = tokio::time::timeout(timeout, bash.output()).await;
             match result {
                 Ok(Ok(output)) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);

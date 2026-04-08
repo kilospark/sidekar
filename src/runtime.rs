@@ -52,7 +52,11 @@ pub fn pty_mode() -> bool {
 }
 
 pub fn agent_name() -> Option<String> {
-    state().agent_name.lock().ok().and_then(|guard| guard.clone())
+    state()
+        .agent_name
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
 }
 
 pub fn set_agent_name(value: Option<String>) {

@@ -390,15 +390,16 @@ pub(crate) async fn dispatch_right_click(cdp: &mut CdpClient, x: f64, y: f64) ->
 // --- Raw mouse primitives ---
 
 pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let action = args
-        .first()
-        .map(String::as_str)
-        .unwrap_or("");
+    let action = args.first().map(String::as_str).unwrap_or("");
     match action {
         "move" => {
-            let x: f64 = args.get(1).and_then(|v| v.parse().ok())
+            let x: f64 = args
+                .get(1)
+                .and_then(|v| v.parse().ok())
                 .context("Usage: mouse move <x> <y>")?;
-            let y: f64 = args.get(2).and_then(|v| v.parse().ok())
+            let y: f64 = args
+                .get(2)
+                .and_then(|v| v.parse().ok())
                 .context("Usage: mouse move <x> <y>")?;
             let (x, y) = adjust_coords_for_zoom(ctx, x, y);
             let mut cdp = open_cdp(ctx).await?;
@@ -452,7 +453,9 @@ pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<(
             cdp.close().await;
         }
         "wheel" => {
-            let delta_y: f64 = args.get(1).and_then(|v| v.parse().ok())
+            let delta_y: f64 = args
+                .get(1)
+                .and_then(|v| v.parse().ok())
                 .context("Usage: mouse wheel <deltaY> [deltaX]")?;
             let delta_x: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
             let state = ctx.load_session_state()?;
@@ -465,10 +468,15 @@ pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<(
                 json!({ "type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y }),
             )
             .await?;
-            out!(ctx, "Mouse wheel deltaY={delta_y} deltaX={delta_x} at ({x}, {y})");
+            out!(
+                ctx,
+                "Mouse wheel deltaY={delta_y} deltaX={delta_x} at ({x}, {y})"
+            );
             cdp.close().await;
         }
-        _ => bail!("Usage: mouse <move|down|up|wheel> [args]\n  mouse move <x> <y>\n  mouse down [left|right|middle]\n  mouse up [left|right|middle]\n  mouse wheel <deltaY> [deltaX]"),
+        _ => bail!(
+            "Usage: mouse <move|down|up|wheel> [args]\n  mouse move <x> <y>\n  mouse down [left|right|middle]\n  mouse up [left|right|middle]\n  mouse wheel <deltaY> [deltaX]"
+        ),
     }
     Ok(())
 }

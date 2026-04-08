@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -43,7 +44,8 @@ enum PoolCmd {
 /// A managed connection to a single Chrome tab.
 struct ManagedConn {
     cmd_tx: mpsc::UnboundedSender<PoolCmd>,
-    last_used: Arc<std::sync::atomic::AtomicU64>,
+    last_used: Arc<AtomicU64>,
+    active_clients: Arc<AtomicUsize>,
 }
 
 /// Daemon-side CDP connection pool.
@@ -63,8 +65,7 @@ impl CdpPool {
     fn get_or_create(&mut self, ws_url: &str) -> mpsc::UnboundedSender<PoolCmd> {
         if let Some(conn) = self.connections.get(ws_url) {
             if !conn.cmd_tx.is_closed() {
-                conn.last_used
-                    .store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
+                conn.last_used.store(epoch_secs(), Ordering::Relaxed);
                 return conn.cmd_tx.clone();
             }
         }
@@ -72,7 +73,8 @@ impl CdpPool {
         self.connections.remove(ws_url);
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let last_used = Arc::new(std::sync::atomic::AtomicU64::new(epoch_secs()));
+        let last_used = Arc::new(AtomicU64::new(epoch_secs()));
+        let active_clients = Arc::new(AtomicUsize::new(0));
         let ws_url_owned = ws_url.to_string();
         let last_used_clone = last_used.clone();
 
@@ -83,10 +85,26 @@ impl CdpPool {
             ManagedConn {
                 cmd_tx: cmd_tx.clone(),
                 last_used,
+                active_clients,
             },
         );
 
         cmd_tx
+    }
+
+    pub fn acquire_client(&mut self, ws_url: &str) {
+        let _ = self.get_or_create(ws_url);
+        if let Some(conn) = self.connections.get(ws_url) {
+            conn.active_clients.fetch_add(1, Ordering::Relaxed);
+            conn.last_used.store(epoch_secs(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn release_client(&mut self, ws_url: &str) {
+        if let Some(conn) = self.connections.get(ws_url) {
+            conn.active_clients.fetch_sub(1, Ordering::Relaxed);
+            conn.last_used.store(epoch_secs(), Ordering::Relaxed);
+        }
     }
 
     /// Remove idle connections that haven't been used recently.
@@ -96,7 +114,10 @@ impl CdpPool {
             if conn.cmd_tx.is_closed() {
                 return false;
             }
-            let last = conn.last_used.load(std::sync::atomic::Ordering::Relaxed);
+            if conn.active_clients.load(Ordering::Relaxed) > 0 {
+                return true;
+            }
+            let last = conn.last_used.load(Ordering::Relaxed);
             now.saturating_sub(last) < CONNECTION_IDLE_TIMEOUT_SECS
         });
     }
@@ -143,7 +164,7 @@ impl CdpPool {
 async fn connection_task(
     ws_url: String,
     mut cmd_rx: mpsc::UnboundedReceiver<PoolCmd>,
-    last_used: Arc<std::sync::atomic::AtomicU64>,
+    last_used: Arc<AtomicU64>,
 ) {
     // Try to connect (with timeout to avoid hanging on unresponsive ports)
     let mut ws = match tokio::time::timeout(Duration::from_secs(10), connect_ws(&ws_url)).await {
@@ -175,7 +196,7 @@ async fn connection_task(
                     Some(PoolCmd::Send { method, params, session_id, response_tx }) => {
                         let id = next_id;
                         next_id += 1;
-                        last_used.store(epoch_secs(), std::sync::atomic::Ordering::Relaxed);
+                        last_used.store(epoch_secs(), Ordering::Relaxed);
 
                         let mut payload = json!({
                             "id": id,
@@ -451,13 +472,14 @@ impl DaemonCdpProxy {
 
         let mut line = String::new();
         match tokio::time::timeout(wait, self.reader.read_line(&mut line)).await {
-            Ok(Ok(0)) | Ok(Err(_)) => Ok(None),
+            Ok(Ok(0)) => bail!("Daemon socket closed"),
+            Ok(Err(e)) => Err(e).context("daemon socket read error"),
             Ok(Ok(_)) => {
                 let value: Value = serde_json::from_str(line.trim())?;
                 let msg_type = value.get("type").and_then(Value::as_str).unwrap_or("");
                 match msg_type {
                     "cdp_event" => Ok(Some(value)),
-                    "cdp_disconnected" => Ok(None),
+                    "cdp_disconnected" => bail!("WebSocket closed"),
                     _ => Ok(None),
                 }
             }
@@ -486,10 +508,12 @@ pub async fn handle_cdp_connection(
     // Subscribe to events for this ws_url
     let mut event_rx = {
         let mut p = pool.lock().await;
+        p.acquire_client(&ws_url);
         p.subscribe(&ws_url)
     };
 
     let mut line = String::new();
+    let mut auto_dialog: Option<(bool, String)> = None;
 
     loop {
         tokio::select! {
@@ -505,42 +529,89 @@ pub async fn handle_cdp_connection(
                                 let params = cmd.get("params").cloned().unwrap_or(json!({}));
                                 let session_id = cmd.get("session_id").and_then(Value::as_str);
                                 let req_id = cmd.get("req_id").and_then(Value::as_u64).unwrap_or(0);
+                                auto_dialog = cmd
+                                    .get("auto_dialog")
+                                    .and_then(Value::as_object)
+                                    .and_then(|obj| {
+                                        Some((
+                                            obj.get("accept")?.as_bool()?,
+                                            obj.get("prompt_text")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or_default()
+                                                .to_string(),
+                                        ))
+                                    });
 
                                 // Dispatch under lock (brief), then await response without lock
                                 let rx = {
                                     let mut p = pool.lock().await;
                                     p.dispatch_cdp(&ws_url, method, params, session_id)
                                 };
-                                let result = match rx {
-                                    Ok(rx) => {
-                                        match tokio::time::timeout(Duration::from_secs(120), rx).await {
-                                            Ok(Ok(val)) => val,
-                                            Ok(Err(_)) => Err(anyhow::anyhow!("CDP response dropped")),
-                                            Err(_) => Err(anyhow::anyhow!("CDP response timed out after 120s")),
+                                let mut response_rx = match rx {
+                                    Ok(rx) => rx,
+                                    Err(e) => {
+                                        let response = json!({
+                                            "type": "cdp_resp",
+                                            "req_id": req_id,
+                                            "error": format!("{e:#}"),
+                                        });
+                                        if write_daemon_line(&mut writer, &response).await.is_err() {
+                                            break;
+                                        }
+                                        line.clear();
+                                        continue;
+                                    }
+                                };
+
+                                loop {
+                                    tokio::select! {
+                                        result = tokio::time::timeout(Duration::from_secs(120), &mut response_rx) => {
+                                            let result = match result {
+                                                Ok(Ok(val)) => val,
+                                                Ok(Err(_)) => Err(anyhow::anyhow!("CDP response dropped")),
+                                                Err(_) => Err(anyhow::anyhow!("CDP response timed out after 120s")),
+                                            };
+
+                                            let response = match result {
+                                                Ok(val) => json!({
+                                                    "type": "cdp_resp",
+                                                    "req_id": req_id,
+                                                    "result": val,
+                                                }),
+                                                Err(e) => json!({
+                                                    "type": "cdp_resp",
+                                                    "req_id": req_id,
+                                                    "error": format!("{e:#}"),
+                                                }),
+                                            };
+
+                                            if write_daemon_line(&mut writer, &response).await.is_err() {
+                                                pool.lock().await.release_client(&ws_url);
+                                                return;
+                                            }
+                                            break;
+                                        }
+                                        event = event_rx.recv() => {
+                                            let Some(value) = event else {
+                                                pool.lock().await.release_client(&ws_url);
+                                                return;
+                                            };
+                                            match process_pool_event(
+                                                &pool,
+                                                &ws_url,
+                                                &mut writer,
+                                                &auto_dialog,
+                                                value,
+                                            ).await {
+                                                Ok(true) => {}
+                                                Ok(false) | Err(_) => {
+                                                    pool.lock().await.release_client(&ws_url);
+                                                    return;
+                                                }
+                                            }
                                         }
                                     }
-                                    Err(e) => Err(e),
-                                };
-
-                                let response = match result {
-                                    Ok(val) => json!({
-                                        "type": "cdp_resp",
-                                        "req_id": req_id,
-                                        "result": val,
-                                    }),
-                                    Err(e) => json!({
-                                        "type": "cdp_resp",
-                                        "req_id": req_id,
-                                        "error": format!("{e:#}"),
-                                    }),
-                                };
-
-                                let mut out = serde_json::to_string(&response).unwrap_or_default();
-                                out.push('\n');
-                                if writer.write_all(out.as_bytes()).await.is_err() {
-                                    break;
                                 }
-                                let _ = writer.flush().await;
                             }
                         }
                         line.clear();
@@ -552,31 +623,26 @@ pub async fn handle_cdp_connection(
             event = event_rx.recv() => {
                 match event {
                     Some(value) => {
-                        // Check for disconnect
-                        let is_disc = value.get("type").and_then(Value::as_str) == Some("cdp_disconnected");
-
-                        let wrapper = if is_disc {
-                            json!({"type": "cdp_disconnected"})
-                        } else {
-                            json!({
-                                "type": "cdp_event",
-                                "method": value.get("method").cloned().unwrap_or(Value::Null),
-                                "params": value.get("params").cloned().unwrap_or(Value::Null),
-                            })
-                        };
-
-                        let mut out = serde_json::to_string(&wrapper).unwrap_or_default();
-                        out.push('\n');
-                        if writer.write_all(out.as_bytes()).await.is_err() {
-                            break;
+                        match process_pool_event(
+                            &pool,
+                            &ws_url,
+                            &mut writer,
+                            &auto_dialog,
+                            value,
+                        ).await {
+                            Ok(true) => {}
+                            Ok(false) | Err(_) => {
+                                break;
+                            }
                         }
-                        let _ = writer.flush().await;
                     }
                     None => break, // Connection pool dropped the sender
                 }
             }
         }
     }
+
+    pool.lock().await.release_client(&ws_url);
 }
 
 // ---------------------------------------------------------------------------
@@ -588,4 +654,50 @@ fn epoch_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+async fn write_daemon_line(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    value: &Value,
+) -> std::io::Result<()> {
+    let mut out = serde_json::to_string(value).unwrap_or_default();
+    out.push('\n');
+    writer.write_all(out.as_bytes()).await?;
+    writer.flush().await
+}
+
+async fn process_pool_event(
+    pool: &Arc<Mutex<CdpPool>>,
+    ws_url: &str,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    auto_dialog: &Option<(bool, String)>,
+    value: Value,
+) -> Result<bool> {
+    if value.get("type").and_then(Value::as_str) == Some("cdp_disconnected") {
+        write_daemon_line(writer, &json!({"type": "cdp_disconnected"})).await?;
+        return Ok(false);
+    }
+
+    if value.get("method").and_then(Value::as_str) == Some("Page.javascriptDialogOpening")
+        && let Some((accept, prompt_text)) = auto_dialog
+    {
+        let mut params = json!({ "accept": *accept });
+        if !prompt_text.is_empty() {
+            params["promptText"] = json!(prompt_text);
+        }
+        let rx = {
+            let mut p = pool.lock().await;
+            p.dispatch_cdp(ws_url, "Page.handleJavaScriptDialog", params, None)?
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(10), rx).await;
+        return Ok(true);
+    }
+
+    let wrapper = json!({
+        "type": "cdp_event",
+        "method": value.get("method").cloned().unwrap_or(Value::Null),
+        "params": value.get("params").cloned().unwrap_or(Value::Null),
+    });
+    write_daemon_line(writer, &wrapper).await?;
+    Ok(true)
 }

@@ -444,7 +444,7 @@ pub async fn run_agent(
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
         let input_state = Arc::new(crate::poller::UserInputState::default());
-        crate::poller::start_poller(identity.name.clone(), master_arc.clone(), input_state.clone());
+        crate::poller::start_poller(identity.name.clone(), master_arc.clone(), input_state.clone(), child_pid);
 
         Ok((master_arc, identity, nick, agent_session_id, input_state))
     })();

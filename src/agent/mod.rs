@@ -153,7 +153,8 @@ pub async fn run(
             {
                 return Err(Cancelled.into());
             }
-            let arguments_json = serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string());
+            let arguments_json =
+                serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string());
             on_event(&StreamEvent::ToolExec {
                 name: name.clone(),
                 arguments_json,

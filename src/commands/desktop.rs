@@ -98,10 +98,8 @@ pub(super) async fn cmd_desktop_screenshot(ctx: &mut AppContext, args: &[String]
         } else {
             let mut out_file = std::fs::File::create(&out_path)
                 .with_context(|| format!("failed to create {}", out_path.display()))?;
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                &mut out_file,
-                quality as u8,
-            );
+            let encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out_file, quality as u8);
             img.write_with_encoder(encoder)
                 .context("failed to encode JPEG")?;
         }

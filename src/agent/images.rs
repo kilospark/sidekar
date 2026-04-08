@@ -64,10 +64,7 @@ pub fn affix_image_path_citations(blocks: &mut Vec<ContentBlock>) {
                 ..
             } if !data_base64.is_empty() && !p.is_empty() => {
                 let prev = i.checked_sub(1).and_then(|j| blocks.get(j));
-                (
-                    !text_block_contains_path(prev, p.as_str()),
-                    p.clone(),
-                )
+                (!text_block_contains_path(prev, p.as_str()), p.clone())
             }
             _ => (false, String::new()),
         };
@@ -133,13 +130,11 @@ mod tests {
     fn strip_replaces_image_with_path_text() {
         let mut history = vec![ChatMessage {
             role: Role::User,
-            content: vec![
-                ContentBlock::Image {
-                    media_type: "image/png".into(),
-                    data_base64: "abcd".into(),
-                    source_path: Some("/tmp/x.png".into()),
-                },
-            ],
+            content: vec![ContentBlock::Image {
+                media_type: "image/png".into(),
+                data_base64: "abcd".into(),
+                source_path: Some("/tmp/x.png".into()),
+            }],
         }];
         strip_user_image_blobs_from_history(&mut history);
         assert_eq!(history[0].content.len(), 1);

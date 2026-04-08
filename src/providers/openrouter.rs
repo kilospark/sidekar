@@ -87,9 +87,9 @@ fn build_request_body(
                         return;
                     }
                     let multimodal = parts.len() > 1
-                        || parts.iter().any(|p| {
-                            p.get("type").and_then(|v| v.as_str()) == Some("image_url")
-                        });
+                        || parts
+                            .iter()
+                            .any(|p| p.get("type").and_then(|v| v.as_str()) == Some("image_url"));
                     if multimodal {
                         api_messages.push(json!({
                             "role": "user",
@@ -362,9 +362,7 @@ async fn parse_sse_stream(
                                 });
                             }
                             pending_tool_calls[tc_index].index = tc_index;
-                            pending_tool_calls[tc_index]
-                                .arguments
-                                .push_str(args_delta);
+                            pending_tool_calls[tc_index].arguments.push_str(args_delta);
                             let _ = tx.send(StreamEvent::ToolCallDelta {
                                 index: tc_index,
                                 delta: args_delta.to_string(),

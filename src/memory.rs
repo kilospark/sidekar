@@ -377,8 +377,7 @@ fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         let scope: String = row.get(3)?;
         let summary: String = row.get(4)?;
         let confidence: f64 = row.get(5)?;
-        let tags: Vec<String> =
-            serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default();
+        let tags: Vec<String> = serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default();
         let scope_label = if scope == "global" { " [global]" } else { "" };
         let tags_label = if tags.is_empty() {
             String::new()
@@ -387,7 +386,14 @@ fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         };
         out!(
             ctx,
-            "[{}] {} ({}, {:.2}, {}){}{}", id, summary, etype, confidence, proj, scope_label, tags_label
+            "[{}] {} ({}, {:.2}, {}){}{}",
+            id,
+            summary,
+            etype,
+            confidence,
+            proj,
+            scope_label,
+            tags_label
         );
     }
     if count == 0 {
@@ -578,7 +584,6 @@ fn cmd_memory_detail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     out!(ctx, "updated_at: {}", row.15);
     Ok(())
 }
-
 
 fn write_memory_event(
     project: &str,
@@ -1154,7 +1159,6 @@ where
     }
     Ok(())
 }
-
 
 fn event_tags(conn: &rusqlite::Connection, id: i64) -> Result<Vec<String>> {
     let tags = conn.query_row(

@@ -756,13 +756,19 @@ mod tests {
         );
 
         assert_eq!(
-            body.system.last().and_then(|block| block.get("cache_control")),
+            body.system
+                .last()
+                .and_then(|block| block.get("cache_control")),
             Some(&json!({"type": "ephemeral"}))
         );
         assert_eq!(body.messages.len(), 5);
-        assert!(body.messages[0].get("content").and_then(|v| v.as_array()).and_then(|parts| {
-            parts.last().and_then(|part| part.get("cache_control"))
-        }).is_none());
+        assert!(
+            body.messages[0]
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|parts| { parts.last().and_then(|part| part.get("cache_control")) })
+                .is_none()
+        );
         assert_eq!(
             body.messages[1]
                 .get("content")
@@ -779,9 +785,13 @@ mod tests {
                 .and_then(|part| part.get("cache_control")),
             Some(&json!({"type": "ephemeral"}))
         );
-        assert!(body.messages[3].get("content").and_then(|v| v.as_array()).and_then(|parts| {
-            parts.last().and_then(|part| part.get("cache_control"))
-        }).is_none());
+        assert!(
+            body.messages[3]
+                .get("content")
+                .and_then(|v| v.as_array())
+                .and_then(|parts| { parts.last().and_then(|part| part.get("cache_control")) })
+                .is_none()
+        );
         assert_eq!(
             body.messages[4]
                 .get("content")
@@ -812,7 +822,10 @@ mod tests {
             .get("content")
             .and_then(|v| v.as_array())
             .expect("oauth text content should be converted to block array");
-        assert_eq!(content[0].get("text").and_then(|v| v.as_str()), Some("hello"));
+        assert_eq!(
+            content[0].get("text").and_then(|v| v.as_str()),
+            Some("hello")
+        );
         assert_eq!(
             content[0].get("cache_control"),
             Some(&json!({"type": "ephemeral"}))

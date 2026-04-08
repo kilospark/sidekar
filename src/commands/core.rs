@@ -1749,10 +1749,7 @@ pub(super) async fn cmd_grid(ctx: &mut AppContext, args: &[String]) -> Result<()
 // --- Screencast / live preview ---
 
 pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let action = args
-        .first()
-        .map(String::as_str)
-        .unwrap_or("");
+    let action = args.first().map(String::as_str).unwrap_or("");
     match action {
         "start" => {
             let quality: u32 = args
@@ -1796,9 +1793,7 @@ pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                 .current_session_id
                 .clone()
                 .unwrap_or_else(|| "default".to_string());
-            let frame_path = ctx
-                .tmp_dir()
-                .join(format!("sidekar-screencast-{sid}.jpg"));
+            let frame_path = ctx.tmp_dir().join(format!("sidekar-screencast-{sid}.jpg"));
             let mut frames_received = 0u32;
             let deadline = Instant::now() + Duration::from_secs(2);
             while Instant::now() < deadline {
@@ -1806,16 +1801,10 @@ pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                 let Some(event) = cdp.next_event(remain).await? else {
                     break;
                 };
-                if event
-                    .get("method")
-                    .and_then(Value::as_str)
-                    == Some("Page.screencastFrame")
-                {
+                if event.get("method").and_then(Value::as_str) == Some("Page.screencastFrame") {
                     if let Some(params) = event.get("params") {
-                        let session_id = params
-                            .get("sessionId")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
+                        let session_id =
+                            params.get("sessionId").and_then(Value::as_i64).unwrap_or(0);
                         if let Some(data) = params.get("data").and_then(Value::as_str) {
                             if let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(data)
@@ -1868,9 +1857,7 @@ pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                 .current_session_id
                 .clone()
                 .unwrap_or_else(|| "default".to_string());
-            let frame_path = ctx
-                .tmp_dir()
-                .join(format!("sidekar-screencast-{sid}.jpg"));
+            let frame_path = ctx.tmp_dir().join(format!("sidekar-screencast-{sid}.jpg"));
 
             // Drain pending frames to get the latest
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -1880,16 +1867,10 @@ pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                 let Some(event) = cdp.next_event(remain).await? else {
                     break;
                 };
-                if event
-                    .get("method")
-                    .and_then(Value::as_str)
-                    == Some("Page.screencastFrame")
-                {
+                if event.get("method").and_then(Value::as_str) == Some("Page.screencastFrame") {
                     if let Some(params) = event.get("params") {
-                        let session_id = params
-                            .get("sessionId")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
+                        let session_id =
+                            params.get("sessionId").and_then(Value::as_i64).unwrap_or(0);
                         if let Some(data) = params.get("data").and_then(Value::as_str) {
                             if let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(data)
@@ -1919,7 +1900,9 @@ pub(super) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
             }
             cdp.close().await;
         }
-        _ => bail!("Usage: screencast <start|stop|frame> [--fps=N] [--quality=N] [--width=N] [--height=N]"),
+        _ => bail!(
+            "Usage: screencast <start|stop|frame> [--fps=N] [--quality=N] [--width=N] [--height=N]"
+        ),
     }
     Ok(())
 }

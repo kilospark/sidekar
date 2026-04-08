@@ -132,9 +132,7 @@ fn safe_commit_end(source: &str) -> usize {
     // Check if the pipe block contains a separator (confirmed table)
     let has_separator = lines[pipe_start..].iter().any(|l| {
         let t = l.trim();
-        t.starts_with('|')
-            && t.len() > 2
-            && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+        t.starts_with('|') && t.len() > 2 && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
     });
 
     if has_separator {
