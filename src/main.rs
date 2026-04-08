@@ -539,7 +539,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if command == "daemon" {
         let sub = args.first().map(|s| s.as_str()).unwrap_or("");
         match sub {
-            "run" => return sidekar::daemon::run().await,
+            "start" => return sidekar::daemon::start().await,
             "relaunch" => {
                 let old_pid = args
                     .get(1)
@@ -562,7 +562,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
                 }
             }
             _ => {
-                eprintln!("Usage: sidekar daemon [run|stop|restart|status]");
+                eprintln!("Usage: sidekar daemon [start|stop|restart|status]");
                 std::process::exit(1);
             }
         }
