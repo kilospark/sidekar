@@ -243,16 +243,14 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         secrets.push((e.key.clone(), e.value.clone()));
     }
 
-    // Build command with env var expansion
+    // Pass args as-is — secrets are injected only as env vars to avoid
+    // leaking values in the process argv (visible via ps/proc).
     let program = &cmd_args[0];
-    let program_args: Vec<String> = cmd_args[1..]
-        .iter()
-        .map(|arg| expand_env_vars(arg, &secrets))
-        .collect();
+    let program_args = &cmd_args[1..];
 
     // Spawn subprocess with secrets injected as env vars
     let mut cmd = std::process::Command::new(program);
-    cmd.args(&program_args);
+    cmd.args(program_args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -291,16 +289,6 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Expand $VAR and ${VAR} references in a string using provided secrets.
-fn expand_env_vars(input: &str, secrets: &[(String, String)]) -> String {
-    let mut result = input.to_string();
-    for (name, value) in secrets {
-        result = result.replace(&format!("${{{}}}", name), value);
-        result = result.replace(&format!("${}", name), value);
-    }
-    result
 }
 
 /// Replace all occurrences of secret values with [REDACTED].

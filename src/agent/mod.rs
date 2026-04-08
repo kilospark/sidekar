@@ -39,6 +39,10 @@ pub async fn run(
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
     prompt_cache_key: Option<&str>,
 ) -> Result<bool, anyhow::Error> {
+    // Reset error flag from any prior turn so a stale flag doesn't suppress
+    // error display in this turn.
+    set_error_displayed(false);
+
     let mut context_window: Option<u32> = None;
     let mut did_compact = false;
 

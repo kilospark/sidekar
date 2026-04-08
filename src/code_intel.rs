@@ -142,7 +142,7 @@ const RUST_QUERY: &str = r#"
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enum_def
 (trait_item name: (type_identifier) @name) @trait_def
-(impl_item type: (type_identifier) @name) @impl_def
+(impl_item type: [(type_identifier) (generic_type)] @name) @impl_def
 (use_declaration) @import
 (const_item name: (identifier) @name) @const_def
 (static_item name: (identifier) @name) @static_def

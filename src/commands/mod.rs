@@ -1073,7 +1073,9 @@ fn extract_usage_from_sse(body: &[u8]) -> Option<serde_json::Value> {
     // Scan for the last "usage" object in SSE events
     let mut last_usage = None;
     for line in text.lines() {
-        let data = line.strip_prefix("data: ")?;
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
             if val.get("usage").is_some() {
                 last_usage = val.get("usage").cloned();
@@ -1151,7 +1153,12 @@ fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
     // For large responses, show only the last 4KB (usage is at the end)
     if resp_text.len() > 4096 {
         lines.push(format!("[... {} total, showing last 4KB ...]", format_bytes(resp_text.len())));
-        lines.push(resp_text[resp_text.len() - 4096..].to_string());
+        // Find a char boundary at or after the target offset
+        let target = resp_text.len() - 4096;
+        let start = (target..resp_text.len())
+            .find(|&i| resp_text.is_char_boundary(i))
+            .unwrap_or(resp_text.len());
+        lines.push(resp_text[start..].to_string());
     } else {
         lines.push(resp_text.into_owned());
     }

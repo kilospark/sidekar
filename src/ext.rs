@@ -353,6 +353,7 @@ pub async fn cli_exec_end(state: &SharedExtState, connection_id: u64) {
     let mut s = state.lock().await;
     if let Some(conn) = s.connections.get_mut(&connection_id) {
         conn.cli_exec_inflight = conn.cli_exec_inflight.saturating_sub(1);
+        conn.last_contact = epoch_secs();
     }
 }
 
