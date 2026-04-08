@@ -1322,8 +1322,10 @@ fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
                             if let Ok(idx) = choice.parse::<usize>() {
                                 if let Some((name, _)) = creds.get(idx) {
                                     let kv_key = providers::oauth::kv_key_for(name);
-                                    let _ = crate::broker::kv_delete(&kv_key);
-                                    tunnel_println(&format!("Deleted credential '{name}'."));
+                                    match crate::broker::kv_delete(&kv_key) {
+                                        Ok(_) => tunnel_println(&format!("Deleted credential '{name}'.")),
+                                        Err(e) => tunnel_println(&format!("Failed to delete credential '{name}': {e}")),
+                                    }
                                 } else {
                                     tunnel_println("Invalid.");
                                 }

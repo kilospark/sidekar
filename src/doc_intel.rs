@@ -94,11 +94,11 @@ fn build_sections(source: &str) -> Vec<Section> {
 
     for (i, heading) in headings.iter().enumerate() {
         let body_start = heading.line; // line after heading (1-based, heading.line is the heading line)
-        let body_end = if i + 1 < headings.len() {
-            headings[i + 1].line - 1
-        } else {
-            total_lines
-        };
+        let body_end = headings[i + 1..]
+            .iter()
+            .find(|h| h.level <= heading.level)
+            .map(|h| h.line - 1)
+            .unwrap_or(total_lines);
 
         // Collect body lines (skip the heading line itself)
         let body = if body_start < total_lines {
