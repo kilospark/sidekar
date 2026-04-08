@@ -136,6 +136,18 @@ impl AgentCliSpec for OpenCode {
     }
 }
 
+/// Pi: `--append-system-prompt` adds to the default system prompt (see pi coding-agent CLI).
+fn enrich_pi_startup(user_args: &[String]) -> Vec<String> {
+    if user_args.iter().any(|a| a.as_str() == STARTUP_INJECT) {
+        return user_args.to_vec();
+    }
+    let mut out = Vec::with_capacity(user_args.len().saturating_add(2));
+    out.push("--append-system-prompt".into());
+    out.push(STARTUP_INJECT.to_string());
+    out.extend(user_args.iter().cloned());
+    out
+}
+
 struct Pi;
 
 impl AgentCliSpec for Pi {
@@ -143,40 +155,9 @@ impl AgentCliSpec for Pi {
         &["pi"]
     }
 
-    fn enrich_startup(&self, _invoked_as: &str, user_args: &[String]) -> Vec<String> {
-        user_args.to_vec()
-    }
-
-    fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
-        ProxyEnvFlags::default()
-    }
-}
-
-struct Aider;
-
-impl AgentCliSpec for Aider {
-    fn ids(&self) -> &'static [&'static str] {
-        &["aider"]
-    }
-
-    fn enrich_startup(&self, _invoked_as: &str, user_args: &[String]) -> Vec<String> {
-        user_args.to_vec()
-    }
-
-    fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
-        ProxyEnvFlags::default()
-    }
-}
-
-struct Goose;
-
-impl AgentCliSpec for Goose {
-    fn ids(&self) -> &'static [&'static str] {
-        &["goose"]
-    }
-
-    fn enrich_startup(&self, _invoked_as: &str, user_args: &[String]) -> Vec<String> {
-        user_args.to_vec()
+    fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
+        debug_assert_eq!(invoked_as, "pi");
+        enrich_pi_startup(user_args)
     }
 
     fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
@@ -190,8 +171,6 @@ static CURSOR_FAMILY: CursorFamily = CursorFamily;
 static GEMINI: Gemini = Gemini;
 static OPENCODE: OpenCode = OpenCode;
 static PI: Pi = Pi;
-static AIDER: Aider = Aider;
-static GOOSE: Goose = Goose;
 
 static REGISTRY: &[&dyn AgentCliSpec] = &[
     &CLAUDE,
@@ -200,8 +179,6 @@ static REGISTRY: &[&dyn AgentCliSpec] = &[
     &GEMINI,
     &OPENCODE,
     &PI,
-    &AIDER,
-    &GOOSE,
 ];
 
 pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
@@ -308,15 +285,17 @@ mod tests {
     }
 
     #[test]
-    fn enrich_pi_and_goose_untouched() {
-        assert_eq!(enrich("pi", &[]), Vec::<String>::new());
-        assert_eq!(enrich("goose", &[]), Vec::<String>::new());
+    fn enrich_pi_prepends_append_system_prompt() {
+        let out = enrich("pi", &[]);
+        assert_eq!(out[0], "--append-system-prompt");
+        assert_eq!(out[1], STARTUP_INJECT);
+        assert_eq!(out.len(), 2);
     }
 
     #[test]
-    fn enrich_aider_registered() {
-        assert_eq!(enrich("aider", &[]), Vec::<String>::new());
-        assert!(is_pty_agent("aider"));
+    fn enrich_pi_skips_duplicate_starter_arg() {
+        let out = enrich("pi", &[STARTUP_INJECT]);
+        assert_eq!(out, vec![STARTUP_INJECT]);
     }
 
     #[test]
@@ -328,6 +307,8 @@ mod tests {
     fn is_pty_agent_matches_registry() {
         assert!(is_pty_agent("claude"));
         assert!(is_pty_agent("pi"));
+        assert!(!is_pty_agent("aider"));
+        assert!(!is_pty_agent("goose"));
         assert!(!is_pty_agent("not-an-agent"));
     }
 }
