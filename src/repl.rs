@@ -100,7 +100,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         broker::try_log_error("bus", &format!("registration failed: {e}"), None);
     }
 
-    crate::bus::set_terminal_title(&format!("{nick} — sidekar repl"));
+    crate::bus::set_terminal_title(&format!("{nick} - sidekar repl"));
 
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
