@@ -424,7 +424,7 @@ impl SidekarBusState {
             let nick = inherited.nick.as_deref().unwrap_or("?");
             let name = &inherited.name;
             let agent_type = detect_agent_type();
-            set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
+            set_terminal_title(&format!("{nick} ({name}) - {agent_type}"));
             self.pane_unique_id = inherited.pane.clone();
             self.inherited_pty = true;
             self.identity = Some(inherited);
@@ -475,7 +475,7 @@ impl SidekarBusState {
         if let (Some(name), Some(nick), Some(_channel)) = (self.name(), self.nick(), self.channel())
         {
             let agent_type = detect_agent_type();
-            set_terminal_title(&format!("{nick} ({name}) — {agent_type}"));
+            set_terminal_title(&format!("{nick} ({name}) - {agent_type}"));
         }
     }
 }
