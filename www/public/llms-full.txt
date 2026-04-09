@@ -83,7 +83,7 @@ Core tools are always available. Extended tools load on demand via `tools(action
 - **media**: viewport, zoom, grid, media, animations, pdf, download
 - **desktop**: desktop_screenshot, desktop_apps, desktop_windows, desktop_find, desktop_click, desktop_launch, desktop_activate, desktop_quit
 - **session**: hover, lock, unlock, activate, minimize, kill, monitor, frames, frame
-- **meta**: feedback, config, install
+- **meta**: config, install
 
 ## Tab Isolation
 

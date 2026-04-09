@@ -29,15 +29,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
-        "feedback",
-        "<rating> [comment]",
-        "Send a rating and optional comment",
-        CommandGroup::System,
-        false,
-        false,
-        false,
-    ),
-    spec(
         "event",
         "<list|clear> [--level=error|debug|info] [N]",
         "View or clear the local event log",

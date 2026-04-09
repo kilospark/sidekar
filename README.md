@@ -315,8 +315,6 @@ Stored in `~/.config/sidekar/sidekar.json`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `telemetry` | `true` | Anonymous usage stats (tool counts, session duration) |
-| `feedback` | `true` | Allow feedback prompt after extended sessions |
 | `browser` | auto-detect | Preferred browser (chrome, edge, brave, arc, vivaldi, chromium) |
 | `auto_update` | `true` | Auto-check and download updates hourly |
 | `max_tabs` | `20` | Maximum tabs per session |
@@ -376,7 +374,7 @@ src/
 ├── types.rs             # SessionState, DebugTab, InteractiveElement, etc.
 ├── utils.rs             # Browser detection, key mapping, file helpers
 ├── config.rs            # SidekarConfig (JSON in ~/.config/sidekar/)
-├── api_client.rs        # Telemetry, feedback, version check, self-update
+├── api_client.rs        # Version check, self-update
 └── auth.rs              # Device auth flow (GitHub OAuth)
 
 relay/                   # Relay server (Fly.io deployed, WSS + bus fan-out)

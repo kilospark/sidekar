@@ -45,18 +45,6 @@ impl RelayMode {
 
 pub static CONFIG_KEYS: &[ConfigKey] = &[
     ConfigKey {
-        key: "telemetry",
-        kind: ConfigKind::Bool,
-        default: "true",
-        description: "Send anonymous usage counts",
-    },
-    ConfigKey {
-        key: "feedback",
-        kind: ConfigKind::Bool,
-        default: "true",
-        description: "Allow sending feedback",
-    },
-    ConfigKey {
         key: "browser",
         kind: ConfigKind::String,
         default: "",
@@ -101,10 +89,6 @@ pub fn find_key(key: &str) -> Option<&'static ConfigKey> {
 /// The struct is kept for in-memory convenience. It's populated from SQLite.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidekarConfig {
-    #[serde(default = "default_true")]
-    pub telemetry: bool,
-    #[serde(default = "default_true")]
-    pub feedback: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
     #[serde(default = "default_true")]
@@ -138,8 +122,6 @@ fn default_max_cron_jobs() -> usize {
 impl Default for SidekarConfig {
     fn default() -> Self {
         Self {
-            telemetry: true,
-            feedback: true,
             browser: None,
             auto_update: true,
             relay: default_relay(),
@@ -252,8 +234,6 @@ pub fn load_config() -> SidekarConfig {
         .as_str()
         .to_string();
     SidekarConfig {
-        telemetry: get_bool("telemetry"),
-        feedback: get_bool("feedback"),
         browser: if browser_val.is_empty() {
             None
         } else {
@@ -269,8 +249,6 @@ pub fn load_config() -> SidekarConfig {
 
 /// Save all fields from a SidekarConfig struct.
 pub fn save_config(config: &SidekarConfig) -> Result<()> {
-    config_set("telemetry", &config.telemetry.to_string())?;
-    config_set("feedback", &config.feedback.to_string())?;
     config_set("browser", config.browser.as_deref().unwrap_or(""))?;
     config_set("auto_update", &config.auto_update.to_string())?;
     let relay = RelayMode::parse(&config.relay).unwrap_or(RelayMode::Auto);

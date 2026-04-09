@@ -24,11 +24,7 @@ www/
 │   ├── sessions.js      # GET /api/sessions: active sessions from MongoDB
 │   ├── devices.js       # GET/DELETE /api/devices: device management
 │   ├── v1/
-│   │   ├── version.js   # GET  /v1/version: GitHub release check
-│   │   ├── telemetry.js # POST /v1/telemetry: session telemetry
-│   │   ├── feedback.js  # POST /v1/feedback: user ratings
-│   │   ├── stats.js     # GET  /v1/stats: aggregated tool/rating stats
-│   │   └── reviews.js   # GET  /v1/reviews: public feedback reviews
+│   │   └── version.js   # GET  /v1/version: GitHub release check
 │   ├── download/
 │   │   └── [...path].js # GET  /download/:version?/:asset: binary proxy
 │   └── script.js        # GET  /install, /uninstall: shell script proxy

@@ -190,9 +190,8 @@ Watches Chrome tabs for title/favicon changes via CDP
 
 ### Config (`src/config.rs`)
 
-SQLite config table in `~/.sidekar/sidekar.sqlite3`. Keys: `telemetry`,
-`feedback`, `browser`, `auto_update`, `relay_pty`, `max_tabs`,
-`cdp_timeout_secs`, `max_cron_jobs`.
+SQLite config table in `~/.sidekar/sidekar.sqlite3`. Keys: `browser`,
+`auto_update`, `relay_pty`, `max_tabs`, `cdp_timeout_secs`, `max_cron_jobs`.
 
 ### KV Store (`src/commands/kv.rs`)
 

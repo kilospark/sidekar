@@ -13,17 +13,6 @@ const db = client.db(DB_NAME);
 
 console.log(`Connected to ${DB_NAME}`);
 
-// Telemetry indexes
-await db.collection("telemetry").createIndex({ created_at: 1 });
-await db.collection("telemetry").createIndex({ version: 1 });
-console.log("  telemetry: created_at, version");
-
-// Feedback indexes
-await db.collection("feedback").createIndex({ created_at: 1 });
-await db.collection("feedback").createIndex({ rating: 1 });
-await db.collection("feedback").createIndex({ status: 1 });
-console.log("  feedback: created_at, rating, status");
-
 // Users indexes
 await db.collection("users").createIndex({ github_id: 1 }, { unique: true, sparse: true });
 await db.collection("users").createIndex({ google_id: 1 }, { unique: true, sparse: true });
