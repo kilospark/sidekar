@@ -1,5 +1,3 @@
-use std::fmt::Write;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandGroup {
     Browser,
@@ -15,7 +13,7 @@ pub enum CommandGroup {
 }
 
 impl CommandGroup {
-    fn title(self) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
             Self::Browser => "Browser",
             Self::Page => "Page",
@@ -1087,6 +1085,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         ext_routable: false,
     },
 ];
+
+pub fn command_specs() -> &'static [CommandSpec] {
+    COMMAND_SPECS
+}
 
 fn handler_name(public_name: &str) -> &str {
     match public_name {
