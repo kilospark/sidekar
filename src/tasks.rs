@@ -27,9 +27,8 @@ pub fn cmd_tasks(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "depend" => cmd_tasks_depend(ctx, &args[1..]),
         "undepend" => cmd_tasks_undepend(ctx, &args[1..]),
         "deps" => cmd_tasks_deps(ctx, &args[1..]),
-        "" => bail!(
-            "Usage: sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ..."
-        ),
+        "" => cmd_tasks_list(ctx, args),
+        other if other.starts_with('-') => cmd_tasks_list(ctx, args),
         other => bail!("Unknown tasks subcommand: {other}"),
     }
 }
@@ -111,16 +110,41 @@ fn cmd_tasks_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    let mut printed = false;
-    for row in rows {
+    // Pre-filter rows for ready/blocked
+    let filtered: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            let unfinished = unfinished_dependency_count(&conn, row.id).unwrap_or(0);
+            if ready_only && unfinished > 0 {
+                return false;
+            }
+            if blocked_only && unfinished == 0 {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        out!(ctx, "0 tasks.");
+        return Ok(());
+    }
+
+    let blocked_count = filtered
+        .iter()
+        .filter(|r| unfinished_dependency_count(&conn, r.id).unwrap_or(0) > 0)
+        .count();
+    let ready_count = filtered.len() - blocked_count;
+    out!(
+        ctx,
+        "{} tasks ({} ready, {} blocked):",
+        filtered.len(),
+        ready_count,
+        blocked_count
+    );
+
+    for row in &filtered {
         let unfinished = unfinished_dependency_count(&conn, row.id)?;
-        if ready_only && unfinished > 0 {
-            continue;
-        }
-        if blocked_only && unfinished == 0 {
-            continue;
-        }
-        printed = true;
         let marker = if row.status == "done" { 'x' } else { ' ' };
         let state = if unfinished > 0 {
             format!(" blocked-by={unfinished}")
@@ -129,7 +153,7 @@ fn cmd_tasks_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         } else {
             String::new()
         };
-        let scope = render_scope_suffix(&row, scope_view, project.as_deref());
+        let scope = render_scope_suffix(row, scope_view, project.as_deref());
         out!(
             ctx,
             "[{}] [{}] p={} {}{}{}",
@@ -140,9 +164,6 @@ fn cmd_tasks_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             scope,
             state
         );
-    }
-    if !printed {
-        out!(ctx, "No tasks found.");
     }
     Ok(())
 }

@@ -809,10 +809,10 @@ pub fn cmd_who(
 
     if agents.is_empty() {
         if show_all {
-            out!(ctx, "No agents on any channel.");
+            out!(ctx, "0 agents on any channel.");
         } else {
             let scope = state.channel().unwrap_or("any channel");
-            out!(ctx, "No agents on \"{scope}\".");
+            out!(ctx, "0 agents on \"{scope}\".");
         }
         return Ok(());
     }

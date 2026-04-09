@@ -157,9 +157,7 @@ pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
         "detail" => cmd_memory_detail(ctx, &args[1..]),
-        "" => bail!(
-            "Usage: sidekar memory <write|search|list|delete|context|compact|patterns|rate|detail> ..."
-        ),
+        "" => cmd_memory_list(ctx, args),
         other => bail!("Unknown memory subcommand: {other}"),
     }
 }
@@ -295,9 +293,11 @@ fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         limit,
     )?;
     if results.is_empty() {
-        out!(ctx, "No memories found.");
+        out!(ctx, "0 memories matching '{}'.", query);
         return Ok(());
     }
+
+    out!(ctx, "{} memories matching '{}':", results.len(), query);
     reinforce_events(results.iter().map(|item| item.row.id))?;
 
     for item in results {
@@ -368,36 +368,53 @@ fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let type_str = event_type.as_deref().unwrap_or("");
     let mut rows = stmt.query(params![project_str, type_str, limit as i64])?;
 
-    let mut count = 0usize;
+    // Collect all rows first for count header
+    struct MemRow {
+        id: i64,
+        proj: String,
+        etype: String,
+        scope: String,
+        summary: String,
+        confidence: f64,
+        tags: Vec<String>,
+    }
+    let mut items = Vec::new();
     while let Some(row) = rows.next()? {
-        count += 1;
-        let id: i64 = row.get(0)?;
-        let proj: String = row.get(1)?;
-        let etype: String = row.get(2)?;
-        let scope: String = row.get(3)?;
-        let summary: String = row.get(4)?;
-        let confidence: f64 = row.get(5)?;
-        let tags: Vec<String> = serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default();
-        let scope_label = if scope == "global" { " [global]" } else { "" };
-        let tags_label = if tags.is_empty() {
+        items.push(MemRow {
+            id: row.get(0)?,
+            proj: row.get(1)?,
+            etype: row.get(2)?,
+            scope: row.get(3)?,
+            summary: row.get(4)?,
+            confidence: row.get(5)?,
+            tags: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+        });
+    }
+
+    if items.is_empty() {
+        out!(ctx, "0 memories.");
+        return Ok(());
+    }
+
+    out!(ctx, "{} memories:", items.len());
+    for item in &items {
+        let scope_label = if item.scope == "global" { " [global]" } else { "" };
+        let tags_label = if item.tags.is_empty() {
             String::new()
         } else {
-            format!(" tags={}", tags.join(","))
+            format!(" tags={}", item.tags.join(","))
         };
         out!(
             ctx,
             "[{}] {} ({}, {:.2}, {}){}{}",
-            id,
-            summary,
-            etype,
-            confidence,
-            proj,
+            item.id,
+            item.summary,
+            item.etype,
+            item.confidence,
+            item.proj,
             scope_label,
             tags_label
         );
-    }
-    if count == 0 {
-        out!(ctx, "No memories found.");
     }
     Ok(())
 }
