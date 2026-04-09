@@ -11,7 +11,15 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::broker;
 
-use super::InputEvent;
+/// What `read_input_or_bus` returned.
+pub(super) enum InputEvent {
+    /// User typed a line (optional pasted image attachments).
+    User(SubmittedLine),
+    /// One or more bus messages arrived while idle.
+    Bus,
+    /// EOF / error.
+    Eof,
+}
 
 /// One submitted REPL line (possibly with pasted image attachments).
 #[derive(Debug, Clone)]
