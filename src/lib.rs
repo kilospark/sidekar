@@ -66,6 +66,7 @@ pub mod cdp;
 pub mod cdp_proxy;
 pub mod cli;
 pub mod code_intel;
+pub mod command_catalog;
 pub mod commands;
 pub mod config;
 pub mod daemon;
@@ -113,7 +114,7 @@ pub use cdp::{
     detect_browser_from_port, get_debug_tabs, get_window_id_for_target, http_get_text,
     http_put_text, minimize_window_by_id, open_cdp, restore_window_by_id, verify_cdp_ready,
 };
-pub use cli::{
+pub use command_catalog::{
     canonical_command_name, command_handler, command_requires_session,
     command_should_auto_launch_browser, is_ext_routable_command, is_known_command,
     removed_command_replacement,
