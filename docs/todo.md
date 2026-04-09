@@ -5,16 +5,16 @@
 - [ ] Token usage tracking: side-by-side comparison of Claude, Codex, Sidekar consumption
 - [ ] Evaluate adding sidekar as a native tool (avoid skills/SKILL.md ceremony)
 - [ ] Evaluate adding edit-file and other precision tools (read, grep, glob)
-- [ ] Evaluate mempalace integration (https://github.com/milla-jovovich/mempalace)
+- [x] Evaluate mempalace integration (https://github.com/milla-jovovich/mempalace) — no major benefits; sidekar already covers dedup, FTS, confidence, supersession
 - [ ] Persona system for agents
 - [ ] Skills system (agent-defined capabilities)
 - [ ] Multi-agent orchestration
 - [ ] Test inter-agent communication across machines
 - [ ] Marketing strategy: public launch vs private/invite-only
-- [ ] Terminal adapters for unmanaged sessions (Terminal.app, iTerm2, Warp, kitty, Ghostty)
-- [ ] Editor adapters (VS Code, Cursor, Zed)
-- [ ] Desktop app adapters (Codex app, Claude desktop)
-- [ ] Clarify and harden first-install signature verification path (`install.sh` bootstrap trust / how signatures are checked before Sidekar is already installed)
+- [x] ~~Terminal adapters~~ — N/A after PTY + REPL approach
+- [x] ~~Editor adapters~~ — N/A after PTY + REPL approach
+- [x] ~~Desktop app adapters~~ — N/A after PTY + REPL approach
+- [x] Clarify and harden first-install signature verification path (`install.sh` bootstrap trust / how signatures are checked before Sidekar is already installed)
 - [ ] Publish Chrome extension to Web Store
 - [ ] Update website copy
 
