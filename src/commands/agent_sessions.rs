@@ -32,10 +32,16 @@ fn cmd_agent_sessions_list(ctx: &mut AppContext, args: &[String]) -> Result<()> 
 
     let sessions = crate::broker::list_agent_sessions(active_only, project.as_deref(), limit)?;
     if sessions.is_empty() {
-        out!(ctx, "No agent sessions.");
+        out!(ctx, "0 agent sessions.");
         return Ok(());
     }
 
+    let active = sessions.iter().filter(|s| s.ended_at.is_none()).count();
+    if active > 0 {
+        out!(ctx, "{} sessions ({} active):", sessions.len(), active);
+    } else {
+        out!(ctx, "{} sessions:", sessions.len());
+    }
     out!(
         ctx,
         "id\tname\tagent\tnick\tproject\tchannel\tstarted_at\tlast_active_at\tended_at\trequests\treplies"

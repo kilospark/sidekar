@@ -496,8 +496,17 @@ pub(crate) async fn cmd_cron_list(
         Some(state) => {
             let jobs = state.jobs.lock().await;
             if jobs.is_empty() {
-                out!(ctx, "No active cron jobs.");
+                out!(ctx, "0 cron jobs.");
                 return Ok(());
+            }
+            let running = jobs
+                .iter()
+                .filter(|j| j.running.load(Ordering::Relaxed))
+                .count();
+            if running > 0 {
+                out!(ctx, "{} cron jobs ({} running):", jobs.len(), running);
+            } else {
+                out!(ctx, "{} cron jobs:", jobs.len());
             }
             for job in jobs.iter() {
                 let name_str = job.name.as_deref().unwrap_or("(unnamed)");
@@ -586,7 +595,7 @@ pub(crate) async fn cmd_cron_list(
             // Cron loop not started — check broker for persisted jobs
             if let Ok(records) = broker::list_cron_jobs(true, scope, &current_project) {
                 if records.is_empty() {
-                    out!(ctx, "No active cron jobs.");
+                    out!(ctx, "0 cron jobs.");
                 } else {
                     out!(
                         ctx,
@@ -608,7 +617,7 @@ pub(crate) async fn cmd_cron_list(
                     }
                 }
             } else {
-                out!(ctx, "No active cron jobs.");
+                out!(ctx, "0 cron jobs.");
             }
         }
     }

@@ -10,7 +10,7 @@ fn unix_now() -> u64 {
 
 pub async fn cmd_totp(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if args.is_empty() {
-        bail!("Usage: sidekar totp <add|list|get|remove> [args...]");
+        return cmd_totp_list(ctx).await;
     }
     match args[0].as_str() {
         "add" => cmd_totp_add(ctx, &args[1..]).await,
@@ -90,10 +90,10 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 async fn cmd_totp_list(ctx: &mut AppContext) -> Result<()> {
     let secrets = crate::broker::totp_list()?;
     if secrets.is_empty() {
-        out!(ctx, "No TOTP secrets stored.");
+        out!(ctx, "0 TOTP secrets.");
         return Ok(());
     }
-    out!(ctx, "TOTP secrets:");
+    out!(ctx, "{} TOTP secrets:", secrets.len());
     for s in secrets {
         out!(
             ctx,

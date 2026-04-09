@@ -20,6 +20,7 @@
 
 ## Medium Priority
 
+- [ ] Full `--json` output for all commands (bus send/done/requests/replies, kv get/set/delete/tag/history/rollback/exec, memory, cron, batch, compact, repo, proxy, config, devices, sessions, login, version)
 - [x] Google login (in addition to GitHub)
 - [ ] Attention/notification system (desktop notifications, terminal badges)
 - [ ] Task queue visibility and claiming UX
@@ -30,6 +31,7 @@
 
 ## Low Priority / Future
 
+- [x] Review [axi](https://github.com/kunchenguid/axi) for ideas/inspiration — adopted: content-first defaults, aggregate counts, definitive empty states
 - [ ] A2A gateway for external agent interop
 - [ ] Linux support
 - [ ] Windows support

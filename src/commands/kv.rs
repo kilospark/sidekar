@@ -2,7 +2,7 @@ use crate::*;
 
 pub async fn cmd_kv(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if args.is_empty() {
-        bail!("Usage: sidekar kv <set|get|list|delete|tag|history|rollback|exec> [args...]");
+        return cmd_kv_list(ctx, args).await;
     }
     match args[0].as_str() {
         "set" => cmd_kv_set(ctx, &args[1..]).await,
@@ -105,10 +105,16 @@ async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
 
     if entries.is_empty() {
-        out!(ctx, "No KV entries.");
+        out!(ctx, "0 KV entries.");
         return Ok(());
     }
 
+    let tagged = entries.iter().filter(|e| !e.tags.is_empty()).count();
+    if tagged > 0 {
+        out!(ctx, "{} entries ({} tagged):", entries.len(), tagged);
+    } else {
+        out!(ctx, "{} entries:", entries.len());
+    }
     for e in entries {
         let tag_str = if e.tags.is_empty() {
             String::new()
@@ -161,10 +167,11 @@ async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let entries = crate::broker::kv_history(key)?;
 
     if entries.is_empty() {
-        out!(ctx, "No history for '{}'.", key);
+        out!(ctx, "0 history entries for '{}'.", key);
         return Ok(());
     }
 
+    out!(ctx, "{} versions for '{}':", entries.len(), key);
     // Also show current value
     if let Ok(Some(current)) = crate::broker::kv_get(key) {
         let tag_str = if current.tags.is_empty() {
