@@ -16,13 +16,17 @@ use tokio::sync::Mutex;
 
 use crate::ext::{ExtState, SharedExtState};
 
+mod command;
+mod housekeeping;
+mod http;
+
+use command::handle_command;
+use housekeeping::{cdp_pool_reaper, housekeeping_loop};
+use http::{accept_http_connections, bind_http_listener};
+
 /// Maximum line length accepted on the daemon socket (1 MB).
 /// Prevents memory exhaustion from a malicious local client.
 const MAX_LINE_LEN: usize = 1_048_576;
-
-/// Port range for the localhost HTTP/WebSocket listener used by extensions.
-const HTTP_PORT_START: u16 = 21517;
-const HTTP_PORT_END: u16 = 21527;
 
 fn data_dir() -> PathBuf {
     dirs::home_dir()
@@ -67,7 +71,6 @@ pub fn ensure_running() -> Result<()> {
         return Ok(());
     }
 
-    // Clean stale pid/socket from a previous crash (kill -9, etc.)
     let _ = std::fs::remove_file(pid_path());
     let _ = std::fs::remove_file(socket_path());
 
@@ -85,7 +88,6 @@ pub fn ensure_running() -> Result<()> {
         eprintln!("Started daemon (PID {})", child.id());
     }
 
-    // Wait for socket to appear
     let sock = socket_path();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
     while std::time::Instant::now() < deadline {
@@ -152,7 +154,7 @@ fn spawn_relauncher(old_pid: i32) -> Result<()> {
     Ok(())
 }
 
-fn restart_current_process() -> Result<()> {
+pub(super) fn restart_current_process() -> Result<()> {
     let pid = std::process::id() as i32;
     spawn_relauncher(pid)?;
     let _ = std::fs::remove_file(pid_path());
@@ -165,7 +167,6 @@ pub fn stop() -> Result<()> {
     if let Some(pid) = get_pid() {
         unsafe { libc::kill(pid, libc::SIGTERM) };
         eprintln!("Sent SIGTERM to daemon (PID {pid})");
-        // Wait for it to exit
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
             if !is_running() {
@@ -215,10 +216,6 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
     serde_json::from_str(&response).context("Invalid JSON response from daemon")
 }
 
-// ---------------------------------------------------------------------------
-// Daemon process (runs when `sidekar daemon start` is invoked)
-// ---------------------------------------------------------------------------
-
 struct DaemonState {
     ext_state: SharedExtState,
     cdp_pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>,
@@ -235,58 +232,20 @@ impl DaemonState {
     }
 }
 
-/// Kill the previously registered daemon (if any) and any orphaned relaunch helpers.
-fn kill_orphaned_daemons() {
-    let my_pid = std::process::id() as i32;
-
-    // Kill the daemon registered in the PID file
-    if let Some(old_pid) = get_pid() {
-        if old_pid != my_pid {
-            unsafe {
-                libc::kill(old_pid, libc::SIGTERM);
-            }
-            // Brief wait for cleanup
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-    }
-
-    // Kill orphaned relaunch helpers (they match "sidekar daemon relaunch")
-    if let Ok(output) = std::process::Command::new("pgrep")
-        .args(["-f", "sidekar daemon relaunch"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Ok(pid) = line.trim().parse::<i32>() {
-                if pid != my_pid {
-                    unsafe {
-                        libc::kill(pid, libc::SIGTERM);
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Run the daemon (called by `sidekar daemon start`).
 pub async fn start() -> Result<()> {
-    // Ensure data dir exists
     std::fs::create_dir_all(data_dir())?;
 
-    // Kill orphaned sidekar daemon processes (stale relaunch helpers, etc.)
-    kill_orphaned_daemons();
+    housekeeping::kill_orphaned_daemons();
 
-    // Clean up stale socket
     let sock_path = socket_path();
     if sock_path.exists() {
         let _ = std::fs::remove_file(&sock_path);
     }
 
-    // Bind unix socket
     let listener = UnixListener::bind(&sock_path)
         .with_context(|| format!("Failed to bind socket at {}", sock_path.display()))?;
 
-    // Set socket permissions (owner only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -294,7 +253,6 @@ pub async fn start() -> Result<()> {
         std::fs::set_permissions(&sock_path, perms)?;
     }
 
-    // Write PID file
     let pid = std::process::id();
     std::fs::write(pid_path(), pid.to_string())?;
 
@@ -303,7 +261,6 @@ pub async fn start() -> Result<()> {
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
-    // Bind localhost HTTP/WS listener for extension communication
     if let Some((tcp_listener, port)) = bind_http_listener() {
         state.lock().await.http_port = port;
         eprintln!("HTTP/WS listener: 127.0.0.1:{port}");
@@ -313,7 +270,6 @@ pub async fn start() -> Result<()> {
         }
     }
 
-    // Signal handling for graceful shutdown
     let shutdown_sock = sock_path.clone();
     let shutdown_pid = pid_path();
     tokio::spawn(async move {
@@ -335,22 +291,18 @@ pub async fn start() -> Result<()> {
             (Err(_), Err(_)) => std::future::pending::<()>().await,
         }
         eprintln!("Daemon shutting down...");
-        // Deregister discover port so extension doesn't connect to a dead daemon
         crate::api_client::deregister_discover_port().await;
         let _ = std::fs::remove_file(&shutdown_pid);
         let _ = std::fs::remove_file(&shutdown_sock);
         std::process::exit(0);
     });
 
-    // Start housekeeping subsystem (dead agent sweeper, auto-update, discover heartbeat)
     let http_port = state.lock().await.http_port;
     tokio::spawn(housekeeping_loop(http_port));
 
-    // Start CDP pool idle reaper
     let cdp_pool_for_reaper = state.lock().await.cdp_pool.clone();
     tokio::spawn(cdp_pool_reaper(cdp_pool_for_reaper));
 
-    // Accept connections
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
@@ -405,7 +357,6 @@ async fn handle_connection(
             let _ = writer.flush().await;
             return;
         }
-        // Upgrade to long-lived CDP proxy connection
         let pool = state.lock().await.cdp_pool.clone();
         crate::cdp_proxy::handle_cdp_connection(ws_url, reader, writer, pool).await;
         return;
@@ -449,638 +400,6 @@ async fn handle_connection(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Housekeeping subsystem (dead agent sweeper, auto-update)
-// ---------------------------------------------------------------------------
-
-const SWEEP_INTERVAL_SECS: u64 = 60;
-const UPDATE_CHECK_INTERVAL_SECS: u64 = 3600; // 1 hour
-const STALE_MESSAGE_AGE_SECS: u64 = 3600; // 1 hour
-
-async fn housekeeping_loop(http_port: u16) {
-    let mut sweep_interval =
-        tokio::time::interval(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS));
-    let mut update_interval =
-        tokio::time::interval(std::time::Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
-
-    // Skip first tick for sweep/update (fires immediately), but DO run
-    // discover heartbeat right away so the extension can find us.
-    sweep_interval.tick().await;
-    update_interval.tick().await;
-    if http_port > 0 {
-        discover_heartbeat(http_port).await;
-    }
-
-    loop {
-        tokio::select! {
-            _ = sweep_interval.tick() => {
-                sweep_dead_agents();
-                cleanup_stale_messages();
-                if http_port > 0 {
-                    discover_heartbeat(http_port).await;
-                }
-            }
-            _ = update_interval.tick() => {
-                check_for_update().await;
-            }
-        }
-    }
-}
-
-/// Periodically reap idle CDP connections from the pool.
-async fn cdp_pool_reaper(pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-    interval.tick().await; // skip immediate
-    loop {
-        interval.tick().await;
-        pool.lock().await.reap_idle();
-    }
-}
-
-/// Extract a local process PID from broker pane IDs that encode one.
-fn pid_from_agent_pane(pane: &str) -> Option<i32> {
-    for prefix in ["pty-", "repl-", "cli-"] {
-        if let Some(pid_str) = pane.strip_prefix(prefix) {
-            if let Ok(pid) = pid_str.parse::<i32>() {
-                return Some(pid);
-            }
-        }
-    }
-    None
-}
-
-/// Sweep dead agents from the broker. Checks each local agent PID encoded in
-/// the pane ID and unregisters agents whose process is no longer alive.
-fn sweep_dead_agents() {
-    let agents = match crate::broker::list_agents(None) {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-    for agent in agents {
-        if let Some(ref pane) = agent.id.pane {
-            if let Some(pid) = pid_from_agent_pane(pane) {
-                if unsafe { libc::kill(pid, 0) } != 0 {
-                    let _ = crate::broker::unregister_agent(&agent.id.name);
-                }
-            }
-        }
-    }
-}
-
-/// Clean up stale messages older than STALE_MESSAGE_AGE_SECS.
-fn cleanup_stale_messages() {
-    let _ = crate::broker::cleanup_old_messages(STALE_MESSAGE_AGE_SECS);
-    let _ = crate::broker::cleanup_old_pending_requests(STALE_MESSAGE_AGE_SECS);
-    let _ = crate::broker::cleanup_old_outbound_requests(STALE_MESSAGE_AGE_SECS);
-}
-
-/// Check for updates and install in background.
-async fn check_for_update() {
-    if !crate::config::load_config().auto_update {
-        return;
-    }
-    if !crate::api_client::should_check_for_update() {
-        return;
-    }
-    match crate::api_client::check_for_update().await {
-        Ok(Some(latest)) => {
-            eprintln!("sidekar: update v{latest} available, installing in background...");
-            if let Err(e) = crate::api_client::self_update(&latest).await {
-                eprintln!("sidekar: background update failed: {e:#}");
-            } else {
-                eprintln!("sidekar: updated to v{latest}; restarting daemon...");
-                if let Err(e) = restart_current_process() {
-                    eprintln!("sidekar: updated, but failed to restart daemon: {e:#}");
-                }
-            }
-        }
-        Ok(None) => {}
-        Err(_) => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Localhost HTTP/WS listener for extension communication
-// ---------------------------------------------------------------------------
-
-fn bind_http_listener() -> Option<(std::net::TcpListener, u16)> {
-    for port in HTTP_PORT_START..=HTTP_PORT_END {
-        let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
-        match std::net::TcpListener::bind(addr) {
-            Ok(listener) => {
-                listener.set_nonblocking(true).ok();
-                return Some((listener, port));
-            }
-            Err(_) => continue,
-        }
-    }
-    eprintln!("sidekar: could not bind HTTP listener on ports {HTTP_PORT_START}-{HTTP_PORT_END}");
-    None
-}
-
-async fn accept_http_connections(
-    listener: tokio::net::TcpListener,
-    state: Arc<Mutex<DaemonState>>,
-) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let s = state.clone();
-                tokio::spawn(handle_http_connection(stream, s));
-            }
-            Err(e) => {
-                eprintln!("HTTP accept error: {e}");
-            }
-        }
-    }
-}
-
-async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mutex<DaemonState>>) {
-    let mut buf = [0u8; 4096];
-    let n = match stream.peek(&mut buf).await {
-        Ok(n) if n > 0 => n,
-        _ => return,
-    };
-
-    let request = match std::str::from_utf8(&buf[..n]) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let first_line = request.lines().next().unwrap_or("");
-
-    if first_line.starts_with("GET /health") {
-        let body = r#"{"sidekar":true}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\n\
-             Content-Type: application/json\r\n\
-             x-sidekar: 1\r\n\
-             Access-Control-Allow-Origin: *\r\n\
-             Content-Length: {}\r\n\
-             Connection: close\r\n\
-             \r\n\
-             {}",
-            body.len(),
-            body
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        return;
-    }
-
-    if first_line.contains("/ext") {
-        let ext_state = state.lock().await.ext_state.clone();
-        match tokio_tungstenite::accept_async(stream).await {
-            Ok(ws) => handle_ext_websocket(ws, ext_state).await,
-            Err(e) => {
-                if crate::runtime::verbose() {
-                    eprintln!("WS handshake failed: {e}");
-                }
-            }
-        }
-        return;
-    }
-
-    let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-    let _ = stream.write_all(response.as_bytes()).await;
-}
-
-async fn handle_ext_websocket(
-    ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    ext_state: SharedExtState,
-) {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::protocol::Message;
-
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    let welcome = json!({"type": "welcome", "version": env!("CARGO_PKG_VERSION")});
-    if ws_tx
-        .send(Message::Text(welcome.to_string().into()))
-        .await
-        .is_err()
-    {
-        return;
-    }
-
-    // Wait for bridge_register
-    let (ext_token, agent_id, browser_name) = loop {
-        match ws_rx.next().await {
-            Some(Ok(Message::Text(text))) => {
-                if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                    if val.get("type").and_then(|v| v.as_str()) == Some("bridge_register") {
-                        let token = val
-                            .get("token")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let aid = val
-                            .get("agent_id")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        let browser = val
-                            .get("browser")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Chrome")
-                            .to_string();
-                        break (token, aid, browser);
-                    }
-                }
-            }
-            _ => return,
-        }
-    };
-
-    // Verify ext token
-    let cli_logged_in = crate::auth::auth_token().is_some();
-    let user_id = if ext_token.is_empty() {
-        let fail = json!({
-            "type": "auth_fail",
-            "reason": "No extension token — sign in from the extension popup.",
-            "cli_logged_in": cli_logged_in,
-        });
-        let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
-        return;
-    } else {
-        use crate::ext::VerifyResult;
-        match tokio::task::spawn_blocking({
-            let token = ext_token.clone();
-            move || crate::ext::verify_ext_token(&token)
-        })
-        .await
-        {
-            Ok(VerifyResult::Ok(uid)) => uid,
-            Ok(VerifyResult::InvalidToken(reason)) => {
-                // Token is definitively bad — tell extension to clear it
-                let fail = json!({
-                    "type": "auth_fail",
-                    "reason": reason,
-                    "clear_token": true,
-                    "cli_logged_in": cli_logged_in,
-                });
-                let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
-                return;
-            }
-            Ok(VerifyResult::TransientError(reason)) => {
-                // Transient — do NOT tell extension to clear token
-                let fail = json!({
-                    "type": "auth_fail",
-                    "reason": reason,
-                    "cli_logged_in": cli_logged_in,
-                });
-                let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
-                return;
-            }
-            Err(_) => {
-                let fail = json!({
-                    "type": "auth_fail",
-                    "reason": "Internal error during verification — retrying.",
-                    "cli_logged_in": cli_logged_in,
-                });
-                let _ = ws_tx.send(Message::Text(fail.to_string().into())).await;
-                return;
-            }
-        }
-    };
-
-    let (conn_id, mut bridge_rx, profile) =
-        crate::ext::register_bridge_ws(&ext_state, user_id.clone(), agent_id, browser_name.clone())
-            .await;
-
-    let ok = json!({"type": "auth_ok", "cli_logged_in": cli_logged_in, "profile": profile});
-    if ws_tx
-        .send(Message::Text(ok.to_string().into()))
-        .await
-        .is_err()
-    {
-        crate::ext::disconnect_bridge_by_id(&ext_state, conn_id).await;
-        return;
-    }
-
-    eprintln!(
-        "[sidekar] Extension bridge connected via WebSocket (conn: {conn_id}, browser: {browser_name}, user: {user_id})"
-    );
-
-    // Keepalive task — send pings via bridge_tx, check last_contact for timeout
-    let ka_state = ext_state.clone();
-    let ka_conn_id = conn_id;
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-        interval.tick().await; // skip immediate
-        loop {
-            interval.tick().await;
-            let now = crate::message::epoch_secs();
-            let should_disconnect;
-            {
-                let s = ka_state.lock().await;
-                match s.connections.get(&ka_conn_id) {
-                    Some(conn) => {
-                        let busy = !conn.pending.is_empty() || conn.cli_exec_inflight > 0;
-                        should_disconnect = !busy && now - conn.last_contact > 30;
-                        if !should_disconnect {
-                            let ping =
-                                serde_json::to_string(&json!({"type":"ping"})).unwrap_or_default();
-                            let _ = conn.bridge_tx.send(ping);
-                        }
-                    }
-                    None => break,
-                }
-            }
-            if should_disconnect {
-                eprintln!("[sidekar] Extension WS keepalive timeout (conn {ka_conn_id})");
-                crate::ext::disconnect_bridge_by_id(&ka_state, ka_conn_id).await;
-                break;
-            }
-        }
-    });
-
-    loop {
-        tokio::select! {
-            Some(outbound) = bridge_rx.recv() => {
-                if ws_tx.send(Message::Text(outbound.into())).await.is_err() {
-                    break;
-                }
-            }
-            msg = ws_rx.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                            crate::ext::touch_connection(&ext_state, conn_id).await;
-                            let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            if msg_type == "pong" {
-                                continue;
-                            }
-                            if msg_type == "watch_event" {
-                                let wid = val.get("watchId").and_then(|v| v.as_str()).unwrap_or("");
-                                let current = val.get("current").and_then(|v| v.as_str()).unwrap_or("");
-                                let previous = val.get("previous").and_then(|v| v.as_str()).unwrap_or("");
-                                let url = val.get("url").and_then(|v| v.as_str());
-                                if !wid.is_empty() {
-                                    if let Err(e) = crate::ext::deliver_watch_event(
-                                        &ext_state, wid, current, previous, url,
-                                    )
-                                    .await
-                                    {
-                                        eprintln!("[sidekar] watch event delivery failed: {e}");
-                                    }
-                                }
-                                continue;
-                            }
-                            if msg_type == "cli_exec" {
-                                let id = val
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                if id.is_empty() {
-                                    continue;
-                                }
-                                let cmd = val
-                                    .get("command")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let text = val
-                                    .get("text")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let bridge_tx = {
-                                    let s = ext_state.lock().await;
-                                    s.connections
-                                        .get(&conn_id)
-                                        .map(|c| c.bridge_tx.clone())
-                                };
-                                let Some(bridge_tx) = bridge_tx else {
-                                    continue;
-                                };
-                                let ext_st = ext_state.clone();
-                                let cid = conn_id;
-                                tokio::spawn(async move {
-                                    crate::ext::cli_exec_begin(&ext_st, cid).await;
-                                    let reply = match async {
-                                        let mut ctx = crate::AppContext::new()?;
-                                        let mode = match cmd.as_str() {
-                                            "inserttext" => {
-                                                crate::commands::dispatch(
-                                                    &mut ctx,
-                                                    "inserttext",
-                                                    &[text.clone()],
-                                                )
-                                                .await?;
-                                                "cli-insertText"
-                                            }
-                                            "keyboard" => {
-                                                crate::commands::dispatch(
-                                                    &mut ctx,
-                                                    "keyboard",
-                                                    &[text.clone()],
-                                                )
-                                                .await?;
-                                                "cli-keyboard"
-                                            }
-                                            _ => bail!("unknown cli_exec command: {cmd}"),
-                                        };
-                                        Ok::<_, anyhow::Error>(mode.to_string())
-                                    }
-                                    .await
-                                    {
-                                        Ok(mode) => json!({
-                                            "id": id,
-                                            "ok": true,
-                                            "mode": mode,
-                                        }),
-                                        Err(e) => json!({
-                                            "id": id,
-                                            "ok": false,
-                                            "error": format!("{e:#}"),
-                                        }),
-                                    };
-                                    let line = match serde_json::to_string(&reply) {
-                                        Ok(mut s) => {
-                                            s.push('\n');
-                                            s
-                                        }
-                                        Err(_) => r#"{"ok":false,"error":"serialize"}"#.to_string(),
-                                    };
-                                    let _ = bridge_tx.send(line);
-                                    crate::ext::cli_exec_end(&ext_st, cid).await;
-                                });
-                                continue;
-                            }
-                            crate::ext::resolve_pending(&ext_state, conn_id, val).await;
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    crate::ext::disconnect_bridge_by_id(&ext_state, conn_id).await;
-    eprintln!("[sidekar] Extension WS bridge disconnected (conn: {conn_id})");
-}
-
-async fn discover_heartbeat(port: u16) {
-    if crate::auth::auth_token().is_none() {
-        return;
-    }
-    // Clear all old ports first, then register ours — prevents stale entries
-    crate::api_client::deregister_discover_port().await;
-    if let Err(e) = crate::api_client::register_discover_port(port).await {
-        if crate::runtime::verbose() {
-            eprintln!("sidekar: discover heartbeat failed: {e:#}");
-        }
-    }
-}
-
-async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>) -> Value {
-    let cmd_type = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match cmd_type {
-        "ping" => json!({"pong": true}),
-
-        "status" => {
-            let s = state.lock().await;
-            let ext_status = crate::ext::get_status(&s.ext_state).await;
-            let cli_logged_in = crate::auth::auth_token().is_some();
-            json!({
-                "running": true,
-                "pid": std::process::id(),
-                "http_port": s.http_port,
-                "ext": ext_status,
-                "cli_logged_in": cli_logged_in,
-            })
-        }
-
-        "stop" => {
-            tokio::spawn(async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                let _ = std::fs::remove_file(pid_path());
-                let _ = std::fs::remove_file(socket_path());
-                std::process::exit(0);
-            });
-            json!({"ok": true, "message": "Daemon stopping"})
-        }
-
-        // Extension commands - forward to ext-bridge
-        "ext" => {
-            let ext_cmd = cmd.get("command").cloned().unwrap_or(json!({}));
-            let agent_id = cmd
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let target_conn = cmd.get("conn_id").and_then(|v| v.as_u64());
-            let target_profile = cmd
-                .get("profile")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let deliver_to = cmd
-                .get("deliver_to")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-
-            // Capture the inner command name before forwarding for bookkeeping.
-            let inner_cmd = ext_cmd
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let inner_selector = ext_cmd
-                .get("selector")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let inner_watch_id = ext_cmd
-                .get("watchId")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-
-            let ext_state = {
-                let s = state.lock().await;
-                s.ext_state.clone()
-            };
-            let routed = crate::ext::forward_command(
-                &ext_state,
-                ext_cmd,
-                agent_id,
-                target_conn,
-                target_profile,
-            )
-            .await;
-            let (mut final_result, routed_conn_id, routed_profile) = match routed {
-                Ok(routed) => (routed.response, routed.conn_id, routed.profile),
-                Err(e) => return json!({"error": e.to_string()}),
-            };
-
-            // Post-process: maintain watch registry.
-            if inner_cmd == "watch" {
-                if let (Some(wid), Some(sel), Some(dest)) = (
-                    final_result
-                        .get("watchId")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    final_result
-                        .get("selector")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                        .or(inner_selector),
-                    deliver_to,
-                ) {
-                    crate::ext::register_watch(
-                        &ext_state,
-                        wid,
-                        sel,
-                        dest,
-                        routed_conn_id,
-                        routed_profile.clone(),
-                    )
-                    .await;
-                }
-            } else if inner_cmd == "unwatch" {
-                if let Some(wid) = inner_watch_id {
-                    crate::ext::remove_watch(&ext_state, &wid).await;
-                } else {
-                    // Bulk unwatch — the extension removed everything; clear our map.
-                    let mut s = ext_state.lock().await;
-                    s.watches.clear();
-                }
-            }
-
-            // Annotate the response with deliver_to so the CLI can display it.
-            if inner_cmd == "watch" && final_result.is_object() {
-                if let Some(dest) = final_result
-                    .get("watchId")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                {
-                    let _ = dest; // just checking existence
-                    if let Some(obj) = final_result.as_object_mut() {
-                        // Look up deliver_to from the just-registered watch (if any).
-                        let deliver = {
-                            let s = ext_state.lock().await;
-                            obj.get("watchId")
-                                .and_then(|v| v.as_str())
-                                .and_then(|wid| s.watches.get(wid).map(|w| w.deliver_to.clone()))
-                        };
-                        if let Some(d) = deliver {
-                            obj.insert("deliverTo".into(), json!(d));
-                        }
-                    }
-                }
-            }
-
-            final_result
-        }
-
-        "ext_status" => {
-            let s = state.lock().await;
-            crate::ext::get_status(&s.ext_state).await
-        }
-
-        _ => json!({"error": format!("Unknown command: {cmd_type}")}),
-    }
-}
-
 /// Read a line from the socket, rejecting lines longer than `max_len` bytes.
 /// Uses `read_until` on a pre-capped buffer to avoid unbounded allocation.
 async fn read_line_limited(
@@ -1095,7 +414,6 @@ async fn read_line_limited(
         let mut byte = [0u8; 1];
         let n = reader.read(&mut byte).await?;
         if n == 0 {
-            // EOF
             if raw.is_empty() {
                 return Ok(0);
             }
@@ -1107,7 +425,6 @@ async fn read_line_limited(
         }
         raw.push(byte[0]);
         if raw.len() > max_len {
-            // Drain remaining bytes until newline or EOF to avoid desync
             loop {
                 let n = reader.read(&mut byte).await?;
                 if n == 0 || byte[0] == b'\n' {
@@ -1129,7 +446,7 @@ async fn read_line_limited(
 
 #[cfg(test)]
 mod tests {
-    use super::pid_from_agent_pane;
+    use crate::daemon::housekeeping::pid_from_agent_pane;
 
     #[test]
     fn pid_from_agent_pane_recognizes_local_agent_prefixes() {
