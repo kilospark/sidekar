@@ -1,6 +1,6 @@
 pub const COMMANDS: &[&str] = &[
-    "config", "device", "session", "feedback", "event", "daemon", "totp", "pack", "unpack", "kv",
-    "install", "skill", "ext",
+    "config", "device", "session", "event", "daemon", "totp", "pack", "unpack", "kv", "install",
+    "skill", "ext",
 ];
 
 pub fn get(command: &str) -> Option<&'static str> {
@@ -17,11 +17,10 @@ sidekar config [list|get|set|reset] [key] [value]
     config set <key> <val>   Set a value
     config reset <key>       Revert to default
 
-  Keys: telemetry, feedback, browser, auto_update, relay, max_tabs, cdp_timeout_secs, max_cron_jobs
+  Keys: browser, auto_update, relay, max_tabs, cdp_timeout_secs, max_cron_jobs
 
   Examples:
     sidekar config list
-    sidekar config set telemetry false
     sidekar config set relay off
     sidekar config set browser brave
     sidekar config reset browser"
@@ -53,18 +52,6 @@ sidekar session <list>
 
   Examples:
     sidekar session list"
-        }
-        "feedback" => {
-            "\
-sidekar feedback <rating> [comment]
-
-  Send a rating and optional comment to Sidekar.
-  Rating must be an integer from 1 to 5.
-  Disabled when `sidekar config set feedback false`.
-
-  Examples:
-    sidekar feedback 5
-    sidekar feedback 3 \"Need better help output for hidden commands\""
         }
         "event" => {
             "\

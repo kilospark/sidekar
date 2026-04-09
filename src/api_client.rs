@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -60,96 +59,6 @@ pub async fn check_version(current: &str) -> Result<Value> {
     }
     Err(anyhow::anyhow!(
         "check_version failed after {} attempts: {:?}",
-        MAX_RETRIES,
-        last_err
-    ))
-}
-
-pub async fn send_telemetry(
-    session_id: &str,
-    version: &str,
-    platform: &str,
-    duration_s: u64,
-    tools: &HashMap<String, u64>,
-) -> Result<()> {
-    let url = format!("{}/v1/telemetry", api_base());
-    let payload = json!({
-        "session_id": session_id,
-        "version": version,
-        "platform": platform,
-        "duration_s": duration_s,
-        "tools": tools,
-    });
-    let mut last_err = None;
-    for attempt in 0..MAX_RETRIES {
-        match HTTP_CLIENT.post(&url).json(&payload).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    return Ok(());
-                }
-                // Don't retry on 4xx client errors
-                if status.is_client_error() {
-                    return Err(anyhow::anyhow!(
-                        "send_telemetry failed with {}: {}",
-                        status,
-                        resp.text().await.unwrap_or_default()
-                    ));
-                }
-                last_err = Some(anyhow::anyhow!("server error: {}", status));
-            }
-            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
-        }
-        if attempt < MAX_RETRIES - 1 {
-            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
-        }
-    }
-    Err(anyhow::anyhow!(
-        "send_telemetry failed after {} attempts: {:?}",
-        MAX_RETRIES,
-        last_err
-    ))
-}
-
-pub async fn send_feedback(
-    session_id: &str,
-    version: &str,
-    rating: u8,
-    comment: &str,
-) -> Result<()> {
-    let url = format!("{}/v1/feedback", api_base());
-    let payload = json!({
-        "session_id": session_id,
-        "version": version,
-        "rating": rating,
-        "comment": comment,
-    });
-    let mut last_err = None;
-    for attempt in 0..MAX_RETRIES {
-        match HTTP_CLIENT.post(&url).json(&payload).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    return Ok(());
-                }
-                // Don't retry on 4xx client errors
-                if status.is_client_error() {
-                    return Err(anyhow::anyhow!(
-                        "send_feedback failed with {}: {}",
-                        status,
-                        resp.text().await.unwrap_or_default()
-                    ));
-                }
-                last_err = Some(anyhow::anyhow!("server error: {}", status));
-            }
-            Err(e) => last_err = Some(anyhow::anyhow!("{}", e)),
-        }
-        if attempt < MAX_RETRIES - 1 {
-            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * (attempt as u64 + 1))).await;
-        }
-    }
-    Err(anyhow::anyhow!(
-        "send_feedback failed after {} attempts: {:?}",
         MAX_RETRIES,
         last_err
     ))

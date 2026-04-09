@@ -143,30 +143,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    // Show telemetry info on first run (when no config exists yet)
+    // Initialize config on first run
     if sidekar::config::is_first_run() && !matches!(command.as_str(), "config") {
         let config = sidekar::config::SidekarConfig::default();
         let _ = sidekar::config::save_config(&config);
-        let message = "Thanks for installing sidekar!\n\nAnonymous telemetry is enabled by default to help us improve.\nIt collects: tool usage counts, error counts (no personal data).\n\nTo disable: sidekar config set telemetry false";
-        if sidekar::runtime::pty_mode() {
-            if sidekar::runtime::verbose() {
-                sidekar::broker::try_log_event(
-                    "debug",
-                    "pty",
-                    "first_run_telemetry_notice",
-                    Some(message),
-                );
-            }
-        } else {
-            eprintln!("");
-            eprintln!("Thanks for installing sidekar!");
-            eprintln!("");
-            eprintln!("Anonymous telemetry is enabled by default to help us improve.");
-            eprintln!("It collects: tool usage counts, error counts (no personal data).");
-            eprintln!("");
-            eprintln!("To disable: sidekar config set telemetry false");
-            eprintln!("");
-        }
     }
 
     if command == "uninstall" {

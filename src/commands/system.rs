@@ -8,7 +8,6 @@ pub(super) async fn dispatch_system_command(
     args: &[String],
 ) -> Option<Result<()>> {
     let result = match command {
-        "feedback" => cmd_feedback(ctx, args).await,
         "event" => cmd_event(ctx, args),
         "install" => cmd_setup(ctx).await,
         "uninstall" => cmd_uninstall(ctx).await,
@@ -18,34 +17,6 @@ pub(super) async fn dispatch_system_command(
         _ => return None,
     };
     Some(result)
-}
-
-async fn cmd_feedback(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let rating: u8 = args.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let comment = args.get(1).map(String::as_str).unwrap_or("");
-    let config = crate::config::load_config();
-    if !config.feedback {
-        out!(
-            ctx,
-            "Feedback is disabled. Enable with: sidekar config set feedback true"
-        );
-        return Ok(());
-    }
-    if !(1..=5).contains(&rating) {
-        bail!("Rating must be 1-5");
-    }
-    match crate::api_client::send_feedback(
-        &ctx.session_id,
-        env!("CARGO_PKG_VERSION"),
-        rating,
-        comment,
-    )
-    .await
-    {
-        Ok(_) => out!(ctx, "Feedback sent. Thank you!"),
-        Err(e) => out!(ctx, "Failed to send feedback: {e}"),
-    }
-    Ok(())
 }
 
 fn cmd_event(ctx: &mut AppContext, args: &[String]) -> Result<()> {
