@@ -45,13 +45,31 @@ if [ -z "$VERSION" ]; then
 fi
 
 URL="https://${DOMAIN}/download/${VERSION}/${ASSET}.tar.gz"
+SIG_URL="${URL}.minisig"
+PUBKEY="RWRbW42KimMWVFdiSOnjFE3ZqQ3qqQ45SOySRmomdZIp3Bb9l3ZUrE33"
 
 echo "Installing ${BINARY} ${VERSION} (${PLATFORM}/${ARCH_NAME})..."
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-curl -fsSL "$URL" | tar xz -C "$TMPDIR"
+curl -fsSL "$URL" -o "$TMPDIR/${ASSET}.tar.gz"
+curl -fsSL "$SIG_URL" -o "$TMPDIR/${ASSET}.tar.gz.minisig"
+
+# Verify signature
+if command -v minisign >/dev/null 2>&1; then
+  if minisign -Vm "$TMPDIR/${ASSET}.tar.gz" -P "$PUBKEY" >/dev/null 2>&1; then
+    echo "Signature verified."
+  else
+    echo "ERROR: Signature verification failed. Aborting."
+    exit 1
+  fi
+else
+  echo "Warning: minisign not found, skipping signature verification."
+  echo "  Install minisign to verify: https://jedisct1.github.io/minisign/"
+fi
+
+tar xzf "$TMPDIR/${ASSET}.tar.gz" -C "$TMPDIR"
 
 mkdir -p "$INSTALL_DIR"
 
