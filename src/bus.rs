@@ -820,12 +820,11 @@ pub fn cmd_who(
     // Group agents by channel when showing all
     let format_agent = |a: &broker::BrokerAgent| -> String {
         let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick = a
-            .id
-            .nick
-            .as_deref()
-            .map(|n| format!(" \"{n}\""))
-            .unwrap_or_default();
+        let nick =
+            a.id.nick
+                .as_deref()
+                .map(|n| format!(" \"{n}\""))
+                .unwrap_or_default();
         let pane = a.id.pane.as_deref().unwrap_or("?");
         let cwd = a
             .cwd

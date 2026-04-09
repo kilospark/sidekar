@@ -398,7 +398,11 @@ fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     out!(ctx, "{} memories:", items.len());
     for item in &items {
-        let scope_label = if item.scope == "global" { " [global]" } else { "" };
+        let scope_label = if item.scope == "global" {
+            " [global]"
+        } else {
+            ""
+        };
         let tags_label = if item.tags.is_empty() {
             String::new()
         } else {
