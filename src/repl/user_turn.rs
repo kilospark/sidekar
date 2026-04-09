@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use base64::Engine;
 use regex::Regex;
-use url::Url;
 
 use crate::providers::ContentBlock;
 
@@ -24,18 +23,51 @@ pub fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
         .or_else(|| pasted.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
         .unwrap_or(pasted);
 
-    if let Ok(url) = Url::parse(unquoted)
-        && url.scheme() == "file"
-    {
-        return url.to_file_path().ok();
+    if let Some(file_url_path) = parse_file_url(unquoted) {
+        return Some(file_url_path);
     }
 
-    let parts: Vec<String> = shlex::Shlex::new(pasted).collect();
-    if parts.len() == 1 {
-        return Some(PathBuf::from(parts.into_iter().next()?));
+    parse_single_shell_token(pasted).map(PathBuf::from)
+}
+
+fn parse_file_url(input: &str) -> Option<PathBuf> {
+    let rest = input.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost/").unwrap_or(rest);
+    let decoded = urlencoding::decode(rest).ok()?;
+    Some(PathBuf::from(decoded.into_owned()))
+}
+
+fn parse_single_shell_token(input: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut saw_whitespace_sep = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '\\' if !in_single => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !out.is_empty() {
+                    saw_whitespace_sep = chars.clone().any(|c| !c.is_whitespace());
+                    break;
+                }
+            }
+            other => out.push(other),
+        }
     }
 
-    None
+    if in_single || in_double || out.is_empty() || saw_whitespace_sep {
+        return None;
+    }
+
+    Some(out)
 }
 
 fn guess_media_type(path: &Path) -> &'static str {

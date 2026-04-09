@@ -75,6 +75,7 @@ pub mod doc_intel;
 pub mod events;
 pub mod ext;
 pub mod help;
+pub mod help_text;
 pub mod md;
 pub mod memory;
 pub mod message;
