@@ -80,7 +80,17 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             rustls::pki_types::PrivateKeyDer::Pkcs8(cached.key_der.clone().into()),
         )?;
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-    let client_tls = tls_acceptor.accept(stream).await?;
+    let client_tls = match tls_acceptor.accept(stream).await {
+        Ok(tls) => tls,
+        Err(e) => {
+            crate::broker::try_log_error(
+                "proxy",
+                &format!("tls_acceptor.accept failed for {host}:{port}: {e:?}"),
+                Some(&format!("error display: {e}")),
+            );
+            return Err(e.into());
+        }
+    };
 
     let real_stream = TcpStream::connect(format!("{host}:{port}")).await?;
     let server_name = rustls::pki_types::ServerName::try_from(host.clone())?;
@@ -204,10 +214,234 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
         server_write.flush().await?;
 
         if is_websocket {
-            // WebSocket upgrade: bidirectional pipe from here on
-            tokio::select! {
-                r = tokio::io::copy(&mut client_reader, &mut server_write) => { let _ = r; }
-                r = tokio::io::copy(&mut server_reader, &mut client_write) => { let _ = r; }
+            // WebSocket upgrade. We still need to observe the 101 response
+            // (to parse Sec-WebSocket-Extensions), then parse frames from
+            // both directions while forwarding raw bytes unchanged. We
+            // accumulate text payloads and emit a single proxy_log entry
+            // for the whole session.
+            let mut ws_resp_headers: Vec<(String, String)> = Vec::new();
+            let ws_status: u16;
+            let mut permessage_deflate = false;
+            let mut client_no_ctx = false;
+            let mut server_no_ctx = false;
+
+            // Read the HTTP response line.
+            let mut response_line = String::new();
+            match server_reader.read_line(&mut response_line).await {
+                Ok(0) | Err(_) => break,
+                _ => {}
+            }
+            client_write.write_all(response_line.as_bytes()).await?;
+            ws_status = response_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(0);
+
+            // Read & forward response headers.
+            loop {
+                let mut line = String::new();
+                match server_reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+                client_write.write_all(line.as_bytes()).await?;
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':') {
+                    let kl = k.trim().to_lowercase();
+                    let vt = v.trim();
+                    ws_resp_headers.push((k.trim().to_string(), vt.to_string()));
+                    if kl == "sec-websocket-extensions" {
+                        let vl = vt.to_lowercase();
+                        if vl.contains("permessage-deflate") {
+                            permessage_deflate = true;
+                            if vl.contains("client_no_context_takeover") {
+                                client_no_ctx = true;
+                            }
+                            if vl.contains("server_no_context_takeover") {
+                                server_no_ctx = true;
+                            }
+                        }
+                    }
+                }
+            }
+            client_write.flush().await?;
+
+            if state.verbose {
+                crate::broker::try_log_event(
+                    "debug",
+                    "proxy",
+                    &format!(
+                        "WS upgrade {host}{path} status={ws_status} deflate={permessage_deflate} \
+                         client_no_ctx={client_no_ctx} server_no_ctx={server_no_ctx}"
+                    ),
+                    None,
+                );
+            }
+
+            // If the handshake failed, just pipe remaining bytes raw and bail.
+            if ws_status != 101 {
+                tokio::select! {
+                    r = tokio::io::copy(&mut client_reader, &mut server_write) => { let _ = r; }
+                    r = tokio::io::copy(&mut server_reader, &mut client_write) => { let _ = r; }
+                }
+                let _ = state.log_tx.send(ProxyLogEntry {
+                    method: "WS".to_string(),
+                    path: path.to_string(),
+                    upstream_host: host.clone(),
+                    request_headers: parsed_headers,
+                    request_body: body,
+                    response_status: ws_status,
+                    response_headers: ws_resp_headers,
+                    response_body: Vec::new(),
+                    duration_ms: req_start.elapsed().as_millis() as u64,
+                });
+                break;
+            }
+
+            // Frame mode. Emit one proxy_log row per *turn* rather than per
+            // session: codex holds the WS open across many turns, so a
+            // flush-on-close design would never show live activity. Heuristic:
+            // a turn starts when the client sends a Data message, and ends on
+            // (a) the next client Data, (b) 2s of server idle, or (c) session
+            // close. Raw bytes are always forwarded unchanged regardless of
+            // bookkeeping.
+            struct WsPending {
+                request_body: Vec<u8>,
+                response_body: Vec<u8>,
+                start: std::time::Instant,
+                last_activity: std::time::Instant,
+            }
+            let mut pending: Option<WsPending> = None;
+            // Codex response streams can have within-turn bursts several
+            // seconds apart (tool calls, reasoning gaps). Keep this generous
+            // so a single turn rarely splits into multiple rows.
+            let idle_flush = std::time::Duration::from_secs(15);
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            let mut client_acc = super::ws::MessageAcc::new();
+            let mut server_acc = super::ws::MessageAcc::new();
+            let mut client_decomp = flate2::Decompress::new(false);
+            let mut server_decomp = flate2::Decompress::new(false);
+
+            macro_rules! flush_pending {
+                ($p:expr) => {{
+                    let p: WsPending = $p;
+                    if !p.request_body.is_empty() || !p.response_body.is_empty() {
+                        let _ = state.log_tx.send(ProxyLogEntry {
+                            method: "WS".to_string(),
+                            path: path.to_string(),
+                            upstream_host: host.clone(),
+                            request_headers: parsed_headers.clone(),
+                            request_body: p.request_body,
+                            response_status: ws_status,
+                            response_headers: ws_resp_headers.clone(),
+                            response_body: p.response_body,
+                            duration_ms: p.start.elapsed().as_millis() as u64,
+                        });
+                    }
+                }};
+            }
+
+            loop {
+                tokio::select! {
+                    r = super::ws::read_frame(&mut client_reader) => {
+                        match r {
+                            Ok(Some((raw, frame))) => {
+                                if server_write.write_all(&raw).await.is_err() { break; }
+                                if let Some(msg) = client_acc.push(frame) {
+                                    if let super::ws::Message::Data { opcode, compressed, payload } = msg {
+                                        if opcode == super::ws::OP_TEXT || opcode == super::ws::OP_BINARY {
+                                            let bytes = if compressed && permessage_deflate {
+                                                if client_no_ctx {
+                                                    client_decomp = flate2::Decompress::new(false);
+                                                }
+                                                super::ws::inflate_with(
+                                                    &mut client_decomp,
+                                                    &payload,
+                                                    MAX_RESPONSE_CAPTURE,
+                                                ).unwrap_or(payload)
+                                            } else { payload };
+                                            // New turn: flush the previous pending row first.
+                                            if let Some(prev) = pending.take() {
+                                                flush_pending!(prev);
+                                            }
+                                            let now = std::time::Instant::now();
+                                            let take = bytes.len().min(MAX_RESPONSE_CAPTURE);
+                                            pending = Some(WsPending {
+                                                request_body: bytes[..take].to_vec(),
+                                                response_body: Vec::new(),
+                                                start: now,
+                                                last_activity: now,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) | Err(_) => break,
+                        }
+                    }
+                    r = super::ws::read_frame(&mut server_reader) => {
+                        match r {
+                            Ok(Some((raw, frame))) => {
+                                if client_write.write_all(&raw).await.is_err() { break; }
+                                if let Some(msg) = server_acc.push(frame) {
+                                    if let super::ws::Message::Data { opcode, compressed, payload } = msg {
+                                        if opcode == super::ws::OP_TEXT || opcode == super::ws::OP_BINARY {
+                                            let bytes = if compressed && permessage_deflate {
+                                                if server_no_ctx {
+                                                    server_decomp = flate2::Decompress::new(false);
+                                                }
+                                                super::ws::inflate_with(
+                                                    &mut server_decomp,
+                                                    &payload,
+                                                    MAX_RESPONSE_CAPTURE,
+                                                ).unwrap_or(payload)
+                                            } else { payload };
+                                            // Attach to the current turn; if the server spoke
+                                            // first (unusual), open an empty-request turn.
+                                            let now = std::time::Instant::now();
+                                            let p = pending.get_or_insert_with(|| WsPending {
+                                                request_body: Vec::new(),
+                                                response_body: Vec::new(),
+                                                start: now,
+                                                last_activity: now,
+                                            });
+                                            if p.response_body.len() < MAX_RESPONSE_CAPTURE {
+                                                if !p.response_body.is_empty() {
+                                                    p.response_body.push(b'\n');
+                                                }
+                                                let room = MAX_RESPONSE_CAPTURE - p.response_body.len();
+                                                let take = bytes.len().min(room);
+                                                p.response_body.extend_from_slice(&bytes[..take]);
+                                            }
+                                            p.last_activity = now;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) | Err(_) => break,
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        let should_flush = pending.as_ref().is_some_and(|p| {
+                            !p.response_body.is_empty()
+                                && p.last_activity.elapsed() >= idle_flush
+                        });
+                        if should_flush {
+                            let p = pending.take().unwrap();
+                            flush_pending!(p);
+                        }
+                    }
+                }
+            }
+
+            // Flush any remaining pending turn on session close.
+            if let Some(p) = pending.take() {
+                flush_pending!(p);
             }
             break;
         }
