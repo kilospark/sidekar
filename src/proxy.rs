@@ -15,6 +15,7 @@
 
 mod mitm;
 mod reverse;
+mod ws;
 
 use anyhow::{Result, bail};
 use std::collections::HashMap;
