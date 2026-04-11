@@ -12,8 +12,8 @@ use cursor_family::CursorFamily;
 use proxy_env::ProxyEnvFlags;
 pub(crate) use proxy_env::build_proxy_child_env;
 
-/// Starter prompt passed via each tool’s native “initial prompt” mechanism.
-pub const STARTUP_INJECT: &str = "never guess or assume. ask if unclear. no sycophancy. think critically. when working on a problem, do not take shortcuts or look for quickfixes. find the root cause. load sidekar skill.";
+/// Starter prompt passed via each tool’s native "initial prompt" mechanism.
+pub const STARTUP_INJECT: &str = "never guess or assume. ask if unclear. no sycophancy. think critically. when working on a problem, do not take shortcuts or look for quickfixes. find the root cause. load sidekar skill.\noutput rules: terse, technical, no fluff. all substance stays, only filler dies. drop articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. fragments OK. short synonyms. technical terms exact. code blocks unchanged. errors quoted exact. pattern: [thing] [action] [reason]. [next step]. lead with the answer, not the reasoning. do not drift verbose over long conversations. code output, commits, file contents: write normally, not compressed. exception: use full clear prose for security warnings, irreversible action confirmations, and multi-step sequences where terse fragments risk misread. resume terse after.";
 
 /// Registry spec: one type per agent **family** (or single binary). No default `proxy_env_flags`.
 pub trait AgentCliSpec: Send + Sync {
