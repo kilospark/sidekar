@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sidekar",
-  "version": "1.1.28",
+  "version": "1.1.29",
   "description": "Bridge between AI agents and your browser",
   "permissions": [
     "activeTab",
