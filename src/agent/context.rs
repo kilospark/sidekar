@@ -1,16 +1,17 @@
 //! Per-request context view builder.
 //!
-//! Builds a right-sized view of history for each API call.
+//! Builds a right-sized view of history for each API call without mutating
+//! canonical history in ways that break the prompt cache prefix.
 //!
-//! Tool-result aging is applied **in-place** on canonical history so that once a
-//! result is truncated it stays byte-identical on subsequent turns — preserving
-//! the prompt cache prefix.  Thinking eviction and budget trimming remain
-//! ephemeral (view-only).
+//! Two optimizations applied in order:
+//! 1. Thinking block eviction — strip from all but the last assistant message.
+//! 2. Budget trimming — drop oldest messages if still over token budget.
 //!
-//! Three optimizations applied in order:
-//! 1. Progressive tool-result aging — **in-place** on canonical history.
-//! 2. Thinking block eviction — strip from all but the last assistant message.
-//! 3. Budget trimming — drop oldest messages if still over token budget.
+//! Note: tool-result aging was removed. Distance-based aging mutated a message
+//! once it crossed the threshold, destroying the prompt cache key at that
+//! position. Context overflow is handled by `compaction::maybe_compact` which
+//! fires at ~90% of the context window — a rare event that rebuilds the cache
+//! once instead of every few turns.
 
 use crate::providers::{ChatMessage, ContentBlock, Role};
 
@@ -27,6 +28,9 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
+                    ContentBlock::EncryptedReasoning { encrypted_content, .. } => {
+                        encrypted_content.len() * 3 / 4
+                    }
                 })
                 .sum::<usize>()
         })
@@ -34,33 +38,10 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         / 4
 }
 
-/// Age tool results in-place on canonical history, then build an ephemeral view
-/// with thinking eviction and budget trimming.
+/// Build an ephemeral view of history with thinking eviction and optional
+/// budget trimming. Canonical history is not mutated.
 pub fn prepare_context(history: &mut Vec<ChatMessage>, token_budget: usize) -> Vec<ChatMessage> {
-    // --- Step 1: Progressive tool-result aging (in-place on canonical history) ---
-    // Applied directly so that once a result is aged, it stays stable across
-    // subsequent turns — the prompt prefix never changes due to aging.
-    // Skip results already aged (prefixed with "[Aged]" or "[" stub marker) to
-    // guarantee byte-stability.
-    let len = history.len();
-    for (i, msg) in history.iter_mut().enumerate() {
-        let distance = len.saturating_sub(1).saturating_sub(i);
-        for block in msg.content.iter_mut() {
-            if let ContentBlock::ToolResult { content, .. } = block {
-                if content.starts_with("[Aged]") || content.starts_with("[Cleared]") {
-                    continue; // already aged — don't re-age
-                }
-                if distance >= 15 && content.len() > 200 {
-                    *content = stub_tool_result(content);
-                } else if distance >= 5 && content.len() > 2048 {
-                    let truncated = truncate(content, 2048).to_string();
-                    *content = format!("[Aged] {truncated}");
-                }
-            }
-        }
-    }
-
-    // --- Step 2: Thinking block eviction (ephemeral, view-only) ---
+    // --- Step 1: Thinking block eviction (ephemeral, view-only) ---
     let mut view: Vec<ChatMessage> = history.to_vec();
 
     let last_assistant_idx = view
@@ -77,7 +58,7 @@ pub fn prepare_context(history: &mut Vec<ChatMessage>, token_budget: usize) -> V
     // Drop messages that became empty after stripping.
     view.retain(|m| !m.content.is_empty());
 
-    // --- Step 3: Budget trimming (ephemeral, view-only) ---
+    // --- Step 2: Budget trimming (ephemeral, view-only) ---
     let est = estimate_tokens(&view);
     if est > token_budget && view.len() > 2 {
         // Protect the first message (may contain session context) and the last 5.
@@ -107,25 +88,6 @@ pub fn prepare_context(history: &mut Vec<ChatMessage>, token_budget: usize) -> V
     }
 
     view
-}
-
-/// Compress a tool result down to a one-line stub with byte count.
-fn stub_tool_result(content: &str) -> String {
-    let first_line = content
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("(empty)");
-    let truncated = truncate(first_line, 120);
-    format!("[{} bytes] {}", content.len(), truncated)
-}
-
-/// Truncate a string at a safe UTF-8 char boundary.
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..s.floor_char_boundary(max)]
-    }
 }
 
 #[cfg(test)]

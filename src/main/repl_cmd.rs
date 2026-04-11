@@ -3,7 +3,11 @@ use sidekar::*;
 /// Handle `sidekar repl <subcommand>` dispatch.
 ///
 /// Returns `Ok(())` on success — the caller should `return` immediately after.
-pub async fn handle(args: &[String], relay_override: Option<bool>) -> Result<()> {
+pub async fn handle(
+    args: &[String],
+    relay_override: Option<bool>,
+    proxy_override: Option<bool>,
+) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
         "login" => handle_login(args).await,
@@ -11,7 +15,8 @@ pub async fn handle(args: &[String], relay_override: Option<bool>) -> Result<()>
         "credentials" => handle_credentials(),
         "models" => handle_models(args).await,
         "sessions" => handle_sessions(args),
-        _ => handle_run(args, relay_override).await,
+        "ws-test" => handle_ws_test(args).await,
+        _ => handle_run(args, relay_override, proxy_override).await,
     }
 }
 
@@ -236,7 +241,96 @@ fn handle_sessions(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn handle_run(args: &[String], relay_override: Option<bool>) -> Result<()> {
+async fn handle_ws_test(args: &[String]) -> Result<()> {
+    use sidekar::providers::{StreamEvent, codex};
+
+    let mut credential = "codex".to_string();
+    let mut prompt = "Say hello in exactly 5 words.".to_string();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-c" | "--credential" if i + 1 < args.len() => {
+                credential = args[i + 1].clone();
+                i += 2;
+            }
+            _ => {
+                prompt = args[i..].join(" ");
+                break;
+            }
+        }
+    }
+
+    // Get codex credentials
+    let (api_key, account_id) =
+        sidekar::providers::oauth::get_codex_token(Some(&credential)).await?;
+
+    let base_url = "https://chatgpt.com/backend-api";
+    let model = "gpt-5.4";
+
+    let messages = vec![sidekar::providers::ChatMessage {
+        role: sidekar::providers::Role::User,
+        content: vec![sidekar::providers::ContentBlock::Text { text: prompt.clone() }],
+    }];
+
+    eprintln!("\x1b[2mConnecting WS to {base_url} ...\x1b[0m");
+    eprintln!("\x1b[2mPrompt: {prompt}\x1b[0m");
+    eprintln!();
+
+    let ws_config = sidekar::providers::StreamConfig {
+        use_websocket: true,
+        ..sidekar::providers::StreamConfig::default()
+    };
+    let (mut rx, _reclaim) = codex::stream_ws(
+        &api_key,
+        &account_id,
+        base_url,
+        model,
+        "You are a helpful assistant. Be concise.",
+        &messages,
+        &[],
+        Some("ws-test-session"),
+        None,
+        &ws_config,
+        None,
+    )
+    .await?;
+
+    let mut full_text = String::new();
+    while let Some(event) = rx.recv().await {
+        match &event {
+            StreamEvent::TextDelta { delta } => {
+                eprint!("{delta}");
+                full_text.push_str(delta);
+            }
+            StreamEvent::Done { message } => {
+                eprintln!();
+                eprintln!();
+                let u = &message.usage;
+                eprintln!("\x1b[2m--- Usage ---\x1b[0m");
+                eprintln!(
+                    "  input: {} (cached: {}, cache_write: {})",
+                    u.input_tokens, u.cache_read_tokens, u.cache_write_tokens
+                );
+                eprintln!("  output: {}", u.output_tokens);
+                eprintln!("  model: {}", message.model);
+                eprintln!("  response_id: {}", message.response_id);
+                eprintln!("  stop: {:?}", message.stop_reason);
+            }
+            StreamEvent::Error { message } => {
+                eprintln!("\n\x1b[31mError: {message}\x1b[0m");
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_run(
+    args: &[String],
+    relay_override: Option<bool>,
+    proxy_override: Option<bool>,
+) -> Result<()> {
     let mut prompt: Option<String> = None;
     let mut model: Option<String> = None;
     let mut credential: Option<String> = None;
@@ -285,6 +379,7 @@ async fn handle_run(args: &[String], relay_override: Option<bool>) -> Result<()>
         verbose,
         resume,
         relay_override,
+        proxy_override,
     })
     .await
 }

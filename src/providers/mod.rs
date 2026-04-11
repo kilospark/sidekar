@@ -16,6 +16,45 @@ pub fn is_verbose() -> bool {
     VERBOSE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+// ---------------------------------------------------------------------------
+// Shared MITM proxy config for in-process streaming clients.
+//
+// Set once at startup (e.g. `sidekar repl --proxy`) and read by
+// `build_streaming_client` below so per-turn traffic flows through sidekar's
+// MITM proxy and gets captured in the `proxy_log` SQLite table — the same way
+// PTY-wrapped agents are captured. Enables symmetric inspection of REPL vs
+// PTY traffic without needing `--verbose` on either side.
+// ---------------------------------------------------------------------------
+
+pub struct SharedProxyConfig {
+    pub port: u16,
+    pub ca_pem: Vec<u8>,
+}
+
+static PROXY_CONFIG: std::sync::OnceLock<SharedProxyConfig> = std::sync::OnceLock::new();
+
+pub fn set_shared_proxy(port: u16, ca_pem: Vec<u8>) {
+    let _ = PROXY_CONFIG.set(SharedProxyConfig { port, ca_pem });
+}
+
+/// Build a reqwest client for streaming provider API calls. When
+/// `set_shared_proxy` has been called (REPL `--proxy` path), the client is
+/// configured to route through sidekar's MITM proxy and trust its ephemeral
+/// CA. Otherwise returns a bare client with just the timeout, preserving
+/// existing behavior for non-proxied runs.
+pub(crate) fn build_streaming_client(
+    timeout: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    if let Some(cfg) = PROXY_CONFIG.get() {
+        let proxy_url = format!("http://127.0.0.1:{}", cfg.port);
+        builder = builder.proxy(reqwest::Proxy::all(&proxy_url)?);
+        let cert = reqwest::Certificate::from_pem(&cfg.ca_pem)?;
+        builder = builder.add_root_certificate(cert);
+    }
+    Ok(builder.build()?)
+}
+
 pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {
     if !is_verbose() {
         return;
@@ -255,6 +294,18 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_path: Option<String>,
     },
+    /// Opaque encrypted reasoning blob returned by the Codex API when
+    /// `include: ["reasoning.encrypted_content"]` is set.  Stored in
+    /// assistant messages and replayed verbatim on subsequent turns so the
+    /// server can reconstruct its reasoning chain without re-computing it,
+    /// which enables prompt-cache hits across the full conversation history.
+    #[serde(rename = "encrypted_reasoning")]
+    EncryptedReasoning {
+        /// Opaque base64-encoded blob from the server.
+        encrypted_content: String,
+        /// Human-readable summary entries (e.g. `[{"type":"summary_text","text":"..."}]`).
+        summary: Vec<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,6 +402,68 @@ pub struct ToolDef {
 }
 
 // ---------------------------------------------------------------------------
+// Per-provider stream tuning
+//
+// Providers differ in what knobs they expose (max_tokens, cache TTL, cache
+// scope, etc.). `StreamConfig` collects the ones we actually vary and
+// `Provider::default_stream_config` returns the defaults each provider's
+// native CLI sends — which is what we observed in `proxy_log` captures.
+// Keeping this as a struct (rather than constants sprinkled through each
+// provider module) lets callers tweak per-turn without rewriting providers.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct StreamConfig {
+    pub max_tokens: u32,
+    /// Cache TTL sent on Anthropic `cache_control` markers. `None` uses the
+    /// Anthropic default (5-minute ephemeral). `Some("1h")` enables the 1-hour
+    /// cache — required to survive REPL pauses and match Claude Code behavior.
+    pub cache_ttl: Option<String>,
+    /// Cache scope sent on Anthropic SYSTEM-block `cache_control` markers
+    /// only. `None` uses the default (request-scoped). `Some("global")`
+    /// enables cross-request reuse — what Claude Code sends in its captured
+    /// traffic. NOTE: Anthropic rejects `scope` on message-content markers
+    /// (`messages.N.content.M.text.cache_control.ephemeral.scope: Extra
+    /// inputs are not permitted`), so this field is applied ONLY to the
+    /// system breakpoint, never to message breakpoints.
+    pub cache_scope: Option<String>,
+    /// Use WebSocket transport instead of HTTP POST + SSE. Currently only
+    /// supported by the Codex provider (`wss://chatgpt.com/backend-api/…`).
+    pub use_websocket: bool,
+    /// Allow the model to emit multiple tool calls in a single response.
+    /// Codex CLI always sends `true`.
+    pub parallel_tool_calls: bool,
+    /// Sampling temperature. Codex CLI sends `1.0` for reasoning models.
+    pub temperature: Option<f32>,
+    /// Reasoning configuration: `{ "effort": "high", "summary": "auto" }`.
+    pub reasoning: Option<ReasoningConfig>,
+    /// Text generation configuration: `{ "verbosity": "verbose" }`.
+    pub text_verbosity: Option<String>,
+}
+
+/// Reasoning parameters sent to the Codex Responses API.
+#[derive(Debug, Clone)]
+pub struct ReasoningConfig {
+    pub effort: String,
+    pub summary: String,
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: 16_000,
+            cache_ttl: None,
+            cache_scope: None,
+            use_websocket: false,
+            parallel_tool_calls: false,
+            temperature: None,
+            reasoning: None,
+            text_verbosity: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Streaming events emitted by providers
 // ---------------------------------------------------------------------------
 
@@ -404,6 +517,10 @@ pub struct AssistantResponse {
     pub usage: Usage,
     pub stop_reason: StopReason,
     pub model: String,
+    /// Provider-specific response identifier for stateful chaining (e.g. codex
+    /// `previous_response_id`). Empty for providers that don't support it.
+    #[serde(default)]
+    pub response_id: String,
 }
 
 /// Cached model metadata fetched from provider APIs.
@@ -866,6 +983,39 @@ impl Provider {
         }
     }
 
+    /// Per-provider defaults matching the native CLI behavior (observed in
+    /// `proxy_log` captures). Anthropic gets Claude Code's `max_tokens=64k`
+    /// plus a 1-hour cache TTL and `scope: "global"` so REPL traffic actually
+    /// hits the prompt cache instead of the 5-minute ephemeral default — the
+    /// single biggest driver of per-turn token drain on multi-turn chats.
+    ///
+    /// `scope: "global"` is only applied to SYSTEM breakpoints. Anthropic
+    /// rejects it on message-content breakpoints (`messages.N.content.M.text.
+    /// cache_control.ephemeral.scope: Extra inputs are not permitted`) but
+    /// accepts it on system blocks — which is exactly how Claude Code's
+    /// captured traffic uses it. The scope flag is what lets the cache survive
+    /// the volatile per-request billing header (block 0, which changes every
+    /// turn because `cch` is a body hash).
+    pub fn default_stream_config(&self) -> StreamConfig {
+        match self {
+            Provider::Anthropic { .. } => StreamConfig {
+                max_tokens: 64_000,
+                cache_ttl: Some("1h".into()),
+                cache_scope: Some("global".into()),
+                ..StreamConfig::default()
+            },
+            Provider::Codex { .. } => StreamConfig {
+                use_websocket: true,
+                // NOTE: parallel_tool_calls, reasoning, and text_verbosity
+                // are disabled for now — adding them correlated with 0% cache
+                // hits vs ~48% without them.  Re-enable one at a time to
+                // isolate the regression.
+                ..StreamConfig::default()
+            },
+            Provider::OpenRouter { .. } => StreamConfig::default(),
+        }
+    }
+
     pub async fn stream(
         &self,
         model: &str,
@@ -873,13 +1023,27 @@ impl Provider {
         messages: &[ChatMessage],
         tools: &[ToolDef],
         prompt_cache_key: Option<&str>,
-    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
+        previous_response_id: Option<&str>,
+        cached_ws: Option<codex::CachedWs>,
+    ) -> anyhow::Result<(
+        tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+        tokio::sync::oneshot::Receiver<Option<codex::CachedWs>>,
+    )> {
         let max_retries = 3u32;
         let mut attempt = 0u32;
+        let mut ws = cached_ws;
 
         loop {
             let result = self
-                .stream_once(model, system_prompt, messages, tools, prompt_cache_key)
+                .stream_once(
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                    prompt_cache_key,
+                    previous_response_id,
+                    ws.take(),
+                )
                 .await;
 
             match &result {
@@ -910,10 +1074,16 @@ impl Provider {
         messages: &[ChatMessage],
         tools: &[ToolDef],
         prompt_cache_key: Option<&str>,
-    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
+        previous_response_id: Option<&str>,
+        cached_ws: Option<codex::CachedWs>,
+    ) -> anyhow::Result<(
+        tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+        tokio::sync::oneshot::Receiver<Option<codex::CachedWs>>,
+    )> {
+        let stream_config = self.default_stream_config();
         match self {
             Provider::Anthropic { api_key, base_url } => {
-                anthropic::stream(
+                let rx = anthropic::stream(
                     api_key,
                     base_url,
                     model,
@@ -921,28 +1091,50 @@ impl Provider {
                     messages,
                     tools,
                     prompt_cache_key,
+                    &stream_config,
                 )
-                .await
+                .await?;
+                Ok(no_ws_reclaim(rx))
             }
             Provider::Codex {
                 api_key,
                 account_id,
                 base_url,
             } => {
-                codex::stream(
-                    api_key,
-                    account_id,
-                    base_url,
-                    model,
-                    system_prompt,
-                    messages,
-                    tools,
-                    prompt_cache_key,
-                )
-                .await
+                if stream_config.use_websocket {
+                    codex::stream_ws(
+                        api_key,
+                        account_id,
+                        base_url,
+                        model,
+                        system_prompt,
+                        messages,
+                        tools,
+                        prompt_cache_key,
+                        previous_response_id,
+                        &stream_config,
+                        cached_ws,
+                    )
+                    .await
+                } else {
+                    let rx = codex::stream(
+                        api_key,
+                        account_id,
+                        base_url,
+                        model,
+                        system_prompt,
+                        messages,
+                        tools,
+                        prompt_cache_key,
+                        previous_response_id,
+                        &stream_config,
+                    )
+                    .await?;
+                    Ok(no_ws_reclaim(rx))
+                }
             }
             Provider::OpenRouter { api_key, base_url } => {
-                openrouter::stream(
+                let rx = openrouter::stream(
                     api_key,
                     base_url,
                     model,
@@ -951,10 +1143,24 @@ impl Provider {
                     tools,
                     prompt_cache_key,
                 )
-                .await
+                .await?;
+                Ok(no_ws_reclaim(rx))
             }
         }
     }
+}
+
+/// Wrap a plain event receiver with a pre-resolved "no WS to reclaim" oneshot
+/// for providers that don't use persistent WebSocket connections.
+fn no_ws_reclaim(
+    rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+) -> (
+    tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+    tokio::sync::oneshot::Receiver<Option<codex::CachedWs>>,
+) {
+    let (tx, reclaim_rx) = tokio::sync::oneshot::channel();
+    let _ = tx.send(None);
+    (rx, reclaim_rx)
 }
 
 /// Check if an error is retryable (5xx, 429 rate limit, or connection failure).

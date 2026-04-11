@@ -241,11 +241,12 @@ async fn cmd_update(ctx: &mut AppContext) -> Result<()> {
 
 fn cmd_proxy(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("log");
+    let rest = args.get(1..).unwrap_or(&[]);
     match sub {
-        "log" => cmd_proxy_log(ctx, &args[1..])?,
+        "log" => cmd_proxy_log(ctx, rest)?,
         "show" => {
-            let id = args
-                .get(1)
+            let id = rest
+                .first()
                 .and_then(|s| s.parse::<i64>().ok())
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar proxy show <id>"))?;
             cmd_proxy_show(ctx, id)?;

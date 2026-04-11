@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::providers::{
     AssistantResponse, ChatMessage, ContentBlock, Provider, Role, StopReason, StreamEvent, ToolDef,
+    codex,
 };
 
 static ERROR_DISPLAYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -29,6 +30,12 @@ pub struct Cancelled;
 
 /// Run the agent loop: stream LLM response, execute tool calls, repeat.
 /// Returns `Ok(true)` if history was compacted during the loop.
+///
+/// `previous_response_id` enables stateful chaining for providers that
+/// support it (codex). On entry it may contain the response ID from a prior
+/// `run()` call. On exit it is updated to the ID of the last successful
+/// response so the caller can pass it into the next `run()`. Compaction
+/// resets it to `None` because the server-side history is no longer valid.
 pub async fn run(
     provider: &Provider,
     model: &str,
@@ -38,6 +45,8 @@ pub async fn run(
     on_event: StreamCallback,
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
     prompt_cache_key: Option<&str>,
+    previous_response_id: &mut Option<String>,
+    cached_ws: &mut Option<codex::CachedWs>,
 ) -> Result<bool, anyhow::Error> {
     // Reset error flag from any prior turn so a stale flag doesn't suppress
     // error display in this turn.
@@ -45,6 +54,10 @@ pub async fn run(
 
     let mut context_window: Option<u32> = None;
     let mut did_compact = false;
+    // Index into `history` from which to send delta-only messages when
+    // chaining via previous_response_id. Set after each successful response.
+    let mut delta_start: usize = history.len();
+    let mut in_tool_loop = false;
 
     loop {
         if let Some(c) = cancel
@@ -53,9 +66,13 @@ pub async fn run(
             return Err(Cancelled.into());
         }
 
-        // Show activity immediately, even if we need a models API lookup to
-        // discover context limits on the first turn.
-        on_event(&StreamEvent::Waiting);
+        // On the first iteration, show status spinners. On subsequent
+        // iterations (tool-call chains), skip them so the ToolExec spinner
+        // ("running Sidekar — ...") stays visible until the next response
+        // starts streaming.
+        if !in_tool_loop {
+            on_event(&StreamEvent::Waiting);
+        }
 
         let context_window = match context_window {
             Some(v) => v,
@@ -67,15 +84,25 @@ pub async fn run(
             }
         };
 
-        // Auto-compact if context is getting large
-        did_compact |=
+        // Auto-compact if context is getting large. Compaction rewrites
+        // history so the server-side chain is no longer valid.
+        let compacted =
             compaction::maybe_compact(provider, model, history, context_window, &on_event).await;
+        if compacted {
+            did_compact = true;
+            *previous_response_id = None;
+            delta_start = 0;
+        }
 
-        // Reassert waiting after any compaction/status output before the model call.
-        on_event(&StreamEvent::Waiting);
+        if !in_tool_loop {
+            on_event(&StreamEvent::Waiting);
+            on_event(&StreamEvent::Connecting);
+        }
 
-        // Build a right-sized view of history for this request.
-        // Budget = context_window minus system prompt, tool defs, and response reserve.
+        // TODO: when WS transport is implemented, use delta_start to send only
+        // new messages when previous_response_id is set. For now, HTTP POST
+        // doesn't support server-side chaining, so always send full history.
+        let prev_id_ref = previous_response_id.as_deref();
         let system_tokens = system_prompt.len() / 4;
         let tool_tokens: usize = tool_defs
             .iter()
@@ -89,23 +116,26 @@ pub async fn run(
             .saturating_sub(response_reserve);
         let view = context::prepare_context(history, history_budget);
 
-        on_event(&StreamEvent::Connecting);
+        if !in_tool_loop {
+            on_event(&StreamEvent::Connecting);
+        }
         // Stream LLM response — select against cancel so Esc works during connection.
+        let ws = cached_ws.take();
         let stream_result = match cancel {
             Some(c) => {
                 tokio::select! {
                     _ = wait_for_cancel(c) => return Err(Cancelled.into()),
-                    result = provider.stream(model, system_prompt, &view, tool_defs, prompt_cache_key) => result,
+                    result = provider.stream(model, system_prompt, &view, tool_defs, prompt_cache_key, prev_id_ref, ws) => result,
                 }
             }
             None => {
                 provider
-                    .stream(model, system_prompt, &view, tool_defs, prompt_cache_key)
+                    .stream(model, system_prompt, &view, tool_defs, prompt_cache_key, prev_id_ref, ws)
                     .await
             }
         };
-        let mut rx = match stream_result {
-            Ok(rx) => rx,
+        let (mut rx, reclaim_rx) = match stream_result {
+            Ok(pair) => pair,
             Err(e) => {
                 on_event(&StreamEvent::Error {
                     message: format!("{e:#}"),
@@ -121,11 +151,28 @@ pub async fn run(
             Err(e) => return Err(e),
         };
 
+        // Reclaim WS connection for reuse on the next turn
+        *cached_ws = reclaim_rx.await.unwrap_or(None);
+        if crate::providers::is_verbose() {
+            crate::tunnel::tunnel_println(&format!(
+                "\x1b[2m[ws] reclaim result: {}\x1b[0m",
+                if cached_ws.is_some() { "got connection" } else { "none" }
+            ));
+        }
+
+        // Update stateful chaining state.
+        if !response.response_id.is_empty() {
+            *previous_response_id = Some(response.response_id.clone());
+        }
+
         // Add assistant message to history
         history.push(ChatMessage {
             role: Role::Assistant,
             content: response.content.clone(),
         });
+
+        // Mark where new messages start for delta-only chaining.
+        delta_start = history.len();
 
         // Extract tool calls
         let tool_calls: Vec<_> = response
@@ -184,6 +231,8 @@ pub async fn run(
             role: Role::User,
             content: result_blocks,
         });
+
+        in_tool_loop = true;
     }
 
     Ok(did_compact)

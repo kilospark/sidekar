@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamConfig, StreamEvent,
+    ToolDef, Usage,
 };
 
 const CLAUDE_CODE_VERSION: &str = "2.1.87";
@@ -26,17 +27,33 @@ pub async fn stream(
     messages: &[ChatMessage],
     tools: &[ToolDef],
     _prompt_cache_key: Option<&str>,
+    config: &StreamConfig,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let is_oauth = api_key.contains("sk-ant-oat");
 
-    let max_tokens = 16_000u32;
-
-    let body = build_request_body(model, system_prompt, messages, tools, max_tokens, is_oauth);
+    let body = build_request_body(
+        api_key,
+        model,
+        system_prompt,
+        messages,
+        tools,
+        config,
+        is_oauth,
+    );
     let mut body_json = serde_json::to_string(&body)?;
     if is_oauth && body_json.contains(CCH_PLACEHOLDER) {
         body_json = sign_request_body(&body_json);
     }
-    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+    // Claude Code's captured traffic hits `/v1/messages?beta=true`, not bare
+    // `/v1/messages`. The `?beta=true` query flag is what actually activates
+    // the beta features listed in `anthropic-beta` — including the
+    // `prompt-caching-scope-2026-01-05` beta. Without it, scope is accepted
+    // syntactically but the cache never creates (cache_creation stays 0).
+    let url = format!(
+        "{}/v1/messages{}",
+        base_url.trim_end_matches('/'),
+        if is_oauth { "?beta=true" } else { "" }
+    );
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
@@ -45,9 +62,16 @@ pub async fn stream(
     headers.insert("anthropic-dangerous-direct-browser-access", "true".parse()?);
 
     if is_oauth {
+        // `prompt-caching-scope-2026-01-05` gates the `cache_control.ephemeral.
+        // scope` field. Without it, Anthropic returns 400
+        // `system.N.cache_control.ephemeral.scope: Extra inputs are not
+        // permitted`. Claude Code sends this beta in its captured traffic,
+        // and it's what lets the cache survive the volatile per-request
+        // billing header (block 0, which changes every turn because `cch`
+        // is a body hash).
         headers.insert(
             "anthropic-beta",
-            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14"
+            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,prompt-caching-scope-2026-01-05"
                 .parse()?,
         );
         headers.insert("authorization", format!("Bearer {api_key}").parse()?);
@@ -65,9 +89,7 @@ pub async fn stream(
         super::log_api_request(&url, &headers, &log_body);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    let client = super::build_streaming_client(std::time::Duration::from_secs(300))?;
 
     let response = client
         .post(&url)
@@ -102,11 +124,12 @@ pub async fn stream(
 // ---------------------------------------------------------------------------
 
 fn build_request_body(
+    api_key: &str,
     model: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
-    max_tokens: u32,
+    config: &StreamConfig,
     is_oauth: bool,
 ) -> AnthropicRequest {
     // Collect all tool_use IDs from assistant messages so we can drop orphaned tool_results
@@ -171,7 +194,7 @@ fn build_request_body(
         Some(json!({
             "user_id": serde_json::to_string(&json!({
                 "device_id": get_or_create_device_id(),
-                "account_uuid": get_account_uuid(),
+                "account_uuid": get_account_uuid(api_key),
                 "session_id": format!("sidekar-{}", std::process::id()),
             })).unwrap_or_default()
         }))
@@ -188,13 +211,13 @@ fn build_request_body(
     let mut request = AnthropicRequest {
         system: build_system_blocks(system_prompt, messages, is_oauth),
         model: model.to_string(),
-        max_tokens,
+        max_tokens: config.max_tokens,
         metadata,
         messages: api_messages,
         stream: true,
         tools,
     };
-    apply_cache_control(&mut request);
+    apply_cache_control(&mut request, config);
     request
 }
 
@@ -226,28 +249,59 @@ fn build_system_blocks(
     blocks
 }
 
-fn apply_cache_control(request: &mut AnthropicRequest) {
-    let marker = json!({ "type": "ephemeral" });
-    let mut breakpoints_used = 0usize;
-
-    if apply_system_cache_control(&mut request.system, &marker) {
-        breakpoints_used += 1;
+fn apply_cache_control(request: &mut AnthropicRequest, config: &StreamConfig) {
+    // "Stable" marker carries `scope` (if configured) because Anthropic
+    // accepts it on system and tool blocks. This is what lets the cache
+    // survive the volatile billing header (block 0's `cch` changes every
+    // turn as a body hash) — matches Claude Code's captured behavior.
+    let mut stable_marker = json!({ "type": "ephemeral" });
+    if let Some(ttl) = &config.cache_ttl {
+        stable_marker["ttl"] = json!(ttl);
+    }
+    if let Some(scope) = &config.cache_scope {
+        stable_marker["scope"] = json!(scope);
     }
 
-    let remaining = 4usize.saturating_sub(breakpoints_used);
-    if remaining == 0 {
-        return;
+    // Rolling marker for the latest message. Intentionally OMITS `scope` —
+    // Anthropic rejects `cache_control.ephemeral.scope` on message-content
+    // cache_control blocks with a 400. TTL alone is sufficient here.
+    let mut rolling_marker = json!({ "type": "ephemeral" });
+    if let Some(ttl) = &config.cache_ttl {
+        rolling_marker["ttl"] = json!(ttl);
     }
 
-    let mut applied = 0usize;
-    for message in request.messages.iter_mut().rev() {
-        if apply_message_cache_control(message, &marker) {
-            applied += 1;
-            if applied >= remaining {
-                break;
-            }
-        }
+    // Place the stable breakpoint on the LAST TOOL definition, not on the
+    // system block. Reason: Anthropic's minimum cacheable prefix is 1024
+    // tokens, and our REPL system prompt (≈380 tokens including the two
+    // fixed CC-identity blocks) falls below that threshold — the marker
+    // would be syntactically valid but silently discarded. Placing it on
+    // the last tool extends the cached prefix to system + tools (≈1830
+    // tokens for the REPL's 7-tool schema), which is safely above 1024 and
+    // still stable across turns (tool defs never change mid-session).
+    //
+    // If there are no tools, fall back to the system block and accept that
+    // tiny system prompts won't cache — still beats missing the feature.
+    let placed_stable = apply_tools_cache_control(&mut request.tools, &stable_marker)
+        || apply_system_cache_control(&mut request.system, &stable_marker);
+    let _ = placed_stable;
+
+    // Only stamp the LATEST message. The cache rolls forward automatically
+    // because Anthropic matches the longest cached prefix from prior turns
+    // on each new request. Matches Claude Code's one-marker-on-tail pattern.
+    if let Some(last) = request.messages.last_mut() {
+        apply_message_cache_control(last, &rolling_marker);
     }
+}
+
+fn apply_tools_cache_control(tools: &mut Option<Vec<Value>>, marker: &Value) -> bool {
+    let Some(tools) = tools.as_mut() else {
+        return false;
+    };
+    let Some(last) = tools.last_mut() else {
+        return false;
+    };
+    last["cache_control"] = marker.clone();
+    true
 }
 
 fn apply_system_cache_control(system: &mut [Value], marker: &Value) -> bool {
@@ -306,48 +360,50 @@ fn apply_message_cache_control(message: &mut Value, marker: &Value) -> bool {
 fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> {
     blocks
         .iter()
-        .map(|b| match b {
-            ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => json!({
+            } => Some(json!({
                 "type": "thinking",
                 "thinking": thinking,
                 "signature": signature,
-            }),
+            })),
             ContentBlock::ToolCall {
                 id,
                 name,
                 arguments,
-            } => json!({
+            } => Some(json!({
                 "type": "tool_use",
                 "id": super::sanitize_id_anthropic(id),
                 "name": if oauth { to_claude_code_tool_name(name) } else { name.clone() },
                 "input": arguments,
-            }),
+            })),
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
                 is_error,
-            } => json!({
+            } => Some(json!({
                 "type": "tool_result",
                 "tool_use_id": super::sanitize_id_anthropic(tool_use_id),
                 "content": content,
                 "is_error": is_error,
-            }),
+            })),
             ContentBlock::Image {
                 media_type,
                 data_base64,
                 ..
-            } => json!({
+            } => Some(json!({
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": media_type,
                     "data": data_base64,
                 }
-            }),
+            })),
+            // Encrypted reasoning is Codex-only; skip for Anthropic.
+            ContentBlock::EncryptedReasoning { .. } => None,
         })
         .collect()
 }
@@ -618,6 +674,7 @@ async fn parse_sse_stream(
                             usage: usage.clone(),
                             stop_reason: stop_reason.clone(),
                             model: model_id.clone(),
+                            response_id: String::new(),
                         },
                     });
                 }
@@ -672,19 +729,39 @@ fn get_or_create_device_id() -> String {
     id
 }
 
-fn get_account_uuid() -> String {
-    crate::broker::kv_get(super::oauth::KV_KEY_ANTHROPIC)
-        .ok()
-        .flatten()
-        .and_then(|entry| serde_json::from_str::<serde_json::Value>(&entry.value).ok())
-        .and_then(|creds| {
-            creds
-                .get("metadata")?
-                .get("account_uuid")?
-                .as_str()
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
+fn get_account_uuid(api_key: &str) -> String {
+    // OAuth creds live under nicknamed keys (`oauth:claude-kb`,
+    // `oauth:claude-ks`, etc.) — not the fixed `oauth:anthropic` key. Scan
+    // all kv entries, find the one whose stored access_token matches the
+    // one we're about to send, and pull `metadata.account_uuid` from it.
+    //
+    // This matters because `scope: "global"` cache reuse is keyed by
+    // account_uuid server-side. An empty account_uuid silently disables
+    // global caching — which is the bug that kept REPL cache_creation
+    // stuck at 0 even though syntactically the request looked identical
+    // to Claude Code's.
+    let Ok(entries) = crate::broker::kv_list(None) else {
+        return String::new();
+    };
+    for entry in entries {
+        if !entry.key.starts_with("oauth:") {
+            continue;
+        }
+        let Ok(creds) = serde_json::from_str::<serde_json::Value>(&entry.value) else {
+            continue;
+        };
+        if creds.get("access_token").and_then(|v| v.as_str()) != Some(api_key) {
+            continue;
+        }
+        if let Some(uuid) = creds
+            .get("metadata")
+            .and_then(|m| m.get("account_uuid"))
+            .and_then(|v| v.as_str())
+        {
+            return uuid.to_string();
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]

@@ -231,7 +231,8 @@ async fn handle_ext_websocket(
 
     loop {
         tokio::select! {
-            Some(outbound) = bridge_rx.recv() => {
+            outbound = bridge_rx.recv() => {
+                let Some(outbound) = outbound else { break };
                 if ws_tx.send(Message::Text(outbound.into())).await.is_err() {
                     break;
                 }

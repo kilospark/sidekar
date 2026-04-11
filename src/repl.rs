@@ -42,11 +42,44 @@ pub struct ReplOptions {
     /// None = fresh session, Some(None) = interactive picker, Some(Some(id)) = resume specific session
     pub resume: Option<Option<String>>,
     pub relay_override: Option<bool>,
+    pub proxy_override: Option<bool>,
 }
 
 /// Entry point for the REPL.
 pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     crate::runtime::init(opts.verbose);
+
+    // Start the MITM proxy for in-process streaming provider calls if requested.
+    // Mirrors PTY proxy semantics: explicit --proxy / --no-proxy wins, otherwise
+    // falls back to the SIDEKAR_PROXY env var. The CA PEM is loaded and handed
+    // to `providers::set_shared_proxy`, which `build_streaming_client` reads on
+    // every provider request to install the proxy + root cert on the client.
+    let proxy_enabled = match opts.proxy_override {
+        Some(v) => v,
+        None => std::env::var("SIDEKAR_PROXY").is_ok(),
+    };
+    if proxy_enabled {
+        match crate::proxy::start(opts.verbose).await {
+            Ok((port, ca_path)) => match std::fs::read(&ca_path) {
+                Ok(ca_pem) => {
+                    providers::set_shared_proxy(port, ca_pem);
+                    repl_status_dim(&format!(
+                        "MITM proxy attached on 127.0.0.1:{port} (payloads in `sidekar proxy log`)"
+                    ));
+                }
+                Err(e) => {
+                    crate::broker::try_log_error(
+                        "proxy",
+                        &format!("failed to read CA at {}: {e:#}", ca_path.display()),
+                        None,
+                    );
+                }
+            },
+            Err(e) => {
+                crate::broker::try_log_error("proxy", &format!("failed to start: {e:#}"), None);
+            }
+        }
+    }
 
     // Credential and model are optional — user can set them interactively.
     let mut cred_name: Option<String> = opts.credential;
@@ -150,6 +183,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let _ = session::append_message(&session_id, &user_msg);
         history.push(user_msg);
 
+        let mut prev_resp_id: Option<String> = None;
+        let mut cached_ws: Option<providers::codex::CachedWs> = None;
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let _cancel_watch = EscCancelWatcher::start(cancel.clone(), tunnel_input_fd);
         let renderer =
@@ -171,6 +206,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             on_event,
             Some(&cancel),
             Some(&session_id),
+            &mut prev_resp_id,
+            &mut cached_ws,
         )
         .await;
         if let Ok(mut guard) = renderer.lock() {
@@ -238,6 +275,13 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let mut line_editor = LineEditor::with_history(
         session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
     );
+
+    // Stateful chaining: persists the codex response ID across turns so
+    // subsequent calls can use previous_response_id for delta-only input.
+    let mut prev_resp_id: Option<String> = None;
+    // Persistent WS connection for Codex provider — reused across turns so
+    // the server can correlate requests and cache prompt prefixes.
+    let mut cached_ws: Option<providers::codex::CachedWs> = None;
 
     loop {
         let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
@@ -330,6 +374,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                     &bus_name,
                     &cwd,
                     &nick,
+                    &mut cached_ws,
                 )
                 .await?
                 {
@@ -398,6 +443,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             on_event,
             Some(&cancel),
             Some(&session_id),
+            &mut prev_resp_id,
+            &mut cached_ws,
         )
         .await;
         if let Ok(mut guard) = renderer.lock() {
