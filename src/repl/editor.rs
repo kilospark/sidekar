@@ -97,8 +97,12 @@ pub(super) fn emit_transient_status(text: &str) {
     })
     .is_none()
     {
+        // Truncate to terminal width so the preview never wraps to a second
+        // line — clear_transient_status can only erase one row.
+        let cols = standalone_terminal_columns();
+        let truncated = truncate_preview_to_width(text, cols.saturating_sub(1));
         emit_raw("\r\x1b[2K");
-        emit_raw(text);
+        emit_raw(&truncated);
     }
 }
 
@@ -496,6 +500,16 @@ fn renumber_pending_image_labels(text: &str, offset: usize) -> String {
         format!("[Image #{}]", offset + n)
     })
     .into_owned()
+}
+
+fn standalone_terminal_columns() -> usize {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let fd = libc::STDOUT_FILENO;
+    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
+        ws.ws_col as usize
+    } else {
+        80
+    }
 }
 
 fn truncate_preview_to_width(s: &str, max_display_width: usize) -> String {

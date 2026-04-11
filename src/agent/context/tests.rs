@@ -98,56 +98,44 @@ fn empty_messages_removed_after_eviction() {
 }
 
 #[test]
-fn tool_results_aged_by_distance() {
+fn tool_results_preserved_across_turns() {
+    // Regression: progressive aging used to mutate historical tool_results
+    // in-place once they crossed a distance threshold, destroying the prompt
+    // cache key at that position. prepare_context must leave tool_result
+    // content untouched on canonical history so the cache prefix is stable.
     let big = "x".repeat(3000);
     let mut history: Vec<ChatMessage> = Vec::new();
 
-    // Build 20 pairs of user tool-result + assistant response
     for i in 0..20 {
         history.push(tool_result_msg(&format!("t{i}"), &big));
         history.push(text_msg(Role::Assistant, &format!("resp {i}")));
     }
 
-    let view = prepare_context(&mut history, 1_000_000);
-    let len = view.len();
-
-    // Check oldest tool result (distance >= 15) is stubbed
-    let oldest_tr = view[0]
-        .content
+    let before: Vec<String> = history
         .iter()
-        .find_map(|b| match b {
-            ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-            _ => None,
+        .flat_map(|m| {
+            m.content.iter().filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
         })
-        .unwrap();
-    assert!(
-        oldest_tr.starts_with('['),
-        "oldest result should be stubbed, got: {}",
-        &oldest_tr[..80.min(oldest_tr.len())]
-    );
+        .collect();
 
-    // Check a mid-range result (distance 5-14) is aged
-    let mid_idx = len.saturating_sub(12); // ~distance 11
-    if let Some(tr) = view.get(mid_idx) {
-        if let Some(content) = tr.content.iter().find_map(|b| match b {
-            ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-            _ => None,
-        }) {
-            assert!(
-                content.starts_with("[Aged]"),
-                "mid-range result should be aged, got: {}",
-                &content[..80.min(content.len())]
-            );
-        }
-    }
+    prepare_context(&mut history, 1_000_000);
 
-    // Check recent result (distance < 5) is full
-    let recent = &view[len - 2]; // second to last
-    if let Some(content) = recent.content.iter().find_map(|b| match b {
-        ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-        _ => None,
-    }) {
-        assert_eq!(content.len(), 3000, "recent result should be full");
+    let after: Vec<String> = history
+        .iter()
+        .flat_map(|m| {
+            m.content.iter().filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+        })
+        .collect();
+
+    assert_eq!(before, after, "canonical history must not be mutated");
+    for content in &after {
+        assert_eq!(content.len(), 3000, "tool result content must be intact");
     }
 }
 
@@ -182,20 +170,19 @@ fn budget_trimming_drops_oldest() {
 }
 
 #[test]
-fn aged_results_stay_stable_across_turns() {
+fn tool_results_stable_across_new_turns() {
+    // Regression: adding new turns used to push older messages past the
+    // distance threshold and rewrite them, breaking the cache. The canonical
+    // history at positions [0..N) must stay byte-identical after new turns
+    // are appended and prepare_context is called again.
     let big = "x".repeat(3000);
     let mut history: Vec<ChatMessage> = Vec::new();
-
-    // Build 20 pairs so some results are well past the aging thresholds.
-    for i in 0..20 {
+    for i in 0..10 {
         history.push(tool_result_msg(&format!("t{i}"), &big));
         history.push(text_msg(Role::Assistant, &format!("resp {i}")));
     }
 
-    // First call — ages in-place
     prepare_context(&mut history, 1_000_000);
-
-    // Snapshot the canonical history after aging.
     let snapshot: Vec<String> = history
         .iter()
         .flat_map(|m| {
@@ -206,17 +193,15 @@ fn aged_results_stay_stable_across_turns() {
         })
         .collect();
 
-    // Simulate several new turns to shift distances.
     for i in 0..5 {
         history.push(text_msg(Role::User, &format!("q{i}")));
         history.push(text_msg(Role::Assistant, &format!("a{i}")));
         prepare_context(&mut history, 1_000_000);
     }
 
-    // All results that were already aged must be byte-identical.
     let current: Vec<String> = history
         .iter()
-        .take(40) // original 20 pairs
+        .take(20)
         .flat_map(|m| {
             m.content.iter().filter_map(|b| match b {
                 ContentBlock::ToolResult { content, .. } => Some(content.clone()),
@@ -225,15 +210,7 @@ fn aged_results_stay_stable_across_turns() {
         })
         .collect();
 
-    for (i, (before, after)) in snapshot.iter().zip(current.iter()).enumerate() {
-        if before.starts_with("[Aged]") || before.starts_with("[") && before.contains(" bytes]")
-        {
-            assert_eq!(
-                before, after,
-                "already-aged tool result t{i} changed on subsequent turn"
-            );
-        }
-    }
+    assert_eq!(snapshot, current, "historical tool_results must not mutate");
 }
 
 #[test]

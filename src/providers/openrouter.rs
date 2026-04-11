@@ -25,9 +25,7 @@ pub async fn stream(
 
     super::log_api_request(&url, &headers, &body);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    let client = super::build_streaming_client(std::time::Duration::from_secs(300))?;
 
     let response = client
         .post(&url)
@@ -410,6 +408,7 @@ async fn parse_sse_stream(
             usage,
             stop_reason: stop,
             model: model_id,
+            response_id: String::new(),
         },
     });
 

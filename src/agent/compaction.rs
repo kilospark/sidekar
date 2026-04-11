@@ -20,6 +20,9 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
+                    ContentBlock::EncryptedReasoning { encrypted_content, .. } => {
+                        encrypted_content.len() * 3 / 4 // base64 → ~75% raw bytes
+                    }
                 })
                 .sum::<usize>()
         })
@@ -199,6 +202,9 @@ async fn phase2_summarize(
                 ContentBlock::Image { .. } => {
                     summary_input.push_str(&format!("{role}: [image attachment]\n"));
                 }
+                ContentBlock::EncryptedReasoning { .. } => {
+                    // Opaque blob — nothing useful to summarize.
+                }
             }
         }
     }
@@ -226,12 +232,14 @@ async fn phase2_summarize(
     }];
 
     on_event(&StreamEvent::Connecting);
-    let mut rx = provider
+    let (mut rx, _reclaim) = provider
         .stream(
             model,
             "You are a precise conversation summarizer. Output only the structured summary.",
             &summary_messages,
             &[],
+            None,
+            None,
             None,
         )
         .await?;

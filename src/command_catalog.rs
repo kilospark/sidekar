@@ -222,3 +222,49 @@ pub fn is_ext_routable_command(name: &str) -> bool {
         .map(|spec| spec.ext_routable)
         .unwrap_or(false)
 }
+
+/// Render a compact `Group: cmd1, cmd2, ...` catalog for embedding in an LLM
+/// tool description. No colors, no flags, just the top-level command names
+/// grouped by category — the model gets a one-shot map of the CLI surface
+/// without needing to call `sidekar help` for discovery.
+///
+/// Sourced from the same `command_specs()` that powers `sidekar help`, so
+/// there is a single source of truth.
+pub fn render_tool_catalog() -> &'static str {
+    static CATALOG: OnceLock<String> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let groups = [
+            CommandGroup::Browser,
+            CommandGroup::Page,
+            CommandGroup::Interact,
+            CommandGroup::Code,
+            CommandGroup::Data,
+            CommandGroup::Desktop,
+            CommandGroup::Agent,
+            CommandGroup::Jobs,
+            CommandGroup::Account,
+            CommandGroup::System,
+        ];
+        let mut out = String::new();
+        for group in groups {
+            let mut first = true;
+            for spec in command_specs() {
+                if spec.group != group {
+                    continue;
+                }
+                if first {
+                    out.push_str(group.title());
+                    out.push_str(": ");
+                    first = false;
+                } else {
+                    out.push_str(", ");
+                }
+                out.push_str(spec.name);
+            }
+            if !first {
+                out.push('\n');
+            }
+        }
+        out
+    })
+}

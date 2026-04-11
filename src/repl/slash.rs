@@ -315,6 +315,7 @@ pub(super) async fn apply_slash_result(
     bus_name: &str,
     cwd: &str,
     nick: &str,
+    cached_ws: &mut Option<crate::providers::codex::CachedWs>,
 ) -> Result<SlashAction> {
     match result {
         SlashResult::Continue => {}
@@ -361,6 +362,8 @@ pub(super) async fn apply_slash_result(
                     let pt = prov.provider_type().to_string();
                     *provider = Some(prov);
                     *cred_name = Some(name.clone());
+                    // Invalidate cached WS — old connection has stale auth
+                    *cached_ws = None;
                     let email_info = providers::oauth::credential_email(&name)
                         .map(|e| format!(" <{e}>"))
                         .unwrap_or_default();

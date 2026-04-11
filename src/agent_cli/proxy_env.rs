@@ -1,7 +1,7 @@
 //! Child-process environment when `SIDEKAR_PROXY` is enabled.
 //!
 //! Every PTY-wrapped agent gets a **universal** block: HTTP(S) proxy pointing at
-//! the local sidecar MITM listener plus several CA-path variables so Node, Python,
+//! the local sidekar MITM listener plus several CA-path variables so Node, Python,
 //! curl, git, and pip trust the ephemeral CA.
 //!
 //! On top of that, [`ProxyEnvFlags`] (from each [`super::AgentCliSpec`]) selects

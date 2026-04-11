@@ -174,7 +174,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     if command == "repl" {
-        return repl_cmd::handle(&args, relay_override).await;
+        return repl_cmd::handle(&args, relay_override, proxy_override).await;
     }
     if command == "device" {
         return top_level_cmds::handle_device(&args).await;
