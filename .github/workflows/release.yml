@@ -52,6 +52,11 @@ jobs:
             sudo apt-get update && sudo apt-get install -y minisign
           fi
 
+      - name: Package extension
+        run: |
+          mkdir -p assets
+          cd extension && zip -r ../assets/extension.zip . -x '*.test.*' 'generate_icons.py' 'README.md'
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
