@@ -74,27 +74,10 @@ jobs:
           echo | minisign -S -s /tmp/minisign.key -m ${{ matrix.name }}.tar.gz
           rm /tmp/minisign.key
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: |
-            ${{ matrix.name }}.tar.gz
-            ${{ matrix.name }}.tar.gz.minisig
-          retention-days: 1
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-
-      - name: Create release
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            *.tar.gz
-            *.minisig
+            ${{ matrix.name }}.tar.gz
+            ${{ matrix.name }}.tar.gz.minisig
           generate_release_notes: true
