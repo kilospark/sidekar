@@ -258,7 +258,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
   Credential and model may be supplied up front or selected interactively.
 
   Options:
-    -c <credential>  Named credential (claude, codex, or-personal, claude-work, etc.)
+    -c <credential>  Named credential (claude, codex, or-personal, grok, etc.)
     -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
     -p <prompt>      Initial prompt (skip interactive input for first turn)
     -r [session_id]  Resume a session (picker if no ID; prefix match)
@@ -268,31 +268,44 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     claude     Claude (Anthropic) — OAuth device flow
     codex      Codex (OpenAI) — OAuth device flow
     or         OpenRouter — API key
+    oc         OpenCode — API key
+    grok       Grok (xAI) — API key
+    openai-compatible  Generic OpenAI-compatible API
 
   Named credentials use prefix to determine provider:
     claude-work, claude-2     → Anthropic
     codex-ci, codex-fast      → OpenAI/Codex
     or-personal, or-grok      → OpenRouter
+    oc-work, opencode-pro     → OpenCode
+    grok-work                 → Grok
+    compat-lab, oai-local     → OpenAI-compatible
 
   Environment:
     SIDEKAR_MODEL              Default model (overridden by -m)
     ANTHROPIC_API_KEY          Fallback for claude credentials
     OPENROUTER_API_KEY         Fallback for or credentials
+    OPENCODE_API_KEY           Fallback for oc credentials
+    XAI_API_KEY                Fallback for grok credentials
 
   Subcommands:
-    sidekar repl login <provider>       Store OAuth/API credentials
-    sidekar repl logout [name|all]      Remove stored credentials
-    sidekar repl credentials            List stored credentials
-    sidekar repl models -c <credential> List available models for a provider
-    sidekar repl sessions               List sessions in this directory
+    sidekar repl login <provider>                         Store OAuth/API credentials
+    sidekar repl login openai-compatible <name> <url> [key] Store generic OpenAI-compatible credentials
+    sidekar repl logout [name|all]                        Remove stored credentials
+    sidekar repl credentials                              List stored credentials
+    sidekar repl models -c <credential>                   List available models for a provider
+    sidekar repl sessions                                 List sessions in this directory
 
   Examples:
     sidekar repl login claude
     sidekar repl login or
+    sidekar repl login grok
+    sidekar repl login openai-compatible local http://localhost:11434/v1
     sidekar repl models -c claude-1
     sidekar repl sessions
     sidekar repl -c claude-1 -m claude-sonnet-4-20250514
     sidekar repl -c or -m x-ai/grok-3 -p \"explain quantum computing\"
+    sidekar repl -c grok -m grok-4
+    sidekar repl -c local -m llama3.1
     sidekar repl -c codex -m o3 -r
     sidekar repl -c claude-1 -r a63dcdc6
     sidekar repl credentials"

@@ -26,6 +26,8 @@ pub const KV_KEY_ANTHROPIC: &str = "oauth:anthropic";
 pub const KV_KEY_CODEX: &str = "oauth:codex";
 pub const KV_KEY_OPENROUTER: &str = "oauth:openrouter";
 pub const KV_KEY_OPENCODE: &str = "oauth:opencode";
+pub const KV_KEY_GROK: &str = "oauth:grok";
+pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
 /// KV key for a named credential. e.g., "claude-1" → "oauth:claude-1"
 pub fn kv_key_for(nickname: &str) -> String {
@@ -40,7 +42,7 @@ fn resolve_kv_key(nickname: Option<&str>, default_key: &str) -> String {
     }
 }
 
-/// Provider type for a nickname. "claude-*" → Anthropic, "codex-*" → Codex, "or-*"/"openrouter-*" → OpenRouter.
+/// Provider type for a nickname.
 pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
     if nickname.starts_with("claude") {
         Some("anthropic")
@@ -50,8 +52,26 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("openrouter")
     } else if nickname.starts_with("oc") || nickname.starts_with("opencode") {
         Some("opencode")
+    } else if nickname.starts_with("grok") {
+        Some("grok")
+    } else if nickname.starts_with("compat") || nickname.starts_with("oai") {
+        Some("openai-compatible")
     } else {
-        None
+        stored_provider_type_for(nickname)
+    }
+}
+
+fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
+    let key = kv_key_for(nickname);
+    let creds = load_credentials(&key).ok()??;
+    match creds.metadata.get("provider_type").and_then(|v| v.as_str()) {
+        Some("anthropic") => Some("anthropic"),
+        Some("codex") => Some("codex"),
+        Some("openrouter") => Some("openrouter"),
+        Some("opencode") => Some("opencode"),
+        Some("grok") => Some("grok"),
+        Some("openai-compatible") => Some("openai-compatible"),
+        _ => None,
     }
 }
 
@@ -93,6 +113,8 @@ pub fn list_credentials() -> Vec<(String, String)> {
                 "openrouter"
             } else if name == "opencode" {
                 "opencode"
+            } else if name == "grok" {
+                "grok"
             } else {
                 "unknown"
             });
@@ -287,6 +309,161 @@ pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
     eprintln!("OpenCode API key saved.");
 
     Ok(key)
+}
+
+/// Get a valid Grok API key. No OAuth — uses stored key or XAI_API_KEY env var.
+pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
+    get_api_key_token(
+        &kv_key,
+        "XAI_API_KEY",
+        "Grok",
+        Some("https://console.x.ai/"),
+    )
+    .await
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenAiCompatCredentials {
+    pub api_key: String,
+    pub base_url: String,
+    pub name: String,
+}
+
+pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompatCredentials> {
+    let kv_key = kv_key_for(nickname);
+    let creds = load_credentials(&kv_key)?.with_context(|| {
+        format!(
+            "No OpenAI-compatible credentials found for '{nickname}'.\n\
+             Run: sidekar repl login openai-compatible {nickname} <base_url>"
+        )
+    })?;
+    let base_url = creds
+        .metadata
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .context("OpenAI-compatible credential is missing base_url metadata")?
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let name = creds
+        .metadata
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(nickname)
+        .to_string();
+
+    Ok(OpenAiCompatCredentials {
+        api_key: creds.access_token,
+        base_url,
+        name,
+    })
+}
+
+pub async fn login_openai_compat(
+    nickname: &str,
+    display_name: Option<&str>,
+    base_url: Option<&str>,
+    api_key: Option<&str>,
+) -> Result<OpenAiCompatCredentials> {
+    let name = match display_name {
+        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => prompt_required("Provider name", Some(nickname))?,
+    };
+    let base_url = match base_url {
+        Some(url) if !url.trim().is_empty() => url.trim().trim_end_matches('/').to_string(),
+        _ => prompt_required("Base URL", None)?,
+    };
+    let api_key = match api_key {
+        Some(key) if !key.trim().is_empty() => key.trim().to_string(),
+        _ => prompt_required("API key", None)?,
+    };
+
+    save_static_token(
+        &kv_key_for(nickname),
+        &api_key,
+        serde_json::json!({
+            "provider_type": "openai-compatible",
+            "name": name,
+            "base_url": base_url,
+        }),
+    )?;
+    eprintln!("OpenAI-compatible API key saved for '{nickname}'.");
+
+    Ok(OpenAiCompatCredentials {
+        api_key,
+        base_url,
+        name,
+    })
+}
+
+async fn get_api_key_token(
+    kv_key: &str,
+    env_var: &str,
+    provider_name: &str,
+    setup_url: Option<&str>,
+) -> Result<String> {
+    if let Some(creds) = load_credentials(kv_key)? {
+        return Ok(creds.access_token);
+    }
+
+    if let Ok(key) = std::env::var(env_var)
+        && !key.is_empty()
+    {
+        return Ok(key);
+    }
+
+    if let Some(url) = setup_url {
+        eprintln!("No {provider_name} credentials found. Opening {url} ...");
+        let _ = open_browser(url);
+    } else {
+        eprintln!("No {provider_name} credentials found.");
+    }
+    let key = prompt_required("API key", None)?;
+    save_static_token(
+        kv_key,
+        &key,
+        serde_json::json!({
+            "provider_type": provider_name.to_ascii_lowercase(),
+        }),
+    )?;
+    eprintln!("{provider_name} API key saved.");
+
+    Ok(key)
+}
+
+fn save_static_token(kv_key: &str, api_key: &str, metadata: serde_json::Value) -> Result<()> {
+    let creds = OAuthCredentials {
+        access_token: api_key.to_string(),
+        refresh_token: String::new(),
+        expires_at: u64::MAX,
+        metadata,
+    };
+    save_credentials(kv_key, &creds)
+}
+
+fn prompt_required(label: &str, default: Option<&str>) -> Result<String> {
+    match default {
+        Some(default) => eprint!("{label} [{default}]: "),
+        None => eprint!("{label}: "),
+    }
+    let _ = std::io::stderr().flush();
+    let mut value = String::new();
+    std::io::stdin()
+        .read_line(&mut value)
+        .with_context(|| format!("failed to read {label}"))?;
+    let value = value.trim();
+    let value = if value.is_empty() {
+        default.unwrap_or("")
+    } else {
+        value
+    };
+    if value.is_empty() {
+        bail!("No {label} provided");
+    }
+    Ok(value.to_string())
 }
 
 /// Generic token retrieval: stored creds → env var → error (or interactive login if `interactive`).
@@ -907,5 +1084,18 @@ fn load_credentials(key: &str) -> Result<Option<OAuthCredentials>> {
             Ok(Some(creds))
         }
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_type_for_grok_and_compat_prefixes() {
+        assert_eq!(provider_type_for("grok"), Some("grok"));
+        assert_eq!(provider_type_for("grok-work"), Some("grok"));
+        assert_eq!(provider_type_for("compat-local"), Some("openai-compatible"));
+        assert_eq!(provider_type_for("oai-lab"), Some("openai-compatible"));
     }
 }

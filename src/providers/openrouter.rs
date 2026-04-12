@@ -16,8 +16,33 @@ pub async fn stream(
     tools: &[ToolDef],
     _prompt_cache_key: Option<&str>,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    stream_with_provider(
+        "OpenRouter",
+        api_key,
+        base_url,
+        model,
+        system_prompt,
+        messages,
+        tools,
+        _prompt_cache_key,
+    )
+    .await
+}
+
+/// Streaming call to a generic OpenAI-compatible chat completions API.
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_with_provider(
+    provider_name: &str,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    _prompt_cache_key: Option<&str>,
+) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let body = build_request_body(model, system_prompt, messages, tools);
-    let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
+    let url = super::openai_chat_completions_url(base_url);
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
@@ -33,13 +58,13 @@ pub async fn stream(
         .json(&body)
         .send()
         .await
-        .context("failed to connect to OpenRouter API")?;
+        .with_context(|| format!("failed to connect to {provider_name} API"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         super::log_api_error(status, &text);
-        bail!("OpenRouter API error ({}): {}", status, text);
+        bail!("{provider_name} API error ({}): {}", status, text);
     }
 
     let (tx, rx) = mpsc::unbounded_channel();

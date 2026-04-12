@@ -31,11 +31,34 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  codex      Codex (OpenAI) — OAuth");
             eprintln!("  or         OpenRouter — API key");
             eprintln!("  oc         OpenCode — API key");
+            eprintln!("  grok       Grok (xAI) — API key");
+            eprintln!("  openai-compatible <name> <url> [api_key]");
             eprintln!();
-            eprintln!("Named credentials: claude-work, codex-2, or-personal, oc-work, etc.");
+            eprintln!(
+                "Named credentials: claude-work, codex-2, or-personal, oc-work, grok-work, etc."
+            );
             std::process::exit(1);
         }
     };
+    if matches!(
+        nickname,
+        "openai-compatible" | "openai-compat" | "compat" | "oai"
+    ) {
+        let name = args
+            .get(2)
+            .map(String::as_str)
+            .unwrap_or("openai-compatible");
+        let base_url = args.get(3).map(String::as_str);
+        let api_key = args.get(4).map(String::as_str);
+        let creds =
+            sidekar::providers::oauth::login_openai_compat(name, Some(name), base_url, api_key)
+                .await?;
+        println!(
+            "Logged in as '{name}' ({} at {}).",
+            creds.name, creds.base_url
+        );
+        return Ok(());
+    }
     let provider_type =
         sidekar::providers::oauth::provider_type_for(nickname).unwrap_or_else(|| {
             if nickname == "anthropic" {
@@ -48,7 +71,9 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "opencode"
             } else {
                 eprintln!("Unknown provider: '{nickname}'.");
-                eprintln!("Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, or oc-<name> for OpenCode.");
+                eprintln!(
+                    "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login openai-compatible <name> <url>`."
+                );
                 std::process::exit(1);
             }
         });
@@ -83,10 +108,29 @@ async fn handle_login(args: &[String]) -> Result<()> {
             let _ = sidekar::providers::oauth::get_opencode_token(Some(nickname)).await?;
             println!("Logged in as '{nickname}' (OpenCode).");
         }
+        "grok" => {
+            let _ = sidekar::providers::oauth::get_grok_token(Some(nickname)).await?;
+            println!("Logged in as '{nickname}' (Grok).");
+        }
+        "openai-compatible" => {
+            let base_url = args.get(2).map(String::as_str);
+            let api_key = args.get(3).map(String::as_str);
+            let creds = sidekar::providers::oauth::login_openai_compat(
+                nickname,
+                Some(nickname),
+                base_url,
+                api_key,
+            )
+            .await?;
+            println!(
+                "Logged in as '{nickname}' ({} at {}).",
+                creds.name, creds.base_url
+            );
+        }
         _ => {
             eprintln!("Unknown provider type for nickname '{nickname}'.");
             eprintln!(
-                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, or oc-<name> for OpenCode."
+                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login openai-compatible <name> <url>`."
             );
             std::process::exit(1);
         }
@@ -152,6 +196,8 @@ async fn handle_models(args: &[String]) -> Result<()> {
             "openrouter"
         } else if cred == "opencode" {
             "opencode"
+        } else if cred == "grok" {
+            "grok"
         } else {
             eprintln!("Unknown provider for '{cred}'.");
             std::process::exit(1);
@@ -165,6 +211,10 @@ async fn handle_models(args: &[String]) -> Result<()> {
             .map(|(t, _)| t),
         "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
         "opencode" => sidekar::providers::oauth::get_opencode_token(Some(&cred)).await,
+        "grok" => sidekar::providers::oauth::get_grok_token(Some(&cred)).await,
+        "openai-compatible" => sidekar::providers::oauth::get_openai_compat_credentials(&cred)
+            .await
+            .map(|c| c.api_key),
         _ => anyhow::bail!("Unknown provider"),
     };
     let api_key = match api_key {
@@ -174,7 +224,12 @@ async fn handle_models(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     };
-    let models = sidekar::providers::fetch_model_list(provider_type, &api_key).await;
+    let models = if provider_type == "openai-compatible" {
+        let creds = sidekar::providers::oauth::get_openai_compat_credentials(&cred).await?;
+        sidekar::providers::fetch_openai_compat_model_list(&creds.api_key, &creds.base_url).await
+    } else {
+        sidekar::providers::fetch_model_list(provider_type, &api_key).await
+    };
     if models.is_empty() {
         println!("No models found.");
     } else {

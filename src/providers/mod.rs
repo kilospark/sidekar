@@ -55,6 +55,28 @@ pub(crate) fn build_streaming_client(
     Ok(builder.build()?)
 }
 
+pub(crate) fn openai_chat_completions_url(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if base.ends_with("/chat/completions") {
+        base.to_string()
+    } else if base.ends_with("/v1") {
+        format!("{base}/chat/completions")
+    } else {
+        format!("{base}/v1/chat/completions")
+    }
+}
+
+fn openai_models_url(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if let Some(prefix) = base.strip_suffix("/chat/completions") {
+        format!("{prefix}/models")
+    } else if base.ends_with("/v1") {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
 pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {
     if !is_verbose() {
         return;
@@ -580,6 +602,9 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
         Provider::OpenRouter { api_key, base_url } => {
             fetch_openrouter_model_limits(api_key, base_url, model).await
         }
+        Provider::OpenAiCompat {
+            api_key, base_url, ..
+        } => fetch_openai_compat_model_limits(api_key, base_url, model).await,
         Provider::Codex { .. } => None, // OpenAI /v1/models doesn't return context info
     }
 }
@@ -636,7 +661,7 @@ async fn fetch_openrouter_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let url = openai_models_url(base_url);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -675,6 +700,53 @@ async fn fetch_openrouter_model_limits(
     None
 }
 
+/// Generic OpenAI-compatible: GET /v1/models, using common context fields if exposed.
+async fn fetch_openai_compat_model_limits(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+) -> Option<(u32, u32)> {
+    let url = openai_models_url(base_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let models = body.get("data").and_then(|d| d.as_array())?;
+
+    for m in models {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == model {
+            let ctx = m
+                .get("context_length")
+                .or_else(|| m.get("context_window"))
+                .or_else(|| m.get("max_context_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(128_000) as u32;
+            let max_out = m
+                .get("max_output_tokens")
+                .or_else(|| m.get("max_completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16_384) as u32;
+            return Some((ctx, max_out));
+        }
+    }
+
+    None
+}
+
 /// A model entry returned by a provider's list endpoint.
 #[derive(Debug, Clone)]
 pub struct RemoteModel {
@@ -689,8 +761,23 @@ pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteM
         "anthropic" => fetch_anthropic_model_list(api_key).await,
         "codex" => fetch_codex_model_list(api_key).await,
         "openrouter" => fetch_openrouter_model_list(api_key).await,
+        "grok" => fetch_openai_compat_model_list(api_key, oauth::GROK_BASE_URL).await,
         "opencode" => fetch_opencode_model_list(api_key).await,
         _ => Vec::new(),
+    }
+}
+
+pub async fn fetch_model_list_for_provider(provider: &Provider) -> Vec<RemoteModel> {
+    match provider {
+        Provider::Anthropic { api_key, base_url } if base_url.contains("opencode.ai") => {
+            fetch_opencode_model_list(api_key).await
+        }
+        Provider::Anthropic { api_key, .. } => fetch_anthropic_model_list(api_key).await,
+        Provider::Codex { api_key, .. } => fetch_codex_model_list(api_key).await,
+        Provider::OpenRouter { api_key, .. } => fetch_openrouter_model_list(api_key).await,
+        Provider::OpenAiCompat {
+            api_key, base_url, ..
+        } => fetch_openai_compat_model_list(api_key, base_url).await,
     }
 }
 
@@ -825,7 +912,11 @@ async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
 }
 
 async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
-    let url = "https://openrouter.ai/api/v1/models";
+    fetch_openai_compat_model_list(api_key, "https://openrouter.ai/api").await
+}
+
+pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
+    let url = openai_models_url(base_url);
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -853,9 +944,15 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
         for m in data {
             let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            let name = m
+                .get("name")
+                .or_else(|| m.get("display_name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(id);
             let ctx = m
                 .get("context_length")
+                .or_else(|| m.get("context_window"))
+                .or_else(|| m.get("max_context_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
             if !id.is_empty() {
@@ -933,6 +1030,12 @@ pub enum Provider {
         api_key: String,
         base_url: String,
     },
+    OpenAiCompat {
+        api_key: String,
+        base_url: String,
+        provider_type: String,
+        display_name: String,
+    },
 }
 
 impl Provider {
@@ -958,6 +1061,24 @@ impl Provider {
         }
     }
 
+    pub fn grok(api_key: String) -> Self {
+        Provider::OpenAiCompat {
+            api_key,
+            base_url: oauth::GROK_BASE_URL.to_string(),
+            provider_type: "grok".to_string(),
+            display_name: "Grok".to_string(),
+        }
+    }
+
+    pub fn openai_compat(api_key: String, base_url: String, display_name: String) -> Self {
+        Provider::OpenAiCompat {
+            api_key,
+            base_url,
+            provider_type: "openai-compatible".to_string(),
+            display_name,
+        }
+    }
+
     /// OpenCode uses the Anthropic API shape with a different base URL.
     pub fn opencode(api_key: String) -> Self {
         Provider::Anthropic {
@@ -971,6 +1092,7 @@ impl Provider {
             Provider::Anthropic { api_key, .. } => api_key,
             Provider::Codex { api_key, .. } => api_key,
             Provider::OpenRouter { api_key, .. } => api_key,
+            Provider::OpenAiCompat { api_key, .. } => api_key,
         }
     }
 
@@ -980,6 +1102,7 @@ impl Provider {
             Provider::Anthropic { .. } => "anthropic",
             Provider::Codex { .. } => "codex",
             Provider::OpenRouter { .. } => "openrouter",
+            Provider::OpenAiCompat { provider_type, .. } => provider_type,
         }
     }
 
@@ -1013,6 +1136,7 @@ impl Provider {
                 ..StreamConfig::default()
             },
             Provider::OpenRouter { .. } => StreamConfig::default(),
+            Provider::OpenAiCompat { .. } => StreamConfig::default(),
         }
     }
 
@@ -1137,6 +1261,25 @@ impl Provider {
             }
             Provider::OpenRouter { api_key, base_url } => {
                 let rx = openrouter::stream(
+                    api_key,
+                    base_url,
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                    prompt_cache_key,
+                )
+                .await?;
+                Ok(no_ws_reclaim(rx))
+            }
+            Provider::OpenAiCompat {
+                api_key,
+                base_url,
+                display_name,
+                ..
+            } => {
+                let rx = openrouter::stream_with_provider(
+                    display_name,
                     api_key,
                     base_url,
                     model,

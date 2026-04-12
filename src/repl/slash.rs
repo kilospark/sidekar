@@ -444,7 +444,7 @@ pub(super) async fn interactive_select_model(
     tunnel_println(&format!(
         "Fetching models for \x1b[1m{cred_name}\x1b[0m ({pt})..."
     ));
-    let models = providers::fetch_model_list(pt, prov.api_key()).await;
+    let models = providers::fetch_model_list_for_provider(prov).await;
     if models.is_empty() {
         tunnel_println("No models found.");
         return None;
@@ -525,7 +525,7 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
     let provider_type = providers::oauth::provider_type_for(cred_name)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', or 'oc'."
+                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', 'oc', 'grok', or be stored as OpenAI-compatible."
             )
         })?;
     match provider_type {
@@ -544,6 +544,18 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
         "opencode" => {
             let api_key = providers::oauth::get_opencode_token(Some(cred_name)).await?;
             Ok(Provider::opencode(api_key))
+        }
+        "grok" => {
+            let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
+            Ok(Provider::grok(api_key))
+        }
+        "openai-compatible" => {
+            let creds = providers::oauth::get_openai_compat_credentials(cred_name).await?;
+            Ok(Provider::openai_compat(
+                creds.api_key,
+                creds.base_url,
+                creds.name,
+            ))
         }
         _ => anyhow::bail!("Unknown provider type: {provider_type}"),
     }
