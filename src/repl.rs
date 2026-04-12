@@ -86,14 +86,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let mut model: Option<String> = opts.model.or_else(|| std::env::var("SIDEKAR_MODEL").ok());
 
     // Validate credential name if provided at startup
-    if let Some(ref name) = cred_name {
-        if providers::oauth::provider_type_for(name).is_none() {
-            anyhow::bail!(
-                "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', 'or', or 'oc'.\n\
+    if let Some(ref name) = cred_name
+        && providers::oauth::provider_type_for(name).is_none()
+    {
+        anyhow::bail!(
+            "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', 'or', or 'oc'.\n\
                  Examples: claude, claude-1, codex, codex-work, or, or-personal, oc, oc-work\n\
                  Login with: sidekar repl login {name}"
-            );
-        }
+        );
     }
 
     // Build provider if credential is available
@@ -450,9 +450,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         if let Ok(mut guard) = renderer.lock() {
             guard.teardown();
         }
-        let (returned_editor, mut submitted) = active_prompt.finish();
+        let returned_editor = active_prompt.finish();
         line_editor = returned_editor;
-        line_editor.pending_followups.append(&mut submitted);
 
         let run_ok = run_result.is_ok();
         if run_ok {
@@ -511,5 +510,3 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let _ = broker::unregister_agent(&bus_name);
     Ok(())
 }
-
-

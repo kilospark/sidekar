@@ -44,7 +44,7 @@ fn colorize_command_help(help: &str) -> String {
     for (i, line) in help.lines().enumerate() {
         if i == 0 {
             if let Some(rest) = line.strip_prefix("sidekar ") {
-                let (cmd, args) = match rest.find(|c: char| c == ' ' || c == '<' || c == '[') {
+                let (cmd, args) = match rest.find([' ', '<', '[']) {
                     Some(pos) => (&rest[..pos], &rest[pos..]),
                     None => (rest, ""),
                 };
@@ -109,17 +109,19 @@ fn colorize_command_help(help: &str) -> String {
             continue;
         }
 
-        if !trimmed.is_empty() && !trimmed.starts_with("sidekar") && !in_examples {
-            if let Some(pos) = trimmed.find("  ") {
-                let left = &trimmed[..pos];
-                let right = trimmed[pos..].trim();
-                if !left.is_empty() && left.len() < 40 && !left.contains('.') && !right.is_empty() {
-                    out.push_str(&format!(
-                        "{}{CYAN}{left}{RST}  {DIM}{right}{RST}\n",
-                        &line[..line.len() - trimmed.len()]
-                    ));
-                    continue;
-                }
+        if !trimmed.is_empty()
+            && !trimmed.starts_with("sidekar")
+            && !in_examples
+            && let Some(pos) = trimmed.find("  ")
+        {
+            let left = &trimmed[..pos];
+            let right = trimmed[pos..].trim();
+            if !left.is_empty() && left.len() < 40 && !left.contains('.') && !right.is_empty() {
+                out.push_str(&format!(
+                    "{}{CYAN}{left}{RST}  {DIM}{right}{RST}\n",
+                    &line[..line.len() - trimmed.len()]
+                ));
+                continue;
             }
         }
 

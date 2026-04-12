@@ -39,7 +39,7 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
     let mut request_line = String::new();
     reader.read_line(&mut request_line).await?;
 
-    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 3 || parts[0] != "CONNECT" {
         let inner = reader.into_inner();
         let _ = inner.try_write(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n");
@@ -114,7 +114,7 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             Ok(0) | Err(_) => break,
             _ => {}
         }
-        let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+        let parts: Vec<&str> = request_line.split_whitespace().collect();
         if parts.len() < 3 {
             break;
         }
@@ -151,10 +151,8 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
 
         // Read request body
         let mut body = vec![0u8; content_length];
-        if content_length > 0 {
-            if client_reader.read_exact(&mut body).await.is_err() {
-                break;
-            }
+        if content_length > 0 && client_reader.read_exact(&mut body).await.is_err() {
+            break;
         }
 
         if state.verbose {
@@ -220,7 +218,7 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             // accumulate text payloads and emit a single proxy_log entry
             // for the whole session.
             let mut ws_resp_headers: Vec<(String, String)> = Vec::new();
-            let ws_status: u16;
+
             let mut permessage_deflate = false;
             let mut client_no_ctx = false;
             let mut server_no_ctx = false;
@@ -232,7 +230,7 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                 _ => {}
             }
             client_write.write_all(response_line.as_bytes()).await?;
-            ws_status = response_line
+            let ws_status: u16 = response_line
                 .split_whitespace()
                 .nth(1)
                 .and_then(|s| s.parse::<u16>().ok())
@@ -352,9 +350,9 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                         match r {
                             Ok(Some((raw, frame))) => {
                                 if server_write.write_all(&raw).await.is_err() { break; }
-                                if let Some(msg) = client_acc.push(frame) {
-                                    if let super::ws::Message::Data { opcode, compressed, payload } = msg {
-                                        if opcode == super::ws::OP_TEXT || opcode == super::ws::OP_BINARY {
+                                if let Some(msg) = client_acc.push(frame)
+                                    && let super::ws::Message::Data { opcode, compressed, payload } = msg
+                                        && (opcode == super::ws::OP_TEXT || opcode == super::ws::OP_BINARY) {
                                             let bytes = if compressed && permessage_deflate {
                                                 if client_no_ctx {
                                                     client_decomp = flate2::Decompress::new(false);
@@ -378,8 +376,6 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                                                 last_activity: now,
                                             });
                                         }
-                                    }
-                                }
                             }
                             Ok(None) | Err(_) => break,
                         }
@@ -388,9 +384,9 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                         match r {
                             Ok(Some((raw, frame))) => {
                                 if client_write.write_all(&raw).await.is_err() { break; }
-                                if let Some(msg) = server_acc.push(frame) {
-                                    if let super::ws::Message::Data { opcode, compressed, payload } = msg {
-                                        if opcode == super::ws::OP_TEXT || opcode == super::ws::OP_BINARY {
+                                if let Some(msg) = server_acc.push(frame)
+                                    && let super::ws::Message::Data { opcode, compressed, payload } = msg
+                                        && (opcode == super::ws::OP_TEXT || opcode == super::ws::OP_BINARY) {
                                             let bytes = if compressed && permessage_deflate {
                                                 if server_no_ctx {
                                                     server_decomp = flate2::Decompress::new(false);
@@ -420,8 +416,6 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                                             }
                                             p.last_activity = now;
                                         }
-                                    }
-                                }
                             }
                             Ok(None) | Err(_) => break,
                         }

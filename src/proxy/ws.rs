@@ -42,7 +42,7 @@ pub struct Frame {
 /// Read one frame from `reader`. Returns `(raw_bytes, frame)` where
 /// `raw_bytes` is the exact on-wire byte sequence (header + extended length
 /// + mask key + masked payload) that the caller must forward to the peer.
-/// Returns `Ok(None)` on clean EOF before any header bytes.
+///   Returns `Ok(None)` on clean EOF before any header bytes.
 pub async fn read_frame<R>(reader: &mut R) -> Result<Option<(Vec<u8>, Frame)>>
 where
     R: AsyncRead + Unpin,

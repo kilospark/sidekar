@@ -66,8 +66,7 @@ fn project_list_includes_global_tasks_but_not_other_projects() -> Result<()> {
             Some(&current),
         )?;
         let _global_task = insert_task("global", None, 0, crate::scope::GLOBAL_SCOPE, None)?;
-        let _other_task =
-            insert_task("other", None, 0, crate::scope::PROJECT_SCOPE, Some(&other))?;
+        let _other_task = insert_task("other", None, 0, crate::scope::PROJECT_SCOPE, Some(&other))?;
 
         let mut ctx = AppContext::new()?;
         cmd_tasks(&mut ctx, &["list".into()])?;

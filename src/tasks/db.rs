@@ -184,7 +184,10 @@ pub(super) fn load_tasks(
         .map_err(Into::into)
 }
 
-pub(super) fn unfinished_dependency_count(conn: &rusqlite::Connection, task_id: i64) -> Result<i64> {
+pub(super) fn unfinished_dependency_count(
+    conn: &rusqlite::Connection,
+    task_id: i64,
+) -> Result<i64> {
     conn.query_row(
         "SELECT COUNT(*)
          FROM task_dependencies td

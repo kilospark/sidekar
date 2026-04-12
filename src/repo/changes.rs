@@ -401,18 +401,18 @@ fn extract_regex_symbols(
     let mut symbols = Vec::new();
     for (index, line) in content.lines().enumerate() {
         for (kind, regex) in patterns {
-            if let Some(caps) = regex.captures(line) {
-                if let Some(name) = caps.get(1) {
-                    symbols.push(RepoSymbol {
-                        name: name.as_str().to_string(),
-                        kind: (*kind).to_string(),
-                        line: index + 1,
-                    });
-                    if symbols.len() >= max_symbols {
-                        return symbols;
-                    }
-                    break;
+            if let Some(caps) = regex.captures(line)
+                && let Some(name) = caps.get(1)
+            {
+                symbols.push(RepoSymbol {
+                    name: name.as_str().to_string(),
+                    kind: (*kind).to_string(),
+                    line: index + 1,
+                });
+                if symbols.len() >= max_symbols {
+                    return symbols;
                 }
+                break;
             }
         }
     }

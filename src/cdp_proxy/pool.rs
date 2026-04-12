@@ -32,6 +32,12 @@ pub struct CdpPool {
     connections: HashMap<String, ManagedConn>, // key = ws_url
 }
 
+impl Default for CdpPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CdpPool {
     pub fn new() -> Self {
         Self {
@@ -42,11 +48,11 @@ impl CdpPool {
     /// Get or create a connection for the given ws_url.
     /// Returns a command sender for sending CDP requests.
     fn get_or_create(&mut self, ws_url: &str) -> mpsc::UnboundedSender<PoolCmd> {
-        if let Some(conn) = self.connections.get(ws_url) {
-            if !conn.cmd_tx.is_closed() {
-                conn.last_used.store(epoch_secs(), Ordering::Relaxed);
-                return conn.cmd_tx.clone();
-            }
+        if let Some(conn) = self.connections.get(ws_url)
+            && !conn.cmd_tx.is_closed()
+        {
+            conn.last_used.store(epoch_secs(), Ordering::Relaxed);
+            return conn.cmd_tx.clone();
         }
         // Remove dead entry before recreating
         self.connections.remove(ws_url);

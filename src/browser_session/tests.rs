@@ -3,8 +3,7 @@ use super::*;
 fn with_temp_home(test: impl FnOnce(&mut AppContext)) {
     let _guard = test_home_lock().lock().unwrap();
     let old_home = env::var_os("HOME");
-    let temp_home =
-        env::temp_dir().join(format!("sidekar-browser-test-{}", rand::random::<u32>()));
+    let temp_home = env::temp_dir().join(format!("sidekar-browser-test-{}", rand::random::<u32>()));
     fs::create_dir_all(&temp_home).unwrap();
     unsafe {
         env::set_var("HOME", &temp_home);

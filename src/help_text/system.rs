@@ -55,18 +55,19 @@ sidekar session <list>
         }
         "event" => {
             "\
-sidekar event <list|clear> [--level=error|debug|info] [N]
+sidekar event <list|clear> [--level=error|debug|info] [N|--limit=N]
 
   View or clear the local event log (SQLite). Defaults to 50 rows, all levels.
 
   Subcommands:
-    list [--level=error|debug|info] [N]   Show recent events (newest first)
+    list [--level=error|debug|info] [N|--limit=N]  Show recent events (newest first)
     clear [--level=error|debug|info]      Delete events (all or by level)
 
   Examples:
     sidekar event list
     sidekar event list --level=debug
     sidekar event list --level=error 100
+    sidekar event list --limit=10
     sidekar event clear
     sidekar event clear --level=debug"
         }

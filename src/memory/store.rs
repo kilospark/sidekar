@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_memory_event(
     project: &str,
     event_type: &str,

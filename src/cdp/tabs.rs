@@ -27,7 +27,7 @@ async fn open_cdp_once(ctx: &mut AppContext) -> Result<CdpClient> {
     if let Some(lock) = check_tab_lock(ctx, &tab.id)? {
         let sid = ctx.require_session_id()?;
         if lock.session_id != sid {
-            let remaining = ((lock.expires - now_epoch_ms()).max(0) / 1000) as i64;
+            let remaining = (lock.expires - now_epoch_ms()).max(0) / 1000;
             bail!(
                 "Tab is locked by session {} (expires in {}s). Use a different tab or wait.",
                 lock.session_id,
@@ -39,11 +39,10 @@ async fn open_cdp_once(ctx: &mut AppContext) -> Result<CdpClient> {
         .web_socket_debugger_url
         .ok_or_else(|| anyhow!("No active tab for this session. Navigate to a URL first."))?;
 
-    if daemon::is_running() {
-        match cdp_proxy::DaemonCdpProxy::connect(&ws_url).await {
-            Ok(proxy) => return Ok(CdpClient::Proxied(proxy)),
-            Err(_) => {}
-        }
+    if daemon::is_running()
+        && let Ok(proxy) = cdp_proxy::DaemonCdpProxy::connect(&ws_url).await
+    {
+        return Ok(CdpClient::Proxied(proxy));
     }
 
     Ok(CdpClient::Direct(DirectCdp::connect(&ws_url).await?))

@@ -127,28 +127,25 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
             if !job_belongs_to_agent(&rec.target, &rec.created_by, cron_ctx.agent_name.as_deref()) {
                 continue;
             }
-            match CronSchedule::parse(&rec.schedule) {
-                Ok(sched) => {
-                    let action: CronAction = match serde_json::from_str(&rec.action_json) {
-                        Ok(a) => a,
-                        Err(_) => continue,
-                    };
-                    loaded.push(CronJob {
-                        id: rec.id,
-                        name: rec.name,
-                        schedule: sched,
-                        schedule_expr: rec.schedule,
-                        action,
-                        target: normalize_loaded_target(&rec.target, &rec.created_by),
-                        created_by: rec.created_by,
-                        last_run_at: rec.last_run_at,
-                        last_finished_at: None,
-                        once: rec.once,
-                        loop_interval_secs: rec.loop_interval_secs,
-                        running: Arc::new(AtomicBool::new(false)),
-                    });
-                }
-                Err(_) => {}
+            if let Ok(sched) = CronSchedule::parse(&rec.schedule) {
+                let action: CronAction = match serde_json::from_str(&rec.action_json) {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                loaded.push(CronJob {
+                    id: rec.id,
+                    name: rec.name,
+                    schedule: sched,
+                    schedule_expr: rec.schedule,
+                    action,
+                    target: normalize_loaded_target(&rec.target, &rec.created_by),
+                    created_by: rec.created_by,
+                    last_run_at: rec.last_run_at,
+                    last_finished_at: None,
+                    once: rec.once,
+                    loop_interval_secs: rec.loop_interval_secs,
+                    running: Arc::new(AtomicBool::new(false)),
+                });
             }
         }
     }
@@ -543,10 +540,11 @@ fn map_cron_action_args(tool: &str, args: &Value) -> Vec<String> {
         cli_args.push(s.to_string());
     }
 
-    if tool == "navigate" && cli_args.is_empty() {
-        if let Some(url) = args.get("url").and_then(Value::as_str) {
-            cli_args.push(url.to_string());
-        }
+    if tool == "navigate"
+        && cli_args.is_empty()
+        && let Some(url) = args.get("url").and_then(Value::as_str)
+    {
+        cli_args.push(url.to_string());
     }
 
     cli_args

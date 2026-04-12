@@ -49,6 +49,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         sidekar::runtime::set_quiet(true);
     }
 
+    let json_flag = extract_global_json_flag(&mut args);
+
     sidekar::runtime::init(verbose_flag);
 
     let saw_relay = args.iter().any(|a| a == "--relay");
@@ -102,19 +104,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     if args.is_empty() {
-        print_help();
-        return Ok(());
-    }
-
-    // `sidekar --json` with no command: output version/info as JSON
-    if args.len() == 1 && args[0] == "--json" {
-        println!(
-            "{}",
-            serde_json::json!({
-                "name": "sidekar",
-                "version": env!("CARGO_PKG_VERSION"),
-            })
-        );
+        if json_flag {
+            print_json_info();
+        } else {
+            print_help();
+        }
         return Ok(());
     }
 
@@ -123,7 +117,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         .unwrap_or(raw_command.as_str())
         .to_string();
     if matches!(command.as_str(), "-v" | "-V" | "--version") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
+        if json_flag {
+            print_json_info();
+        } else {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+        }
         return Ok(());
     }
     if matches!(command.as_str(), "-h" | "--help" | "help") {
@@ -134,10 +132,16 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         }
         return Ok(());
     }
-    // `sidekar <command> --help` → show help for that command
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    // `sidekar <sidekar-command> --help` → show help for that command.
+    // Unknown commands may be PTY-wrapped agents, so leave their argv intact.
+    if args.iter().any(|a| a == "--help" || a == "-h")
+        && should_handle_sidekar_help_flag(&raw_command, &command)
+    {
         print_command_help(&command);
         return Ok(());
+    }
+    if json_flag {
+        args.push("--json".to_string());
     }
     if command == "skill" {
         sidekar::skill::print_skill();
@@ -214,12 +218,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if !matches!(
         command.as_str(),
         "device" | "config" | "memory" | "tasks" | "compact" | "pack" | "unpack"
-    ) {
-        if crate::auth::auth_token().is_some() {
-            if let Err(e) = crate::broker::fetch_encryption_key().await {
-                eprintln!("Warning: could not fetch encryption key: {}", e);
-            }
-        }
+    ) && crate::auth::auth_token().is_some()
+        && let Err(e) = crate::broker::fetch_encryption_key().await
+    {
+        eprintln!("Warning: could not fetch encryption key: {}", e);
     }
 
     // Inside a PTY wrapper — enable isolated mode (own window, no tab activation)
@@ -349,6 +351,29 @@ fn tab_id_from_global_flag(override_tab_id: &Option<String>) -> Option<u64> {
     }
 }
 
+fn should_handle_sidekar_help_flag(raw_command: &str, command: &str) -> bool {
+    sidekar::is_known_command(command)
+        || sidekar::removed_command_replacement(raw_command).is_some()
+}
+
+fn extract_global_json_flag(args: &mut Vec<String>) -> bool {
+    let saw_json = args.iter().any(|a| a == "--json");
+    if saw_json {
+        args.retain(|a| a != "--json");
+    }
+    saw_json
+}
+
+fn print_json_info() {
+    println!(
+        "{}",
+        serde_json::json!({
+            "name": "sidekar",
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+    );
+}
+
 fn format_age(timestamp: f64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -363,5 +388,49 @@ fn format_age(timestamp: f64) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_flag_is_not_intercepted_for_unknown_agent_commands() {
+        assert!(!should_handle_sidekar_help_flag("codex", "codex"));
+        assert!(!should_handle_sidekar_help_flag(
+            "definitely-not-sidekar",
+            "definitely-not-sidekar"
+        ));
+    }
+
+    #[test]
+    fn help_flag_is_intercepted_for_sidekar_and_removed_commands() {
+        assert!(should_handle_sidekar_help_flag("repl", "repl"));
+        assert!(should_handle_sidekar_help_flag("who", "who"));
+    }
+
+    #[test]
+    fn json_flag_is_extracted_before_command_selection() {
+        let mut args = vec![
+            "--json".to_string(),
+            "daemon".to_string(),
+            "status".to_string(),
+        ];
+
+        assert!(extract_global_json_flag(&mut args));
+        assert_eq!(args, vec!["daemon", "status"]);
+    }
+
+    #[test]
+    fn json_flag_is_extracted_from_command_args() {
+        let mut args = vec![
+            "daemon".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ];
+
+        assert!(extract_global_json_flag(&mut args));
+        assert_eq!(args, vec!["daemon", "status"]);
     }
 }

@@ -448,16 +448,14 @@ fn print_result(command: &str, result: &Value) {
         }
         "screenshot" => {
             if let Some(data_url) = result.get("screenshot").and_then(|v| v.as_str()) {
-                if let Some(b64) = data_url.strip_prefix("data:image/jpeg;base64,") {
-                    if let Ok(bytes) =
+                if let Some(b64) = data_url.strip_prefix("data:image/jpeg;base64,")
+                    && let Ok(bytes) =
                         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-                    {
-                        let path =
-                            format!("/tmp/sidekar-ext-screenshot-{}.jpg", rand::random::<u32>());
-                        if std::fs::write(&path, &bytes).is_ok() {
-                            println!("Screenshot saved: {path}");
-                            return;
-                        }
+                {
+                    let path = format!("/tmp/sidekar-ext-screenshot-{}.jpg", rand::random::<u32>());
+                    if std::fs::write(&path, &bytes).is_ok() {
+                        println!("Screenshot saved: {path}");
+                        return;
                     }
                 }
                 println!("Screenshot captured ({} bytes)", data_url.len());
@@ -521,10 +519,10 @@ fn print_result(command: &str, result: &Value) {
             {
                 println!("Used plain-text fallback for HTML content");
             }
-            if let Some(from) = result.get("fallback_from").and_then(|v| v.as_str()) {
-                if from != "none" {
-                    println!("Fallback source: {from}");
-                }
+            if let Some(from) = result.get("fallback_from").and_then(|v| v.as_str())
+                && from != "none"
+            {
+                println!("Fallback source: {from}");
             }
             if let Some(err) = result.get("debugger_error").and_then(|v| v.as_str()) {
                 println!("Debugger warning: {err}");
@@ -591,15 +589,15 @@ fn print_result(command: &str, result: &Value) {
                 if let Some(deliver) = result.get("deliverTo").and_then(|v| v.as_str()) {
                     println!("Events will be delivered to: {deliver}");
                 }
-                if let Some(state) = result.get("initialState").and_then(|v| v.as_str()) {
-                    if !state.is_empty() {
-                        let preview = if state.len() > 200 {
-                            &state[..200]
-                        } else {
-                            state
-                        };
-                        println!("Current state: {preview}");
-                    }
+                if let Some(state) = result.get("initialState").and_then(|v| v.as_str())
+                    && !state.is_empty()
+                {
+                    let preview = if state.len() > 200 {
+                        &state[..200]
+                    } else {
+                        state
+                    };
+                    println!("Current state: {preview}");
                 }
             }
         }
@@ -662,38 +660,38 @@ fn print_result(command: &str, result: &Value) {
                 }
             }
 
-            if let Some(history) = result.get("recent_history").and_then(|v| v.as_array()) {
-                if !history.is_empty() {
-                    println!("\nRecent activity:");
-                    for h in history.iter().take(10) {
-                        let title = h.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                        let url = h.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                        let ts = h
-                            .get("lastVisitTime")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        let ago = format_time_ago(ts);
-                        let short_title = if title.len() > 50 {
-                            &title[..50]
-                        } else {
-                            title
-                        };
-                        let domain = url
-                            .strip_prefix("https://")
-                            .or_else(|| url.strip_prefix("http://"))
-                            .unwrap_or(url)
-                            .split('/')
-                            .next()
-                            .unwrap_or("");
-                        println!("  {ago} | {domain} | {short_title}");
-                    }
+            if let Some(history) = result.get("recent_history").and_then(|v| v.as_array())
+                && !history.is_empty()
+            {
+                println!("\nRecent activity:");
+                for h in history.iter().take(10) {
+                    let title = h.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    let url = h.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let ts = h
+                        .get("lastVisitTime")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let ago = format_time_ago(ts);
+                    let short_title = if title.len() > 50 {
+                        &title[..50]
+                    } else {
+                        title
+                    };
+                    let domain = url
+                        .strip_prefix("https://")
+                        .or_else(|| url.strip_prefix("http://"))
+                        .unwrap_or(url)
+                        .split('/')
+                        .next()
+                        .unwrap_or("");
+                    println!("  {ago} | {domain} | {short_title}");
                 }
             }
 
-            if let Some(watchers) = result.get("watchers").and_then(|v| v.as_array()) {
-                if !watchers.is_empty() {
-                    println!("\n{} active watcher(s)", watchers.len());
-                }
+            if let Some(watchers) = result.get("watchers").and_then(|v| v.as_array())
+                && !watchers.is_empty()
+            {
+                println!("\n{} active watcher(s)", watchers.len());
             }
         }
         _ => {

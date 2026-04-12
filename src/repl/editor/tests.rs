@@ -31,6 +31,27 @@ fn up_on_top_row_pulls_all_pending_followups_at_once() {
 }
 
 #[test]
+fn active_prompt_pollfds_compact_tunnel_only_fd() {
+    let fds = build_input_pollfds(None, Some(42));
+    assert_eq!(fds.len(), 1);
+    assert_eq!(fds[0].fd, 42);
+}
+
+#[test]
+fn active_prompt_submission_queues_followup_immediately() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    editor
+        .process_input_bytes(b"next prompt\n", |ed, line| {
+            ed.queue_pending_followup(line);
+        })
+        .unwrap();
+
+    assert_eq!(editor.pending_followups.len(), 1);
+    assert_eq!(editor.pending_followups[0].text, "next prompt");
+    assert!(editor.buffer.is_empty());
+}
+
+#[test]
 fn esc_detector_only_cancels_lone_escape_after_timeout() {
     let start = std::time::Instant::now();
     let mut detector = EscDetector::new();

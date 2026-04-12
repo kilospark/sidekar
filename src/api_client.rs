@@ -144,12 +144,11 @@ pub async fn self_update(version: &str) -> Result<()> {
     let lock_path = last_check_file().with_extension("lock");
 
     // Break stale locks (>5 min) before attempting atomic create
-    if let Ok(meta) = std::fs::metadata(&lock_path) {
-        if let Ok(modified) = meta.modified() {
-            if modified.elapsed().map_or(false, |age| age.as_secs() >= 300) {
-                let _ = std::fs::remove_file(&lock_path);
-            }
-        }
+    if let Ok(meta) = std::fs::metadata(&lock_path)
+        && let Ok(modified) = meta.modified()
+        && modified.elapsed().is_ok_and(|age| age.as_secs() >= 300)
+    {
+        let _ = std::fs::remove_file(&lock_path);
     }
 
     // Atomic lock acquisition — create_new fails if file already exists

@@ -184,7 +184,10 @@ pub(super) fn event_type_label(event_type: &str) -> &'static str {
     }
 }
 
-pub(super) fn cluster_by_similarity(rows: &[MemoryEventRow], threshold: f64) -> Vec<Vec<MemoryEventRow>> {
+pub(super) fn cluster_by_similarity(
+    rows: &[MemoryEventRow],
+    threshold: f64,
+) -> Vec<Vec<MemoryEventRow>> {
     let mut clusters = Vec::new();
     let mut used = HashSet::new();
     for row in rows {

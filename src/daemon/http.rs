@@ -106,24 +106,24 @@ async fn handle_ext_websocket(
     let (ext_token, agent_id, browser_name) = loop {
         match ws_rx.next().await {
             Some(Ok(Message::Text(text))) => {
-                if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                    if val.get("type").and_then(|v| v.as_str()) == Some("bridge_register") {
-                        let token = val
-                            .get("token")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let aid = val
-                            .get("agent_id")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        let browser = val
-                            .get("browser")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Chrome")
-                            .to_string();
-                        break (token, aid, browser);
-                    }
+                if let Ok(val) = serde_json::from_str::<Value>(&text)
+                    && val.get("type").and_then(|v| v.as_str()) == Some("bridge_register")
+                {
+                    let token = val
+                        .get("token")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let aid = val
+                        .get("agent_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let browser = val
+                        .get("browser")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Chrome")
+                        .to_string();
+                    break (token, aid, browser);
                 }
             }
             _ => return,
@@ -251,15 +251,14 @@ async fn handle_ext_websocket(
                                 let current = val.get("current").and_then(|v| v.as_str()).unwrap_or("");
                                 let previous = val.get("previous").and_then(|v| v.as_str()).unwrap_or("");
                                 let url = val.get("url").and_then(|v| v.as_str());
-                                if !wid.is_empty() {
-                                    if let Err(e) = crate::ext::deliver_watch_event(
+                                if !wid.is_empty()
+                                    && let Err(e) = crate::ext::deliver_watch_event(
                                         &ext_state, wid, current, previous, url,
                                     )
                                     .await
                                     {
                                         eprintln!("[sidekar] watch event delivery failed: {e}");
                                     }
-                                }
                                 continue;
                             }
                             if msg_type == "cli_exec" {
@@ -301,7 +300,7 @@ async fn handle_ext_websocket(
                                                 crate::commands::dispatch(
                                                     &mut ctx,
                                                     "inserttext",
-                                                    &[text.clone()],
+                                                    std::slice::from_ref(&text),
                                                 )
                                                 .await?;
                                                 "cli-insertText"
@@ -310,7 +309,7 @@ async fn handle_ext_websocket(
                                                 crate::commands::dispatch(
                                                     &mut ctx,
                                                     "keyboard",
-                                                    &[text.clone()],
+                                                    std::slice::from_ref(&text),
                                                 )
                                                 .await?;
                                                 "cli-keyboard"

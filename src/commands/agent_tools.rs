@@ -322,7 +322,7 @@ async fn cmd_loop(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 fn recovered_bus_state(ctx: &AppContext) -> crate::bus::SidekarBusState {
     let mut state = crate::bus::SidekarBusState::new();
     if let Some(name) = ctx.agent_name.as_deref() {
-        if let Ok(Some(agent)) = crate::broker::find_agent(&name, None) {
+        if let Ok(Some(agent)) = crate::broker::find_agent(name, None) {
             state.identity = Some(agent.id);
             state.pane_unique_id = agent.pane_unique_id;
             state.inherited_pty = true;

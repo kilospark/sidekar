@@ -1,10 +1,10 @@
 use anyhow::Result;
 use std::collections::VecDeque;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 
 use regex::Regex;
-use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -35,6 +35,25 @@ const CONTINUATION_VISIBLE: &str = "· ";
 const ESC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
 
 type SharedEditor = Arc<Mutex<LineEditor>>;
+
+fn build_input_pollfds(stdin_fd: Option<i32>, tunnel_fd: Option<i32>) -> Vec<libc::pollfd> {
+    let mut pollfds = Vec::with_capacity(2);
+    if let Some(fd) = stdin_fd {
+        pollfds.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    if let Some(fd) = tunnel_fd {
+        pollfds.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    pollfds
+}
 
 fn emit_raw(text: &str) {
     print!("{text}");
@@ -238,30 +257,15 @@ impl EscCancelWatcher {
                 while running_thread.load(std::sync::atomic::Ordering::Relaxed)
                     && !cancel.load(std::sync::atomic::Ordering::Relaxed)
                 {
-                    let mut fds = [
-                        libc::pollfd {
-                            fd: local_fd.unwrap_or(-1),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        },
-                        libc::pollfd {
-                            fd: tunnel_fd.unwrap_or(-1),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        },
-                    ];
-                    let nfds = match (local_fd.is_some(), tunnel_fd.is_some()) {
-                        (true, true) => 2,
-                        (true, false) | (false, true) => 1,
-                        (false, false) => 0,
-                    };
-                    if nfds == 0 {
+                    let mut fds = build_input_pollfds(local_fd, tunnel_fd);
+                    if fds.is_empty() {
                         break;
                     }
-                    let ready = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 50) };
+                    let ready =
+                        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50) };
                     let now = std::time::Instant::now();
                     if ready > 0 {
-                        for pollfd in fds.iter().take(nfds as usize) {
+                        for pollfd in fds.iter() {
                             if (pollfd.revents & libc::POLLIN) == 0 {
                                 continue;
                             }
@@ -315,7 +319,6 @@ pub(super) struct ActivePromptSession {
     running: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
     raw_mode: Option<RawModeGuard>,
-    submitted_rx: mpsc::Receiver<SubmittedLine>,
 }
 
 impl ActivePromptSession {
@@ -332,10 +335,7 @@ impl ActivePromptSession {
 
         let raw_mode = RawModeGuard::enter().ok();
         let use_raw_stdin = raw_mode.is_some();
-        // While the agent runs, keep draining user input like Codex queues when `is_task_running()`:
-        // poll stdin whenever we have a TTY, raw mode, or a tunnel (relay may share the session).
-        let poll_stdin = use_raw_stdin || io::stdin().is_terminal() || tunnel_fd.is_some();
-        let stdin_poll_fd = if poll_stdin {
+        let stdin_poll_fd = if use_raw_stdin {
             Some(libc::STDIN_FILENO)
         } else {
             None
@@ -343,11 +343,8 @@ impl ActivePromptSession {
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let running_thread = running.clone();
         let editor_thread = editor.clone();
-        let (submitted_tx, submitted_rx) = mpsc::channel();
 
-        let nfds: libc::nfds_t =
-            (stdin_poll_fd.is_some() as u32 + tunnel_fd.is_some() as u32) as libc::nfds_t;
-        let handle = if nfds == 0 {
+        let handle = if stdin_poll_fd.is_none() && tunnel_fd.is_none() {
             None
         } else {
             Some(std::thread::spawn(move || {
@@ -356,47 +353,13 @@ impl ActivePromptSession {
                 while running_thread.load(std::sync::atomic::Ordering::Relaxed)
                     && !cancel.load(std::sync::atomic::Ordering::Relaxed)
                 {
-                    let mut fds = [
-                        libc::pollfd {
-                            fd: stdin_poll_fd.unwrap_or(-1),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        },
-                        libc::pollfd {
-                            fd: tunnel_fd.unwrap_or(-1),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        },
-                    ];
-                    let ready = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 50) };
+                    let mut fds = build_input_pollfds(stdin_poll_fd, tunnel_fd);
+                    let ready =
+                        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50) };
                     let now = std::time::Instant::now();
                     if ready > 0 {
-                        for pollfd in fds.iter().take(nfds as usize) {
+                        for pollfd in fds.iter() {
                             if (pollfd.revents & libc::POLLIN) == 0 {
-                                continue;
-                            }
-                            let is_stdin = stdin_poll_fd.is_some_and(|fd| fd == pollfd.fd);
-                            let is_tunnel = tunnel_fd.is_some_and(|fd| fd == pollfd.fd);
-
-                            if is_stdin && !use_raw_stdin {
-                                let mut line = String::new();
-                                match io::stdin().lock().read_line(&mut line) {
-                                    Ok(0) => return,
-                                    Ok(_) => {
-                                        let line = line
-                                            .trim_end_matches(|c| c == '\r' || c == '\n')
-                                            .to_string();
-                                        let _ = submitted_tx.send(SubmittedLine {
-                                            text: line,
-                                            image_paths: Vec::new(),
-                                        });
-                                    }
-                                    Err(_) => return,
-                                }
-                                continue;
-                            }
-
-                            if !is_tunnel && !is_stdin {
                                 continue;
                             }
 
@@ -417,8 +380,7 @@ impl ActivePromptSession {
                             }
                             if let Ok(mut editor) = editor_thread.lock() {
                                 let r = editor.process_input_bytes(&forwarded, |ed, line| {
-                                    let _ = submitted_tx.send(line);
-                                    ed.redraw_inner();
+                                    ed.queue_pending_followup(line);
                                 });
                                 if r.is_err() {
                                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -427,7 +389,7 @@ impl ActivePromptSession {
                             }
                         }
                     }
-                    if use_raw_stdin && detector.check_timeout(now) {
+                    if detector.check_timeout(now) {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
@@ -440,11 +402,10 @@ impl ActivePromptSession {
             running,
             handle,
             raw_mode,
-            submitted_rx,
         }
     }
 
-    pub(super) fn finish(mut self) -> (LineEditor, VecDeque<SubmittedLine>) {
+    pub(super) fn finish(mut self) -> LineEditor {
         self.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
@@ -458,16 +419,11 @@ impl ActivePromptSession {
         if let Ok(mut guard) = editor_arc.lock() {
             guard.clear_rendered_prompt_inner();
         }
-        let editor = Arc::try_unwrap(editor_arc)
+
+        Arc::try_unwrap(editor_arc)
             .ok()
             .and_then(|mutex| mutex.into_inner().ok())
-            .unwrap_or_default();
-
-        let mut submitted = VecDeque::new();
-        while let Ok(sub) = self.submitted_rx.try_recv() {
-            submitted.push_back(sub);
-        }
-        (editor, submitted)
+            .unwrap_or_default()
     }
 }
 
@@ -611,6 +567,11 @@ impl LineEditor {
         self.pending_submits.pop_front()
     }
 
+    fn queue_pending_followup(&mut self, line: SubmittedLine) {
+        self.pending_followups.push_back(line);
+        self.redraw_inner();
+    }
+
     /// Feeds every byte in `bytes`, invoking `on_submit` for each completed line. Stops on EOF (empty buffer + Ctrl-D).
     pub(super) fn process_input_bytes<F>(
         &mut self,
@@ -634,13 +595,13 @@ impl LineEditor {
 
     fn insert_pasted_text(&mut self, text: &str) {
         let t = text.trim_end_matches('\0');
-        if !t.contains('\n') && t.len() < 16_384 {
-            if let Some(pb) = super::user_turn::normalize_pasted_path(t.trim()) {
-                if image::image_dimensions(&pb).is_ok() {
-                    self.attach_image(pb);
-                    return;
-                }
-            }
+        if !t.contains('\n')
+            && t.len() < 16_384
+            && let Some(pb) = super::user_turn::normalize_pasted_path(t.trim())
+            && image::image_dimensions(&pb).is_ok()
+        {
+            self.attach_image(pb);
+            return;
         }
         if !t.is_empty() {
             self.detach_history_nav();
@@ -757,7 +718,7 @@ impl LineEditor {
         let rows = self.wrapped_rows(cols);
         let mut out = String::new();
         if let Some(ref bar) = pending_bar {
-            out.push_str("\r");
+            out.push('\r');
             out.push_str(bar);
             out.push_str("\r\n");
         }
@@ -1555,7 +1516,7 @@ fn prev_grapheme_boundary(text: &str, pos: usize) -> usize {
     }
     text[..pos]
         .grapheme_indices(true)
-        .last()
+        .next_back()
         .map(|(idx, _)| idx)
         .unwrap_or(0)
 }
@@ -1578,22 +1539,22 @@ pub(super) fn read_input_or_bus(
 ) -> InputEvent {
     editor.redraw();
 
-    let _raw_mode = match RawModeGuard::enter() {
-        Ok(guard) => guard,
-        Err(_) => {
-            let mut line_buf = String::new();
-            match io::stdin().lock().read_line(&mut line_buf) {
-                Ok(0) => return InputEvent::Eof,
-                Ok(_) => {
-                    return InputEvent::User(SubmittedLine {
-                        text: line_buf.trim_end_matches('\n').to_string(),
-                        image_paths: Vec::new(),
-                    });
-                }
-                Err(_) => return InputEvent::Eof,
+    let raw_mode = RawModeGuard::enter().ok();
+    if raw_mode.is_none() && tunnel_fd.is_none() {
+        let mut line_buf = String::new();
+        match io::stdin().lock().read_line(&mut line_buf) {
+            Ok(0) => return InputEvent::Eof,
+            Ok(_) => {
+                return InputEvent::User(SubmittedLine {
+                    text: line_buf.trim_end_matches('\n').to_string(),
+                    image_paths: Vec::new(),
+                });
             }
+            Err(_) => return InputEvent::Eof,
         }
-    };
+    }
+    let _raw_mode = raw_mode;
+    let stdin_fd = _raw_mode.as_ref().map(|_| libc::STDIN_FILENO);
 
     let mut buf = [0u8; 64];
 
@@ -1608,63 +1569,58 @@ pub(super) fn read_input_or_bus(
         }
 
         unsafe {
-            let mut fds_arr = [
-                libc::pollfd {
-                    fd: 0,
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: tunnel_fd.unwrap_or(-1),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-            ];
-            let nfds: libc::nfds_t = if tunnel_fd.is_some() { 2 } else { 1 };
+            let mut fds_arr = build_input_pollfds(stdin_fd, tunnel_fd);
+            if fds_arr.is_empty() {
+                return InputEvent::Eof;
+            }
 
-            let ready = libc::poll(fds_arr.as_mut_ptr(), nfds, 100);
+            let ready = libc::poll(fds_arr.as_mut_ptr(), fds_arr.len() as libc::nfds_t, 100);
             if ready > 0 {
-                if nfds > 1 && (fds_arr[1].revents & libc::POLLIN) != 0 {
-                    match libc::read(
-                        fds_arr[1].fd,
-                        buf.as_mut_ptr() as *mut libc::c_void,
-                        buf.len(),
-                    ) {
-                        n if n > 0 => {
-                            if editor
-                                .process_input_bytes(&buf[..n as usize], |ed, line| {
-                                    ed.pending_submits.push_back(line);
-                                    ed.redraw_inner();
-                                })
-                                .is_err()
-                            {
-                                return InputEvent::Eof;
-                            }
-                            if let Some(line) = editor.take_next_pending_submit() {
-                                return InputEvent::User(line);
-                            }
-                        }
-                        _ => {}
+                for pollfd in fds_arr.iter() {
+                    if (pollfd.revents & libc::POLLIN) == 0 {
+                        continue;
                     }
-                }
-                if (fds_arr[0].revents & libc::POLLIN) != 0 {
-                    match io::stdin().read(&mut buf) {
-                        Ok(0) => return InputEvent::Eof,
-                        Ok(n) => {
-                            if editor
-                                .process_input_bytes(&buf[..n], |ed, line| {
-                                    ed.pending_submits.push_back(line);
-                                    ed.redraw_inner();
-                                })
-                                .is_err()
-                            {
-                                return InputEvent::Eof;
+                    if tunnel_fd.is_some_and(|fd| fd == pollfd.fd) {
+                        match libc::read(
+                            pollfd.fd,
+                            buf.as_mut_ptr() as *mut libc::c_void,
+                            buf.len(),
+                        ) {
+                            n if n > 0 => {
+                                if editor
+                                    .process_input_bytes(&buf[..n as usize], |ed, line| {
+                                        ed.pending_submits.push_back(line);
+                                        ed.redraw_inner();
+                                    })
+                                    .is_err()
+                                {
+                                    return InputEvent::Eof;
+                                }
+                                if let Some(line) = editor.take_next_pending_submit() {
+                                    return InputEvent::User(line);
+                                }
                             }
-                            if let Some(line) = editor.take_next_pending_submit() {
-                                return InputEvent::User(line);
-                            }
+                            _ => {}
                         }
-                        Err(_) => return InputEvent::Eof,
+                    } else if stdin_fd.is_some_and(|fd| fd == pollfd.fd) {
+                        match io::stdin().read(&mut buf) {
+                            Ok(0) => return InputEvent::Eof,
+                            Ok(n) => {
+                                if editor
+                                    .process_input_bytes(&buf[..n], |ed, line| {
+                                        ed.pending_submits.push_back(line);
+                                        ed.redraw_inner();
+                                    })
+                                    .is_err()
+                                {
+                                    return InputEvent::Eof;
+                                }
+                                if let Some(line) = editor.take_next_pending_submit() {
+                                    return InputEvent::User(line);
+                                }
+                            }
+                            Err(_) => return InputEvent::Eof,
+                        }
                     }
                 }
             } else if ready == 0 {

@@ -99,13 +99,10 @@ pub fn start_poller(
             std::thread::sleep(POLL_INTERVAL);
 
             // Poll for messages
-            match broker::poll_messages(&agent_name) {
-                Ok(messages) => {
-                    for msg in messages {
-                        deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
-                    }
+            if let Ok(messages) = broker::poll_messages(&agent_name) {
+                for msg in messages {
+                    deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
                 }
-                Err(_) => {} // SQLite busy or locked, retry next poll
             }
 
             // Periodic cleanup
@@ -196,12 +193,11 @@ fn is_recipient_alive(recipient_name: &str) -> bool {
         _ => return false,
     };
 
-    if let Some(ref pane) = agent.id.pane {
-        if let Some(pid_str) = pane.strip_prefix("pty-") {
-            if let Ok(pid) = pid_str.parse::<i32>() {
-                return unsafe { libc::kill(pid, 0) } == 0;
-            }
-        }
+    if let Some(ref pane) = agent.id.pane
+        && let Some(pid_str) = pane.strip_prefix("pty-")
+        && let Ok(pid) = pid_str.parse::<i32>()
+    {
+        return unsafe { libc::kill(pid, 0) } == 0;
     }
 
     // If we can't determine PID, assume alive (could be a relay agent)
@@ -218,7 +214,7 @@ fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, chi
             return;
         }
         waited += 1;
-        if waited % 50 == 0 {
+        if waited.is_multiple_of(50) {
             // Log every 5s while blocked (50 * 100ms)
             crate::broker::try_log_event(
                 "debug",

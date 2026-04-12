@@ -218,6 +218,12 @@ pub struct EventParser {
     code_content: Vec<String>,
 }
 
+impl Default for EventParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventParser {
     pub fn new() -> Self {
         Self {
@@ -322,10 +328,10 @@ impl EventParser {
         }
 
         // If kind changes from current block, flush and start new
-        if let Some(current_kind) = self.block_kind {
-            if !kinds_compatible(current_kind, kind) {
-                self.flush_block(events);
-            }
+        if let Some(current_kind) = self.block_kind
+            && !kinds_compatible(current_kind, kind)
+        {
+            self.flush_block(events);
         }
 
         self.block_kind = Some(kind);

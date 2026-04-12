@@ -75,9 +75,32 @@ fn enrich_claude_codex_trailing_prompt_unchanged() {
 }
 
 #[test]
+fn enrich_claude_codex_skip_option_values_before_injecting() {
+    assert_eq!(
+        enrich("claude", &["--model", "sonnet"]),
+        vec!["--model", "sonnet", STARTUP_INJECT]
+    );
+    assert_eq!(
+        enrich("codex", &["--model", "gpt-5.4"]),
+        vec!["--model", "gpt-5.4", STARTUP_INJECT]
+    );
+}
+
+#[test]
+fn enrich_claude_print_prompt_is_not_treated_as_option_value() {
+    assert_eq!(enrich("claude", &["-p", "hello"]), vec!["-p", "hello"]);
+}
+
+#[test]
 fn enrich_gemini_uses_dash_i() {
     let out = enrich("gemini", &[]);
     assert_eq!(out, vec!["-i", STARTUP_INJECT]);
+}
+
+#[test]
+fn enrich_gemini_skip_option_values_before_injecting() {
+    let out = enrich("gemini", &["--model", "gemini-2.5-pro"]);
+    assert_eq!(out, vec!["--model", "gemini-2.5-pro", "-i", STARTUP_INJECT]);
 }
 
 #[test]

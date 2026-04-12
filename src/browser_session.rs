@@ -12,9 +12,8 @@ impl AppContext {
             .truncate(true)
             .open(&lock_path)
             .ok()
-            .and_then(|f| {
+            .inspect(|f| {
                 f.lock_shared().ok();
-                Some(f)
             });
         let mut state = if path.exists() {
             let content = fs::read_to_string(&path)

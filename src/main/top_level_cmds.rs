@@ -17,8 +17,8 @@ pub async fn handle_device(args: &[String]) -> Result<()> {
                     println!("No devices registered.");
                 } else {
                     println!(
-                        "{:<20} {:<10} {:<8} {:<12} {}",
-                        "HOSTNAME", "OS", "ARCH", "VERSION", "LAST SEEN"
+                        "{:<20} {:<10} {:<8} {:<12} LAST SEEN",
+                        "HOSTNAME", "OS", "ARCH", "VERSION"
                     );
                     for d in devices {
                         let hostname = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
@@ -58,15 +58,11 @@ pub async fn handle_session(args: &[String]) -> Result<()> {
                 if sessions.is_empty() {
                     println!("No active sessions.");
                 } else {
-                    println!(
-                        "{:<20} {:<15} {:<12} {}",
-                        "NAME", "AGENT", "HOSTNAME", "CWD"
-                    );
+                    println!("{:<20} {:<15} {:<12} CWD", "NAME", "AGENT", "HOSTNAME");
                     for s in sessions {
                         let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("-");
                         let agent = s.get("agent_type").and_then(|v| v.as_str()).unwrap_or("-");
-                        let hostname =
-                            s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
+                        let hostname = s.get("hostname").and_then(|v| v.as_str()).unwrap_or("-");
                         let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("-");
                         println!("{:<20} {:<15} {:<12} {}", name, agent, hostname, cwd);
                     }
@@ -92,8 +88,8 @@ pub fn handle_browser_sessions(args: &[String]) -> Result<()> {
                 println!("No browser sessions.");
             } else {
                 println!(
-                    "{:<10} {:<10} {:<12} {:<6} {:<10} {}",
-                    "ID", "BROWSER", "PROFILE", "TABS", "ACTIVE", "UPDATED"
+                    "{:<10} {:<10} {:<12} {:<6} {:<10} UPDATED",
+                    "ID", "BROWSER", "PROFILE", "TABS", "ACTIVE"
                 );
                 for s in sessions {
                     let browser = s.browser_name.as_deref().unwrap_or("-");

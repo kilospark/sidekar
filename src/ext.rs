@@ -23,8 +23,8 @@ pub const EXTENSION_ZIP: &[u8] = include_bytes!("../assets/extension.zip");
 mod cli;
 mod verify;
 
-pub use verify::{VerifyResult, is_ext_available, verify_ext_token};
 pub use cli::send_cli_command;
+pub use verify::{VerifyResult, is_ext_available, verify_ext_token};
 
 /// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
 const TIMEOUT_SECS: u64 = 180;
@@ -172,10 +172,10 @@ pub async fn deliver_watch_event(
     };
 
     let mut message = format!("Element changed on {selector}");
-    if let Some(u) = url {
-        if !u.is_empty() {
-            message.push_str(&format!("\nURL: {u}"));
-        }
+    if let Some(u) = url
+        && !u.is_empty()
+    {
+        message.push_str(&format!("\nURL: {u}"));
     }
     if !previous.is_empty() {
         let prev_trim = if previous.len() > 500 {
@@ -256,10 +256,10 @@ pub async fn cli_exec_end(state: &SharedExtState, connection_id: u64) {
 pub async fn resolve_pending(state: &SharedExtState, connection_id: u64, val: Value) {
     if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
         let mut s = state.lock().await;
-        if let Some(conn) = s.connections.get_mut(&connection_id) {
-            if let Some(tx) = conn.pending.remove(id) {
-                let _ = tx.send(val);
-            }
+        if let Some(conn) = s.connections.get_mut(&connection_id)
+            && let Some(tx) = conn.pending.remove(id)
+        {
+            let _ = tx.send(val);
         }
     }
 }
@@ -354,14 +354,12 @@ async fn send_command(
                     "No connection matching profile '{profile}'. Use `sidekar ext status` to list."
                 ),
             }
+        } else if s.connections.len() == 1 {
+            *s.connections.keys().next().unwrap()
         } else {
-            if s.connections.len() == 1 {
-                *s.connections.keys().next().unwrap()
-            } else {
-                bail!(
-                    "Multiple extension connections are available. Rerun with `--conn` or `--profile`."
-                );
-            }
+            bail!(
+                "Multiple extension connections are available. Rerun with `--conn` or `--profile`."
+            );
         };
 
         let conn = s.connections.get_mut(&conn_id).unwrap();
@@ -391,4 +389,3 @@ async fn send_command(
         }
     }
 }
-

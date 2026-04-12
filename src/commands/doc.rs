@@ -49,8 +49,7 @@ fn cmd_doc_section(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     let query = args
         .iter()
-        .filter(|a| !a.starts_with('-'))
-        .next()
+        .find(|a| !a.starts_with('-'))
         .ok_or_else(|| anyhow!("Usage: sidekar doc section <heading> [path]"))?;
 
     let path_arg = args.iter().filter(|a| !a.starts_with('-')).nth(1);
@@ -105,8 +104,7 @@ fn cmd_doc_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     let query = args
         .iter()
-        .filter(|a| !a.starts_with('-'))
-        .next()
+        .find(|a| !a.starts_with('-'))
         .ok_or_else(|| anyhow!("Usage: sidekar doc search <query> [path]"))?;
 
     let path_arg = args.iter().filter(|a| !a.starts_with('-')).nth(1);

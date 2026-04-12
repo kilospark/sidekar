@@ -142,7 +142,9 @@ fn build_request_body_replays_encrypted_reasoning() {
         .find(|item| item.get("type").and_then(|v| v.as_str()) == Some("reasoning"))
         .expect("reasoning item should be present in input");
     assert_eq!(
-        reasoning_item.get("encrypted_content").and_then(|v| v.as_str()),
+        reasoning_item
+            .get("encrypted_content")
+            .and_then(|v| v.as_str()),
         Some("opaque-blob-123")
     );
     assert!(reasoning_item.get("summary").is_some());
@@ -202,16 +204,10 @@ fn build_request_body_includes_codex_config_fields() {
         body.get("parallel_tool_calls").and_then(|v| v.as_bool()),
         Some(true)
     );
-    assert_eq!(
-        body.get("temperature").and_then(|v| v.as_f64()),
-        Some(1.0)
-    );
+    assert_eq!(body.get("temperature").and_then(|v| v.as_f64()), Some(1.0));
     assert_eq!(
         body.get("reasoning"),
         Some(&json!({"effort": "high", "summary": "auto"}))
     );
-    assert_eq!(
-        body.get("text"),
-        Some(&json!({"verbosity": "verbose"}))
-    );
+    assert_eq!(body.get("text"), Some(&json!({"verbosity": "verbose"})));
 }

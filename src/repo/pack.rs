@@ -343,7 +343,7 @@ pub(super) fn normalize_relative_path(path: &Path) -> String {
 
 fn estimate_tokens(content: &str) -> usize {
     let chars = content.chars().count();
-    (chars + 3) / 4
+    chars.div_ceil(4)
 }
 
 fn language_hint(path: &Path) -> Option<&'static str> {

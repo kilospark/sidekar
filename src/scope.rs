@@ -55,13 +55,12 @@ fn project_root_path(cwd: Option<&str>) -> PathBuf {
             "--show-toplevel",
         ])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !top.is_empty() {
-                let top_path = PathBuf::from(top);
-                return fs::canonicalize(&top_path).unwrap_or(top_path);
-            }
+        let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !top.is_empty() {
+            let top_path = PathBuf::from(top);
+            return fs::canonicalize(&top_path).unwrap_or(top_path);
         }
     }
     fs::canonicalize(&path).unwrap_or(path)

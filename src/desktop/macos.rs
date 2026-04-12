@@ -3,7 +3,12 @@
 //! Replaces the Swift bridge (native/macos-automation/) with direct unsafe calls
 //! to ApplicationServices (AXUIElement) and AppKit (NSWorkspace/NSRunningApplication).
 
-#![allow(non_upper_case_globals, clippy::missing_safety_doc)]
+#![allow(
+    non_upper_case_globals,
+    clippy::missing_safety_doc,
+    clippy::too_many_arguments,
+    clippy::unnecessary_cast
+)]
 
 use crate::desktop::types::*;
 use anyhow::{Result, bail};

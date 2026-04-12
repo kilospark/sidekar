@@ -456,13 +456,12 @@ pub(crate) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                     if let Some(params) = event.get("params") {
                         let session_id =
                             params.get("sessionId").and_then(Value::as_i64).unwrap_or(0);
-                        if let Some(data) = params.get("data").and_then(Value::as_str) {
-                            if let Ok(bytes) =
+                        if let Some(data) = params.get("data").and_then(Value::as_str)
+                            && let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(data)
-                            {
-                                let _ = fs::write(&frame_path, &bytes);
-                                frames_received += 1;
-                            }
+                        {
+                            let _ = fs::write(&frame_path, &bytes);
+                            frames_received += 1;
                         }
                         let _ = cdp
                             .send(
@@ -521,13 +520,12 @@ pub(crate) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                     if let Some(params) = event.get("params") {
                         let session_id =
                             params.get("sessionId").and_then(Value::as_i64).unwrap_or(0);
-                        if let Some(data) = params.get("data").and_then(Value::as_str) {
-                            if let Ok(bytes) =
+                        if let Some(data) = params.get("data").and_then(Value::as_str)
+                            && let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(data)
-                            {
-                                let _ = fs::write(&frame_path, &bytes);
-                                got_frame = true;
-                            }
+                        {
+                            let _ = fs::write(&frame_path, &bytes);
+                            got_frame = true;
                         }
                         let _ = cdp
                             .send(

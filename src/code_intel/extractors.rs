@@ -1,6 +1,10 @@
 use super::*;
 
-pub(crate) fn extract_symbols_from_source(lang: &Lang, source: &str, file_path: &str) -> Vec<Symbol> {
+pub(crate) fn extract_symbols_from_source(
+    lang: &Lang,
+    source: &str,
+    file_path: &str,
+) -> Vec<Symbol> {
     match lang {
         Lang::Rust => extract_rust_symbols(source, file_path),
         Lang::Python => extract_python_symbols(source, file_path),

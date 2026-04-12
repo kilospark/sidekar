@@ -19,6 +19,7 @@ const CCH_SEED: u64 = 0x6E52_736A_C806_831E;
 const CCH_MASK: u64 = 0xF_FFFF;
 
 /// Stream a response from the Anthropic Messages API.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream(
     api_key: &str,
     base_url: &str,

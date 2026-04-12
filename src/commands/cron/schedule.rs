@@ -144,7 +144,7 @@ pub(super) fn interval_to_cron(interval: &str) -> Result<String> {
 
     match unit {
         's' => {
-            let minutes = ((num + 59) / 60).max(1);
+            let minutes = num.div_ceil(60).max(1);
             if minutes >= 60 {
                 Ok(format!("0 */{} * * *", minutes / 60))
             } else {

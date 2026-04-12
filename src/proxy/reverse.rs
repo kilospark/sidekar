@@ -5,7 +5,10 @@ use super::*;
 // Agent sets ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
 // ---------------------------------------------------------------------------
 
-pub(super) async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: TcpStream) -> Result<()> {
+pub(super) async fn handle_reverse_proxy_http(
+    state: Arc<ProxyState>,
+    stream: TcpStream,
+) -> Result<()> {
     let start_time = std::time::Instant::now();
     let (client_read, mut client_write) = tokio::io::split(stream);
     let mut reader = BufReader::new(client_read);
@@ -13,7 +16,7 @@ pub(super) async fn handle_reverse_proxy_http(state: Arc<ProxyState>, stream: Tc
     // Read request line: "POST /v1/messages HTTP/1.1"
     let mut request_line = String::new();
     reader.read_line(&mut request_line).await?;
-    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 3 {
         bail!("invalid request line");
     }

@@ -254,10 +254,10 @@ async fn parse_sse_stream(
             };
 
             // Extract model from first chunk
-            if model_id.is_empty() {
-                if let Some(m) = data.get("model").and_then(|v| v.as_str()) {
-                    model_id = m.to_string();
-                }
+            if model_id.is_empty()
+                && let Some(m) = data.get("model").and_then(|v| v.as_str())
+            {
+                model_id = m.to_string();
             }
 
             // Usage (present in final chunk when stream_options.include_usage is set)
@@ -282,13 +282,13 @@ async fn parse_sse_stream(
                 };
 
                 // Text content delta
-                if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
-                    if !content.is_empty() {
-                        text_buf.push_str(content);
-                        let _ = tx.send(StreamEvent::TextDelta {
-                            delta: content.to_string(),
-                        });
-                    }
+                if let Some(content) = delta.get("content").and_then(|v| v.as_str())
+                    && !content.is_empty()
+                {
+                    text_buf.push_str(content);
+                    let _ = tx.send(StreamEvent::TextDelta {
+                        delta: content.to_string(),
+                    });
                 }
 
                 // Tool call deltas

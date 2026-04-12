@@ -82,42 +82,41 @@ pub fn remove_skill() {
         ".pi/skills/sidekar",
     ] {
         let path = home.join(subdir);
-        if path.is_dir() {
-            if fs::remove_dir_all(&path).is_ok() {
-                any = true;
-                println!("  Removed {}", path.display());
-            }
+        if path.is_dir() && fs::remove_dir_all(&path).is_ok() {
+            any = true;
+            println!("  Removed {}", path.display());
         }
     }
 
     let opencode_skill = xdg_config_dir().join("opencode/skills/sidekar");
-    if opencode_skill.is_dir() {
-        if fs::remove_dir_all(&opencode_skill).is_ok() {
-            any = true;
-            println!("  Removed {}", opencode_skill.display());
-        }
+    if opencode_skill.is_dir() && fs::remove_dir_all(&opencode_skill).is_ok() {
+        any = true;
+        println!("  Removed {}", opencode_skill.display());
     }
 
     // --- Legacy MCP client configurations ---
 
     // CLI-based clients
-    if crate::which_bin("claude").is_some() && run_silent(&["claude", "mcp", "get", "sidekar"]) {
-        if run_silent(&["claude", "mcp", "remove", "-s", "user", "sidekar"]) {
-            any = true;
-            println!("  Claude Code MCP: removed");
-        }
+    if crate::which_bin("claude").is_some()
+        && run_silent(&["claude", "mcp", "get", "sidekar"])
+        && run_silent(&["claude", "mcp", "remove", "-s", "user", "sidekar"])
+    {
+        any = true;
+        println!("  Claude Code MCP: removed");
     }
-    if crate::which_bin("codex").is_some() && run_grep(&["codex", "mcp", "list"], "sidekar") {
-        if run_silent(&["codex", "mcp", "remove", "sidekar"]) {
-            any = true;
-            println!("  Codex MCP: removed");
-        }
+    if crate::which_bin("codex").is_some()
+        && run_grep(&["codex", "mcp", "list"], "sidekar")
+        && run_silent(&["codex", "mcp", "remove", "sidekar"])
+    {
+        any = true;
+        println!("  Codex MCP: removed");
     }
-    if crate::which_bin("gemini").is_some() && run_grep(&["gemini", "mcp", "list"], "sidekar") {
-        if run_silent(&["gemini", "mcp", "remove", "-s", "user", "sidekar"]) {
-            any = true;
-            println!("  Gemini CLI MCP: removed");
-        }
+    if crate::which_bin("gemini").is_some()
+        && run_grep(&["gemini", "mcp", "list"], "sidekar")
+        && run_silent(&["gemini", "mcp", "remove", "-s", "user", "sidekar"])
+    {
+        any = true;
+        println!("  Gemini CLI MCP: removed");
     }
 
     // JSON config file clients (Claude Desktop, Cursor, Windsurf, ChatGPT, Cline, Copilot)
@@ -179,11 +178,9 @@ pub fn remove_skill() {
 
     // --- Data directory ---
     let data_dir = home.join(".sidekar");
-    if data_dir.is_dir() {
-        if fs::remove_dir_all(&data_dir).is_ok() {
-            any = true;
-            println!("  Removed {}", data_dir.display());
-        }
+    if data_dir.is_dir() && fs::remove_dir_all(&data_dir).is_ok() {
+        any = true;
+        println!("  Removed {}", data_dir.display());
     }
 
     println!();
@@ -208,12 +205,11 @@ fn remove_mcp_from_json(path: &Path) -> Option<String> {
     if let Some(obj) = data.as_object_mut() {
         // Check both "mcpServers" and "mcp" keys
         for key in &["mcpServers", "mcp"] {
-            if let Some(section) = obj.get_mut(*key) {
-                if let Some(m) = section.as_object_mut() {
-                    if m.remove("sidekar").is_some() {
-                        removed = true;
-                    }
-                }
+            if let Some(section) = obj.get_mut(*key)
+                && let Some(m) = section.as_object_mut()
+                && m.remove("sidekar").is_some()
+            {
+                removed = true;
             }
         }
     }
@@ -263,13 +259,12 @@ fn install_skill_to(dir: &Path, name: &str) {
         return;
     }
     let path = dir.join("SKILL.md");
-    if path.exists() {
-        if let Ok(existing) = fs::read_to_string(&path) {
-            if existing == SKILL_MD {
-                println!("  {name}: up to date");
-                return;
-            }
-        }
+    if path.exists()
+        && let Ok(existing) = fs::read_to_string(&path)
+        && existing == SKILL_MD
+    {
+        println!("  {name}: up to date");
+        return;
     }
     match fs::write(&path, SKILL_MD) {
         Ok(()) => println!("  {name}: installed → {}", path.display()),
@@ -282,10 +277,10 @@ fn home_dir() -> PathBuf {
 }
 
 fn xdg_config_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
     }
     home_dir().join(".config")
 }

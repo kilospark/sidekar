@@ -1,5 +1,5 @@
-use super::*;
 use super::escape_filter::{filter_osc_color_sequences, rewrite_osc_titles};
+use super::*;
 
 pub(crate) async fn event_loop(
     master: &Arc<OwnedFd>,
@@ -257,13 +257,5 @@ pub(crate) async fn event_loop(
         tx.shutdown();
     }
 
-    // Wait for child to exit
-    let mut status: libc::c_int = 0;
-    unsafe { libc::waitpid(child_pid, &mut status, 0) };
-
-    if libc::WIFEXITED(status) {
-        libc::WEXITSTATUS(status)
-    } else {
-        1
-    }
+    wait_child_exit_or_terminate(child_pid)
 }

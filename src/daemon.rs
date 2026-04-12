@@ -42,27 +42,48 @@ pub fn socket_path() -> PathBuf {
     data_dir().join("daemon.sock")
 }
 
+fn pid_file_pid() -> Option<i32> {
+    std::fs::read_to_string(pid_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+fn pid_is_alive(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+fn daemon_ping_pid() -> Option<Option<i32>> {
+    send_command(&json!({"type": "ping"}))
+        .ok()
+        .filter(|v| v.get("pong").and_then(Value::as_bool).unwrap_or(false))
+        .map(|v| v.get("pid").and_then(Value::as_i64).map(|pid| pid as i32))
+}
+
+fn running_daemon_pid() -> Option<i32> {
+    if !socket_path().exists() {
+        return None;
+    }
+    let pid = match daemon_ping_pid()? {
+        Some(pid) => pid,
+        None => pid_file_pid()?,
+    };
+    if !pid_is_alive(pid) {
+        return None;
+    }
+    if pid_file_pid() != Some(pid) {
+        let _ = std::fs::write(pid_path(), pid.to_string());
+    }
+    Some(pid)
+}
+
 /// Check if daemon is already running.
 pub fn is_running() -> bool {
-    let pid_file = pid_path();
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            unsafe { libc::kill(pid, 0) == 0 }
-        } else {
-            false
-        }
-    } else {
-        false
-    }
+    running_daemon_pid().is_some()
 }
 
 /// Get the PID of the running daemon, if any.
 pub fn get_pid() -> Option<i32> {
-    let pid_file = pid_path();
-    std::fs::read_to_string(&pid_file)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .filter(|&pid| unsafe { libc::kill(pid, 0) == 0 })
+    running_daemon_pid()
 }
 
 /// Start the daemon if not already running.
@@ -165,8 +186,13 @@ pub(super) fn restart_current_process() -> Result<()> {
 /// Stop the running daemon.
 pub fn stop() -> Result<()> {
     if let Some(pid) = get_pid() {
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-        eprintln!("Sent SIGTERM to daemon (PID {pid})");
+        match send_command(&json!({"type": "stop"})) {
+            Ok(_) => eprintln!("Sent stop command to daemon (PID {pid})"),
+            Err(e) => {
+                eprintln!("Daemon stop command failed ({e:#}); sending SIGTERM to PID {pid}");
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
             if !is_running() {
@@ -203,6 +229,8 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
     let sock = socket_path();
     let mut stream = UnixStream::connect(&sock)
         .with_context(|| format!("Cannot connect to daemon at {}", sock.display()))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
 
     let mut line = serde_json::to_string(cmd)?;
     line.push('\n');

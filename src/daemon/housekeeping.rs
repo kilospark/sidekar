@@ -4,13 +4,13 @@ use super::*;
 pub(super) fn kill_orphaned_daemons() {
     let my_pid = std::process::id() as i32;
 
-    if let Some(old_pid) = get_pid() {
-        if old_pid != my_pid {
-            unsafe {
-                libc::kill(old_pid, libc::SIGTERM);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+    if let Some(old_pid) = get_pid()
+        && old_pid != my_pid
+    {
+        unsafe {
+            libc::kill(old_pid, libc::SIGTERM);
         }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     if let Ok(output) = std::process::Command::new("pgrep")
@@ -19,11 +19,11 @@ pub(super) fn kill_orphaned_daemons() {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if let Ok(pid) = line.trim().parse::<i32>() {
-                if pid != my_pid {
-                    unsafe {
-                        libc::kill(pid, libc::SIGTERM);
-                    }
+            if let Ok(pid) = line.trim().parse::<i32>()
+                && pid != my_pid
+            {
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
                 }
             }
         }
@@ -75,10 +75,10 @@ pub(super) async fn cdp_pool_reaper(pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>)
 /// Extract a local process PID from broker pane IDs that encode one.
 pub(super) fn pid_from_agent_pane(pane: &str) -> Option<i32> {
     for prefix in ["pty-", "repl-", "cli-"] {
-        if let Some(pid_str) = pane.strip_prefix(prefix) {
-            if let Ok(pid) = pid_str.parse::<i32>() {
-                return Some(pid);
-            }
+        if let Some(pid_str) = pane.strip_prefix(prefix)
+            && let Ok(pid) = pid_str.parse::<i32>()
+        {
+            return Some(pid);
         }
     }
     None
@@ -92,12 +92,11 @@ fn sweep_dead_agents() {
         Err(_) => return,
     };
     for agent in agents {
-        if let Some(ref pane) = agent.id.pane {
-            if let Some(pid) = pid_from_agent_pane(pane) {
-                if unsafe { libc::kill(pid, 0) } != 0 {
-                    let _ = crate::broker::unregister_agent(&agent.id.name);
-                }
-            }
+        if let Some(ref pane) = agent.id.pane
+            && let Some(pid) = pid_from_agent_pane(pane)
+            && unsafe { libc::kill(pid, 0) } != 0
+        {
+            let _ = crate::broker::unregister_agent(&agent.id.name);
         }
     }
 }
@@ -139,9 +138,9 @@ pub(super) async fn discover_heartbeat(port: u16) {
         return;
     }
     crate::api_client::deregister_discover_port().await;
-    if let Err(e) = crate::api_client::register_discover_port(port).await {
-        if crate::runtime::verbose() {
-            eprintln!("sidekar: discover heartbeat failed: {e:#}");
-        }
+    if let Err(e) = crate::api_client::register_discover_port(port).await
+        && crate::runtime::verbose()
+    {
+        eprintln!("sidekar: discover heartbeat failed: {e:#}");
     }
 }

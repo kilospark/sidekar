@@ -107,9 +107,7 @@ fn cleanup_completed_exchange(
 }
 
 fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionInfo> {
-    if crate::auth::auth_token().is_none() {
-        return None;
-    }
+    crate::auth::auth_token()?;
     let sessions = crate::transport::fetch_relay_sessions().ok()?;
     sessions
         .into_iter()
@@ -303,7 +301,7 @@ pub fn cmd_who(
         out!(ctx, "{}", out_lines.join("\n"));
     } else {
         let channel_label = state.channel().unwrap_or("all");
-        let lines: Vec<String> = agents.iter().map(|a| format_agent(a)).collect();
+        let lines: Vec<String> = agents.iter().map(format_agent).collect();
         out!(ctx, "Channel \"{channel_label}\":\n{}", lines.join("\n"));
     }
     Ok(())

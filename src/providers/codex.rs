@@ -11,11 +11,9 @@ use super::{
 // Persistent WebSocket connection
 // ---------------------------------------------------------------------------
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-type WsWrite =
-    futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsWrite = futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
 /// A reusable WebSocket connection to the Codex Responses API.
@@ -28,6 +26,7 @@ pub struct CachedWs {
 }
 
 /// Non-streaming call to the OpenAI Codex Responses API.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream(
     api_key: &str,
     account_id: &str,
@@ -391,12 +390,12 @@ async fn parse_sse_stream(
                 }
 
                 "response.output_text.delta" => {
-                    if let Some(delta) = data.get("delta").and_then(|v| v.as_str()) {
-                        if !delta.is_empty() {
-                            let _ = tx.send(StreamEvent::TextDelta {
-                                delta: delta.to_string(),
-                            });
-                        }
+                    if let Some(delta) = data.get("delta").and_then(|v| v.as_str())
+                        && !delta.is_empty()
+                    {
+                        let _ = tx.send(StreamEvent::TextDelta {
+                            delta: delta.to_string(),
+                        });
                     }
                 }
 
@@ -428,12 +427,12 @@ async fn parse_sse_stream(
                 }
 
                 "response.output_text.done" => {
-                    if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
-                        if !text.is_empty() {
-                            content_blocks.push(ContentBlock::Text {
-                                text: text.to_string(),
-                            });
-                        }
+                    if let Some(text) = data.get("text").and_then(|v| v.as_str())
+                        && !text.is_empty()
+                    {
+                        content_blocks.push(ContentBlock::Text {
+                            text: text.to_string(),
+                        });
                     }
                 }
 
@@ -551,7 +550,11 @@ async fn parse_sse_stream(
                     let msg = data
                         .get("message")
                         .and_then(|v| v.as_str())
-                        .or_else(|| data.get("error").and_then(|e| e.get("message")).and_then(|v| v.as_str()))
+                        .or_else(|| {
+                            data.get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|v| v.as_str())
+                        })
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("Codex SSE error: {data}"));
                     let _ = tx.send(StreamEvent::Error { message: msg });
@@ -577,10 +580,7 @@ struct PendingToolCall {
 /// `response.completed` event.  The WS/SSE stream may NOT send individual
 /// `response.output_item.done` events for reasoning items — they only
 /// appear in the final completed payload's `output` array.
-fn extract_reasoning_from_completed(
-    data: &Value,
-    content_blocks: &mut Vec<ContentBlock>,
-) {
+fn extract_reasoning_from_completed(data: &Value, content_blocks: &mut Vec<ContentBlock>) {
     let output = data
         .get("response")
         .and_then(|r| r.get("output"))
@@ -588,25 +588,25 @@ fn extract_reasoning_from_completed(
     if let Some(items) = output {
         for item in items {
             let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if item_type == "reasoning" {
-                if let Some(enc) = item.get("encrypted_content").and_then(|v| v.as_str()) {
-                    // Only add if we didn't already capture it from
-                    // a response.output_item.done event.
-                    let already_have = content_blocks.iter().any(|b| {
-                        matches!(b, ContentBlock::EncryptedReasoning { encrypted_content, .. }
+            if item_type == "reasoning"
+                && let Some(enc) = item.get("encrypted_content").and_then(|v| v.as_str())
+            {
+                // Only add if we didn't already capture it from
+                // a response.output_item.done event.
+                let already_have = content_blocks.iter().any(|b| {
+                    matches!(b, ContentBlock::EncryptedReasoning { encrypted_content, .. }
                             if encrypted_content == enc)
+                });
+                if !already_have {
+                    let summary = item
+                        .get("summary")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    content_blocks.push(ContentBlock::EncryptedReasoning {
+                        encrypted_content: enc.to_string(),
+                        summary,
                     });
-                    if !already_have {
-                        let summary = item
-                            .get("summary")
-                            .and_then(|v| v.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        content_blocks.push(ContentBlock::EncryptedReasoning {
-                            encrypted_content: enc.to_string(),
-                            summary,
-                        });
-                    }
                 }
             }
         }
@@ -626,10 +626,10 @@ fn get_pending_tool_call_mut<'a>(
     pending_tool_calls: &'a mut HashMap<String, PendingToolCall>,
     data: &Value,
 ) -> Option<&'a mut PendingToolCall> {
-    if let Some(event_id) = get_event_call_id(data) {
-        if pending_tool_calls.contains_key(&event_id) {
-            return pending_tool_calls.get_mut(&event_id);
-        }
+    if let Some(event_id) = get_event_call_id(data)
+        && pending_tool_calls.contains_key(&event_id)
+    {
+        return pending_tool_calls.get_mut(&event_id);
     }
 
     if pending_tool_calls.len() == 1 {
@@ -739,9 +739,7 @@ async fn connect_ws(
     if !account_id.is_empty() {
         req_builder = req_builder.header("chatgpt-account-id", account_id);
     }
-    let ws_request = req_builder
-        .body(())
-        .context("failed to build WS request")?;
+    let ws_request = req_builder.body(()).context("failed to build WS request")?;
 
     // Build rustls TLS config (explicit ring provider)
     let mut roots = rustls::RootCertStore::empty();
@@ -763,7 +761,10 @@ async fn connect_ws(
     let ws = if let Some(cfg) = super::PROXY_CONFIG.get() {
         let proxy_addr = format!("127.0.0.1:{}", cfg.port);
         if verbose {
-            crate::tunnel::tunnel_println(&format!("\x1b[2m[ws] CONNECT tunnel via proxy :{}\x1b[0m", cfg.port));
+            crate::tunnel::tunnel_println(&format!(
+                "\x1b[2m[ws] CONNECT tunnel via proxy :{}\x1b[0m",
+                cfg.port
+            ));
         }
         let mut tcp = tokio::net::TcpStream::connect(&proxy_addr)
             .await
@@ -793,7 +794,9 @@ async fn connect_ws(
         }
 
         if verbose {
-            crate::tunnel::tunnel_println(&format!("\x1b[2m[ws] TLS + WS handshake to {host}\x1b[0m"));
+            crate::tunnel::tunnel_println(&format!(
+                "\x1b[2m[ws] TLS + WS handshake to {host}\x1b[0m"
+            ));
         }
         let connector = Some(tokio_tungstenite::Connector::Rustls(tls_config));
         let (ws, _) =
@@ -803,7 +806,9 @@ async fn connect_ws(
         ws
     } else {
         if verbose {
-            crate::tunnel::tunnel_println(&format!("\x1b[2m[ws] TLS + WS handshake to {host}\x1b[0m"));
+            crate::tunnel::tunnel_println(&format!(
+                "\x1b[2m[ws] TLS + WS handshake to {host}\x1b[0m"
+            ));
         }
         let connector = tokio_tungstenite::Connector::Rustls(tls_config);
         let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
@@ -834,6 +839,7 @@ async fn connect_ws(
 /// When `cached_ws` is provided, reuses the existing connection. If the send
 /// fails (stale connection), transparently reconnects. After `response.completed`,
 /// the connection is returned via the oneshot for the next turn to reuse.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_ws(
     api_key: &str,
     account_id: &str,
@@ -882,24 +888,34 @@ pub async fn stream_ws(
             if verbose {
                 crate::tunnel::tunnel_println("\x1b[2m[ws] sending on cached connection\x1b[0m");
             }
-            if w.send(WsMessage::Text(payload.clone().into())).await.is_ok() {
+            if w.send(WsMessage::Text(payload.clone().into()))
+                .await
+                .is_ok()
+            {
                 if verbose {
-                    crate::tunnel::tunnel_println("\x1b[2m[ws] sent, validating with first read...\x1b[0m");
+                    crate::tunnel::tunnel_println(
+                        "\x1b[2m[ws] sent, validating with first read...\x1b[0m",
+                    );
                 }
                 // Validate: read first message to confirm connection is alive
                 use futures_util::StreamExt;
-                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) = r.next().await
-                {
+                if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) = r.next().await {
                     if verbose {
-                        crate::tunnel::tunnel_println("\x1b[2m[ws] cached connection alive, reusing\x1b[0m");
+                        crate::tunnel::tunnel_println(
+                            "\x1b[2m[ws] cached connection alive, reusing\x1b[0m",
+                        );
                     }
                     break 'conn (w, r, Some(t.to_string()));
                 }
                 if verbose {
-                    crate::tunnel::tunnel_println("\x1b[2m[ws] cached read failed (broken pipe), reconnecting\x1b[0m");
+                    crate::tunnel::tunnel_println(
+                        "\x1b[2m[ws] cached read failed (broken pipe), reconnecting\x1b[0m",
+                    );
                 }
             } else if verbose {
-                crate::tunnel::tunnel_println("\x1b[2m[ws] cached send failed, reconnecting\x1b[0m");
+                crate::tunnel::tunnel_println(
+                    "\x1b[2m[ws] cached send failed, reconnecting\x1b[0m",
+                );
             }
         } else if verbose {
             crate::tunnel::tunnel_println("\x1b[2m[ws] no cached connection\x1b[0m");
@@ -927,7 +943,9 @@ pub async fn stream_ws(
         match parse_ws_stream(&mut read, &tx, first_text).await {
             Ok(true) => {
                 if verbose {
-                    crate::tunnel::tunnel_println("\x1b[2m[ws] reclaiming connection for reuse\x1b[0m");
+                    crate::tunnel::tunnel_println(
+                        "\x1b[2m[ws] reclaiming connection for reuse\x1b[0m",
+                    );
                 }
                 let _ = reclaim_tx.send(Some(CachedWs { write, read }));
             }
@@ -939,7 +957,9 @@ pub async fn stream_ws(
             }
             Err(e) => {
                 if verbose {
-                    crate::tunnel::tunnel_println(&format!("\x1b[2m[ws] transport error: {e:#}\x1b[0m"));
+                    crate::tunnel::tunnel_println(&format!(
+                        "\x1b[2m[ws] transport error: {e:#}\x1b[0m"
+                    ));
                 }
                 let _ = tx.send(StreamEvent::Error {
                     message: format!("{e:#}"),
@@ -1067,12 +1087,12 @@ where
             }
 
             "response.output_text.delta" => {
-                if let Some(delta) = data.get("delta").and_then(|v| v.as_str()) {
-                    if !delta.is_empty() {
-                        let _ = tx.send(StreamEvent::TextDelta {
-                            delta: delta.to_string(),
-                        });
-                    }
+                if let Some(delta) = data.get("delta").and_then(|v| v.as_str())
+                    && !delta.is_empty()
+                {
+                    let _ = tx.send(StreamEvent::TextDelta {
+                        delta: delta.to_string(),
+                    });
                 }
             }
 
@@ -1104,12 +1124,12 @@ where
             }
 
             "response.output_text.done" => {
-                if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
-                    if !text.is_empty() {
-                        content_blocks.push(ContentBlock::Text {
-                            text: text.to_string(),
-                        });
-                    }
+                if let Some(text) = data.get("text").and_then(|v| v.as_str())
+                    && !text.is_empty()
+                {
+                    content_blocks.push(ContentBlock::Text {
+                        text: text.to_string(),
+                    });
                 }
             }
 
@@ -1230,7 +1250,11 @@ where
                 let msg = data
                     .get("message")
                     .and_then(|v| v.as_str())
-                    .or_else(|| data.get("error").and_then(|e| e.get("message")).and_then(|v| v.as_str()))
+                    .or_else(|| {
+                        data.get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|v| v.as_str())
+                    })
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("Codex WS error: {data}"));
                 let _ = tx.send(StreamEvent::Error { message: msg });
