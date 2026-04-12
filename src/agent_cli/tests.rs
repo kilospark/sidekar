@@ -20,6 +20,24 @@ fn enrich_opencode_skips_when_prompt_present() {
 }
 
 #[test]
+fn enrich_opencode_resume_and_management_skip_starter() {
+    assert_eq!(enrich("opencode", &["--continue"]), vec!["--continue"]);
+    assert_eq!(enrich("opencode", &["-c"]), vec!["-c"]);
+    assert_eq!(
+        enrich("opencode", &["--session", "abc"]),
+        vec!["--session", "abc"]
+    );
+    assert_eq!(enrich("opencode", &["run"]), vec!["run"]);
+    assert_eq!(enrich("opencode", &["run", "-c"]), vec!["run", "-c"]);
+    assert_eq!(enrich("opencode", &["session"]), vec!["session"]);
+    assert_eq!(
+        enrich("opencode", &["session", "list"]),
+        vec!["session", "list"]
+    );
+    assert_eq!(enrich("opencode", &["models"]), vec!["models"]);
+}
+
+#[test]
 fn enrich_cursor_agent_tail_gets_starter() {
     let out = enrich("cursor", &["agent"]);
     assert_eq!(out, vec!["agent", STARTUP_INJECT]);
@@ -41,6 +59,29 @@ fn enrich_cursor_agent_with_user_prompt_skips_starter() {
 fn enrich_cursor_agent_login_skips_starter() {
     let out = enrich("cursor", &["agent", "login"]);
     assert_eq!(out, vec!["agent", "login"]);
+}
+
+#[test]
+fn enrich_cursor_resume_and_picker_paths_skip_starter() {
+    assert_eq!(enrich("agent", &["--resume"]), vec!["--resume"]);
+    assert_eq!(enrich("agent", &["--continue"]), vec!["--continue"]);
+    assert_eq!(enrich("agent", &["--cloud"]), vec!["--cloud"]);
+    assert_eq!(enrich("agent", &["-c"]), vec!["-c"]);
+    assert_eq!(
+        enrich("agent", &["--resume", "chat-id"]),
+        vec!["--resume", "chat-id"]
+    );
+    assert_eq!(enrich("agent", &["resume"]), vec!["resume"]);
+    assert_eq!(enrich("agent", &["ls"]), vec!["ls"]);
+    assert_eq!(enrich("cursor-agent", &["--resume"]), vec!["--resume"]);
+    assert_eq!(
+        enrich("cursor", &["agent", "--resume"]),
+        vec!["agent", "--resume"]
+    );
+    assert_eq!(
+        enrich("cursor", &["agent", "--continue"]),
+        vec!["agent", "--continue"]
+    );
 }
 
 #[test]
@@ -92,6 +133,36 @@ fn enrich_claude_print_prompt_is_not_treated_as_option_value() {
 }
 
 #[test]
+fn enrich_claude_resume_paths_skip_starter() {
+    assert_eq!(enrich("claude", &["--resume"]), vec!["--resume"]);
+    assert_eq!(enrich("claude", &["-r"]), vec!["-r"]);
+    assert_eq!(
+        enrich("claude", &["--resume", "session-id"]),
+        vec!["--resume", "session-id"]
+    );
+    assert_eq!(
+        enrich("claude", &["--resume=session-id"]),
+        vec!["--resume=session-id"]
+    );
+    assert_eq!(enrich("claude", &["--continue"]), vec!["--continue"]);
+    assert_eq!(enrich("claude", &["-c"]), vec!["-c"]);
+    assert_eq!(enrich("claude", &["--from-pr"]), vec!["--from-pr"]);
+}
+
+#[test]
+fn enrich_codex_resume_subcommand_skips_starter() {
+    assert_eq!(enrich("codex", &["resume"]), vec!["resume"]);
+    assert_eq!(
+        enrich("codex", &["--model", "gpt-5.4", "resume"]),
+        vec!["--model", "gpt-5.4", "resume"]
+    );
+    assert_eq!(
+        enrich("codex", &["resume", "--last"]),
+        vec!["resume", "--last"]
+    );
+}
+
+#[test]
 fn enrich_gemini_uses_dash_i() {
     let out = enrich("gemini", &[]);
     assert_eq!(out, vec!["-i", STARTUP_INJECT]);
@@ -101,6 +172,27 @@ fn enrich_gemini_uses_dash_i() {
 fn enrich_gemini_skip_option_values_before_injecting() {
     let out = enrich("gemini", &["--model", "gemini-2.5-pro"]);
     assert_eq!(out, vec!["--model", "gemini-2.5-pro", "-i", STARTUP_INJECT]);
+}
+
+#[test]
+fn enrich_gemini_resume_and_session_management_skip_starter() {
+    assert_eq!(
+        enrich("gemini", &["--resume", "latest"]),
+        vec!["--resume", "latest"]
+    );
+    assert_eq!(enrich("gemini", &["-r", "5"]), vec!["-r", "5"]);
+    assert_eq!(
+        enrich("gemini", &["--list-sessions"]),
+        vec!["--list-sessions"]
+    );
+    assert_eq!(
+        enrich("gemini", &["--delete-session", "3"]),
+        vec!["--delete-session", "3"]
+    );
+    assert_eq!(
+        enrich("gemini", &["--list-extensions"]),
+        vec!["--list-extensions"]
+    );
 }
 
 #[test]
@@ -115,6 +207,26 @@ fn enrich_pi_prepends_append_system_prompt() {
 fn enrich_pi_skips_duplicate_starter_arg() {
     let out = enrich("pi", &[STARTUP_INJECT]);
     assert_eq!(out, vec![STARTUP_INJECT]);
+}
+
+#[test]
+fn enrich_pi_resume_and_management_skip_starter() {
+    assert_eq!(enrich("pi", &["--resume"]), vec!["--resume"]);
+    assert_eq!(enrich("pi", &["-r"]), vec!["-r"]);
+    assert_eq!(enrich("pi", &["--continue"]), vec!["--continue"]);
+    assert_eq!(
+        enrich("pi", &["--session", "session.jsonl"]),
+        vec!["--session", "session.jsonl"]
+    );
+    assert_eq!(
+        enrich("pi", &["install", "source"]),
+        vec!["install", "source"]
+    );
+    assert_eq!(enrich("pi", &["list"]), vec!["list"]);
+    assert_eq!(
+        enrich("pi", &["--list-models", "sonnet"]),
+        vec!["--list-models", "sonnet"]
+    );
 }
 
 #[test]

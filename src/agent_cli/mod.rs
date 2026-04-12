@@ -48,6 +48,18 @@ fn has_positional(args: &[String], value_flags: &[&str]) -> bool {
     false
 }
 
+fn first_positional<'a>(args: &'a [String], value_flags: &[&str]) -> Option<&'a str> {
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i].starts_with('-') && args[i] != "-" {
+            i = skip_option_arg(args, i, value_flags);
+        } else {
+            return Some(args[i].as_str());
+        }
+    }
+    None
+}
+
 fn enrich_with_startup_prompt(args: &[String], value_flags: &[&str]) -> Vec<String> {
     let has_positional = has_positional(args, value_flags);
     let mut out = args.to_vec();
@@ -55,6 +67,14 @@ fn enrich_with_startup_prompt(args: &[String], value_flags: &[&str]) -> Vec<Stri
         out.push(STARTUP_INJECT.to_string());
     }
     out
+}
+
+fn has_flag(args: &[String], flags: &[&str]) -> bool {
+    args.iter().any(|a| {
+        flags
+            .iter()
+            .any(|f| a == f || a.starts_with(&format!("{f}=")))
+    })
 }
 
 struct Claude;
@@ -66,6 +86,9 @@ impl AgentCliSpec for Claude {
 
     fn enrich_startup(&self, invoked_as: &str, args: &[String]) -> Vec<String> {
         debug_assert_eq!(invoked_as, "claude");
+        if has_flag(args, &["-c", "--continue", "-r", "--resume", "--from-pr"]) {
+            return args.to_vec();
+        }
         enrich_with_startup_prompt(
             args,
             &[
@@ -176,6 +199,23 @@ impl AgentCliSpec for Gemini {
 
     fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
         debug_assert_eq!(invoked_as, "gemini");
+        if has_flag(
+            user_args,
+            &[
+                "-r",
+                "--resume",
+                "--list-sessions",
+                "--delete-session",
+                "-l",
+                "--list-extensions",
+                "-h",
+                "--help",
+                "-v",
+                "--version",
+            ],
+        ) {
+            return user_args.to_vec();
+        }
         let has_positional = has_positional(
             user_args,
             &[
@@ -225,6 +265,32 @@ impl AgentCliSpec for Gemini {
 
 struct OpenCode;
 
+const OPENCODE_COMMANDS: &[&str] = &[
+    "completion",
+    "acp",
+    "mcp",
+    "attach",
+    "run",
+    "debug",
+    "providers",
+    "auth",
+    "agent",
+    "upgrade",
+    "uninstall",
+    "serve",
+    "web",
+    "models",
+    "stats",
+    "export",
+    "import",
+    "github",
+    "pr",
+    "session",
+    "plugin",
+    "plug",
+    "db",
+];
+
 impl AgentCliSpec for OpenCode {
     fn ids(&self) -> &'static [&'static str] {
         &["opencode"]
@@ -232,14 +298,36 @@ impl AgentCliSpec for OpenCode {
 
     fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
         debug_assert_eq!(invoked_as, "opencode");
-        let has_flag = |flags: &[&str]| -> bool {
-            user_args.iter().any(|a| {
-                flags
-                    .iter()
-                    .any(|f| a == f || a.starts_with(&format!("{f}=")))
-            })
-        };
-        if !has_flag(&["--prompt"]) {
+        if has_flag(
+            user_args,
+            &[
+                "-c",
+                "--continue",
+                "-s",
+                "--session",
+                "-h",
+                "--help",
+                "-v",
+                "--version",
+            ],
+        ) || first_positional(
+            user_args,
+            &[
+                "--log-level",
+                "--port",
+                "--hostname",
+                "--mdns-domain",
+                "-m",
+                "--model",
+                "--agent",
+                "--prompt",
+            ],
+        )
+        .is_some_and(|arg| OPENCODE_COMMANDS.contains(&arg))
+        {
+            return user_args.to_vec();
+        }
+        if !has_flag(user_args, &["--prompt"]) {
             let mut prefixed = Vec::with_capacity(user_args.len().saturating_add(2));
             prefixed.push("--prompt".into());
             prefixed.push(STARTUP_INJECT.to_string());
@@ -257,6 +345,54 @@ impl AgentCliSpec for OpenCode {
 
 /// Pi: `--append-system-prompt` adds to the default system prompt (see pi coding-agent CLI).
 fn enrich_pi_startup(user_args: &[String]) -> Vec<String> {
+    if has_flag(
+        user_args,
+        &[
+            "-c",
+            "--continue",
+            "-r",
+            "--resume",
+            "--session",
+            "--fork",
+            "--export",
+            "--list-models",
+            "-h",
+            "--help",
+            "-v",
+            "--version",
+        ],
+    ) || first_positional(
+        user_args,
+        &[
+            "--provider",
+            "--model",
+            "--api-key",
+            "--system-prompt",
+            "--append-system-prompt",
+            "--mode",
+            "--session",
+            "--fork",
+            "--session-dir",
+            "--models",
+            "--tools",
+            "--thinking",
+            "--extension",
+            "-e",
+            "--skill",
+            "--prompt-template",
+            "--theme",
+            "--export",
+            "--list-models",
+        ],
+    )
+    .is_some_and(|arg| {
+        matches!(
+            arg,
+            "install" | "remove" | "uninstall" | "update" | "list" | "config"
+        )
+    }) {
+        return user_args.to_vec();
+    }
     if user_args.iter().any(|a| a.as_str() == STARTUP_INJECT) {
         return user_args.to_vec();
     }

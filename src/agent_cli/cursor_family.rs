@@ -1,6 +1,6 @@
 //! Cursor `cursor` shim vs `agent` / `cursor-agent` argv shaping.
 
-use super::{AgentCliSpec, ProxyEnvFlags, STARTUP_INJECT};
+use super::{AgentCliSpec, ProxyEnvFlags, STARTUP_INJECT, has_flag};
 
 /// Subcommands that are not an interactive agent session (no initial prompt slot).
 const MGMT_COMMANDS: &[&str] = &[
@@ -73,6 +73,22 @@ fn first_positional_index(args: &[String]) -> usize {
 }
 
 fn should_inject_initial_prompt(args: &[String]) -> bool {
+    if has_flag(
+        args,
+        &[
+            "-c",
+            "--cloud",
+            "--continue",
+            "--resume",
+            "--list-models",
+            "-h",
+            "--help",
+            "-v",
+            "--version",
+        ],
+    ) {
+        return false;
+    }
     let i = first_positional_index(args);
     if i >= args.len() {
         return true;
