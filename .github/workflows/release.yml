@@ -81,6 +81,7 @@ jobs:
           path: |
             ${{ matrix.name }}.tar.gz
             ${{ matrix.name }}.tar.gz.minisig
+          retention-days: 1
 
   release:
     needs: build
