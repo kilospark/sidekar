@@ -28,9 +28,9 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
-                    ContentBlock::EncryptedReasoning { encrypted_content, .. } => {
-                        encrypted_content.len() * 3 / 4
-                    }
+                    ContentBlock::EncryptedReasoning {
+                        encrypted_content, ..
+                    } => encrypted_content.len() * 3 / 4,
                 })
                 .sum::<usize>()
         })
@@ -40,7 +40,7 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
 
 /// Build an ephemeral view of history with thinking eviction and optional
 /// budget trimming. Canonical history is not mutated.
-pub fn prepare_context(history: &mut Vec<ChatMessage>, token_budget: usize) -> Vec<ChatMessage> {
+pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<ChatMessage> {
     // --- Step 1: Thinking block eviction (ephemeral, view-only) ---
     let mut view: Vec<ChatMessage> = history.to_vec();
 

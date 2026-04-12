@@ -70,6 +70,7 @@ const fn spec(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 const fn spec_aliases(
     name: &'static str,
     usage: &'static str,

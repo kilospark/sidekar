@@ -8,7 +8,7 @@ pub(crate) fn capture_symbol(
     comment_prefix: &str,
 ) -> Option<Symbol> {
     let trimmed = lines[line_idx].trim_start();
-    for (regex, kind) in patterns {
+    if let Some((regex, kind)) = patterns.iter().next() {
         let cap = regex.captures(trimmed)?;
         let end = match kind {
             SymbolKind::Import | SymbolKind::Variable => line_idx,
@@ -66,7 +66,11 @@ pub(crate) fn collect_comments(lines: &[&str], line_idx: usize, prefix: &str) ->
     }
 }
 
-pub(crate) fn collect_line_comments(lines: &[&str], line_idx: usize, prefix: &str) -> Option<String> {
+pub(crate) fn collect_line_comments(
+    lines: &[&str],
+    line_idx: usize,
+    prefix: &str,
+) -> Option<String> {
     let mut out = Vec::new();
     let mut idx = line_idx;
     while idx > 0 {

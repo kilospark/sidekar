@@ -15,7 +15,10 @@ pub(crate) fn resolve_agent(agent: &str) -> Result<(String, std::ffi::CString)> 
 }
 
 /// Build CString args for execvp (must happen before fork).
-pub(crate) fn prepare_args(bin: &std::ffi::CString, args: &[String]) -> Result<Vec<std::ffi::CString>> {
+pub(crate) fn prepare_args(
+    bin: &std::ffi::CString,
+    args: &[String],
+) -> Result<Vec<std::ffi::CString>> {
     let mut c_args: Vec<std::ffi::CString> = vec![bin.clone()];
     for arg in args {
         c_args.push(std::ffi::CString::new(arg.as_str()).context("invalid arg")?);

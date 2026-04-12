@@ -38,14 +38,14 @@ fn tool_result_msg(id: &str, content: &str) -> ChatMessage {
 
 #[test]
 fn thinking_evicted_except_last_assistant() {
-    let mut history = vec![
+    let history = vec![
         text_msg(Role::User, "hello"),
         thinking_msg("old reasoning", "response 1"),
         text_msg(Role::User, "next"),
         thinking_msg("recent reasoning", "response 2"),
     ];
 
-    let view = prepare_context(&mut history, 1_000_000);
+    let view = prepare_context(&history, 1_000_000);
 
     // First assistant: thinking stripped, only text remains
     let first_asst = view
@@ -79,7 +79,7 @@ fn thinking_evicted_except_last_assistant() {
 #[test]
 fn empty_messages_removed_after_eviction() {
     // An assistant message with only a thinking block should be dropped.
-    let mut history = vec![
+    let history = vec![
         text_msg(Role::User, "hello"),
         ChatMessage {
             role: Role::Assistant,
@@ -92,7 +92,7 @@ fn empty_messages_removed_after_eviction() {
         text_msg(Role::Assistant, "final"),
     ];
 
-    let view = prepare_context(&mut history, 1_000_000);
+    let view = prepare_context(&history, 1_000_000);
     // The thinking-only message should be gone.
     assert_eq!(view.len(), 3);
 }
@@ -121,7 +121,7 @@ fn tool_results_preserved_across_turns() {
         })
         .collect();
 
-    prepare_context(&mut history, 1_000_000);
+    prepare_context(&history, 1_000_000);
 
     let after: Vec<String> = history
         .iter()
@@ -148,7 +148,7 @@ fn budget_trimming_drops_oldest() {
     }
 
     // Tiny budget forces trimming
-    let view = prepare_context(&mut history, 10);
+    let view = prepare_context(&history, 10);
 
     // Should be significantly trimmed from the original 40 messages
     assert!(
@@ -182,7 +182,7 @@ fn tool_results_stable_across_new_turns() {
         history.push(text_msg(Role::Assistant, &format!("resp {i}")));
     }
 
-    prepare_context(&mut history, 1_000_000);
+    prepare_context(&history, 1_000_000);
     let snapshot: Vec<String> = history
         .iter()
         .flat_map(|m| {
@@ -196,7 +196,7 @@ fn tool_results_stable_across_new_turns() {
     for i in 0..5 {
         history.push(text_msg(Role::User, &format!("q{i}")));
         history.push(text_msg(Role::Assistant, &format!("a{i}")));
-        prepare_context(&mut history, 1_000_000);
+        prepare_context(&history, 1_000_000);
     }
 
     let current: Vec<String> = history
@@ -215,11 +215,11 @@ fn tool_results_stable_across_new_turns() {
 
 #[test]
 fn no_changes_when_within_budget() {
-    let mut history = vec![
+    let history = vec![
         text_msg(Role::User, "hello"),
         text_msg(Role::Assistant, "hi"),
     ];
 
-    let view = prepare_context(&mut history, 1_000_000);
+    let view = prepare_context(&history, 1_000_000);
     assert_eq!(view.len(), 2);
 }

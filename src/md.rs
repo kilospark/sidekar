@@ -33,6 +33,12 @@ enum Style {
     BlockQuote,
 }
 
+impl Default for MarkdownStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkdownStream {
     pub fn new() -> Self {
         Self {

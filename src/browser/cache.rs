@@ -19,56 +19,57 @@ pub async fn fetch_interactive_elements(
     let cache_key = cache_key_from_url(&current_url);
 
     let mut action_cache = load_action_cache(ctx)?;
-    if let Some(cached) = action_cache.get(&cache_key).cloned() {
-        if now_epoch_ms() - cached.timestamp < CACHE_TTL_MS && !cached.ref_map.is_empty() {
-            let refs_to_check = cached.ref_map.values().take(3).cloned().collect::<Vec<_>>();
-            let mut valid = !refs_to_check.is_empty();
-            for sel in refs_to_check {
-                let check = runtime_evaluate(
-                    cdp,
-                    &format!("!!document.querySelector({})", serde_json::to_string(&sel)?),
-                    true,
-                    false,
-                )
-                .await?;
-                if !check
-                    .pointer("/result/value")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    valid = false;
-                    break;
-                }
+    if let Some(cached) = action_cache.get(&cache_key).cloned()
+        && now_epoch_ms() - cached.timestamp < CACHE_TTL_MS
+        && !cached.ref_map.is_empty()
+    {
+        let refs_to_check = cached.ref_map.values().take(3).cloned().collect::<Vec<_>>();
+        let mut valid = !refs_to_check.is_empty();
+        for sel in refs_to_check {
+            let check = runtime_evaluate(
+                cdp,
+                &format!("!!document.querySelector({})", serde_json::to_string(&sel)?),
+                true,
+                false,
+            )
+            .await?;
+            if !check
+                .pointer("/result/value")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                valid = false;
+                break;
             }
-            if valid {
-                let overlay_check = runtime_evaluate(
+        }
+        if valid {
+            let overlay_check = runtime_evaluate(
                     cdp,
                     "document.querySelectorAll('[role=dialog],[role=alertdialog],[role=menu],[role=listbox],[aria-modal=true],[aria-modal=\"true\"],.modal,.modal-dialog,.drawer,.popover,[data-modal],[data-state=open],[data-headlessui-state~=open]').length",
                     true,
                     false,
                 )
                 .await?;
-                let overlay_count = overlay_check
-                    .pointer("/result/value")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                if overlay_count > 0 {
-                    valid = false;
-                }
+            let overlay_count = overlay_check
+                .pointer("/result/value")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if overlay_count > 0 {
+                valid = false;
             }
-            if valid {
-                let mut state = ctx.load_session_state()?;
-                state.prev_elements = state.current_elements.clone();
-                state.current_elements = Some(cached.elements.clone());
-                state.ref_map = Some(cached.ref_map.clone());
-                state.ref_map_url = Some(current_url);
-                state.ref_map_timestamp = Some(cached.timestamp);
-                ctx.save_session_state(&state)?;
-                return Ok(InteractiveData {
-                    elements: cached.elements,
-                    output: cached.output,
-                });
-            }
+        }
+        if valid {
+            let mut state = ctx.load_session_state()?;
+            state.prev_elements = state.current_elements.clone();
+            state.current_elements = Some(cached.elements.clone());
+            state.ref_map = Some(cached.ref_map.clone());
+            state.ref_map_url = Some(current_url);
+            state.ref_map_timestamp = Some(cached.timestamp);
+            ctx.save_session_state(&state)?;
+            return Ok(InteractiveData {
+                elements: cached.elements,
+                output: cached.output,
+            });
         }
     }
 

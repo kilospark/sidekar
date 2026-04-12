@@ -145,12 +145,11 @@ fn detect_format(path: Option<&str>, input: &str) -> Result<Format> {
         return Ok(Format::Packed);
     }
 
-    if let Some(path) = path {
-        if let Some(ext) = Path::new(path).extension().and_then(|ext| ext.to_str()) {
-            if let Ok(format) = Format::parse(ext) {
-                return Ok(format);
-            }
-        }
+    if let Some(path) = path
+        && let Some(ext) = Path::new(path).extension().and_then(|ext| ext.to_str())
+        && let Ok(format) = Format::parse(ext)
+    {
+        return Ok(format);
     }
 
     if serde_json::from_str::<Value>(trimmed).is_ok() {

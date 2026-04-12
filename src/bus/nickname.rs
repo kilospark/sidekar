@@ -156,16 +156,17 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
     }
 
     // Try to reuse stored nickname for this project (only if not already taken)
-    let chosen = if let Some(proj) = project {
+
+    if let Some(proj) = project {
         let nick_key = format!("_nick:{}", proj);
         let stored = broker::kv_get(&nick_key).ok().flatten().map(|e| e.value);
 
-        if let Some(nick) = stored {
-            if !used.contains(&nick) {
-                return nick; // reused successfully
-            }
-            // stored nickname is taken - fall through to pick new one
+        if let Some(nick) = stored
+            && !used.contains(&nick)
+        {
+            return nick; // reused successfully
         }
+        // stored nickname is taken - fall through to pick new one
 
         // Pick new from available
         let mut available: Vec<&str> = NICKNAMES
@@ -194,7 +195,5 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
             let r: u16 = rand::random();
             format!("agent-{:04x}", r)
         })
-    };
-
-    chosen
+    }
 }

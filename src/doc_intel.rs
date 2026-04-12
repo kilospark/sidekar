@@ -259,13 +259,10 @@ fn walk_markdown_files(root: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
     for entry in walker {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() {
-            match path.extension().and_then(|e| e.to_str()) {
-                Some("md" | "mdx" | "markdown") => {
-                    files.push(path.to_path_buf());
-                }
-                _ => {}
-            }
+        if path.is_file()
+            && let Some("md" | "mdx" | "markdown") = path.extension().and_then(|e| e.to_str())
+        {
+            files.push(path.to_path_buf());
         }
     }
     files.sort();

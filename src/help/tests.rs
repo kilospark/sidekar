@@ -23,8 +23,7 @@ fn custom_help_entries_match_command_catalog() {
 fn every_command_has_printable_help() {
     for spec in crate::command_catalog::command_specs() {
         assert!(
-            command_help_text(spec.name).is_some()
-                || command_spec_fallback(spec.name).is_some(),
+            command_help_text(spec.name).is_some() || command_spec_fallback(spec.name).is_some(),
             "command is missing help text: {}",
             spec.name
         );

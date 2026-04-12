@@ -173,10 +173,10 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
                         .and_then(|a| a.get(1))
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    if let Some(filter) = key {
-                        if k != filter {
-                            continue;
-                        }
+                    if let Some(filter) = key
+                        && k != filter
+                    {
+                        continue;
                     }
                     let display_v = if v.len() > 200 {
                         format!("{}...", &v[..200])

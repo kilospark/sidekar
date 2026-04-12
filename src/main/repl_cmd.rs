@@ -65,8 +65,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
             }
         }
         "codex" => {
-            let (_, account_id) =
-                sidekar::providers::oauth::login_codex(Some(nickname)).await?;
+            let (_, account_id) = sidekar::providers::oauth::login_codex(Some(nickname)).await?;
             println!(
                 "Logged in as '{nickname}' (Codex, account: {}).",
                 if account_id.is_empty() {
@@ -144,21 +143,20 @@ async fn handle_models(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     };
-    let provider_type =
-        sidekar::providers::oauth::provider_type_for(&cred).unwrap_or_else(|| {
-            if cred == "anthropic" {
-                "anthropic"
-            } else if cred == "codex" || cred == "openai" {
-                "codex"
-            } else if cred == "openrouter" {
-                "openrouter"
-            } else if cred == "opencode" {
-                "opencode"
-            } else {
-                eprintln!("Unknown provider for '{cred}'.");
-                std::process::exit(1);
-            }
-        });
+    let provider_type = sidekar::providers::oauth::provider_type_for(&cred).unwrap_or_else(|| {
+        if cred == "anthropic" {
+            "anthropic"
+        } else if cred == "codex" || cred == "openai" {
+            "codex"
+        } else if cred == "openrouter" {
+            "openrouter"
+        } else if cred == "opencode" {
+            "opencode"
+        } else {
+            eprintln!("Unknown provider for '{cred}'.");
+            std::process::exit(1);
+        }
+    });
     // Get token silently (don't trigger login)
     let api_key = match provider_type {
         "anthropic" => sidekar::providers::oauth::get_anthropic_token(Some(&cred)).await,
@@ -269,7 +267,9 @@ async fn handle_ws_test(args: &[String]) -> Result<()> {
 
     let messages = vec![sidekar::providers::ChatMessage {
         role: sidekar::providers::Role::User,
-        content: vec![sidekar::providers::ContentBlock::Text { text: prompt.clone() }],
+        content: vec![sidekar::providers::ContentBlock::Text {
+            text: prompt.clone(),
+        }],
     }];
 
     eprintln!("\x1b[2mConnecting WS to {base_url} ...\x1b[0m");

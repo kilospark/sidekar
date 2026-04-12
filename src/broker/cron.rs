@@ -19,6 +19,7 @@ pub struct CronJobRecord {
     pub loop_interval_secs: Option<u64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_cron_job(
     id: &str,
     name: Option<&str>,

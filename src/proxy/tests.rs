@@ -71,12 +71,14 @@ async fn ws_fragmented_message_reassembly() {
     let mut acc = ws::MessageAcc::new();
     let mut seen: Option<Vec<u8>> = None;
     while let Some((_, frame)) = ws::read_frame(&mut r).await.unwrap() {
-        if let Some(msg) = acc.push(frame) {
-            if let ws::Message::Data { opcode, payload, .. } = msg {
-                assert_eq!(opcode, ws::OP_TEXT);
-                seen = Some(payload);
-                break;
-            }
+        if let Some(msg) = acc.push(frame)
+            && let ws::Message::Data {
+                opcode, payload, ..
+            } = msg
+        {
+            assert_eq!(opcode, ws::OP_TEXT);
+            seen = Some(payload);
+            break;
         }
     }
     assert_eq!(seen.as_deref(), Some(&b"hello world"[..]));
@@ -254,7 +256,8 @@ async fn ws_permessage_deflate_context_takeover_multi() {
         // scratch buffer, loop until we actually see the trailer.
         loop {
             let before_out = comp.total_out();
-            comp.compress(&[], &mut scratch, FlushCompress::Sync).unwrap();
+            comp.compress(&[], &mut scratch, FlushCompress::Sync)
+                .unwrap();
             let produced = (comp.total_out() - before_out) as usize;
             out.extend_from_slice(&scratch[..produced]);
             if out.ends_with(&[0x00, 0x00, 0xff, 0xff]) {
@@ -273,8 +276,7 @@ async fn ws_permessage_deflate_context_takeover_multi() {
 
     // One compressor, shared across all messages (context takeover).
     let mut comp = Compress::new(Compression::default(), false);
-    let encoded: Vec<Vec<u8>> =
-        messages.iter().map(|m| encode_one(&mut comp, m)).collect();
+    let encoded: Vec<Vec<u8>> = messages.iter().map(|m| encode_one(&mut comp, m)).collect();
 
     // Now decode with a shared Decompress (context takeover on receive side).
     let mut decomp = flate2::Decompress::new(false);
@@ -335,7 +337,8 @@ async fn ws_permessage_deflate_large_context_takeover() {
         }
         loop {
             let before_out = comp.total_out();
-            comp.compress(&[], &mut scratch, FlushCompress::Sync).unwrap();
+            comp.compress(&[], &mut scratch, FlushCompress::Sync)
+                .unwrap();
             let produced = (comp.total_out() - before_out) as usize;
             out.extend_from_slice(&scratch[..produced]);
             if out.ends_with(&[0x00, 0x00, 0xff, 0xff]) || produced == 0 {
@@ -369,7 +372,8 @@ async fn ws_permessage_deflate_large_context_takeover() {
             messages[i].len()
         );
         assert_eq!(
-            inflated, messages[i],
+            inflated,
+            messages[i],
             "message {i} decoded incorrectly (first 80 inflated bytes: {:?})",
             String::from_utf8_lossy(&inflated[..inflated.len().min(80)])
         );

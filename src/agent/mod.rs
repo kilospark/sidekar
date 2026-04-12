@@ -36,6 +36,7 @@ pub struct Cancelled;
 /// `run()` call. On exit it is updated to the ID of the last successful
 /// response so the caller can pass it into the next `run()`. Compaction
 /// resets it to `None` because the server-side history is no longer valid.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     provider: &Provider,
     model: &str,
@@ -54,9 +55,6 @@ pub async fn run(
 
     let mut context_window: Option<u32> = None;
     let mut did_compact = false;
-    // Index into `history` from which to send delta-only messages when
-    // chaining via previous_response_id. Set after each successful response.
-    let mut delta_start: usize = history.len();
     let mut in_tool_loop = false;
 
     loop {
@@ -91,7 +89,6 @@ pub async fn run(
         if compacted {
             did_compact = true;
             *previous_response_id = None;
-            delta_start = 0;
         }
 
         if !in_tool_loop {
@@ -99,9 +96,6 @@ pub async fn run(
             on_event(&StreamEvent::Connecting);
         }
 
-        // TODO: when WS transport is implemented, use delta_start to send only
-        // new messages when previous_response_id is set. For now, HTTP POST
-        // doesn't support server-side chaining, so always send full history.
         let prev_id_ref = previous_response_id.as_deref();
         let system_tokens = system_prompt.len() / 4;
         let tool_tokens: usize = tool_defs
@@ -130,7 +124,15 @@ pub async fn run(
             }
             None => {
                 provider
-                    .stream(model, system_prompt, &view, tool_defs, prompt_cache_key, prev_id_ref, ws)
+                    .stream(
+                        model,
+                        system_prompt,
+                        &view,
+                        tool_defs,
+                        prompt_cache_key,
+                        prev_id_ref,
+                        ws,
+                    )
                     .await
             }
         };
@@ -156,7 +158,11 @@ pub async fn run(
         if crate::providers::is_verbose() {
             crate::tunnel::tunnel_println(&format!(
                 "\x1b[2m[ws] reclaim result: {}\x1b[0m",
-                if cached_ws.is_some() { "got connection" } else { "none" }
+                if cached_ws.is_some() {
+                    "got connection"
+                } else {
+                    "none"
+                }
             ));
         }
 
@@ -170,9 +176,6 @@ pub async fn run(
             role: Role::Assistant,
             content: response.content.clone(),
         });
-
-        // Mark where new messages start for delta-only chaining.
-        delta_start = history.len();
 
         // Extract tool calls
         let tool_calls: Vec<_> = response

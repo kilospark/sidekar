@@ -68,27 +68,26 @@ pub(super) async fn cmd_activate(ctx: &mut AppContext) -> Result<()> {
     let state = ctx.load_session_state()?;
 
     // Try per-window CDP restore first (scoped to this session's window)
-    if let Some(wid) = state.window_id {
-        if let Some(tab_id) = state.active_tab_id.as_ref() {
-            let tabs = get_debug_tabs(ctx).await.unwrap_or_default();
-            if let Some(tab) = tabs.iter().find(|t| &t.id == tab_id) {
-                if let Some(ws_url) = &tab.web_socket_debugger_url {
-                    if restore_window_by_id(ctx, ws_url, wid).await.is_ok() {
-                        // Still need AppleScript to bring Chrome to foreground
-                        if let Some(name) = state
-                            .browser_name
-                            .as_ref()
-                            .or(ctx.launch_browser_name.as_ref())
-                        {
-                            let _ = activate_browser(name);
-                        }
-                        out!(ctx, "Brought session window to front.");
-                        return Ok(());
-                    }
-                    // CDP failed — fall through to app-wide activate
-                }
+    if let Some(wid) = state.window_id
+        && let Some(tab_id) = state.active_tab_id.as_ref()
+    {
+        let tabs = get_debug_tabs(ctx).await.unwrap_or_default();
+        if let Some(tab) = tabs.iter().find(|t| &t.id == tab_id)
+            && let Some(ws_url) = &tab.web_socket_debugger_url
+            && restore_window_by_id(ctx, ws_url, wid).await.is_ok()
+        {
+            // Still need AppleScript to bring Chrome to foreground
+            if let Some(name) = state
+                .browser_name
+                .as_ref()
+                .or(ctx.launch_browser_name.as_ref())
+            {
+                let _ = activate_browser(name);
             }
+            out!(ctx, "Brought session window to front.");
+            return Ok(());
         }
+        // CDP failed — fall through to app-wide activate
     }
 
     // Fallback: app-wide activate
@@ -105,19 +104,18 @@ pub(super) async fn cmd_minimize(ctx: &mut AppContext) -> Result<()> {
     let state = ctx.load_session_state()?;
 
     // Try per-window CDP minimize first (scoped to this session's window)
-    if let Some(wid) = state.window_id {
-        if let Some(tab_id) = state.active_tab_id.as_ref() {
-            let tabs = get_debug_tabs(ctx).await.unwrap_or_default();
-            if let Some(tab) = tabs.iter().find(|t| &t.id == tab_id) {
-                if let Some(ws_url) = &tab.web_socket_debugger_url {
-                    if minimize_window_by_id(ctx, ws_url, wid).await.is_ok() {
-                        out!(ctx, "Minimized session window.");
-                        return Ok(());
-                    }
-                    // CDP failed — fall through to app-wide minimize
-                }
-            }
+    if let Some(wid) = state.window_id
+        && let Some(tab_id) = state.active_tab_id.as_ref()
+    {
+        let tabs = get_debug_tabs(ctx).await.unwrap_or_default();
+        if let Some(tab) = tabs.iter().find(|t| &t.id == tab_id)
+            && let Some(ws_url) = &tab.web_socket_debugger_url
+            && minimize_window_by_id(ctx, ws_url, wid).await.is_ok()
+        {
+            out!(ctx, "Minimized session window.");
+            return Ok(());
         }
+        // CDP failed — fall through to app-wide minimize
     }
 
     // Fallback: app-wide minimize
@@ -281,15 +279,16 @@ pub(super) async fn cmd_lock(ctx: &mut AppContext, ttl_seconds: Option<&str>) ->
     let sid = ctx.require_session_id()?.to_string();
 
     with_tab_locks_exclusive(ctx, |locks| {
-        if let Some(lock) = locks.get(&tab_id) {
-            if lock.session_id != sid && now_epoch_ms() <= lock.expires {
-                let remaining = ((lock.expires - now_epoch_ms()).max(0) / 1000) as i64;
-                bail!(
-                    "Tab already locked by session {} (expires in {}s)",
-                    lock.session_id,
-                    remaining
-                );
-            }
+        if let Some(lock) = locks.get(&tab_id)
+            && lock.session_id != sid
+            && now_epoch_ms() <= lock.expires
+        {
+            let remaining = (lock.expires - now_epoch_ms()).max(0) / 1000;
+            bail!(
+                "Tab already locked by session {} (expires in {}s)",
+                lock.session_id,
+                remaining
+            );
         }
         locks.insert(
             tab_id.clone(),
@@ -366,12 +365,12 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
                 .map(|arr| {
                     let mut map = serde_json::Map::new();
                     for pair in &arr {
-                        if let Some(pair_arr) = pair.as_array() {
-                            if pair_arr.len() >= 2 {
-                                let k = pair_arr[0].as_str().unwrap_or_default().to_string();
-                                let v = pair_arr[1].as_str().unwrap_or_default().to_string();
-                                map.insert(k, json!(v));
-                            }
+                        if let Some(pair_arr) = pair.as_array()
+                            && pair_arr.len() >= 2
+                        {
+                            let k = pair_arr[0].as_str().unwrap_or_default().to_string();
+                            let v = pair_arr[1].as_str().unwrap_or_default().to_string();
+                            map.insert(k, json!(v));
                         }
                     }
                     Value::Object(map)
@@ -392,12 +391,12 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
                 .map(|arr| {
                     let mut map = serde_json::Map::new();
                     for pair in &arr {
-                        if let Some(pair_arr) = pair.as_array() {
-                            if pair_arr.len() >= 2 {
-                                let k = pair_arr[0].as_str().unwrap_or_default().to_string();
-                                let v = pair_arr[1].as_str().unwrap_or_default().to_string();
-                                map.insert(k, json!(v));
-                            }
+                        if let Some(pair_arr) = pair.as_array()
+                            && pair_arr.len() >= 2
+                        {
+                            let k = pair_arr[0].as_str().unwrap_or_default().to_string();
+                            let v = pair_arr[1].as_str().unwrap_or_default().to_string();
+                            map.insert(k, json!(v));
                         }
                     }
                     Value::Object(map)

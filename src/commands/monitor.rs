@@ -126,11 +126,11 @@ async fn start_monitor(ctx: &mut AppContext, tab_ids: Vec<String>) -> Result<()>
     } else {
         for id_str in &tab_ids {
             if let Ok(idx) = id_str.parse::<usize>() {
-                if let Some(tab_cdp_id) = state.tabs.get(idx) {
-                    if let Some(tab) = debug_tabs.iter().find(|t| t.id == *tab_cdp_id) {
-                        cdp_target_ids.push(tab.id.clone());
-                        watched_names.push(tab.title.as_deref().unwrap_or("untitled").to_string());
-                    }
+                if let Some(tab_cdp_id) = state.tabs.get(idx)
+                    && let Some(tab) = debug_tabs.iter().find(|t| t.id == *tab_cdp_id)
+                {
+                    cdp_target_ids.push(tab.id.clone());
+                    watched_names.push(tab.title.as_deref().unwrap_or("untitled").to_string());
                 }
             } else if debug_tabs.iter().any(|t| t.id == *id_str) {
                 cdp_target_ids.push(id_str.clone());
@@ -281,6 +281,7 @@ async fn inject_favicon_observer(cdp: &mut DirectCdp, target_id: &str) -> Option
 }
 
 /// The background CDP watcher for title and favicon changes.
+#[allow(clippy::too_many_arguments)]
 async fn run_title_watcher(
     running: Arc<AtomicBool>,
     watched_targets: Vec<String>,
@@ -454,23 +455,23 @@ async fn run_title_watcher(
                 }
 
                 // If URL changed, the page navigated — re-inject favicon observer
-                if url != old_url && !old_url.is_empty() {
-                    if let Some(session_id) = session_to_target
+                if url != old_url
+                    && !old_url.is_empty()
+                    && let Some(session_id) = session_to_target
                         .iter()
                         .find(|(_, tid)| **tid == target_id)
                         .map(|(sid, _)| sid.clone())
-                    {
-                        // URL changed, re-injecting favicon observer
-                        // Small delay to let the page load
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        let _ = cdp
-                            .send_to_session(
-                                "Runtime.evaluate",
-                                json!({"expression": FAVICON_OBSERVER_JS}),
-                                &session_id,
-                            )
-                            .await;
-                    }
+                {
+                    // URL changed, re-injecting favicon observer
+                    // Small delay to let the page load
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let _ = cdp
+                        .send_to_session(
+                            "Runtime.evaluate",
+                            json!({"expression": FAVICON_OBSERVER_JS}),
+                            &session_id,
+                        )
+                        .await;
                 }
             }
 

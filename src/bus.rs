@@ -104,16 +104,15 @@ fn detect_agent_type() -> String {
             if name == "opencode" || name.starts_with("opencode-") {
                 return "opencode".into();
             }
-            if name == "node" {
-                if let Ok(args_out) = Command::new("ps")
+            if name == "node"
+                && let Ok(args_out) = Command::new("ps")
                     .args(["-o", "args=", "-p", &pid.to_string()])
                     .output()
-                {
-                    let args = String::from_utf8_lossy(&args_out.stdout).to_lowercase();
-                    for known in ["gemini", "opencode", "copilot"] {
-                        if args.contains(known) {
-                            return known.into();
-                        }
+            {
+                let args = String::from_utf8_lossy(&args_out.stdout).to_lowercase();
+                for known in ["gemini", "opencode", "copilot"] {
+                    if args.contains(known) {
+                        return known.into();
                     }
                 }
             }
@@ -357,4 +356,3 @@ pub fn check_outbound_timeouts(state: &SidekarBusState) -> Option<String> {
         Some(warnings.join("\n"))
     }
 }
-

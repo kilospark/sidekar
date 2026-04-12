@@ -35,7 +35,7 @@ pub fn try_log_error(source: &str, message: &str, details: Option<&str>) {
 /// Recent events, newest first. Filter by level if provided.
 pub fn events_recent(limit: usize, level: Option<&str>) -> Result<Vec<EventRow>> {
     let conn = open()?;
-    let lim = limit.min(500).max(1) as i64;
+    let lim = limit.clamp(1, 500) as i64;
     let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match level {
         Some(lvl) => (
             "SELECT id, created_at, level, source, message, details FROM events WHERE level = ?1 ORDER BY id DESC LIMIT ?2",

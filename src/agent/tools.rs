@@ -42,7 +42,7 @@ call with args=[\"help\",\"<command>\"].\n\n",
         out.push_str("## Command catalog\n");
         out.push_str(catalog);
         if !rules.is_empty() {
-            out.push_str("\n");
+            out.push('\n');
             out.push_str(rules);
         }
         out
@@ -74,8 +74,7 @@ pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "Bash".into(),
-            description:
-                "Execute a bash command and return its combined stdout+stderr. \
+            description: "Execute a bash command and return its combined stdout+stderr. \
 Use this for system/terminal operations that require a real shell — building, \
 running tests, git, network probes, and any command without a dedicated tool. \
 Do NOT use Bash for file reads (use Read), file writes (use Write), file \
@@ -83,7 +82,7 @@ edits (use Edit), filename search (use Glob), content search (use Grep), or \
 sidekar CLI calls (use Sidekar) — the dedicated tools are cheaper and safer. \
 Output is piped through sidekar's `rtk` compactor for known commands (git, \
 cargo, npm, etc.) to reduce token usage on noisy output."
-                    .into(),
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -101,19 +100,18 @@ cargo, npm, etc.) to reduce token usage on noisy output."
         },
         ToolDef {
             name: "Read".into(),
-            description:
-                "Read a UTF-8 text file from disk and return its contents with \
+            description: "Read a UTF-8 text file from disk and return its contents with \
 1-indexed line numbers. Use this instead of `bash cat`/`head`/`tail`. \
 Supports pagination: set `offset` to start at a specific line and `limit` to \
 cap how many lines are returned — useful for large files. Binary files will \
-be rejected. Paths must be absolute."
-                    .into(),
+be rejected. Paths may be absolute or relative to the current working directory."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute path to the file to read."
+                        "description": "Path to the file to read. Relative paths resolve from the current working directory."
                     },
                     "offset": {
                         "type": "integer",
@@ -129,18 +127,17 @@ be rejected. Paths must be absolute."
         },
         ToolDef {
             name: "Write".into(),
-            description:
-                "Write (or overwrite) a file with the given UTF-8 contents. \
+            description: "Write (or overwrite) a file with the given UTF-8 contents. \
 Creates parent directories as needed. Use this to create new files; prefer \
 Edit for modifying existing files so you don't clobber unrelated changes. \
-Paths must be absolute."
-                    .into(),
+Paths may be absolute or relative to the current working directory."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute path of the file to write."
+                        "description": "Path of the file to write. Relative paths resolve from the current working directory."
                     },
                     "content": {
                         "type": "string",
@@ -152,20 +149,19 @@ Paths must be absolute."
         },
         ToolDef {
             name: "Edit".into(),
-            description:
-                "Edit a file by replacing an exact string with a new string. \
+            description: "Edit a file by replacing an exact string with a new string. \
 Requires `old_string` to appear exactly once in the file (otherwise the edit \
 is rejected). For multiple occurrences, include enough surrounding context to \
 make `old_string` unique, or set `replace_all: true` to replace every \
 occurrence. Use this for targeted changes instead of rewriting the whole file \
 with Write."
-                    .into(),
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute path of the file to edit."
+                        "description": "Path of the file to edit. Relative paths resolve from the current working directory."
                     },
                     "old_string": {
                         "type": "string",
@@ -185,13 +181,12 @@ with Write."
         },
         ToolDef {
             name: "Glob".into(),
-            description:
-                "Find files by glob pattern (e.g. `src/**/*.rs`, `**/*.{ts,tsx}`). \
+            description: "Find files by glob pattern (e.g. `src/**/*.rs`, `**/*.{ts,tsx}`). \
 Walks the directory tree honoring .gitignore. Returns matching paths sorted \
 by recency (most recently modified first). Use this instead of `bash find` or \
 `bash ls` for filename search. Much faster than Grep when you only need to \
 know which files exist."
-                    .into(),
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -201,7 +196,7 @@ know which files exist."
                     },
                     "path": {
                         "type": "string",
-                        "description": "Directory to search (default: current working directory). Must be absolute when provided."
+                        "description": "Directory to search (default: current working directory). Relative paths resolve from the current working directory."
                     }
                 },
                 "required": ["pattern"]
@@ -209,14 +204,13 @@ know which files exist."
         },
         ToolDef {
             name: "Grep".into(),
-            description:
-                "Search file contents for a regular expression. Walks the tree \
+            description: "Search file contents for a regular expression. Walks the tree \
 honoring .gitignore and returns matching lines prefixed with `path:line:`. \
 Use this instead of `bash grep`/`bash rg` — it's already optimized and \
 respects sidekar's output cap. Filter by file extension with `glob` \
 (e.g. `*.rs`) or by directory with `path`. Returns at most 200 matches by \
 default — refine the pattern or narrow the scope if you need more."
-                    .into(),
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -387,11 +381,11 @@ fn exec_write(args: &Value) -> Result<String> {
         .and_then(|v| v.as_str())
         .context("write: missing 'content'")?;
 
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("write: cannot create parent dir for {path}"))?;
-        }
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("write: cannot create parent dir for {path}"))?;
     }
     std::fs::write(path, content).with_context(|| format!("write: cannot write {path}"))?;
     Ok(format!("Wrote {} bytes to {path}", content.len()))
@@ -605,7 +599,9 @@ async fn exec_sidekar(
         .unwrap_or(120)
         .min(600);
 
-    let mut cmd = tokio::process::Command::new("sidekar");
+    let sidekar_bin =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sidekar"));
+    let mut cmd = tokio::process::Command::new(sidekar_bin);
     cmd.kill_on_drop(true).args(&string_args);
     let output_future = cmd.output();
 

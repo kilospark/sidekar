@@ -150,10 +150,10 @@ pub fn kv_list(filter_tag: Option<&str>) -> Result<Vec<KvEntry>> {
     let mut rows = stmt.query(params![uid])?;
     while let Some(row) = rows.next()? {
         let entry = read_kv_entry(row)?;
-        if let Some(tag) = filter_tag {
-            if !entry.tags.iter().any(|t| t == tag) {
-                continue;
-            }
+        if let Some(tag) = filter_tag
+            && !entry.tags.iter().any(|t| t == tag)
+        {
+            continue;
         }
         out.push(entry);
     }

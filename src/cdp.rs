@@ -107,42 +107,42 @@ impl DirectCdp {
                 .parse_ws_message(msg.context("CDP websocket read error")?)?
                 .ok_or_else(|| anyhow!("WebSocket closed"))?;
 
-            if value.get("method").and_then(Value::as_str) == Some("Page.javascriptDialogOpening") {
-                if let Some((accept, prompt_text)) = &self.auto_dialog {
-                    let dialog_id = self.next_id;
-                    self.next_id += 1;
-                    let mut params = json!({ "accept": *accept });
-                    if !prompt_text.is_empty() {
-                        params["promptText"] = Value::String(prompt_text.clone());
-                    }
-                    let payload = json!({
-                        "id": dialog_id,
-                        "method": "Page.handleJavaScriptDialog",
-                        "params": params,
-                    });
-                    if let Err(e) = self
-                        .ws
-                        .send(Message::Text(payload.to_string().into()))
-                        .await
-                    {
-                        wlog!("failed auto-handling dialog: {e}");
-                    }
-                    let dialog_type = value
-                        .pointer("/params/type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("dialog");
-                    let msg_text = value
-                        .pointer("/params/message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    wlog!(
-                        "Auto-{}ed {}: \"{}\"",
-                        if *accept { "accept" } else { "dismiss" },
-                        dialog_type,
-                        msg_text
-                    );
-                    continue;
+            if value.get("method").and_then(Value::as_str) == Some("Page.javascriptDialogOpening")
+                && let Some((accept, prompt_text)) = &self.auto_dialog
+            {
+                let dialog_id = self.next_id;
+                self.next_id += 1;
+                let mut params = json!({ "accept": *accept });
+                if !prompt_text.is_empty() {
+                    params["promptText"] = Value::String(prompt_text.clone());
                 }
+                let payload = json!({
+                    "id": dialog_id,
+                    "method": "Page.handleJavaScriptDialog",
+                    "params": params,
+                });
+                if let Err(e) = self
+                    .ws
+                    .send(Message::Text(payload.to_string().into()))
+                    .await
+                {
+                    wlog!("failed auto-handling dialog: {e}");
+                }
+                let dialog_type = value
+                    .pointer("/params/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("dialog");
+                let msg_text = value
+                    .pointer("/params/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                wlog!(
+                    "Auto-{}ed {}: \"{}\"",
+                    if *accept { "accept" } else { "dismiss" },
+                    dialog_type,
+                    msg_text
+                );
+                continue;
             }
 
             if value.get("id").and_then(Value::as_u64) == Some(id) {
@@ -224,6 +224,7 @@ impl Drop for DirectCdp {
 
 /// Unified CDP handle. Commands use this type; the connection may be
 /// a direct WebSocket or proxied through the sidekar daemon.
+#[allow(clippy::large_enum_variant)]
 pub enum CdpClient {
     Direct(DirectCdp),
     Proxied(cdp_proxy::DaemonCdpProxy),

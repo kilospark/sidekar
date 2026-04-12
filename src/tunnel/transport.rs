@@ -171,8 +171,8 @@ async fn io_loop(
                         let _ = evt_tx.try_send(TunnelEvent::Data(data.into()));
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                            if v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+                            && v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
                                 let body_str = v
                                     .get("body")
                                     .and_then(|b| b.as_str())
@@ -196,7 +196,6 @@ async fn io_loop(
                                     let _ = evt_tx.try_send(TunnelEvent::BusPlain(body_str));
                                 }
                             }
-                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_sink.send(Message::Pong(data)).await;

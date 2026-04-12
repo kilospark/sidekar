@@ -11,16 +11,16 @@ pub use keys::*;
 pub fn parse_coordinates(args: &[String]) -> Option<(f64, f64)> {
     if args.len() == 1 {
         let arg = args[0].trim();
-        if let Some((x, y)) = arg.split_once(',') {
-            if let (Ok(xv), Ok(yv)) = (x.parse::<f64>(), y.parse::<f64>()) {
-                return Some((xv, yv));
-            }
+        if let Some((x, y)) = arg.split_once(',')
+            && let (Ok(xv), Ok(yv)) = (x.parse::<f64>(), y.parse::<f64>())
+        {
+            return Some((xv, yv));
         }
     }
-    if args.len() == 2 {
-        if let (Ok(x), Ok(y)) = (args[0].parse::<f64>(), args[1].parse::<f64>()) {
-            return Some((x, y));
-        }
+    if args.len() == 2
+        && let (Ok(x), Ok(y)) = (args[0].parse::<f64>(), args[1].parse::<f64>())
+    {
+        return Some((x, y));
     }
     None
 }
@@ -44,12 +44,12 @@ pub fn adjust_coords_for_zoom(ctx: &crate::AppContext, x: f64, y: f64) -> (f64, 
 
 pub fn console_arg_to_text(arg: &Value) -> String {
     arg.get("value")
-        .and_then(|v| match v {
-            Value::String(s) => Some(s.clone()),
-            Value::Number(n) => Some(n.to_string()),
-            Value::Bool(b) => Some(b.to_string()),
-            Value::Null => Some("null".to_string()),
-            _ => Some(v.to_string()),
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Null => "null".to_string(),
+            _ => v.to_string(),
         })
         .or_else(|| {
             arg.get("description")
@@ -225,7 +225,7 @@ fn unix_epoch_days_to_ymd(mut days: u64) -> (u32, u32, u32) {
 }
 
 fn year_is_leap(y: u32) -> bool {
-    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
+    y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
 }
 
 pub fn human_size(size: u64) -> String {
@@ -275,21 +275,20 @@ end tell"#,
 
 fn activate_browser_linux(browser_name: &str) -> Result<()> {
     // Try wmctrl first (more reliable for raising + focusing)
-    if let Ok(output) = Command::new("wmctrl").args(["-a", browser_name]).output() {
-        if output.status.success() {
-            return Ok(());
-        }
+    if let Ok(output) = Command::new("wmctrl").args(["-a", browser_name]).output()
+        && output.status.success()
+    {
+        return Ok(());
     }
     // Fallback: xdotool search by name, activate first match
     if let Ok(output) = Command::new("xdotool")
         .args(["search", "--name", browser_name])
         .output()
+        && let Some(wid) = String::from_utf8_lossy(&output.stdout).lines().next()
     {
-        if let Some(wid) = String::from_utf8_lossy(&output.stdout).lines().next() {
-            let _ = Command::new("xdotool")
-                .args(["windowactivate", wid])
-                .output();
-        }
+        let _ = Command::new("xdotool")
+            .args(["windowactivate", wid])
+            .output();
     }
     Ok(())
 }

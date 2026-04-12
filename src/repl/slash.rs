@@ -1,5 +1,5 @@
-use super::*;
 use super::renderer::EventRenderer;
+use super::*;
 
 // ---------------------------------------------------------------------------
 // Slash commands
@@ -303,6 +303,7 @@ pub(super) enum SlashAction {
 }
 
 /// Apply a `SlashResult` to mutable REPL state. Returns control flow instruction.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn apply_slash_result(
     result: SlashResult,
     provider: &mut Option<Provider>,
@@ -383,9 +384,7 @@ pub(super) async fn apply_slash_result(
             *model = Some(name.clone());
             tunnel_println(&format!("Model set: \x1b[1m{name}\x1b[0m"));
             if provider.is_none() {
-                tunnel_println(
-                    "\x1b[2mUse /credential <name> to set a credential first.\x1b[0m",
-                );
+                tunnel_println("\x1b[2mUse /credential <name> to set a credential first.\x1b[0m");
             }
         }
         SlashResult::RelayOn => {
@@ -480,14 +479,14 @@ pub(super) async fn interactive_select_model(
                 tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
             }
             return None;
-        } else if let Ok(idx) = choice.parse::<usize>() {
-            if let Some(m) = models.get(idx) {
-                tunnel_println(&format!(
-                    "\x1b[32mModel set: {} \x1b[0m({})",
-                    m.id, m.display_name
-                ));
-                return Some(m.id.clone());
-            }
+        } else if let Ok(idx) = choice.parse::<usize>()
+            && let Some(m) = models.get(idx)
+        {
+            tunnel_println(&format!(
+                "\x1b[32mModel set: {} \x1b[0m({})",
+                m.id, m.display_name
+            ));
+            return Some(m.id.clone());
         }
         tunnel_println("Invalid selection.");
     }
@@ -502,23 +501,14 @@ pub(super) async fn run_compact(
     session_id: &str,
 ) {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let renderer = std::sync::Arc::new(std::sync::Mutex::new(
-        EventRenderer::new(cancel.clone()),
-    ));
+    let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
     let renderer_for_events = renderer.clone();
-    let on_event: crate::agent::StreamCallback =
-        Box::new(move |event: &StreamEvent| {
-            if let Ok(mut guard) = renderer_for_events.lock() {
-                guard.render(event);
-            }
-        });
-    let changed = crate::agent::compaction::compact_now(
-        prov,
-        mdl,
-        history,
-        &on_event,
-    )
-    .await;
+    let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
+        if let Ok(mut guard) = renderer_for_events.lock() {
+            guard.render(event);
+        }
+    });
+    let changed = crate::agent::compaction::compact_now(prov, mdl, history, &on_event).await;
     if let Ok(mut guard) = renderer.lock() {
         guard.teardown();
     }

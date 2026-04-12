@@ -121,20 +121,18 @@ pub fn build_user_turn_content(
         if trimmed.is_empty() {
             return Ok(vec![]);
         }
-        if !trimmed.contains('\n') {
-            if let Some(pb) = normalize_pasted_path(trimmed) {
-                if std::fs::metadata(&pb).map(|m| m.len()).unwrap_or(0) <= MAX_IMAGE_BYTES
-                    && image::image_dimensions(&pb).is_ok()
-                {
-                    let img = read_image_block(&pb)?;
-                    return Ok(vec![
-                        ContentBlock::Text {
-                            text: format!("Attached image: {}", pb.display()),
-                        },
-                        img,
-                    ]);
-                }
-            }
+        if !trimmed.contains('\n')
+            && let Some(pb) = normalize_pasted_path(trimmed)
+            && std::fs::metadata(&pb).map(|m| m.len()).unwrap_or(0) <= MAX_IMAGE_BYTES
+            && image::image_dimensions(&pb).is_ok()
+        {
+            let img = read_image_block(&pb)?;
+            return Ok(vec![
+                ContentBlock::Text {
+                    text: format!("Attached image: {}", pb.display()),
+                },
+                img,
+            ]);
         }
         return Ok(vec![ContentBlock::Text {
             text: text.to_string(),

@@ -30,7 +30,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "event",
-        "<list|clear> [--level=error|debug|info] [N]",
+        "<list|clear> [--level=error|debug|info] [N|--limit=N]",
         "View or clear the local event log",
         CommandGroup::System,
         false,

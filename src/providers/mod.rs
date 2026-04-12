@@ -1016,6 +1016,7 @@ impl Provider {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn stream(
         &self,
         model: &str,
@@ -1067,6 +1068,7 @@ impl Provider {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn stream_once(
         &self,
         model: &str,

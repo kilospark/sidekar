@@ -368,7 +368,7 @@ pub(crate) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                             req.response_size = params
                                 .pointer("/response/encodedDataLength")
                                 .and_then(Value::as_i64);
-                            req.time_ms = Some(now_epoch_ms() - start - req.time.max(0) as i64);
+                            req.time_ms = Some(now_epoch_ms() - start - req.time.max(0));
                         }
                     }
                     _ => {}

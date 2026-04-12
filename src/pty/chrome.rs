@@ -28,30 +28,30 @@ pub(crate) async fn watch_session_file(agent_name: String) {
 
         // Read session state to get CDP port
         let state_file = data_dir.join(format!("state-{contents}.json"));
-        if let Ok(state_str) = std::fs::read_to_string(&state_file) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&state_str) {
-                let port = state.get("port").and_then(|v| v.as_u64()).unwrap_or(9222) as u16;
-                let host = state
-                    .get("host")
+        if let Ok(state_str) = std::fs::read_to_string(&state_file)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&state_str)
+        {
+            let port = state.get("port").and_then(|v| v.as_u64()).unwrap_or(9222) as u16;
+            let host = state
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("127.0.0.1")
+                .to_string();
+            let cron_ctx = crate::commands::cron::CronContext {
+                cdp_port: port,
+                cdp_host: host,
+                current_session_id: Some(contents.clone()),
+                current_profile: state
+                    .get("profile")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("127.0.0.1")
-                    .to_string();
-                let cron_ctx = crate::commands::cron::CronContext {
-                    cdp_port: port,
-                    cdp_host: host,
-                    current_session_id: Some(contents.clone()),
-                    current_profile: state
-                        .get("profile")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("default")
-                        .to_string(),
-                    headless: false,
-                    agent_name: Some(agent_name.clone()),
-                    project: crate::scope::resolve_project_name(None),
-                };
-                crate::commands::cron::update_cron_context(cron_ctx).await;
-                // silent — don't print to the pty terminal
-            }
+                    .unwrap_or("default")
+                    .to_string(),
+                headless: false,
+                agent_name: Some(agent_name.clone()),
+                project: crate::scope::resolve_project_name(None),
+            };
+            crate::commands::cron::update_cron_context(cron_ctx).await;
+            // silent — don't print to the pty terminal
         }
     }
 }

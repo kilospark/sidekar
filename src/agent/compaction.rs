@@ -20,7 +20,9 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
-                    ContentBlock::EncryptedReasoning { encrypted_content, .. } => {
+                    ContentBlock::EncryptedReasoning {
+                        encrypted_content, ..
+                    } => {
                         encrypted_content.len() * 3 / 4 // base64 → ~75% raw bytes
                     }
                 })

@@ -3,6 +3,7 @@ use super::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn cmd_cron_create(
     ctx: &mut AppContext,
     schedule_expr: &str,
@@ -19,26 +20,26 @@ pub(crate) async fn cmd_cron_create(
     let action_parsed: CronAction = serde_json::from_value(action.clone())
         .context("Invalid action: must have 'tool', 'batch', 'command', or 'prompt' field")?;
 
-    if let CronAction::Tool { ref tool, .. } = action_parsed {
-        if matches!(
+    if let CronAction::Tool { ref tool, .. } = action_parsed
+        && matches!(
             tool.as_str(),
             "cron-create" | "cron-delete" | "kill" | "uninstall"
-        ) {
-            bail!("Tool '{tool}' cannot be used in cron actions");
-        }
+        )
+    {
+        bail!("Tool '{tool}' cannot be used in cron actions");
     }
-    if let CronAction::Bash { ref command } = action_parsed {
-        if command.trim().is_empty() {
-            bail!("Bash command cannot be empty");
-        }
+    if let CronAction::Bash { ref command } = action_parsed
+        && command.trim().is_empty()
+    {
+        bail!("Bash command cannot be empty");
     }
     if crate::runtime::cron_depth() > 0 {
         bail!("Cannot create cron/loop jobs from within a cron action (prevents self-replication)");
     }
-    if let CronAction::Prompt { ref prompt } = action_parsed {
-        if prompt.trim().is_empty() {
-            bail!("Prompt text cannot be empty");
-        }
+    if let CronAction::Prompt { ref prompt } = action_parsed
+        && prompt.trim().is_empty()
+    {
+        bail!("Prompt text cannot be empty");
     }
 
     let effective_target = normalize_cron_target(target, created_by)?;

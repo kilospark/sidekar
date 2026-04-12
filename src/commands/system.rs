@@ -23,19 +23,10 @@ fn cmd_event(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
-            let mut limit = 50usize;
-            let mut level_filter: Option<&str> = None;
-            let json_output = args.iter().any(|a| a == "--json");
-            for arg in args.iter().skip(1) {
-                if let Some(lvl) = arg.strip_prefix("--level=") {
-                    level_filter = Some(lvl);
-                } else if let Ok(n) = arg.parse::<usize>() {
-                    limit = n;
-                }
-            }
-            let rows = crate::broker::events_recent(limit, level_filter)?;
+            let options = parse_event_list_options(args)?;
+            let rows = crate::broker::events_recent(options.limit, options.level_filter)?;
 
-            if json_output {
+            if options.json_output {
                 let items: Vec<serde_json::Value> = rows
                     .iter()
                     .map(|r| {
@@ -82,12 +73,79 @@ fn cmd_event(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         "clear" => {
-            let level_filter = args.iter().skip(1).find_map(|a| a.strip_prefix("--level="));
+            let level_filter = parse_event_clear_level(args)?;
             let deleted = crate::broker::events_clear(level_filter)?;
             out!(ctx, "Deleted {deleted} events.");
             Ok(())
         }
         _ => bail!("Unknown subcommand: event {sub}. Use: event list, event clear"),
+    }
+}
+
+#[derive(Debug)]
+struct EventListOptions<'a> {
+    limit: usize,
+    level_filter: Option<&'a str>,
+    json_output: bool,
+}
+
+fn parse_event_list_options(args: &[String]) -> Result<EventListOptions<'_>> {
+    let mut options = EventListOptions {
+        limit: 50,
+        level_filter: None,
+        json_output: false,
+    };
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" => options.json_output = true,
+            "--limit" => {
+                let value = iter.next().context(
+                    "Usage: sidekar event list [--level=error|debug|info] [N|--limit=N]",
+                )?;
+                options.limit = parse_event_limit(value)?;
+            }
+            _ if arg.starts_with("--limit=") => {
+                let value = arg.trim_start_matches("--limit=");
+                options.limit = parse_event_limit(value)?;
+            }
+            _ if arg.starts_with("--level=") => {
+                let level = arg.trim_start_matches("--level=");
+                options.level_filter = Some(parse_event_level(level)?);
+            }
+            _ if arg.starts_with("--") => bail!("Unknown option for event list: {arg}"),
+            _ => options.limit = parse_event_limit(arg)?,
+        }
+    }
+    Ok(options)
+}
+
+fn parse_event_clear_level(args: &[String]) -> Result<Option<&str>> {
+    let mut level_filter = None;
+    for arg in args.iter().skip(1) {
+        if let Some(level) = arg.strip_prefix("--level=") {
+            level_filter = Some(parse_event_level(level)?);
+        } else {
+            bail!("Unknown option for event clear: {arg}");
+        }
+    }
+    Ok(level_filter)
+}
+
+fn parse_event_limit(value: &str) -> Result<usize> {
+    let limit = value
+        .parse::<usize>()
+        .with_context(|| format!("Invalid event limit: {value}"))?;
+    if limit == 0 {
+        bail!("Invalid event limit: {value}");
+    }
+    Ok(limit)
+}
+
+fn parse_event_level(level: &str) -> Result<&str> {
+    match level {
+        "debug" | "info" | "error" => Ok(level),
+        _ => bail!("Invalid event level: {level}. Use one of: debug, info, error"),
     }
 }
 
@@ -356,10 +414,10 @@ fn extract_usage_from_sse(body: &[u8]) -> Option<serde_json::Value> {
         let Some(data) = line.strip_prefix("data: ") else {
             continue;
         };
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
-            if val.get("usage").is_some() {
-                last_usage = val.get("usage").cloned();
-            }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(data)
+            && val.get("usage").is_some()
+        {
+            last_usage = val.get("usage").cloned();
         }
     }
     last_usage
@@ -382,10 +440,10 @@ fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
         if let Some(msgs) = req_json.get("messages").and_then(|v| v.as_array()) {
             lines.push(format!("Messages: {}", msgs.len()));
         }
-        if let Some(tools) = req_json.get("tools").and_then(|v| v.as_array()) {
-            if !tools.is_empty() {
-                lines.push(format!("Tools: {}", tools.len()));
-            }
+        if let Some(tools) = req_json.get("tools").and_then(|v| v.as_array())
+            && !tools.is_empty()
+        {
+            lines.push(format!("Tools: {}", tools.len()));
         }
     }
 
@@ -458,4 +516,60 @@ fn cmd_proxy_clear(ctx: &mut AppContext) -> Result<()> {
     let count = crate::broker::proxy_log_clear()?;
     out!(ctx, "Deleted {count} proxy log entries.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn event_list_accepts_positional_limit_and_json() {
+        let args = args(&["list", "--json", "--level=debug", "10"]);
+
+        let options = parse_event_list_options(&args).unwrap();
+
+        assert_eq!(options.limit, 10);
+        assert_eq!(options.level_filter, Some("debug"));
+        assert!(options.json_output);
+    }
+
+    #[test]
+    fn event_list_accepts_limit_flag() {
+        let args = args(&["list", "--limit=1"]);
+
+        let options = parse_event_list_options(&args).unwrap();
+
+        assert_eq!(options.limit, 1);
+    }
+
+    #[test]
+    fn event_list_rejects_unknown_option() {
+        let args = args(&["list", "--bogus"]);
+
+        let err = parse_event_list_options(&args).unwrap_err().to_string();
+
+        assert!(err.contains("Unknown option for event list: --bogus"));
+    }
+
+    #[test]
+    fn event_list_rejects_invalid_level() {
+        let args = args(&["list", "--level=warn"]);
+
+        let err = parse_event_list_options(&args).unwrap_err().to_string();
+
+        assert!(err.contains("Invalid event level: warn"));
+    }
+
+    #[test]
+    fn event_clear_rejects_unknown_option() {
+        let args = args(&["clear", "10"]);
+
+        let err = parse_event_clear_level(&args).unwrap_err().to_string();
+
+        assert!(err.contains("Unknown option for event clear: 10"));
+    }
 }

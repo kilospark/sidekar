@@ -12,14 +12,14 @@ pub fn find_free_port() -> Result<u16> {
 }
 
 pub fn find_browser() -> Option<BrowserCandidate> {
-    if let Ok(chrome_path) = env::var("CHROME_PATH") {
-        if Path::new(&chrome_path).exists() {
-            let name = app_name_from_path(&chrome_path);
-            return Some(BrowserCandidate {
-                path: chrome_path,
-                name,
-            });
-        }
+    if let Ok(chrome_path) = env::var("CHROME_PATH")
+        && Path::new(&chrome_path).exists()
+    {
+        let name = app_name_from_path(&chrome_path);
+        return Some(BrowserCandidate {
+            path: chrome_path,
+            name,
+        });
     }
 
     for (path, name) in all_browser_candidates() {

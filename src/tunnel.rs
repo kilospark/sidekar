@@ -50,7 +50,7 @@ pub fn clear_output_tunnel() {
 
 /// Returns true if a tunnel sender is currently registered.
 pub fn has_output_tunnel() -> bool {
-    OUTPUT_TUNNEL.lock().ok().map_or(false, |g| g.is_some())
+    OUTPUT_TUNNEL.lock().ok().is_some_and(|g| g.is_some())
 }
 
 /// Print a line to stdout and, if a tunnel is registered, to web viewers.
@@ -85,6 +85,7 @@ fn relay_url() -> String {
 
 /// Events received from the relay, delivered to the PTY event loop.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TunnelEvent {
     /// Raw bytes from a browser viewer (keyboard input).
     Data(Vec<u8>),

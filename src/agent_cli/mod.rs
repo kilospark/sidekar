@@ -22,8 +22,34 @@ pub trait AgentCliSpec: Send + Sync {
     fn proxy_env_flags(&self, invoked_as: &str) -> ProxyEnvFlags;
 }
 
-fn enrich_claude_codex_style(args: &[String]) -> Vec<String> {
-    let has_positional = args.iter().any(|a| !a.starts_with('-'));
+fn skip_option_arg(args: &[String], i: usize, value_flags: &[&str]) -> usize {
+    let arg = args[i].as_str();
+    if !arg.starts_with('-') || arg == "-" {
+        return i;
+    }
+    if arg.contains('=') {
+        return i + 1;
+    }
+    if value_flags.contains(&arg) && i + 1 < args.len() {
+        return i + 2;
+    }
+    i + 1
+}
+
+fn has_positional(args: &[String], value_flags: &[&str]) -> bool {
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i].starts_with('-') && args[i] != "-" {
+            i = skip_option_arg(args, i, value_flags);
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+fn enrich_with_startup_prompt(args: &[String], value_flags: &[&str]) -> Vec<String> {
+    let has_positional = has_positional(args, value_flags);
     let mut out = args.to_vec();
     if !has_positional {
         out.push(STARTUP_INJECT.to_string());
@@ -40,7 +66,47 @@ impl AgentCliSpec for Claude {
 
     fn enrich_startup(&self, invoked_as: &str, args: &[String]) -> Vec<String> {
         debug_assert_eq!(invoked_as, "claude");
-        enrich_claude_codex_style(args)
+        enrich_with_startup_prompt(
+            args,
+            &[
+                "--add-dir",
+                "--agent",
+                "--agents",
+                "--allowedTools",
+                "--allowed-tools",
+                "--append-system-prompt",
+                "--betas",
+                "-d",
+                "--debug",
+                "--debug-file",
+                "--disallowedTools",
+                "--disallowed-tools",
+                "--effort",
+                "--fallback-model",
+                "--file",
+                "--from-pr",
+                "--json-schema",
+                "--max-budget-usd",
+                "--mcp-config",
+                "--model",
+                "-m",
+                "-n",
+                "--name",
+                "--output-format",
+                "--permission-mode",
+                "--plugin-dir",
+                "-r",
+                "--resume",
+                "--remote-control-session-name-prefix",
+                "--session-id",
+                "--setting-sources",
+                "--settings",
+                "--system-prompt",
+                "--tools",
+                "-w",
+                "--worktree",
+            ],
+        )
     }
 
     fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
@@ -62,7 +128,31 @@ impl AgentCliSpec for Codex {
 
     fn enrich_startup(&self, invoked_as: &str, args: &[String]) -> Vec<String> {
         debug_assert_eq!(invoked_as, "codex");
-        enrich_claude_codex_style(args)
+        enrich_with_startup_prompt(
+            args,
+            &[
+                "-a",
+                "--add-dir",
+                "--ask-for-approval",
+                "-c",
+                "--config",
+                "-C",
+                "--cd",
+                "--disable",
+                "--enable",
+                "-i",
+                "--image",
+                "--local-provider",
+                "-m",
+                "--model",
+                "-p",
+                "--profile",
+                "--remote",
+                "--remote-auth-token-env",
+                "-s",
+                "--sandbox",
+            ],
+        )
     }
 
     fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
@@ -86,7 +176,32 @@ impl AgentCliSpec for Gemini {
 
     fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
         debug_assert_eq!(invoked_as, "gemini");
-        let has_positional = user_args.iter().any(|a| !a.starts_with('-'));
+        let has_positional = has_positional(
+            user_args,
+            &[
+                "-m",
+                "--model",
+                "-p",
+                "--prompt",
+                "-i",
+                "--prompt-interactive",
+                "-w",
+                "--worktree",
+                "--approval-mode",
+                "--policy",
+                "--admin-policy",
+                "--allowed-mcp-server-names",
+                "--allowed-tools",
+                "-e",
+                "--extensions",
+                "-r",
+                "--resume",
+                "--delete-session",
+                "--include-directories",
+                "-o",
+                "--output-format",
+            ],
+        );
         let has_flag = |flags: &[&str]| -> bool {
             user_args.iter().any(|a| {
                 flags
@@ -182,7 +297,7 @@ pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
     REGISTRY
         .iter()
         .copied()
-        .find(|s| s.ids().iter().any(|&id| id == invoked_as))
+        .find(|s| s.ids().contains(&invoked_as))
 }
 
 /// True when `sidekar <name> …` should PTY-wrap this binary.

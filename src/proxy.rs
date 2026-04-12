@@ -272,18 +272,13 @@ pub fn cleanup_ca_file(ca_path: &std::path::Path) {
 }
 
 async fn accept_loop(listener: TcpListener, state: Arc<ProxyState>) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let st = state.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(st, stream).await {
-                        crate::broker::try_log_error("proxy", &format!("{e:#}"), None);
-                    }
-                });
+    while let Ok((stream, _)) = listener.accept().await {
+        let st = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(st, stream).await {
+                crate::broker::try_log_error("proxy", &format!("{e:#}"), None);
             }
-            Err(_) => break,
-        }
+        });
     }
 }
 

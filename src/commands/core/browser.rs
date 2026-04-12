@@ -46,14 +46,14 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         if let Ok(saved_port) = saved.trim().parse::<u16>() {
             ctx.cdp_port = saved_port;
             if get_debug_tabs(ctx).await.is_ok() {
-                if profile == "default" {
-                    if let Some(ref wanted) = preferred_browser {
-                        let running = detect_browser_from_port(ctx).await.unwrap_or_default();
-                        if !running.to_lowercase().contains(&wanted.to_lowercase()) {
-                            bail!(
-                                "Default browser already running ({running}). Use --profile <name> to launch a separate {wanted} instance."
-                            );
-                        }
+                if profile == "default"
+                    && let Some(ref wanted) = preferred_browser
+                {
+                    let running = detect_browser_from_port(ctx).await.unwrap_or_default();
+                    if !running.to_lowercase().contains(&wanted.to_lowercase()) {
+                        bail!(
+                            "Default browser already running ({running}). Use --profile <name> to launch a separate {wanted} instance."
+                        );
                     }
                 }
                 ctx.headless = headless;
@@ -186,22 +186,20 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
         );
     }
 
-    if let Ok(tabs) = get_debug_tabs(ctx).await {
-        if let Some(tab) = tabs.first() {
-            if let Some(ref ws_url) = tab.web_socket_debugger_url {
-                if let Ok(mut cdp) = DirectCdp::connect(ws_url).await {
-                    let _ = cdp
-                        .send(
-                            "Page.addScriptToEvaluateOnNewDocument",
-                            json!({
-                                "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
-                            }),
-                        )
-                        .await;
-                    cdp.close().await;
-                }
-            }
-        }
+    if let Ok(tabs) = get_debug_tabs(ctx).await
+        && let Some(tab) = tabs.first()
+        && let Some(ref ws_url) = tab.web_socket_debugger_url
+        && let Ok(mut cdp) = DirectCdp::connect(ws_url).await
+    {
+        let _ = cdp
+            .send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({
+                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+                }),
+            )
+            .await;
+        cdp.close().await;
     }
 
     let initial_tabs: Vec<String> = get_debug_tabs(ctx)
@@ -249,18 +247,18 @@ pub(crate) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
         (create_new_tab(ctx, None).await?, false)
     };
 
-    if let Some(ref ws_url) = new_tab.web_socket_debugger_url {
-        if let Ok(mut cdp) = DirectCdp::connect(ws_url).await {
-            let _ = cdp
-                .send(
-                    "Page.addScriptToEvaluateOnNewDocument",
-                    json!({
-                        "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
-                    }),
-                )
-                .await;
-            cdp.close().await;
-        }
+    if let Some(ref ws_url) = new_tab.web_socket_debugger_url
+        && let Ok(mut cdp) = DirectCdp::connect(ws_url).await
+    {
+        let _ = cdp
+            .send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({
+                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+                }),
+            )
+            .await;
+        cdp.close().await;
     }
 
     let window_id = if has_own_window {
@@ -317,15 +315,15 @@ pub(crate) async fn cmd_kill(ctx: &mut AppContext) -> Result<()> {
     }
 
     let port_file = ctx.chrome_port_file_for(&profile);
-    if let Ok(port_str) = fs::read_to_string(&port_file) {
-        if let Ok(port) = port_str.trim().parse::<u16>() {
-            let old_port = ctx.cdp_port;
-            ctx.cdp_port = port;
-            if let Ok(mut cdp) = open_cdp(ctx).await {
-                let _ = cdp.send("Browser.close", json!({})).await;
-            }
-            ctx.cdp_port = old_port;
+    if let Ok(port_str) = fs::read_to_string(&port_file)
+        && let Ok(port) = port_str.trim().parse::<u16>()
+    {
+        let old_port = ctx.cdp_port;
+        ctx.cdp_port = port;
+        if let Ok(mut cdp) = open_cdp(ctx).await {
+            let _ = cdp.send("Browser.close", json!({})).await;
         }
+        ctx.cdp_port = old_port;
     }
 
     let _ = fs::remove_file(&port_file);
@@ -438,18 +436,18 @@ pub(crate) async fn cmd_new_tab(ctx: &mut AppContext, url: Option<&str>) -> Resu
     }
     let new_tab = create_new_tab(ctx, url).await?;
 
-    if let Some(ref ws_url) = new_tab.web_socket_debugger_url {
-        if let Ok(mut cdp) = DirectCdp::connect(ws_url).await {
-            let _ = cdp
-                .send(
-                    "Page.addScriptToEvaluateOnNewDocument",
-                    json!({
-                        "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
-                    }),
-                )
-                .await;
-            cdp.close().await;
-        }
+    if let Some(ref ws_url) = new_tab.web_socket_debugger_url
+        && let Ok(mut cdp) = DirectCdp::connect(ws_url).await
+    {
+        let _ = cdp
+            .send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({
+                    "source": "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+                }),
+            )
+            .await;
+        cdp.close().await;
     }
 
     state.tabs.push(new_tab.id.clone());

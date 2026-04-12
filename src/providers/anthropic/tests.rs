@@ -41,7 +41,11 @@ fn build_request_body_places_cache_on_last_tool_when_tools_present() {
                 text: "latest".to_string(),
             }],
         }],
-        &[sample_tool("bash"), sample_tool("read"), sample_tool("write")],
+        &[
+            sample_tool("bash"),
+            sample_tool("read"),
+            sample_tool("write"),
+        ],
         &test_config(),
         false,
     );

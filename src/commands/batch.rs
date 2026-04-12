@@ -282,10 +282,10 @@ fn build_action_args(tool: &str, action: &Value) -> Vec<String> {
         "screenshot" => {
             if let Some(r) = action.get("ref").and_then(Value::as_i64) {
                 args.push(format!("--ref={r}"));
-            } else if let Some(sel) = action.get("selector").and_then(Value::as_str) {
-                if !sel.is_empty() {
-                    args.push(format!("--selector={sel}"));
-                }
+            } else if let Some(sel) = action.get("selector").and_then(Value::as_str)
+                && !sel.is_empty()
+            {
+                args.push(format!("--selector={sel}"));
             }
             if let Some(s) = action.get("scale").and_then(Value::as_f64) {
                 args.push(format!("--scale={s}"));
@@ -293,10 +293,10 @@ fn build_action_args(tool: &str, action: &Value) -> Vec<String> {
             if action.get("full").and_then(Value::as_bool).unwrap_or(false) {
                 args.push("--full".to_string());
             }
-            if let Some(o) = action.get("output").and_then(Value::as_str) {
-                if !o.is_empty() {
-                    args.push(format!("--output={o}"));
-                }
+            if let Some(o) = action.get("output").and_then(Value::as_str)
+                && !o.is_empty()
+            {
+                args.push(format!("--output={o}"));
             }
         }
         "scroll" => {
@@ -346,15 +346,15 @@ fn build_action_args(tool: &str, action: &Value) -> Vec<String> {
             }
         }
         "read" | "text" | "dom" => {
-            if let Some(sel) = action.get("selector").and_then(Value::as_str) {
-                if !sel.is_empty() {
-                    args.push(sel.to_string());
-                }
+            if let Some(sel) = action.get("selector").and_then(Value::as_str)
+                && !sel.is_empty()
+            {
+                args.push(sel.to_string());
             }
-            if let Some(tokens) = action.get("max_tokens").and_then(Value::as_i64) {
-                if tokens > 0 {
-                    args.push(format!("--tokens={tokens}"));
-                }
+            if let Some(tokens) = action.get("max_tokens").and_then(Value::as_i64)
+                && tokens > 0
+            {
+                args.push(format!("--tokens={tokens}"));
             }
         }
         "axtree" => {

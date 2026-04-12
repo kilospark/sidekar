@@ -214,10 +214,10 @@ pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
     }
 
     // 2. Environment variable
-    if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
-        if !key.is_empty() {
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
+        && !key.is_empty()
+    {
+        return Ok(key);
     }
 
     // 3. Interactive prompt
@@ -257,10 +257,10 @@ pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
     }
 
     // 2. Environment variable
-    if let Ok(key) = std::env::var("OPENCODE_API_KEY") {
-        if !key.is_empty() {
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var("OPENCODE_API_KEY")
+        && !key.is_empty()
+    {
+        return Ok(key);
     }
 
     // 3. Interactive prompt — open browser to auth page
@@ -290,6 +290,7 @@ pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
 }
 
 /// Generic token retrieval: stored creds → env var → error (or interactive login if `interactive`).
+#[allow(clippy::type_complexity)]
 async fn get_token(
     kv_key: &str,
     env_var: &str,
@@ -324,10 +325,10 @@ async fn get_token(
     }
 
     // 2. Environment variable fallback
-    if let Ok(key) = std::env::var(env_var) {
-        if !key.is_empty() {
-            return Ok(key);
-        }
+    if let Ok(key) = std::env::var(env_var)
+        && !key.is_empty()
+    {
+        return Ok(key);
     }
 
     // 3. Interactive login (only during `repl login`) or fail
@@ -569,6 +570,7 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
 // Generic PKCE OAuth flow (shared by both providers)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn pkce_login(
     client_id: &str,
     authorize_url: &str,

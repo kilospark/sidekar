@@ -153,10 +153,10 @@ pub(crate) async fn cmd_frame(
                 found =
                     find_frame_in_tree(tree.get("frameTree").unwrap_or(&Value::Null), name_or_id);
             }
-            if found.is_none() {
-                if let Some(src) = info_val.get("src").and_then(Value::as_str) {
-                    found = find_frame_by_url(tree.get("frameTree").unwrap_or(&Value::Null), src);
-                }
+            if found.is_none()
+                && let Some(src) = info_val.get("src").and_then(Value::as_str)
+            {
+                found = find_frame_by_url(tree.get("frameTree").unwrap_or(&Value::Null), src);
             }
         }
     }

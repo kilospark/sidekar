@@ -146,12 +146,12 @@ pub fn is_first_run() -> bool {
 
 /// Get a single config value, returning the default if not set.
 pub fn config_get(key: &str) -> String {
-    if let Ok(conn) = crate::broker::open_db() {
-        if let Ok(val) = conn.query_row("SELECT value FROM config WHERE key = ?1", [key], |r| {
+    if let Ok(conn) = crate::broker::open_db()
+        && let Ok(val) = conn.query_row("SELECT value FROM config WHERE key = ?1", [key], |r| {
             r.get::<_, String>(0)
-        }) {
-            return val;
-        }
+        })
+    {
+        return val;
     }
     // Return default
     find_key(key)
@@ -179,15 +179,13 @@ pub fn config_delete(key: &str) -> Result<()> {
 /// Get all config values (including defaults for unset keys).
 pub fn config_list() -> Vec<(String, String, bool)> {
     let mut set_values = std::collections::HashMap::new();
-    if let Ok(conn) = crate::broker::open_db() {
-        if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM config") {
-            if let Ok(rows) =
-                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            {
-                for row in rows.flatten() {
-                    set_values.insert(row.0, row.1);
-                }
-            }
+    if let Ok(conn) = crate::broker::open_db()
+        && let Ok(mut stmt) = conn.prepare("SELECT key, value FROM config")
+        && let Ok(rows) =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    {
+        for row in rows.flatten() {
+            set_values.insert(row.0, row.1);
         }
     }
     CONFIG_KEYS

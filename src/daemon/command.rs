@@ -4,7 +4,7 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
     let cmd_type = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
     match cmd_type {
-        "ping" => json!({"pong": true}),
+        "ping" => json!({"pong": true, "pid": std::process::id()}),
 
         "status" => {
             let s = state.lock().await;
@@ -108,23 +108,23 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                 }
             }
 
-            if inner_cmd == "watch" && final_result.is_object() {
-                if let Some(dest) = final_result
+            if inner_cmd == "watch"
+                && final_result.is_object()
+                && let Some(dest) = final_result
                     .get("watchId")
                     .and_then(|v| v.as_str())
                     .map(String::from)
-                {
-                    let _ = dest;
-                    if let Some(obj) = final_result.as_object_mut() {
-                        let deliver = {
-                            let s = ext_state.lock().await;
-                            obj.get("watchId")
-                                .and_then(|v| v.as_str())
-                                .and_then(|wid| s.watches.get(wid).map(|w| w.deliver_to.clone()))
-                        };
-                        if let Some(d) = deliver {
-                            obj.insert("deliverTo".into(), json!(d));
-                        }
+            {
+                let _ = dest;
+                if let Some(obj) = final_result.as_object_mut() {
+                    let deliver = {
+                        let s = ext_state.lock().await;
+                        obj.get("watchId")
+                            .and_then(|v| v.as_str())
+                            .and_then(|wid| s.watches.get(wid).map(|w| w.deliver_to.clone()))
+                    };
+                    if let Some(d) = deliver {
+                        obj.insert("deliverTo".into(), json!(d));
                     }
                 }
             }

@@ -21,6 +21,7 @@ pub struct AgentSessionRecord {
     pub notes: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_agent_session(
     id: &str,
     agent_name: &str,

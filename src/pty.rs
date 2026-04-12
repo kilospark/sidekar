@@ -21,7 +21,17 @@ mod session;
 use chrome::{cleanup_chrome_session, watch_session_file};
 use event_loop::event_loop;
 use identity::{prepare_args, resolve_agent, unique_agent_name};
-use session::{cleanup_child_and_state, connect_relay_tunnel, relay_policy_label, resolved_relay_policy};
+use session::{
+    cleanup_child_and_state, connect_relay_tunnel, relay_policy_label, resolved_relay_policy,
+};
+
+type PtySetupState = (
+    Arc<OwnedFd>,
+    AgentId,
+    String,
+    String,
+    Arc<crate::poller::UserInputState>,
+);
 
 // Re-export for external callers (e.g. bus.rs uses crate::pty::detect_channel)
 pub(crate) use identity::detect_channel;
@@ -147,6 +157,40 @@ fn set_nonblocking(fd: i32) -> Result<()> {
         bail!("fcntl F_SETFL failed");
     }
     Ok(())
+}
+
+fn wait_child_exit_or_terminate(child_pid: libc::pid_t) -> i32 {
+    let mut status: libc::c_int = 0;
+    for attempt in 0..20 {
+        let waited = unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
+        if waited == child_pid {
+            return child_exit_code(status);
+        }
+        if waited < 0 {
+            return 1;
+        }
+        if attempt == 0 {
+            unsafe { libc::kill(child_pid, libc::SIGTERM) };
+        } else if attempt == 5 {
+            unsafe { libc::kill(child_pid, libc::SIGKILL) };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let waited = unsafe { libc::waitpid(child_pid, &mut status, 0) };
+    if waited == child_pid {
+        child_exit_code(status)
+    } else {
+        1
+    }
+}
+
+fn child_exit_code(status: libc::c_int) -> i32 {
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else {
+        1
+    }
 }
 
 /// Write an entire buffer to a raw fd, retrying on short writes, EINTR, and EAGAIN.
@@ -278,13 +322,7 @@ pub async fn run_agent(
     // From here, any setup failure must clean up the child + broker.
     let mut registered_name: Option<String> = None;
 
-    let setup_result = (|| -> Result<(
-        Arc<OwnedFd>,
-        AgentId,
-        String,
-        String,
-        Arc<crate::poller::UserInputState>,
-    )> {
+    let setup_result = (|| -> Result<PtySetupState> {
         // Copy parent terminal size to child PTY
         let _ = copy_terminal_size(master_raw);
 
@@ -321,7 +359,12 @@ pub async fn run_agent(
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
         let input_state = Arc::new(crate::poller::UserInputState::default());
-        crate::poller::start_poller(identity.name.clone(), master_arc.clone(), input_state.clone(), child_pid);
+        crate::poller::start_poller(
+            identity.name.clone(),
+            master_arc.clone(),
+            input_state.clone(),
+            child_pid,
+        );
 
         Ok((master_arc, identity, nick, agent_session_id, input_state))
     })();
@@ -331,6 +374,12 @@ pub async fn run_agent(
         Err(e) => {
             // silent — error propagated via return
             cleanup_child_and_state(child_pid, registered_name.as_deref(), None);
+            if let Some((_, ref ca_path)) = proxy_info {
+                crate::proxy::cleanup_ca_file(ca_path);
+            }
+            if proxy_injected_codex_toml {
+                crate::proxy::remove_codex_ca();
+            }
             return Err(e);
         }
     };
@@ -401,7 +450,26 @@ pub async fn run_agent(
     let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
 
     // Enter raw mode (must happen after eprintln messages)
-    let raw_guard = RawModeGuard::enter()?;
+    let raw_guard = match RawModeGuard::enter() {
+        Ok(guard) => guard,
+        Err(e) => {
+            if let Some((ref tx, _)) = tunnel {
+                tx.shutdown();
+            }
+            session_watcher.abort();
+            crate::poller::shutdown_poller();
+            cleanup_chrome_session(&pre_fork_name).await;
+            if let Some((_, ref ca_path)) = proxy_info {
+                crate::proxy::cleanup_ca_file(ca_path);
+            }
+            if proxy_injected_codex_toml {
+                crate::proxy::remove_codex_ca();
+            }
+            let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
+            cleanup_child_and_state(child_pid, Some(&identity.name), None);
+            return Err(e);
+        }
+    };
 
     // Run the async event loop
     let exit_code = event_loop(

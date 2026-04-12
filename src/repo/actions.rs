@@ -179,33 +179,31 @@ pub(super) fn discover_project_actions(root: &Path) -> Result<Vec<ProjectAction>
         };
 
     let package_json = root.join("package.json");
-    if package_json.exists() {
-        if let Ok(raw) = fs::read_to_string(&package_json) {
-            if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-                if let Some(scripts) = value.get("scripts").and_then(Value::as_object) {
-                    for script_name in scripts.keys().collect::<Vec<_>>() {
-                        let kind = match script_name.as_str() {
-                            "test" => "test",
-                            "lint" => "lint",
-                            "build" => "build",
-                            "start" | "dev" => "run",
-                            "typecheck" | "check" => "check",
-                            _ => "custom",
-                        };
-                        add_action(
-                            &format!("npm:{script_name}"),
-                            kind,
-                            vec![
-                                "npm".to_string(),
-                                "run".to_string(),
-                                script_name.to_string(),
-                            ],
-                            "package.json",
-                            &format!("Run npm script '{script_name}'."),
-                        );
-                    }
-                }
-            }
+    if package_json.exists()
+        && let Ok(raw) = fs::read_to_string(&package_json)
+        && let Ok(value) = serde_json::from_str::<Value>(&raw)
+        && let Some(scripts) = value.get("scripts").and_then(Value::as_object)
+    {
+        for script_name in scripts.keys().collect::<Vec<_>>() {
+            let kind = match script_name.as_str() {
+                "test" => "test",
+                "lint" => "lint",
+                "build" => "build",
+                "start" | "dev" => "run",
+                "typecheck" | "check" => "check",
+                _ => "custom",
+            };
+            add_action(
+                &format!("npm:{script_name}"),
+                kind,
+                vec![
+                    "npm".to_string(),
+                    "run".to_string(),
+                    script_name.to_string(),
+                ],
+                "package.json",
+                &format!("Run npm script '{script_name}'."),
+            );
         }
     }
 
@@ -289,14 +287,14 @@ pub(super) fn discover_project_actions(root: &Path) -> Result<Vec<ProjectAction>
         );
     }
 
+    let target_regex =
+        Regex::new(r"(?m)^([A-Za-z0-9_.-]+)\s*:").expect("valid makefile target regex");
     for makefile_name in ["Makefile", "makefile", "GNUmakefile"] {
         let path = root.join(makefile_name);
         if !path.exists() {
             continue;
         }
         let contents = fs::read_to_string(&path).unwrap_or_default();
-        let target_regex =
-            Regex::new(r"(?m)^([A-Za-z0-9_.-]+)\s*:").expect("valid makefile target regex");
         let targets = target_regex
             .captures_iter(&contents)
             .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))

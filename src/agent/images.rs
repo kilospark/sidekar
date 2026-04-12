@@ -16,7 +16,7 @@ fn ext_for_media_type(media_type: &str) -> &'static str {
 }
 
 /// If an image block has bytes but no path, write a temp file and set `source_path`.
-pub fn materialize_ephemeral_image_sources(blocks: &mut Vec<ContentBlock>) -> anyhow::Result<()> {
+pub fn materialize_ephemeral_image_sources(blocks: &mut [ContentBlock]) -> anyhow::Result<()> {
     for block in blocks.iter_mut() {
         let ContentBlock::Image {
             media_type,
@@ -85,7 +85,7 @@ pub fn affix_image_path_citations(blocks: &mut Vec<ContentBlock>) {
 }
 
 /// After a successful model turn, replace user image payloads with path-only text.
-pub fn strip_user_image_blobs_from_history(history: &mut Vec<ChatMessage>) {
+pub fn strip_user_image_blobs_from_history(history: &mut [ChatMessage]) {
     for msg in history.iter_mut() {
         if msg.role != Role::User {
             continue;
