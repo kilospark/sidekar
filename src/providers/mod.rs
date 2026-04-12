@@ -397,7 +397,7 @@ pub(crate) fn sanitize_id_anthropic(id: &str) -> std::borrow::Cow<'_, str> {
     })
 }
 
-/// Sanitize a tool call ID for OpenAI-compatible APIs (must start with `call_`).
+/// Sanitize a tool call ID for OpenAI-compat APIs (must start with `call_`).
 pub(crate) fn sanitize_id_openai(id: &str) -> String {
     // Strip pipe-separated item ID if present (Codex format)
     let base = id.split_once('|').map(|(call, _)| call).unwrap_or(id);
@@ -700,7 +700,7 @@ async fn fetch_openrouter_model_limits(
     None
 }
 
-/// Generic OpenAI-compatible: GET /v1/models, using common context fields if exposed.
+/// Generic OpenAI-compat: GET /v1/models, using common context fields if exposed.
 async fn fetch_openai_compat_model_limits(
     api_key: &str,
     base_url: &str,
@@ -1074,7 +1074,7 @@ impl Provider {
         Provider::OpenAiCompat {
             api_key,
             base_url,
-            provider_type: "openai-compatible".to_string(),
+            provider_type: "oac".to_string(),
             display_name,
         }
     }

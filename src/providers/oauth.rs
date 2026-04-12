@@ -54,8 +54,8 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("opencode")
     } else if nickname.starts_with("grok") {
         Some("grok")
-    } else if nickname.starts_with("compat") || nickname.starts_with("oai") {
-        Some("openai-compatible")
+    } else if nickname.starts_with("oac") {
+        Some("oac")
     } else {
         stored_provider_type_for(nickname)
     }
@@ -70,7 +70,8 @@ fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("openrouter") => Some("openrouter"),
         Some("opencode") => Some("opencode"),
         Some("grok") => Some("grok"),
-        Some("openai-compatible") => Some("openai-compatible"),
+        Some("oac") => Some("oac"),
+        Some("openai-compatible") => Some("oac"),
         _ => None,
     }
 }
@@ -334,8 +335,8 @@ pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompa
     let kv_key = kv_key_for(nickname);
     let creds = load_credentials(&kv_key)?.with_context(|| {
         format!(
-            "No OpenAI-compatible credentials found for '{nickname}'.\n\
-             Run: sidekar repl login openai-compatible {nickname} <base_url>"
+            "No OpenAI-compat credentials found for '{nickname}'.\n\
+             Run: sidekar repl login oac {nickname} <base_url>"
         )
     })?;
     let base_url = creds
@@ -343,7 +344,7 @@ pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompa
         .get("base_url")
         .and_then(|v| v.as_str())
         .filter(|v| !v.trim().is_empty())
-        .context("OpenAI-compatible credential is missing base_url metadata")?
+        .context("OpenAI-compat credential is missing base_url metadata")?
         .trim()
         .trim_end_matches('/')
         .to_string();
@@ -385,12 +386,12 @@ pub async fn login_openai_compat(
         &kv_key_for(nickname),
         &api_key,
         serde_json::json!({
-            "provider_type": "openai-compatible",
+            "provider_type": "oac",
             "name": name,
             "base_url": base_url,
         }),
     )?;
-    eprintln!("OpenAI-compatible API key saved for '{nickname}'.");
+    eprintln!("OpenAI-compat API key saved for '{nickname}'.");
 
     Ok(OpenAiCompatCredentials {
         api_key,
@@ -1095,7 +1096,10 @@ mod tests {
     fn provider_type_for_grok_and_compat_prefixes() {
         assert_eq!(provider_type_for("grok"), Some("grok"));
         assert_eq!(provider_type_for("grok-work"), Some("grok"));
-        assert_eq!(provider_type_for("compat-local"), Some("openai-compatible"));
-        assert_eq!(provider_type_for("oai-lab"), Some("openai-compatible"));
+        assert_eq!(provider_type_for("oac"), Some("oac"));
+        assert_eq!(provider_type_for("oac-local"), Some("oac"));
+        assert_eq!(provider_type_for("oac-lab"), Some("oac"));
+        assert_eq!(provider_type_for("compat-local"), None);
+        assert_eq!(provider_type_for("oai-lab"), None);
     }
 }

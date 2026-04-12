@@ -525,7 +525,7 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
     let provider_type = providers::oauth::provider_type_for(cred_name)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', 'oc', 'grok', or be stored as OpenAI-compatible."
+                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', 'oc', 'grok', or 'oac'."
             )
         })?;
     match provider_type {
@@ -549,7 +549,7 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
             let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
             Ok(Provider::grok(api_key))
         }
-        "openai-compatible" => {
+        "oac" => {
             let creds = providers::oauth::get_openai_compat_credentials(cred_name).await?;
             Ok(Provider::openai_compat(
                 creds.api_key,

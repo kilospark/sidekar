@@ -270,7 +270,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     or         OpenRouter — API key
     oc         OpenCode — API key
     grok       Grok (xAI) — API key
-    openai-compatible  Generic OpenAI-compatible API
+    oac        Generic OpenAI-compat API
 
   Named credentials use prefix to determine provider:
     claude-work, claude-2     → Anthropic
@@ -278,7 +278,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     or-personal, or-grok      → OpenRouter
     oc-work, opencode-pro     → OpenCode
     grok-work                 → Grok
-    compat-lab, oai-local     → OpenAI-compatible
+    oac-lab, oac-local        → OpenAI-compat
 
   Environment:
     SIDEKAR_MODEL              Default model (overridden by -m)
@@ -289,7 +289,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
 
   Subcommands:
     sidekar repl login <provider>                         Store OAuth/API credentials
-    sidekar repl login openai-compatible <name> <url> [key] Store generic OpenAI-compatible credentials
+    sidekar repl login oac <name> <url> [key] Store generic OpenAI-compat credentials
     sidekar repl logout [name|all]                        Remove stored credentials
     sidekar repl credentials                              List stored credentials
     sidekar repl models -c <credential>                   List available models for a provider
@@ -299,7 +299,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     sidekar repl login claude
     sidekar repl login or
     sidekar repl login grok
-    sidekar repl login openai-compatible local http://localhost:11434/v1
+    sidekar repl login oac local http://localhost:11434/v1
     sidekar repl models -c claude-1
     sidekar repl sessions
     sidekar repl -c claude-1 -m claude-sonnet-4-20250514

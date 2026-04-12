@@ -51,5 +51,5 @@ fn openai_compat_provider_type_is_preserved() {
     );
 
     assert_eq!(grok.provider_type(), "grok");
-    assert_eq!(compat.provider_type(), "openai-compatible");
+    assert_eq!(compat.provider_type(), "oac");
 }

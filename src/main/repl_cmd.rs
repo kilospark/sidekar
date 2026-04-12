@@ -32,7 +32,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  or         OpenRouter — API key");
             eprintln!("  oc         OpenCode — API key");
             eprintln!("  grok       Grok (xAI) — API key");
-            eprintln!("  openai-compatible <name> <url> [api_key]");
+            eprintln!("  oac <name> <url> [api_key]");
             eprintln!();
             eprintln!(
                 "Named credentials: claude-work, codex-2, or-personal, oc-work, grok-work, etc."
@@ -40,14 +40,8 @@ async fn handle_login(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     };
-    if matches!(
-        nickname,
-        "openai-compatible" | "openai-compat" | "compat" | "oai"
-    ) {
-        let name = args
-            .get(2)
-            .map(String::as_str)
-            .unwrap_or("openai-compatible");
+    if nickname == "oac" {
+        let name = args.get(2).map(String::as_str).unwrap_or("oac");
         let base_url = args.get(3).map(String::as_str);
         let api_key = args.get(4).map(String::as_str);
         let creds =
@@ -72,7 +66,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
             } else {
                 eprintln!("Unknown provider: '{nickname}'.");
                 eprintln!(
-                    "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login openai-compatible <name> <url>`."
+                    "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login oac <name> <url>`."
                 );
                 std::process::exit(1);
             }
@@ -112,7 +106,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
             let _ = sidekar::providers::oauth::get_grok_token(Some(nickname)).await?;
             println!("Logged in as '{nickname}' (Grok).");
         }
-        "openai-compatible" => {
+        "oac" => {
             let base_url = args.get(2).map(String::as_str);
             let api_key = args.get(3).map(String::as_str);
             let creds = sidekar::providers::oauth::login_openai_compat(
@@ -130,7 +124,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
         _ => {
             eprintln!("Unknown provider type for nickname '{nickname}'.");
             eprintln!(
-                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login openai-compatible <name> <url>`."
+                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login oac <name> <url>`."
             );
             std::process::exit(1);
         }
@@ -212,7 +206,7 @@ async fn handle_models(args: &[String]) -> Result<()> {
         "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
         "opencode" => sidekar::providers::oauth::get_opencode_token(Some(&cred)).await,
         "grok" => sidekar::providers::oauth::get_grok_token(Some(&cred)).await,
-        "openai-compatible" => sidekar::providers::oauth::get_openai_compat_credentials(&cred)
+        "oac" => sidekar::providers::oauth::get_openai_compat_credentials(&cred)
             .await
             .map(|c| c.api_key),
         _ => anyhow::bail!("Unknown provider"),
@@ -224,7 +218,7 @@ async fn handle_models(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     };
-    let models = if provider_type == "openai-compatible" {
+    let models = if provider_type == "oac" {
         let creds = sidekar::providers::oauth::get_openai_compat_credentials(&cred).await?;
         sidekar::providers::fetch_openai_compat_model_list(&creds.api_key, &creds.base_url).await
     } else {
