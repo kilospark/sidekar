@@ -76,12 +76,8 @@ async fn handle_login(args: &[String]) -> Result<()> {
     let _ = sidekar::broker::kv_delete(&kv_key);
     match provider_type {
         "anthropic" => {
-            let token = sidekar::providers::oauth::login_anthropic(Some(nickname)).await?;
-            if token.contains("sk-ant-oat") {
-                println!("Logged in as '{nickname}' (Claude OAuth).");
-            } else {
-                println!("Using API key from environment for '{nickname}'.");
-            }
+            let _ = sidekar::providers::oauth::login_anthropic(Some(nickname)).await?;
+            println!("Logged in as '{nickname}' (Claude OAuth).");
         }
         "codex" => {
             let (_, account_id) = sidekar::providers::oauth::login_codex(Some(nickname)).await?;
@@ -95,15 +91,15 @@ async fn handle_login(args: &[String]) -> Result<()> {
             );
         }
         "openrouter" => {
-            let _ = sidekar::providers::oauth::get_openrouter_token(Some(nickname)).await?;
+            let _ = sidekar::providers::oauth::login_openrouter(Some(nickname)).await?;
             println!("Logged in as '{nickname}' (OpenRouter).");
         }
         "opencode" => {
-            let _ = sidekar::providers::oauth::get_opencode_token(Some(nickname)).await?;
+            let _ = sidekar::providers::oauth::login_opencode(Some(nickname)).await?;
             println!("Logged in as '{nickname}' (OpenCode).");
         }
         "grok" => {
-            let _ = sidekar::providers::oauth::get_grok_token(Some(nickname)).await?;
+            let _ = sidekar::providers::oauth::login_grok(Some(nickname)).await?;
             println!("Logged in as '{nickname}' (Grok).");
         }
         "oac" => {

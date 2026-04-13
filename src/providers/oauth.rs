@@ -43,22 +43,32 @@ fn resolve_kv_key(nickname: Option<&str>, default_key: &str) -> String {
 }
 
 /// Provider type for a nickname.
+///
+/// A nickname matches a convention only if it is exactly the prefix
+/// (`claude`) or uses a dash boundary (`claude-work`). This prevents names
+/// like `oracle-prod` from being misclassified as OpenRouter and `ocean`
+/// from being misclassified as OpenCode.
 pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
-    if nickname.starts_with("claude") {
+    if matches_convention(nickname, "claude") {
         Some("anthropic")
-    } else if nickname.starts_with("codex") {
+    } else if matches_convention(nickname, "codex") {
         Some("codex")
-    } else if nickname.starts_with("or") {
+    } else if matches_convention(nickname, "or") {
         Some("openrouter")
-    } else if nickname.starts_with("oc") || nickname.starts_with("opencode") {
+    } else if matches_convention(nickname, "oc") || matches_convention(nickname, "opencode") {
         Some("opencode")
-    } else if nickname.starts_with("grok") {
+    } else if matches_convention(nickname, "grok") {
         Some("grok")
-    } else if nickname.starts_with("oac") {
+    } else if matches_convention(nickname, "oac") {
         Some("oac")
     } else {
         stored_provider_type_for(nickname)
     }
+}
+
+fn matches_convention(nickname: &str, prefix: &str) -> bool {
+    nickname == prefix
+        || (nickname.starts_with(prefix) && nickname.as_bytes().get(prefix.len()) == Some(&b'-'))
 }
 
 fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
@@ -229,15 +239,24 @@ pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
 
 /// Get a valid OpenRouter API key. No OAuth — uses stored key or OPENROUTER_API_KEY env var.
 pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
+    get_openrouter_token_inner(nickname, false).await
+}
+
+pub async fn login_openrouter(nickname: Option<&str>) -> Result<String> {
+    get_openrouter_token_inner(nickname, true).await
+}
+
+async fn get_openrouter_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENROUTER);
 
-    // 1. Stored credentials
-    if let Some(creds) = load_credentials(&kv_key)? {
+    // 1. Stored credentials (skipped on interactive login — caller wants fresh auth).
+    if !interactive && let Some(creds) = load_credentials(&kv_key)? {
         return Ok(creds.access_token);
     }
 
-    // 2. Environment variable
-    if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
+    // 2. Environment variable (skipped on interactive login — would silently
+    // bypass prompt + persistence under oauth:<nickname>).
+    if !interactive && let Ok(key) = std::env::var("OPENROUTER_API_KEY")
         && !key.is_empty()
     {
         return Ok(key);
@@ -272,15 +291,21 @@ pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
 
 /// Get a valid OpenCode API key. No OAuth — uses stored key or OPENCODE_API_KEY env var.
 pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
+    get_opencode_token_inner(nickname, false).await
+}
+
+pub async fn login_opencode(nickname: Option<&str>) -> Result<String> {
+    get_opencode_token_inner(nickname, true).await
+}
+
+async fn get_opencode_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE);
 
-    // 1. Stored credentials
-    if let Some(creds) = load_credentials(&kv_key)? {
+    if !interactive && let Some(creds) = load_credentials(&kv_key)? {
         return Ok(creds.access_token);
     }
 
-    // 2. Environment variable
-    if let Ok(key) = std::env::var("OPENCODE_API_KEY")
+    if !interactive && let Ok(key) = std::env::var("OPENCODE_API_KEY")
         && !key.is_empty()
     {
         return Ok(key);
@@ -320,6 +345,19 @@ pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
         "XAI_API_KEY",
         "Grok",
         Some("https://console.x.ai/"),
+        false,
+    )
+    .await
+}
+
+pub async fn login_grok(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
+    get_api_key_token(
+        &kv_key,
+        "XAI_API_KEY",
+        "Grok",
+        Some("https://console.x.ai/"),
+        true,
     )
     .await
 }
@@ -405,12 +443,13 @@ async fn get_api_key_token(
     env_var: &str,
     provider_name: &str,
     setup_url: Option<&str>,
+    interactive: bool,
 ) -> Result<String> {
-    if let Some(creds) = load_credentials(kv_key)? {
+    if !interactive && let Some(creds) = load_credentials(kv_key)? {
         return Ok(creds.access_token);
     }
 
-    if let Ok(key) = std::env::var(env_var)
+    if !interactive && let Ok(key) = std::env::var(env_var)
         && !key.is_empty()
     {
         return Ok(key);
@@ -483,8 +522,11 @@ async fn get_token(
     >,
     interactive: bool,
 ) -> Result<String> {
-    // 1. Stored OAuth credentials
-    if let Some(creds) = load_credentials(kv_key)? {
+    // 1. Stored OAuth credentials.
+    //    Skip during interactive login — the caller has explicitly asked to
+    //    (re)authenticate this credential, so stale/existing tokens must not
+    //    short-circuit the flow.
+    if !interactive && let Some(creds) = load_credentials(kv_key)? {
         if creds.is_expired() {
             match refresh_fn(&creds).await {
                 Ok(new_creds) => {
@@ -502,8 +544,10 @@ async fn get_token(
         }
     }
 
-    // 2. Environment variable fallback
-    if let Ok(key) = std::env::var(env_var)
+    // 2. Environment variable fallback — only for non-interactive usage.
+    //    During `repl login`, the user expects OAuth to run and a credential
+    //    row to be persisted; env-var shortcut would silently skip both.
+    if !interactive && let Ok(key) = std::env::var(env_var)
         && !key.is_empty()
     {
         return Ok(key);
