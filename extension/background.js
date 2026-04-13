@@ -11,6 +11,8 @@ let lastConnectError = null;
 let cliLoggedIn = false;
 let creatingOffscreen = null;
 let awaitListeners = new Map(); // id → resolve callback
+let connecting = null;          // Promise for an in-flight connect() attempt
+let connectEpoch = 0;           // bumped by forceReconnect() to abort in-flight attempts
 
 function clearStoredExtToken() {
   return new Promise((resolve) => {
@@ -91,15 +93,51 @@ async function discoverDaemonPort(extToken) {
 }
 
 async function connect() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  // If a socket is already open or in the middle of opening, do nothing.
+  if (ws) {
+    const state = ws.readyState;
+    if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
+  }
+  // Coalesce concurrent callers onto a single in-flight attempt — otherwise
+  // multiple WebSockets get opened and orphaned on the daemon side.
+  if (connecting) return connecting;
 
-  // Close stale socket
+  const myEpoch = connectEpoch;
+  connecting = (async () => {
+    try {
+      await doConnect(myEpoch);
+    } finally {
+      connecting = null;
+    }
+  })();
+  return connecting;
+}
+
+async function forceReconnect() {
+  // Invalidate any in-flight attempt so it doesn't publish a new ws with stale
+  // credentials after we swap state here.
+  connectEpoch++;
+  if (ws) {
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+  authenticated = false;
+  if (connecting) {
+    try { await connecting; } catch {}
+  }
+  connect();
+}
+
+async function doConnect(myEpoch) {
+  // Clear any CLOSING/CLOSED ws left behind (an OPEN/CONNECTING one would
+  // have returned us early above).
   if (ws) {
     try { ws.close(); } catch {}
     ws = null;
   }
 
   const extToken = await getExtToken();
+  if (myEpoch !== connectEpoch) return;
   if (!extToken) {
     lastConnectError = "Not signed in — sign in from the extension popup.";
     // Don't schedule reconnect for auth issues — wait for token change
@@ -110,10 +148,12 @@ async function connect() {
   try {
     port = await discoverDaemonPort(extToken);
   } catch (e) {
+    if (myEpoch !== connectEpoch) return;
     lastConnectError = "Cannot reach sidekar.dev — check internet connection.";
     scheduleReconnect();
     return;
   }
+  if (myEpoch !== connectEpoch) return;
 
   if (!port) {
     lastConnectError = "No sidekar daemon found. Is sidekar running?";
@@ -121,21 +161,29 @@ async function connect() {
     return;
   }
 
+  let newWs;
   try {
-    ws = new WebSocket(`ws://127.0.0.1:${port}/ext`);
+    newWs = new WebSocket(`ws://127.0.0.1:${port}/ext`);
   } catch (e) {
     lastConnectError = "WebSocket connection failed.";
-    ws = null;
     scheduleReconnect();
     return;
   }
 
-  ws.onopen = () => {
+  // Epoch could have advanced between port discovery and socket construction.
+  if (myEpoch !== connectEpoch) {
+    try { newWs.close(); } catch {}
+    return;
+  }
+
+  ws = newWs;
+
+  newWs.onopen = () => {
     console.log("[sidekar] WS connected to 127.0.0.1:" + port);
     // Wait for welcome, then register
   };
 
-  ws.onmessage = async (event) => {
+  newWs.onmessage = async (event) => {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
 
@@ -204,7 +252,9 @@ async function connect() {
     sendWs({ id: msg.id, ...result });
   };
 
-  ws.onclose = () => {
+  newWs.onclose = () => {
+    // An orphan socket (one we already replaced) must not null the current ws.
+    if (ws !== newWs) return;
     console.log("[sidekar] WS disconnected");
     ws = null;
     authenticated = false;
@@ -220,7 +270,7 @@ async function connect() {
     scheduleReconnect();
   };
 
-  ws.onerror = () => {
+  newWs.onerror = () => {
     // onclose fires after onerror, so reconnect is handled there
   };
 }
@@ -2038,25 +2088,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.type === "reconnect") {
-    if (ws) {
-      try { ws.close(); } catch {}
-    }
-    ws = null;
-    authenticated = false;
     lastConnectError = null;
-    connect();
+    forceReconnect();
     sendResponse({ ok: true });
     return false;
   }
   if (msg.type === "setToken") {
     const extToken = String(msg.extToken || "").trim();
     chrome.storage.local.set({ extToken }, () => {
-      if (ws) {
-        try { ws.close(); } catch {}
-      }
-      ws = null;
-      authenticated = false;
-      connect();
+      forceReconnect();
       sendResponse({ ok: true });
     });
     return true;
@@ -2125,12 +2165,7 @@ function startOAuthFlow() {
               const toStore = { extToken: token };
               if (profile) toStore.extProfile = profile;
               chrome.storage.local.set(toStore, () => {
-                if (ws) {
-                  try { ws.close(); } catch {}
-                }
-                ws = null;
-                authenticated = false;
-                connect();
+                forceReconnect();
               });
 
               // Close the callback tab
