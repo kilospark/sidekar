@@ -122,6 +122,12 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
+                    // Skip empty fences entirely — otherwise a blank
+                    // ```...``` in model output renders as a hollow box.
+                    if code_block_buf.trim().is_empty() {
+                        code_block_buf.clear();
+                        continue;
+                    }
                     push_line(&mut lines, &mut current_line);
                     let lang_label = if code_block_lang.is_empty() {
                         "code".to_string()

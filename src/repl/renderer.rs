@@ -249,33 +249,50 @@ impl Spinner {
 
 pub(super) fn extract_tool_summary(name: &str, args_json: &str) -> String {
     let args: serde_json::Value = serde_json::from_str(args_json).unwrap_or_default();
-    match name {
-        "bash" | "Bash" => {
-            let cmd = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or(args_json);
-            // Show only the first line to keep multi-line scripts readable
-            let first_line = cmd.lines().next().unwrap_or(cmd);
-            truncate_display(first_line, 120)
-        }
+    let raw = match name {
+        "bash" | "Bash" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or(args_json)
+            .to_string(),
         _ => {
-            // For other tools, show first string field or truncated args
-            if let Some(obj) = args.as_object()
-                && let Some((_, v)) = obj.iter().next()
-                && let Some(s) = v.as_str()
-            {
-                return truncate_display(s, 120);
-            }
-            truncate_display(args_json, 120)
+            // Prefer common identifier-like fields over arbitrary string values
+            // (e.g. Edit's `new_string` would otherwise win alphabetically and
+            // spill multi-line code into the spinner line).
+            const PREFERRED: &[&str] = &[
+                "path",
+                "file_path",
+                "pattern",
+                "url",
+                "query",
+                "key",
+                "name",
+                "id",
+            ];
+            let obj = args.as_object();
+            let picked = obj.and_then(|o| {
+                PREFERRED
+                    .iter()
+                    .find_map(|k| o.get(*k).and_then(|v| v.as_str()))
+                    .or_else(|| o.values().find_map(|v| v.as_str()))
+            });
+            picked.map(str::to_string).unwrap_or_else(|| args_json.to_string())
         }
-    }
+    };
+    truncate_display(&raw, 120)
 }
 
+/// Truncate to `max` chars and collapse to a single line — the transient
+/// spinner status can only safely occupy one row.
 fn truncate_display(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
+    let first = s.lines().next().unwrap_or(s);
+    let cleaned: String = first
+        .chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .collect();
+    if cleaned.len() <= max {
+        cleaned
     } else {
-        format!("{}...", &s[..s.floor_char_boundary(max)])
+        format!("{}...", &cleaned[..cleaned.floor_char_boundary(max)])
     }
 }

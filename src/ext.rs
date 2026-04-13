@@ -133,6 +133,20 @@ pub async fn remove_watch(state: &SharedExtState, watch_id: &str) -> Option<Watc
     s.watches.remove(watch_id)
 }
 
+/// Drop watches whose owning connection is gone or that have exceeded
+/// `max_age_secs`. Guards against zombie watches from silently-dropped
+/// extension connections and forgotten registrations on long daemon uptime.
+pub async fn sweep_stale_watches(state: &SharedExtState, max_age_secs: u64) -> usize {
+    let mut s = state.lock().await;
+    let now = epoch_secs();
+    let before = s.watches.len();
+    let live_conns: std::collections::HashSet<u64> = s.connections.keys().copied().collect();
+    s.watches.retain(|_, w| {
+        live_conns.contains(&w.conn_id) && now.saturating_sub(w.created_at) <= max_age_secs
+    });
+    before - s.watches.len()
+}
+
 /// Look up delivery target for a watch event.
 pub async fn find_watch_target(state: &SharedExtState, watch_id: &str) -> Option<(String, String)> {
     let s = state.lock().await;

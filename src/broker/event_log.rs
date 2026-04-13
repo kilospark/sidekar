@@ -70,3 +70,12 @@ pub fn events_clear(level: Option<&str>) -> Result<u64> {
     };
     Ok(changed as u64)
 }
+
+/// Delete events older than `max_age_secs`. Keeps the events table bounded
+/// across long-running daemon uptime.
+pub fn cleanup_old_events(max_age_secs: u64) -> Result<usize> {
+    let conn = open()?;
+    let cutoff = (crate::message::epoch_secs() - max_age_secs) as i64;
+    let deleted = conn.execute("DELETE FROM events WHERE created_at < ?1", params![cutoff])?;
+    Ok(deleted)
+}

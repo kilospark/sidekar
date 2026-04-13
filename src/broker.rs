@@ -49,6 +49,23 @@ pub fn open_db() -> Result<Connection> {
     open()
 }
 
+/// Truncate the WAL file so its on-disk size doesn't grow without bound on
+/// long-lived daemons. Safe to call while other connections are open.
+pub fn wal_checkpoint_truncate() -> Result<()> {
+    let conn = open()?;
+    conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+    Ok(())
+}
+
+/// Reclaim freed pages from the SQLite file. Rewrites the whole DB, so only
+/// run occasionally (daily at most). Requires no other writers to be holding
+/// long transactions; otherwise falls back silently.
+pub fn vacuum_db() -> Result<()> {
+    let conn = open()?;
+    conn.execute_batch("VACUUM")?;
+    Ok(())
+}
+
 pub(crate) fn open() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
     let path = db_path();

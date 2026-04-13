@@ -113,15 +113,25 @@ fn is_sidekar_daemon_start(cmdline: &str) -> bool {
 const SWEEP_INTERVAL_SECS: u64 = 60;
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 3600;
 const STALE_MESSAGE_AGE_SECS: u64 = 3600;
+const DB_MAINTENANCE_INTERVAL_SECS: u64 = 900; // 15 min: WAL checkpoint
+const DB_VACUUM_INTERVAL_SECS: u64 = 86_400; // 24 h: VACUUM + event purge
+const STALE_EVENT_AGE_SECS: u64 = 7 * 86_400; // keep 7 days of events
+const STALE_WATCH_AGE_SECS: u64 = 48 * 3600; // zombie-watch TTL
 
-pub(super) async fn housekeeping_loop(http_port: u16) {
+pub(super) async fn housekeeping_loop(http_port: u16, ext_state: crate::ext::SharedExtState) {
     let mut sweep_interval =
         tokio::time::interval(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS));
     let mut update_interval =
         tokio::time::interval(std::time::Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
+    let mut db_maint_interval =
+        tokio::time::interval(std::time::Duration::from_secs(DB_MAINTENANCE_INTERVAL_SECS));
+    let mut db_vacuum_interval =
+        tokio::time::interval(std::time::Duration::from_secs(DB_VACUUM_INTERVAL_SECS));
 
     sweep_interval.tick().await;
     update_interval.tick().await;
+    db_maint_interval.tick().await;
+    db_vacuum_interval.tick().await;
     if http_port > 0 {
         discover_heartbeat(http_port).await;
     }
@@ -132,9 +142,17 @@ pub(super) async fn housekeeping_loop(http_port: u16) {
                 kill_orphaned_daemons();
                 sweep_dead_agents();
                 cleanup_stale_messages();
+                crate::ext::sweep_stale_watches(&ext_state, STALE_WATCH_AGE_SECS).await;
                 if http_port > 0 {
                     discover_heartbeat(http_port).await;
                 }
+            }
+            _ = db_maint_interval.tick() => {
+                let _ = crate::broker::wal_checkpoint_truncate();
+            }
+            _ = db_vacuum_interval.tick() => {
+                let _ = crate::broker::cleanup_old_events(STALE_EVENT_AGE_SECS);
+                let _ = crate::broker::vacuum_db();
             }
             _ = update_interval.tick() => {
                 check_for_update().await;

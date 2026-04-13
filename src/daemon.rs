@@ -326,7 +326,8 @@ pub async fn start() -> Result<()> {
     });
 
     let http_port = state.lock().await.http_port;
-    tokio::spawn(housekeeping_loop(http_port));
+    let ext_state_for_housekeeping = state.lock().await.ext_state.clone();
+    tokio::spawn(housekeeping_loop(http_port, ext_state_for_housekeeping));
 
     let cdp_pool_for_reaper = state.lock().await.cdp_pool.clone();
     tokio::spawn(cdp_pool_reaper(cdp_pool_for_reaper));
