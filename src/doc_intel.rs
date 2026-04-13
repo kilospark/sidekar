@@ -1,7 +1,6 @@
 //! Markdown document intelligence: outline, section extraction, search, and mapping.
 //!
 //! Pure pulldown-cmark parsing — no LLM, no embeddings, no network.
-//! The prose counterpart of code_intel.rs.
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::path::Path;

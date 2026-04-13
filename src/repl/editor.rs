@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 
@@ -33,6 +33,15 @@ const PROMPT_VISIBLE: &str = "› ";
 const CONTINUATION_PREFIX: &str = "\x1b[2m·\x1b[0m ";
 const CONTINUATION_VISIBLE: &str = "· ";
 const ESC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
+const PLACEHOLDER_DIM_OPEN: &str = "\x1b[2m";
+const PLACEHOLDER_DIM_CLOSE: &str = "\x1b[22m";
+
+#[derive(Debug, Clone)]
+struct PendingPaste {
+    placeholder: String,
+    content: String,
+}
 
 type SharedEditor = Arc<Mutex<LineEditor>>;
 
@@ -53,6 +62,41 @@ fn build_input_pollfds(stdin_fd: Option<i32>, tunnel_fd: Option<i32>) -> Vec<lib
         });
     }
     pollfds
+}
+
+/// Append `buffer[row]` to `out`, wrapping any byte ranges in `spans` (full-buffer coords)
+/// that intersect the row with dim ANSI so paste placeholders render distinctly.
+fn append_row_with_placeholders(
+    out: &mut String,
+    buffer: &str,
+    row: std::ops::Range<usize>,
+    spans: &[std::ops::Range<usize>],
+) {
+    if spans.is_empty() {
+        out.push_str(&buffer[row]);
+        return;
+    }
+    let mut idx = row.start;
+    for span in spans {
+        if span.end <= row.start {
+            continue;
+        }
+        if span.start >= row.end {
+            break;
+        }
+        let s = span.start.max(row.start);
+        let e = span.end.min(row.end);
+        if s > idx {
+            out.push_str(&buffer[idx..s]);
+        }
+        out.push_str(PLACEHOLDER_DIM_OPEN);
+        out.push_str(&buffer[s..e]);
+        out.push_str(PLACEHOLDER_DIM_CLOSE);
+        idx = e;
+    }
+    if idx < row.end {
+        out.push_str(&buffer[idx..row.end]);
+    }
 }
 
 fn emit_raw(text: &str) {
@@ -590,7 +634,15 @@ pub(super) struct LineEditor {
     pub(super) pending_followups: VecDeque<SubmittedLine>,
     /// Pasted/dragged image paths; text uses `[Image #N]` matching 1-based indices here.
     attached_images: Vec<PathBuf>,
+    /// Large pastes shown in the buffer as `[Pasted Content N chars]` placeholders;
+    /// expanded back to full text on submit.
+    pending_pastes: Vec<PendingPaste>,
+    /// Per-char-count counter so duplicate paste sizes get `#2`, `#3`, ... suffix.
+    large_paste_counters: HashMap<usize, usize>,
     rendered_pending_rows: usize,
+    /// Detects keyboard-delivered paste bursts (drag-and-drop on terminals
+    /// that don't wrap pastes in bracketed-paste sequences).
+    paste_burst: PasteBurst,
 }
 
 impl Default for LineEditor {
@@ -619,7 +671,10 @@ impl LineEditor {
             pending_submits: VecDeque::new(),
             pending_followups: VecDeque::new(),
             attached_images: Vec::new(),
+            pending_pastes: Vec::new(),
+            large_paste_counters: HashMap::new(),
             rendered_pending_rows: 0,
+            paste_burst: PasteBurst::default(),
         }
     }
 
@@ -656,20 +711,101 @@ impl LineEditor {
 
     fn insert_pasted_text(&mut self, text: &str) {
         let t = text.trim_end_matches('\0');
-        if !t.contains('\n')
-            && t.len() < 16_384
-            && let Some(pb) = super::user_turn::normalize_pasted_path(t.trim())
-            && image::image_dimensions(&pb).is_ok()
+        if t.is_empty() {
+            return;
+        }
+        let char_count = t.chars().count();
+        if char_count > LARGE_PASTE_CHAR_THRESHOLD {
+            let placeholder = self.next_large_paste_placeholder(char_count);
+            self.detach_history_nav();
+            self.buffer.insert_str(self.cursor, &placeholder);
+            self.cursor += placeholder.len();
+            self.pending_pastes.push(PendingPaste {
+                placeholder,
+                content: t.to_string(),
+            });
+            self.preferred_col = None;
+            return;
+        }
+        // For paste-burst flushes, the user may have hit Enter before the
+        // idle timeout, appending a trailing newline to the burst. Ignore any
+        // leading/trailing whitespace when checking for a single-line image
+        // path so drag-and-drop still attaches as an image.
+        let trimmed = t.trim();
+        if !trimmed.contains('\n')
+            && trimmed.len() < 16_384
+            && let Some(pb) = super::user_turn::normalize_pasted_path(trimmed)
+            && looks_like_image_file(&pb)
         {
             self.attach_image(pb);
             return;
         }
-        if !t.is_empty() {
-            self.detach_history_nav();
-            self.buffer.insert_str(self.cursor, t);
-            self.cursor += t.len();
-            self.preferred_col = None;
+        self.detach_history_nav();
+        self.buffer.insert_str(self.cursor, t);
+        self.cursor += t.len();
+        self.preferred_col = None;
+    }
+
+    fn next_large_paste_placeholder(&mut self, char_count: usize) -> String {
+        let base = format!("[Pasted Content {char_count} chars]");
+        let entry = self.large_paste_counters.entry(char_count).or_insert(0);
+        *entry += 1;
+        if *entry == 1 {
+            base
+        } else {
+            format!("{base} #{}", *entry)
         }
+    }
+
+    /// All non-overlapping byte ranges in `buffer` covered by active paste placeholders,
+    /// sorted by start. Longer placeholders win when they overlap shorter ones (e.g.,
+    /// `[Pasted Content 100 chars]` vs `[Pasted Content 100 chars] #2`).
+    fn placeholder_spans(&self) -> Vec<std::ops::Range<usize>> {
+        let mut placeholders: Vec<&str> =
+            self.pending_pastes.iter().map(|p| p.placeholder.as_str()).collect();
+        placeholders.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        let mut taken = vec![false; self.buffer.len()];
+        let mut spans = Vec::new();
+        for ph in placeholders {
+            if ph.is_empty() {
+                continue;
+            }
+            let mut search_from = 0;
+            while let Some(rel) = self.buffer[search_from..].find(ph) {
+                let start = search_from + rel;
+                let end = start + ph.len();
+                if (start..end).all(|i| !taken[i]) {
+                    for slot in &mut taken[start..end] {
+                        *slot = true;
+                    }
+                    spans.push(start..end);
+                }
+                search_from = start + ph.len();
+                if search_from >= self.buffer.len() {
+                    break;
+                }
+            }
+        }
+        spans.sort_by_key(|r| r.start);
+        spans
+    }
+
+    /// Drop pending paste entries whose placeholder no longer appears anywhere in `buffer`.
+    fn prune_pending_pastes(&mut self) {
+        self.pending_pastes
+            .retain(|p| self.buffer.contains(&p.placeholder));
+    }
+
+    /// Replace every active placeholder occurrence with its full pasted content.
+    /// Longer placeholders are expanded first so an entry like
+    /// `[Pasted Content 100 chars] #2` isn't clobbered by `[Pasted Content 100 chars]`.
+    fn expand_pending_pastes(&self, mut text: String) -> String {
+        let mut entries: Vec<&PendingPaste> = self.pending_pastes.iter().collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.placeholder.len()));
+        for entry in entries {
+            text = text.replace(&entry.placeholder, &entry.content);
+        }
+        text
     }
 
     fn attach_image(&mut self, path: PathBuf) {
@@ -777,6 +913,7 @@ impl LineEditor {
         let pending_bar = self.pending_bar_line(cols);
         let pending_rows = usize::from(pending_bar.is_some());
         let rows = self.wrapped_rows(cols);
+        let placeholder_spans = self.placeholder_spans();
         let mut out = String::new();
         if let Some(ref bar) = pending_bar {
             out.push('\r');
@@ -792,7 +929,7 @@ impl LineEditor {
                     out.push_str(CONTINUATION_PREFIX);
                 }
             }
-            out.push_str(&self.buffer[row.start..row.end]);
+            append_row_with_placeholders(&mut out, &self.buffer, row.clone(), &placeholder_spans);
         }
         out.push_str("\x1b[999D");
         if layout.end.row > 0 {
@@ -843,6 +980,9 @@ impl LineEditor {
         self.rendered_cursor = CursorPos::default();
         self.paste_buffer = None;
         self.attached_images.clear();
+        self.pending_pastes.clear();
+        self.large_paste_counters.clear();
+        self.paste_burst.clear_after_explicit_paste();
     }
 
     fn compute_layout(&self, cols: usize) -> RenderLayout {
@@ -888,8 +1028,8 @@ impl LineEditor {
             match std::str::from_utf8(&self.utf8) {
                 Ok(s) => {
                     if let Some(ch) = s.chars().next() {
-                        self.insert_char(ch);
                         self.utf8.clear();
+                        self.handle_plain_char(ch, false);
                         self.redraw();
                     }
                 }
@@ -903,14 +1043,26 @@ impl LineEditor {
 
         match byte {
             b'\r' | b'\n' => {
+                let now = std::time::Instant::now();
+                if self.paste_burst.newline_should_insert_instead_of_submit(now) {
+                    if !self.paste_burst.append_newline_if_active(now) {
+                        self.handle_plain_char('\n', false);
+                    }
+                    self.redraw();
+                    return LineEditResult::Continue;
+                }
+                if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
+                    self.insert_pasted_text(&flushed);
+                }
                 self.move_to_render_end();
                 emit_raw("\r\n");
-                let text = self.buffer.clone();
+                let text = self.expand_pending_pastes(self.buffer.clone());
                 let image_paths = std::mem::take(&mut self.attached_images);
                 self.reset();
                 LineEditResult::Submit(SubmittedLine { text, image_paths })
             }
             0x04 => {
+                self.flush_paste_burst_as_typed();
                 if self.buffer.is_empty() {
                     self.clear_rendered_prompt_inner();
                     emit_raw("\r\n");
@@ -929,6 +1081,7 @@ impl LineEditor {
                 LineEditResult::Eof
             }
             0x01 => {
+                self.flush_paste_burst_as_typed();
                 let bol = self.beginning_of_current_line();
                 if self.cursor == bol && bol > 0 {
                     // Already at BOL: jump to previous line's BOL
@@ -944,6 +1097,7 @@ impl LineEditor {
                 LineEditResult::Continue
             }
             0x05 => {
+                self.flush_paste_burst_as_typed();
                 let eol = self.end_of_current_line();
                 if self.cursor == eol && eol < self.buffer.len() {
                     // Already at EOL: jump to next line's EOL
@@ -959,58 +1113,68 @@ impl LineEditor {
                 LineEditResult::Continue
             }
             0x15 => {
+                self.flush_paste_burst_as_typed();
                 self.kill_to_start();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x0b => {
+                self.flush_paste_burst_as_typed();
                 self.kill_to_end();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x17 => {
+                self.flush_paste_burst_as_typed();
                 self.delete_backward_word();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x19 => {
+                self.flush_paste_burst_as_typed();
                 self.yank();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x02 => {
+                self.flush_paste_burst_as_typed();
                 self.move_left();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x06 => {
+                self.flush_paste_burst_as_typed();
                 self.move_right();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x10 => {
+                self.flush_paste_burst_as_typed();
                 self.history_prev();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x0e => {
+                self.flush_paste_burst_as_typed();
                 self.history_next();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x7f | 0x08 => {
+                self.flush_paste_burst_as_typed();
                 self.backspace();
                 self.redraw();
                 LineEditResult::Continue
             }
             0x1b => {
+                self.flush_paste_burst_as_typed();
                 self.escape.push(byte);
                 self.escape_started_at = Some(std::time::Instant::now());
                 LineEditResult::Continue
             }
             byte if byte.is_ascii_control() => LineEditResult::Continue,
             byte if byte.is_ascii() => {
-                self.insert_char(byte as char);
+                self.handle_plain_char(byte as char, true);
                 self.redraw();
                 LineEditResult::Continue
             }
@@ -1231,6 +1395,122 @@ impl LineEditor {
         self.preferred_col = None;
     }
 
+    /// Route a printable char through the paste-burst detector.
+    ///
+    /// For bracketed-paste-less terminals (Apple Terminal, Windows consoles),
+    /// drag-and-drop and clipboard pastes arrive as rapid sequential chars.
+    /// The detector holds the first char, watches timing, and flushes the
+    /// accumulated burst as a single paste via `flush_paste_burst_if_due`.
+    ///
+    /// When `allow_hold` is false, we skip the pending-first-char path
+    /// (used from UTF-8 completion where we already committed to a char).
+    fn handle_plain_char(&mut self, ch: char, allow_hold: bool) {
+        let now = std::time::Instant::now();
+        let decision = if allow_hold {
+            self.paste_burst.on_plain_char(ch, now)
+        } else if let Some(d) = self.paste_burst.on_plain_char_no_hold(now) {
+            d
+        } else {
+            self.insert_char(ch);
+            return;
+        };
+        match decision {
+            CharDecision::RetainFirstChar => {
+                // Held in burst; flush_if_due will surface it as Typed(ch).
+            }
+            CharDecision::BeginBufferFromPending => {
+                self.paste_burst.append_char_to_buffer(ch, now);
+            }
+            CharDecision::BufferAppend => {
+                self.paste_burst.append_char_to_buffer(ch, now);
+            }
+            CharDecision::BeginBuffer { retro_chars } => {
+                let before = self.buffer[..self.cursor].to_string();
+                if let Some(grab) =
+                    self.paste_burst
+                        .decide_begin_buffer(now, &before, retro_chars as usize)
+                {
+                    self.detach_history_nav();
+                    self.buffer.drain(grab.start_byte..self.cursor);
+                    self.cursor = grab.start_byte;
+                    self.paste_burst.append_char_to_buffer(ch, now);
+                    self.preferred_col = None;
+                } else {
+                    self.insert_char(ch);
+                }
+            }
+        }
+    }
+
+    /// Flush any pending held char or accumulated burst as normal typing,
+    /// before a non-char key (arrow, backspace, Ctrl-*) interrupts the burst.
+    fn flush_paste_burst_as_typed(&mut self) {
+        if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
+            self.insert_pasted_text(&flushed);
+        }
+        self.paste_burst.clear_window_after_non_char();
+    }
+
+    /// Called from the input poll idle tick. If the burst detector has timed
+    /// out, emit the accumulated bytes as either a single typed char or a
+    /// paste (which may be recognized as an image path and attached). A
+    /// trailing newline in the flushed burst means the user pressed Enter
+    /// while the burst was still accumulating — submit the line after
+    /// attaching so drag-and-drop → Enter works as expected.
+    pub(super) fn flush_paste_burst_if_due(&mut self) {
+        let now = std::time::Instant::now();
+        match self.paste_burst.flush_if_due(now) {
+            FlushResult::None => {}
+            FlushResult::Typed(ch) => {
+                self.insert_char(ch);
+                self.redraw();
+            }
+            FlushResult::Paste(s) => {
+                let (body, submit) = match s.strip_suffix('\n') {
+                    Some(rest) => (rest.to_string(), true),
+                    None => (s, false),
+                };
+                self.insert_pasted_text(&body);
+                if submit {
+                    self.submit_current_line();
+                } else {
+                    self.redraw();
+                }
+            }
+        }
+    }
+
+    fn submit_current_line(&mut self) {
+        self.move_to_render_end();
+        emit_raw("\r\n");
+        let text = self.expand_pending_pastes(self.buffer.clone());
+        let image_paths = std::mem::take(&mut self.attached_images);
+        self.reset();
+        self.pending_submits
+            .push_back(SubmittedLine { text, image_paths });
+        self.redraw_inner();
+    }
+
+    pub(super) fn paste_burst_is_active(&self) -> bool {
+        self.paste_burst.is_active()
+    }
+
+    /// Test-only: force the paste-burst detector to flush immediately,
+    /// bypassing the idle-time wait. Used by tests that synchronously feed
+    /// bytes without natural time spacing.
+    #[cfg(test)]
+    pub(super) fn force_flush_paste_burst(&mut self) {
+        match self.paste_burst.force_flush() {
+            FlushResult::None => {}
+            FlushResult::Typed(ch) => {
+                self.insert_char(ch);
+            }
+            FlushResult::Paste(s) => {
+                self.insert_pasted_text(&s);
+            }
+        }
+    }
+
     fn move_left(&mut self) {
         self.cursor = prev_grapheme_boundary(&self.buffer, self.cursor);
         self.preferred_col = None;
@@ -1290,6 +1570,17 @@ impl LineEditor {
             return;
         }
         self.detach_history_nav();
+        if let Some(span) = self
+            .placeholder_spans()
+            .into_iter()
+            .find(|r| r.end == self.cursor)
+        {
+            self.buffer.drain(span.clone());
+            self.cursor = span.start;
+            self.preferred_col = None;
+            self.prune_pending_pastes();
+            return;
+        }
         let prev = prev_grapheme_boundary(&self.buffer, self.cursor);
         self.buffer.drain(prev..self.cursor);
         self.cursor = prev;
@@ -1301,6 +1592,16 @@ impl LineEditor {
             return;
         }
         self.detach_history_nav();
+        if let Some(span) = self
+            .placeholder_spans()
+            .into_iter()
+            .find(|r| r.start == self.cursor)
+        {
+            self.buffer.drain(span);
+            self.preferred_col = None;
+            self.prune_pending_pastes();
+            return;
+        }
         let end = next_grapheme_boundary(&self.buffer, self.cursor);
         self.buffer.drain(self.cursor..end);
         self.preferred_col = None;
@@ -1371,6 +1672,7 @@ impl LineEditor {
         self.cursor = range.start;
         self.buffer.drain(range);
         self.preferred_col = None;
+        self.prune_pending_pastes();
     }
 
     fn delete_backward_word(&mut self) {
@@ -1439,6 +1741,9 @@ impl LineEditor {
         self.rendered_cursor = CursorPos::default();
         self.paste_buffer = None;
         self.attached_images.clear();
+        self.pending_pastes.clear();
+        self.large_paste_counters.clear();
+        self.paste_burst.clear_after_explicit_paste();
     }
 
     fn detach_history_nav(&mut self) {
@@ -1566,6 +1871,21 @@ impl LineEditor {
     }
 }
 
+/// A dropped path counts as an image if it has a common image extension.
+/// We don't verify readability here — `image::image_dimensions` only supports
+/// the png/jpeg features we build in, and macOS screenshot-thumbnail drags
+/// deliver temp paths that may be cleaned up between drop and read. The
+/// user-turn image loader will surface a real error if the file is gone.
+fn looks_like_image_file(path: &std::path::Path) -> bool {
+    const IMAGE_EXTS: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif", "avif",
+    ];
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    IMAGE_EXTS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
 fn wrapped_row_index_by_start(rows: &[std::ops::Range<usize>], pos: usize) -> Option<usize> {
     let idx = rows.partition_point(|range| range.start <= pos);
     if idx == 0 { None } else { Some(idx - 1) }
@@ -1620,6 +1940,7 @@ pub(super) fn read_input_or_bus(
     let mut buf = [0u8; 64];
 
     loop {
+        editor.flush_paste_burst_if_due();
         if let Some(line) = editor.take_next_pending_submit() {
             return InputEvent::User(line);
         }
@@ -1635,7 +1956,12 @@ pub(super) fn read_input_or_bus(
                 return InputEvent::Eof;
             }
 
-            let ready = libc::poll(fds_arr.as_mut_ptr(), fds_arr.len() as libc::nfds_t, 100);
+            let poll_timeout_ms = if editor.paste_burst_is_active() { 10 } else { 100 };
+            let ready = libc::poll(
+                fds_arr.as_mut_ptr(),
+                fds_arr.len() as libc::nfds_t,
+                poll_timeout_ms,
+            );
             if ready > 0 {
                 for pollfd in fds_arr.iter() {
                     if (pollfd.revents & libc::POLLIN) == 0 {
@@ -1686,6 +2012,10 @@ pub(super) fn read_input_or_bus(
                 }
             } else if ready == 0 {
                 let _ = editor.maybe_resolve_pending_escape();
+                editor.flush_paste_burst_if_due();
+                if let Some(line) = editor.take_next_pending_submit() {
+                    return InputEvent::User(line);
+                }
             } else if ready < 0 {
                 continue;
             }
@@ -1712,6 +2042,9 @@ pub(super) fn print_banner(model: Option<&str>, credential: Option<&str>) {
     println!("{line2}");
     println!();
 }
+
+mod paste_burst;
+use paste_burst::{CharDecision, FlushResult, PasteBurst};
 
 #[cfg(test)]
 mod tests;

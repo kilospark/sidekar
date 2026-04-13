@@ -3,7 +3,6 @@ use crate::*;
 mod agent_sessions;
 mod agent_tools;
 mod batch;
-mod code;
 mod core;
 pub mod cron;
 mod data;

@@ -70,29 +70,6 @@ const fn spec(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-const fn spec_aliases(
-    name: &'static str,
-    usage: &'static str,
-    summary: &'static str,
-    group: CommandGroup,
-    aliases: &'static [&'static str],
-    requires_session: bool,
-    auto_launch_browser: bool,
-    ext_routable: bool,
-) -> CommandSpec {
-    CommandSpec {
-        name,
-        usage,
-        summary,
-        group,
-        aliases,
-        requires_session,
-        auto_launch_browser,
-        ext_routable,
-    }
-}
-
 const REMOVED_COMMANDS: &[(&str, &str)] = &[
     ("who", "bus who"),
     ("bus-send", "bus send"),

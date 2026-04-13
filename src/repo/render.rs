@@ -41,24 +41,6 @@ pub(super) fn render_markdown(snapshot: &RepoSnapshot) -> String {
         }
     }
 
-    if let Some(diff) = &snapshot.git_diff {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "## Git Diff");
-        let _ = writeln!(out);
-        let _ = writeln!(out, "```diff");
-        let _ = writeln!(out, "{diff}");
-        let _ = writeln!(out, "```");
-    }
-
-    if let Some(logs) = &snapshot.git_log {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "## Git Log");
-        let _ = writeln!(out);
-        let _ = writeln!(out, "```text");
-        let _ = writeln!(out, "{logs}");
-        let _ = writeln!(out, "```");
-    }
-
     if !snapshot.skipped.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "## Skipped Files");

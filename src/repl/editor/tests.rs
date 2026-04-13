@@ -4,8 +4,28 @@ use super::*;
 fn process_input_bytes_emits_every_line_in_one_chunk() {
     let mut editor = LineEditor::with_history(Vec::new());
     let mut lines = Vec::new();
+    // Paste-burst detection holds rapid-arrival chars in its buffer,
+    // so tests must force-flush between logical lines to simulate the
+    // idle-time gap that a real terminal provides between keystrokes.
     editor
-        .process_input_bytes(b"first\nsecond\n", |_, line| {
+        .process_input_bytes(b"first", |_, line| {
+            lines.push(line);
+        })
+        .unwrap();
+    editor.force_flush_paste_burst();
+    editor
+        .process_input_bytes(b"\n", |_, line| {
+            lines.push(line);
+        })
+        .unwrap();
+    editor
+        .process_input_bytes(b"second", |_, line| {
+            lines.push(line);
+        })
+        .unwrap();
+    editor.force_flush_paste_burst();
+    editor
+        .process_input_bytes(b"\n", |_, line| {
             lines.push(line);
         })
         .unwrap();
@@ -41,7 +61,13 @@ fn active_prompt_pollfds_compact_tunnel_only_fd() {
 fn active_prompt_submission_queues_followup_immediately() {
     let mut editor = LineEditor::with_history(Vec::new());
     editor
-        .process_input_bytes(b"next prompt\n", |ed, line| {
+        .process_input_bytes(b"next prompt", |ed, line| {
+            ed.queue_pending_followup(line);
+        })
+        .unwrap();
+    editor.force_flush_paste_burst();
+    editor
+        .process_input_bytes(b"\n", |ed, line| {
             ed.queue_pending_followup(line);
         })
         .unwrap();
@@ -389,4 +415,84 @@ fn bracketed_paste_with_utf8() {
         editor.feed_byte(b);
     }
     assert_eq!(editor.buffer, content);
+}
+
+fn paste_bytes(editor: &mut LineEditor, content: &[u8]) {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\x1b[200~");
+    bytes.extend_from_slice(content);
+    bytes.extend_from_slice(b"\x1b[201~");
+    for &b in &bytes {
+        editor.feed_byte(b);
+    }
+}
+
+#[test]
+fn large_paste_inserts_placeholder_and_expands_on_submit() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let payload = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+    paste_bytes(&mut editor, payload.as_bytes());
+    let placeholder = format!("[Pasted Content {} chars]", payload.chars().count());
+    assert_eq!(editor.buffer, placeholder);
+    assert_eq!(editor.cursor, placeholder.len());
+    assert_eq!(editor.pending_pastes.len(), 1);
+
+    let expanded = editor.expand_pending_pastes(editor.buffer.clone());
+    assert_eq!(expanded, payload);
+}
+
+#[test]
+fn large_paste_at_threshold_inserts_raw_text() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let payload = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD);
+    paste_bytes(&mut editor, payload.as_bytes());
+    assert_eq!(editor.buffer, payload);
+    assert!(editor.pending_pastes.is_empty());
+}
+
+#[test]
+fn duplicate_large_paste_size_gets_suffixed_placeholder() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let payload = "y".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1);
+    paste_bytes(&mut editor, payload.as_bytes());
+    paste_bytes(&mut editor, payload.as_bytes());
+    let base = format!("[Pasted Content {} chars]", payload.chars().count());
+    assert_eq!(editor.buffer, format!("{base}{base} #2"));
+    assert_eq!(editor.pending_pastes.len(), 2);
+
+    let expanded = editor.expand_pending_pastes(editor.buffer.clone());
+    assert_eq!(expanded, format!("{payload}{payload}"));
+}
+
+#[test]
+fn backspace_removes_large_paste_placeholder_atomically() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let payload = "z".repeat(LARGE_PASTE_CHAR_THRESHOLD + 3);
+    paste_bytes(&mut editor, payload.as_bytes());
+    assert!(!editor.pending_pastes.is_empty());
+    editor.backspace();
+    assert!(editor.buffer.is_empty());
+    assert_eq!(editor.cursor, 0);
+    assert!(editor.pending_pastes.is_empty());
+}
+
+#[test]
+fn delete_forward_removes_large_paste_placeholder_atomically() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let payload = "a".repeat(LARGE_PASTE_CHAR_THRESHOLD + 7);
+    paste_bytes(&mut editor, payload.as_bytes());
+    editor.cursor = 0;
+    editor.delete_at_cursor();
+    assert!(editor.buffer.is_empty());
+    assert!(editor.pending_pastes.is_empty());
+}
+
+#[test]
+fn kill_range_prunes_pending_pastes() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let payload = "b".repeat(LARGE_PASTE_CHAR_THRESHOLD + 2);
+    paste_bytes(&mut editor, payload.as_bytes());
+    let len = editor.buffer.len();
+    editor.kill_range(0..len);
+    assert!(editor.pending_pastes.is_empty());
 }

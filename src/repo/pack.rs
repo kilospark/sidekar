@@ -1,10 +1,6 @@
 use super::*;
 
-pub(super) fn build_repo_snapshot(
-    args: &RepoArgs,
-    include_diff: bool,
-    include_logs: Option<usize>,
-) -> Result<RepoSnapshot> {
+pub(super) fn build_repo_snapshot(args: &RepoArgs) -> Result<RepoSnapshot> {
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let target_path = args
         .target
@@ -36,22 +32,6 @@ pub(super) fn build_repo_snapshot(
         .sum::<usize>();
     let tree = build_tree_string(&root, &repo_files.files);
 
-    let git_root = find_repo_root(&root);
-    let git_diff = if include_diff {
-        Some(run_git_diff(git_root.as_deref().unwrap_or(&root), &root)?)
-    } else {
-        None
-    };
-    let git_log = if let Some(limit) = include_logs {
-        Some(run_git_log(
-            git_root.as_deref().unwrap_or(&root),
-            &root,
-            limit,
-        )?)
-    } else {
-        None
-    };
-
     Ok(RepoSnapshot {
         display_root: root
             .file_name()
@@ -64,8 +44,6 @@ pub(super) fn build_repo_snapshot(
         files: repo_files.files,
         skipped: repo_files.skipped,
         tree,
-        git_diff,
-        git_log,
     })
 }
 

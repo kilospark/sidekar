@@ -53,9 +53,13 @@ fn parse_single_shell_token(input: &str) -> Option<String> {
                     out.push(next);
                 }
             }
-            c if c.is_whitespace() && !in_single && !in_double => {
+            // Only ASCII space/tab act as shell token separators. Unicode
+            // whitespace like U+202F (NARROW NO-BREAK SPACE) shows up inside
+            // real filenames — e.g., macOS screenshot names use it between
+            // the time and "AM"/"PM" — and must not split the path.
+            c if (c == ' ' || c == '\t') && !in_single && !in_double => {
                 if !out.is_empty() {
-                    saw_whitespace_sep = chars.clone().any(|c| !c.is_whitespace());
+                    saw_whitespace_sep = chars.clone().any(|c| c != ' ' && c != '\t');
                     break;
                 }
             }

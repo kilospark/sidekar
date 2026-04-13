@@ -57,8 +57,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "repo",
-        "<pack|tree|changes|actions> [args]",
-        "Pack repos, summarize changes, and run project actions",
+        "<pack|tree> [args]",
+        "Pack repos and show repo trees with token estimates",
         CommandGroup::Agent,
         false,
         false,

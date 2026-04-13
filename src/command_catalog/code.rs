@@ -1,4 +1,4 @@
-use super::{CommandGroup, CommandSpec, spec, spec_aliases};
+use super::{CommandGroup, CommandSpec, spec};
 
 pub const COMMANDS: &[CommandSpec] = &[
     spec(
@@ -15,45 +15,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         "[path|-] [--to=json|yaml|csv]",
         "Restore packed text to JSON, YAML, or CSV",
         CommandGroup::Data,
-        false,
-        false,
-        false,
-    ),
-    spec_aliases(
-        "symbols",
-        "<path> [--imports]",
-        "List symbols (functions, structs, classes) in file or directory",
-        CommandGroup::Code,
-        &["syms"],
-        false,
-        false,
-        false,
-    ),
-    spec_aliases(
-        "definition",
-        "<name> [path]",
-        "Find and show a symbol's full definition",
-        CommandGroup::Code,
-        &["def"],
-        false,
-        false,
-        false,
-    ),
-    spec_aliases(
-        "references",
-        "<name> [path]",
-        "Find all usage sites of a symbol",
-        CommandGroup::Code,
-        &["refs"],
-        false,
-        false,
-        false,
-    ),
-    spec(
-        "structure",
-        "[path]",
-        "Hierarchical symbol tree for a project or file",
-        CommandGroup::Code,
         false,
         false,
         false,

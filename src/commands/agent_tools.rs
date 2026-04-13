@@ -5,7 +5,6 @@ use crate::tasks::cmd_tasks;
 use crate::*;
 
 use super::agent_sessions::cmd_agent_sessions;
-use super::code::{cmd_definition, cmd_references, cmd_structure, cmd_symbols};
 use super::cron;
 use super::doc::cmd_doc;
 use super::kv::cmd_kv;
@@ -42,10 +41,6 @@ pub(super) async fn dispatch_agent_command(
         "unpack" => cmd_unpack(ctx, args),
         "totp" => cmd_totp(ctx, args).await,
         "kv" => cmd_kv(ctx, args).await,
-        "symbols" | "syms" => cmd_symbols(ctx, args),
-        "definition" | "def" => cmd_definition(ctx, args),
-        "references" | "refs" => cmd_references(ctx, args),
-        "structure" => cmd_structure(ctx, args),
         "doc" => cmd_doc(ctx, args),
         _ => return None,
     };

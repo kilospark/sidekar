@@ -164,7 +164,7 @@ sidekar bus who                           # List agents on your channel
 sidekar bus send claude-2 "Review the PR" # Send a request or FYI
 sidekar memory context                    # Show scoped startup memory brief
 sidekar tasks list --ready                # Show unblocked tasks
-sidekar repo actions                      # Discover likely project commands
+sidekar repo pack                         # Pack repo files for model context
 sidekar monitor start all                 # Watch tabs for title/favicon changes
 ```
 
