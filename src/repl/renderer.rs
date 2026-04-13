@@ -77,13 +77,13 @@ impl EventRenderer {
     pub(super) fn render(&mut self, event: &StreamEvent) {
         match event {
             StreamEvent::Waiting => {
-                self.set_status_spinner("thinking");
+                self.set_status_spinner("waiting for response");
             }
             StreamEvent::ResolvingContext => {
                 self.set_status_spinner("resolving context");
             }
             StreamEvent::Connecting => {
-                self.set_status_spinner("connecting to model");
+                self.set_status_spinner("connecting");
             }
             StreamEvent::Compacting => {
                 self.set_status_spinner("compacting context");
@@ -111,9 +111,10 @@ impl EventRenderer {
                 self.update_partial_preview();
             }
             StreamEvent::ThinkingDelta { .. } => {
-                if self.spinner.is_none() {
-                    self.spinner = Some(Spinner::start_with_label("thinking".to_string()));
-                }
+                // Stream has started — replace any earlier status label
+                // ("connecting to model", "resolving context", "working")
+                // with "thinking" so the spinner reflects reality.
+                self.set_status_spinner("thinking");
             }
             StreamEvent::ToolCallStart { index, name, .. } => {
                 self.stop_spinner();

@@ -147,6 +147,10 @@ pub async fn run(
             }
         };
 
+        // Stream opened — transition from "connecting" to "waiting for
+        // response" until the first delta arrives.
+        on_event(&StreamEvent::Waiting);
+
         let response = match consume_stream(&mut rx, &on_event, cancel).await {
             Ok(r) => r,
             Err(e) if e.is::<Cancelled>() => return Err(e),
