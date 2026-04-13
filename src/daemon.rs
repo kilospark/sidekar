@@ -210,14 +210,40 @@ pub fn stop() -> Result<()> {
     }
 }
 
+#[derive(serde::Serialize)]
+struct DaemonStatusOutput {
+    running: bool,
+    pid: Option<i32>,
+    socket: Option<String>,
+}
+
+impl crate::output::CommandOutput for DaemonStatusOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(pid) = self.pid {
+            writeln!(w, "Daemon running (PID {pid})")?;
+            if let Some(sock) = &self.socket {
+                writeln!(w, "Socket: {sock}")?;
+            }
+        } else {
+            writeln!(w, "Daemon not running")?;
+        }
+        Ok(())
+    }
+}
+
 /// Show daemon status.
 pub fn status() -> Result<()> {
-    if let Some(pid) = get_pid() {
-        println!("Daemon running (PID {pid})");
-        println!("Socket: {}", socket_path().display());
+    let (pid, socket) = if let Some(pid) = get_pid() {
+        (Some(pid), Some(socket_path().display().to_string()))
     } else {
-        println!("Daemon not running");
-    }
+        (None, None)
+    };
+    let out = DaemonStatusOutput {
+        running: pid.is_some(),
+        pid,
+        socket,
+    };
+    crate::output::emit(&out)?;
     Ok(())
 }
 
@@ -284,14 +310,23 @@ pub async fn start() -> Result<()> {
     let pid = std::process::id();
     std::fs::write(pid_path(), pid.to_string())?;
 
-    eprintln!("sidekar daemon running (PID {pid})");
-    eprintln!("Socket: {}", sock_path.display());
+    crate::broker::try_log_event(
+        "info",
+        "daemon",
+        &format!("started (PID {pid})"),
+        Some(&sock_path.display().to_string()),
+    );
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
     if let Some((tcp_listener, port)) = bind_http_listener() {
         state.lock().await.http_port = port;
-        eprintln!("HTTP/WS listener: 127.0.0.1:{port}");
+        crate::broker::try_log_event(
+            "info",
+            "daemon",
+            &format!("HTTP/WS listener on 127.0.0.1:{port}"),
+            None,
+        );
         if let Ok(listener) = tokio::net::TcpListener::from_std(tcp_listener) {
             let tcp_state = state.clone();
             tokio::spawn(accept_http_connections(listener, tcp_state));
@@ -318,7 +353,7 @@ pub async fn start() -> Result<()> {
             }
             (Err(_), Err(_)) => std::future::pending::<()>().await,
         }
-        eprintln!("Daemon shutting down...");
+        crate::broker::try_log_event("info", "daemon", "shutting down", None);
         crate::api_client::deregister_discover_port().await;
         let _ = std::fs::remove_file(&shutdown_pid);
         let _ = std::fs::remove_file(&shutdown_sock);
@@ -339,7 +374,7 @@ pub async fn start() -> Result<()> {
                 tokio::spawn(handle_connection(stream, s));
             }
             Err(e) => {
-                eprintln!("Accept error: {e}");
+                crate::broker::try_log_error("daemon", "accept error", Some(&format!("{e:#}")));
             }
         }
     }

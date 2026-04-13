@@ -1,4 +1,121 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct CookieEntry {
+    name: String,
+    value: String,
+    domain: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    flags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct CookiesOutput {
+    cookies: Vec<CookieEntry>,
+}
+
+impl crate::output::CommandOutput for CookiesOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.cookies.is_empty() {
+            writeln!(w, "No cookies.")?;
+            return Ok(());
+        }
+        for c in &self.cookies {
+            let exp = c
+                .expires
+                .as_ref()
+                .map(|e| format!(" exp:{e}"))
+                .unwrap_or_default();
+            writeln!(
+                w,
+                "{}={} ({}{} {})",
+                c.name,
+                c.value,
+                c.domain,
+                exp,
+                c.flags.join(" ")
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ConsoleLogEntry {
+    kind: String,
+    text: String,
+}
+
+#[derive(serde::Serialize)]
+struct ConsoleLogsOutput {
+    entries: Vec<ConsoleLogEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+impl crate::output::CommandOutput for ConsoleLogsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(note) = &self.note {
+            writeln!(w, "{note}")?;
+            return Ok(());
+        }
+        for e in &self.entries {
+            writeln!(w, "[{}] {}", e.kind, e.text)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct NetworkRow {
+    method: String,
+    url: String,
+    status: Option<i64>,
+    req_type: String,
+    time_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct NetworkListOutput {
+    prefix: Option<String>,
+    rows: Vec<NetworkRow>,
+    footer: String,
+}
+
+impl crate::output::CommandOutput for NetworkListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(prefix) = &self.prefix {
+            writeln!(w, "{prefix}")?;
+        }
+        for r in &self.rows {
+            let status = r
+                .status
+                .map(|s| format!("[{}]", s))
+                .unwrap_or_else(|| "[pending]".to_string());
+            let req_type = if r.req_type.is_empty() {
+                "?"
+            } else {
+                r.req_type.as_str()
+            };
+            writeln!(
+                w,
+                "{} {} {} ({}) +{}ms",
+                r.method, r.url, status, req_type, r.time_ms
+            )?;
+            if let Some(body) = &r.body {
+                writeln!(w, "  body: {body}")?;
+            }
+        }
+        writeln!(w)?;
+        writeln!(w, "{}", self.footer)?;
+        Ok(())
+    }
+}
 
 /// Minimal ISO 8601 date from epoch seconds (no chrono dependency).
 fn chrono_lite(epoch_secs: i64) -> String {
@@ -26,40 +143,46 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            if cookies.is_empty() {
-                out!(ctx, "No cookies.");
-            } else {
-                for c in cookies {
-                    let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-                    let value = c.get("value").and_then(Value::as_str).unwrap_or("");
-                    let domain = c.get("domain").and_then(Value::as_str).unwrap_or("");
+            let entries: Vec<CookieEntry> = cookies
+                .iter()
+                .map(|c| {
+                    let name = c.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                    let value = truncate(
+                        c.get("value").and_then(Value::as_str).unwrap_or(""),
+                        60,
+                    );
+                    let domain = c
+                        .get("domain")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let expires = c.get("expires").and_then(Value::as_f64).unwrap_or(-1.0);
-                    let mut flags = Vec::new();
+                    let mut flags: Vec<String> = Vec::new();
                     if c.get("httpOnly").and_then(Value::as_bool).unwrap_or(false) {
-                        flags.push("httpOnly");
+                        flags.push("httpOnly".to_string());
                     }
                     if c.get("secure").and_then(Value::as_bool).unwrap_or(false) {
-                        flags.push("secure");
+                        flags.push("secure".to_string());
                     }
                     if c.get("session").and_then(Value::as_bool).unwrap_or(false) {
-                        flags.push("session");
+                        flags.push("session".to_string());
                     }
-                    let exp = if expires > 0.0 {
-                        format!(" exp:{}", epoch_to_date(expires as i64))
+                    let expires = if expires > 0.0 {
+                        Some(epoch_to_date(expires as i64))
                     } else {
-                        String::new()
+                        None
                     };
-                    out!(
-                        ctx,
-                        "{}={} ({}{} {})",
+                    CookieEntry {
                         name,
-                        truncate(value, 60),
+                        value,
                         domain,
-                        exp,
-                        flags.join(" ")
-                    );
-                }
-            }
+                        expires,
+                        flags,
+                    }
+                })
+                .collect();
+            let output = CookiesOutput { cookies: entries };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             cdp.close().await;
         }
         "set" => {
@@ -85,20 +208,20 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
                 json!({ "name": name, "value": value, "domain": domain, "path": "/" }),
             )
             .await?;
-            out!(
-                ctx,
+            let msg = format!(
                 "Cookie set: {}={} ({})",
                 name,
                 truncate(&value, 40),
                 domain
             );
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
         "clear" => {
             let mut cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut cdp).await?;
             cdp.send("Network.clearBrowserCookies", json!({})).await?;
-            out!(ctx, "All cookies cleared.");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("All cookies cleared."))?);
             cdp.close().await;
         }
         "delete" => {
@@ -123,7 +246,8 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
                 json!({ "name": name, "domain": domain }),
             )
             .await?;
-            out!(ctx, "Deleted cookie: {} ({})", name, domain);
+            let msg = format!("Deleted cookie: {} ({})", name, domain);
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
         _ => bail!("Usage: sidekar cookies [get|set|clear|delete] [args]"),
@@ -181,18 +305,42 @@ pub(crate) async fn cmd_console(ctx: &mut AppContext, action: Option<&str>) -> R
                     logs.push(format!("[exception] {}", truncate(desc, 200)));
                 }
             }
-            if logs.is_empty() {
-                out!(ctx, "No console output captured (listened for 1s).");
+            let output = if logs.is_empty() {
+                ConsoleLogsOutput {
+                    entries: Vec::new(),
+                    note: Some("No console output captured (listened for 1s).".to_string()),
+                }
             } else {
-                out!(ctx, "{}", logs.join("\n"));
-            }
+                let entries = logs
+                    .iter()
+                    .map(|line| {
+                        // Lines look like "[kind] text"; split once.
+                        if let Some(rest) = line.strip_prefix('[')
+                            && let Some(idx) = rest.find(']')
+                        {
+                            let kind = rest[..idx].to_string();
+                            let text = rest[idx + 1..].trim_start().to_string();
+                            return ConsoleLogEntry { kind, text };
+                        }
+                        ConsoleLogEntry {
+                            kind: "log".to_string(),
+                            text: line.clone(),
+                        }
+                    })
+                    .collect();
+                ConsoleLogsOutput {
+                    entries,
+                    note: None,
+                }
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             cdp.close().await;
         }
         "listen" => {
             let mut cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut cdp).await?;
             cdp.send("Runtime.enable", json!({})).await?;
-            out!(ctx, "Listening for console output (Ctrl+C to stop)...");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Listening for console output (Ctrl+C to stop)..."))?);
             loop {
                 let Some(event) = cdp.next_event(Duration::from_secs(60)).await? else {
                     continue;
@@ -213,7 +361,8 @@ pub(crate) async fn cmd_console(ctx: &mut AppContext, action: Option<&str>) -> R
                         .map(console_arg_to_text)
                         .collect::<Vec<_>>()
                         .join(" ");
-                    out!(ctx, "[{}] {}", event_type, truncate(&text, 500));
+                    let line = format!("[{}] {}", event_type, truncate(&text, 500));
+                    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(line))?);
                 } else if event.get("method").and_then(Value::as_str)
                     == Some("Runtime.exceptionThrown")
                 {
@@ -227,7 +376,8 @@ pub(crate) async fn cmd_console(ctx: &mut AppContext, action: Option<&str>) -> R
                                 .and_then(Value::as_str)
                         })
                         .unwrap_or("Unknown error");
-                    out!(ctx, "[exception] {}", truncate(desc, 500));
+                    let line = format!("[exception] {}", truncate(desc, 500));
+                    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(line))?);
                 }
             }
         }
@@ -250,8 +400,7 @@ pub(crate) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
             let mut cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut cdp).await?;
             cdp.send("Network.enable", json!({})).await?;
-            out!(
-                ctx,
+            let prefix = format!(
                 "Capturing network for {}s{}...",
                 duration,
                 filter
@@ -375,29 +524,24 @@ pub(crate) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                 }
             }
 
-            for r in &requests {
-                let status = r
-                    .status
-                    .map(|s| format!("[{}]", s))
-                    .unwrap_or_else(|| "[pending]".to_string());
-                out!(
-                    ctx,
-                    "{} {} {} ({}) +{}ms",
-                    r.method,
-                    truncate(&r.url, 150),
-                    status,
-                    if r.req_type.is_empty() {
-                        "?"
-                    } else {
-                        r.req_type.as_str()
-                    },
-                    r.time
-                );
-                if let Some(body) = &r.post_data {
-                    out!(ctx, "  body: {}", truncate(body, 200));
-                }
-            }
-            out!(ctx, "\n{} requests captured", requests.len());
+            let rows: Vec<NetworkRow> = requests
+                .iter()
+                .map(|r| NetworkRow {
+                    method: r.method.clone(),
+                    url: truncate(&r.url, 150),
+                    status: r.status,
+                    req_type: r.req_type.clone(),
+                    time_ms: r.time,
+                    body: r.post_data.as_ref().map(|b| truncate(b, 200)),
+                })
+                .collect();
+            let footer = format!("{} requests captured", requests.len());
+            let output = NetworkListOutput {
+                prefix: Some(prefix),
+                rows,
+                footer,
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             fs::write(&log_file, serde_json::to_string_pretty(&requests)?)
                 .with_context(|| format!("failed writing {}", log_file.display()))?;
             cdp.close().await;
@@ -415,37 +559,31 @@ pub(crate) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
                 .into_iter()
                 .filter(|r| filter.as_ref().is_none_or(|f| r.url.contains(f)))
                 .collect::<Vec<_>>();
-            for r in &filtered {
-                let status = r
-                    .status
-                    .map(|s| format!("[{}]", s))
-                    .unwrap_or_else(|| "[pending]".to_string());
-                out!(
-                    ctx,
-                    "{} {} {} ({}) +{}ms",
-                    r.method,
-                    truncate(&r.url, 150),
-                    status,
-                    if r.req_type.is_empty() {
-                        "?"
-                    } else {
-                        r.req_type.as_str()
-                    },
-                    r.time
-                );
-                if let Some(body) = &r.post_data {
-                    out!(ctx, "  body: {}", truncate(body, 200));
-                }
-            }
-            out!(
-                ctx,
-                "\n{} requests{}",
+            let rows: Vec<NetworkRow> = filtered
+                .iter()
+                .map(|r| NetworkRow {
+                    method: r.method.clone(),
+                    url: truncate(&r.url, 150),
+                    status: r.status,
+                    req_type: r.req_type.clone(),
+                    time_ms: r.time,
+                    body: r.post_data.as_ref().map(|b| truncate(b, 200)),
+                })
+                .collect();
+            let footer = format!(
+                "{} requests{}",
                 filtered.len(),
                 filter
                     .as_ref()
                     .map(|f| format!(" matching \"{}\"", f))
                     .unwrap_or_default()
             );
+            let output = NetworkListOutput {
+                prefix: None,
+                rows,
+                footer,
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
         }
         "har" => {
             if !log_file.exists() {
@@ -536,12 +674,12 @@ pub(crate) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
             };
             fs::write(&har_file, serde_json::to_string_pretty(&har)?)
                 .with_context(|| format!("failed writing {}", har_file.display()))?;
-            out!(
-                ctx,
+            let msg = format!(
                 "HAR 1.2 exported: {} ({} entries)",
                 har_file.display(),
                 entries.len()
             );
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
         _ => bail!("Usage: sidekar network <capture|show|har> [args]"),
     }
@@ -558,7 +696,7 @@ pub(crate) async fn cmd_block(ctx: &mut AppContext, args: &[String]) -> Result<(
     if args.first().map(String::as_str) == Some("off") {
         state.block_patterns = None;
         ctx.save_session_state(&state)?;
-        out!(ctx, "Request blocking disabled.");
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Request blocking disabled."))?);
         return Ok(());
     }
 
@@ -587,9 +725,8 @@ pub(crate) async fn cmd_block(ctx: &mut AppContext, args: &[String]) -> Result<(
         url_patterns,
     });
     ctx.save_session_state(&state)?;
-    if has_ads {
-        out!(
-            ctx,
+    let msg = if has_ads {
+        format!(
             "Blocking: ads/trackers ({} patterns){}",
             ADBLOCK_PATTERNS.len(),
             if args.len() > 1 {
@@ -597,13 +734,13 @@ pub(crate) async fn cmd_block(ctx: &mut AppContext, args: &[String]) -> Result<(
             } else {
                 String::new()
             }
-        );
+        )
     } else {
-        out!(
-            ctx,
+        format!(
             "Blocking: {}. Takes effect on next page load.",
             args.join(", ")
-        );
-    }
+        )
+    };
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     Ok(())
 }

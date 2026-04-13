@@ -2,18 +2,21 @@ use crate::*;
 
 pub fn print_command_help(command: &str) {
     if let Some(replacement) = removed_command_replacement(command) {
-        println!("Command '{command}' was removed.\n\nUse: sidekar {replacement}");
+        let msg = format!("Command '{command}' was removed.\n\nUse: sidekar {replacement}");
+        let _ = crate::output::emit(&crate::output::PlainOutput::new(msg));
         return;
     }
 
     let command = canonical_command_name(command).unwrap_or(command);
     let help = command_help_text(command).or_else(|| command_spec_fallback(command));
     let Some(help) = help else {
-        println!("Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands.");
+        let msg = format!("Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands.");
+        let _ = crate::output::emit(&crate::output::PlainOutput::new(msg));
         return;
     };
     let text = colorize_command_help(&help);
-    println!("{}", crate::runtime::maybe_strip_ansi(&text));
+    let text = crate::runtime::maybe_strip_ansi(&text);
+    let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
 }
 
 fn command_spec_fallback(command: &str) -> Option<String> {
@@ -137,7 +140,8 @@ fn colorize_command_help(help: &str) -> String {
 
 pub fn print_help() {
     let text = crate::cli::render_help(env!("CARGO_PKG_VERSION"));
-    println!("{}", crate::runtime::maybe_strip_ansi(&text));
+    let text = crate::runtime::maybe_strip_ansi(&text);
+    let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
 }
 
 #[cfg(test)]

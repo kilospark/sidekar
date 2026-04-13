@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "macos")]
+use crate::output::{CommandOutput, PlainOutput};
 
 pub(super) async fn cmd_desktop_screenshot(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
@@ -115,13 +117,28 @@ pub(super) async fn cmd_desktop_screenshot(ctx: &mut AppContext, args: &[String]
         };
         let est_tokens = (target_w as u64 * scaled_h) / 750;
 
-        out!(ctx, "Screenshot saved to {}", out_path.display());
-        out!(
-            ctx,
-            "Size: {}KB | Est. vision tokens: ~{}",
-            file_kb,
-            est_tokens
-        );
+        #[derive(serde::Serialize)]
+        struct ScreenshotOutput {
+            path: String,
+            size_kb: u64,
+            est_vision_tokens: u64,
+        }
+        impl CommandOutput for ScreenshotOutput {
+            fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                writeln!(w, "Screenshot saved to {}", self.path)?;
+                writeln!(
+                    w,
+                    "Size: {}KB | Est. vision tokens: ~{}",
+                    self.size_kb, self.est_vision_tokens
+                )
+            }
+        }
+        let output = ScreenshotOutput {
+            path: out_path.display().to_string(),
+            size_kb: file_kb,
+            est_vision_tokens: est_tokens,
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         Ok(())
     }
 }
@@ -178,15 +195,43 @@ pub(super) async fn cmd_desktop_apps(ctx: &mut AppContext) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let apps = crate::desktop::native::list_apps()?;
-        if apps.is_empty() {
-            out!(ctx, "No running applications found.");
-        } else {
-            for app in &apps {
-                let active = if app.is_active { " *" } else { "" };
-                let bundle = app.bundle_id.as_deref().unwrap_or("-");
-                out!(ctx, "[{}] {} ({}){}", app.pid, app.name, bundle, active);
+        #[derive(serde::Serialize)]
+        struct AppEntry {
+            pid: i32,
+            name: String,
+            bundle_id: Option<String>,
+            is_active: bool,
+        }
+        #[derive(serde::Serialize)]
+        struct AppsOutput {
+            apps: Vec<AppEntry>,
+        }
+        impl CommandOutput for AppsOutput {
+            fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                if self.apps.is_empty() {
+                    writeln!(w, "No running applications found.")?;
+                    return Ok(());
+                }
+                for app in &self.apps {
+                    let active = if app.is_active { " *" } else { "" };
+                    let bundle = app.bundle_id.as_deref().unwrap_or("-");
+                    writeln!(w, "[{}] {} ({}){}", app.pid, app.name, bundle, active)?;
+                }
+                Ok(())
             }
         }
+        let output = AppsOutput {
+            apps: apps
+                .into_iter()
+                .map(|a| AppEntry {
+                    pid: a.pid,
+                    name: a.name,
+                    bundle_id: a.bundle_id,
+                    is_active: a.is_active,
+                })
+                .collect(),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         Ok(())
     }
 }
@@ -199,34 +244,66 @@ pub(super) async fn cmd_desktop_windows(ctx: &mut AppContext, args: &[String]) -
     {
         let pid = parse_desktop_pid(args)?;
         let windows = crate::desktop::native::list_windows(pid)?;
-        if windows.is_empty() {
-            out!(ctx, "No windows found for pid {pid}.");
-        } else {
-            for win in &windows {
-                let title = win.title.as_deref().unwrap_or("(untitled)");
-                let flags = match (win.is_main, win.is_focused) {
-                    (true, true) => " [main, focused]",
-                    (true, false) => " [main]",
-                    (false, true) => " [focused]",
-                    _ => "",
-                };
-                let wid = win
-                    .window_id
-                    .map(|id| format!(" wid:{id}"))
-                    .unwrap_or_default();
-                out!(
-                    ctx,
-                    "\"{}\" ({:.0}x{:.0} at {:.0},{:.0}){}{}",
-                    title,
-                    win.frame.width,
-                    win.frame.height,
-                    win.frame.x,
-                    win.frame.y,
-                    wid,
-                    flags
-                );
+        #[derive(serde::Serialize)]
+        struct WindowEntry {
+            title: Option<String>,
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+            window_id: Option<u32>,
+            is_main: bool,
+            is_focused: bool,
+        }
+        #[derive(serde::Serialize)]
+        struct WindowsOutput {
+            pid: i32,
+            windows: Vec<WindowEntry>,
+        }
+        impl CommandOutput for WindowsOutput {
+            fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                if self.windows.is_empty() {
+                    writeln!(w, "No windows found for pid {}.", self.pid)?;
+                    return Ok(());
+                }
+                for win in &self.windows {
+                    let title = win.title.as_deref().unwrap_or("(untitled)");
+                    let flags = match (win.is_main, win.is_focused) {
+                        (true, true) => " [main, focused]",
+                        (true, false) => " [main]",
+                        (false, true) => " [focused]",
+                        _ => "",
+                    };
+                    let wid = win
+                        .window_id
+                        .map(|id| format!(" wid:{id}"))
+                        .unwrap_or_default();
+                    writeln!(
+                        w,
+                        "\"{}\" ({:.0}x{:.0} at {:.0},{:.0}){}{}",
+                        title, win.width, win.height, win.x, win.y, wid, flags
+                    )?;
+                }
+                Ok(())
             }
         }
+        let output = WindowsOutput {
+            pid,
+            windows: windows
+                .into_iter()
+                .map(|win| WindowEntry {
+                    title: win.title,
+                    x: win.frame.x,
+                    y: win.frame.y,
+                    width: win.frame.width,
+                    height: win.frame.height,
+                    window_id: win.window_id,
+                    is_main: win.is_main,
+                    is_focused: win.is_focused,
+                })
+                .collect(),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         Ok(())
     }
 }
@@ -243,20 +320,48 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
             bail!("Usage: sidekar desktop find --app <name>|--pid <pid> <query>");
         }
         let matches = crate::desktop::native::find_elements(pid, &query)?;
-        if matches.is_empty() {
-            out!(ctx, "No elements found matching \"{}\"", query);
-        } else {
-            out!(ctx, "Found {} element(s):", matches.len());
-            for m in &matches {
-                let title = m.title.as_deref().unwrap_or("");
-                let actions = if m.actions.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", m.actions.join(", "))
-                };
-                out!(ctx, "  {} \"{}\"{}", m.role, title, actions);
+        #[derive(serde::Serialize)]
+        struct FindMatch {
+            role: String,
+            title: Option<String>,
+            actions: Vec<String>,
+        }
+        #[derive(serde::Serialize)]
+        struct FindOutput {
+            query: String,
+            matches: Vec<FindMatch>,
+        }
+        impl CommandOutput for FindOutput {
+            fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                if self.matches.is_empty() {
+                    writeln!(w, "No elements found matching \"{}\"", self.query)?;
+                    return Ok(());
+                }
+                writeln!(w, "Found {} element(s):", self.matches.len())?;
+                for m in &self.matches {
+                    let title = m.title.as_deref().unwrap_or("");
+                    let actions = if m.actions.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", m.actions.join(", "))
+                    };
+                    writeln!(w, "  {} \"{}\"{}", m.role, title, actions)?;
+                }
+                Ok(())
             }
         }
+        let output = FindOutput {
+            query: query.clone(),
+            matches: matches
+                .into_iter()
+                .map(|m| FindMatch {
+                    role: m.role,
+                    title: m.title,
+                    actions: m.actions,
+                })
+                .collect(),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         Ok(())
     }
 }
@@ -310,7 +415,11 @@ pub(super) async fn cmd_desktop_launch(ctx: &mut AppContext, args: &[String]) ->
             bail!("Usage: sidekar desktop launch <app name>");
         }
         crate::desktop::native::launch_app(&name)?;
-        out!(ctx, "Launched {}", name);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!("Launched {}", name)))?
+        );
         Ok(())
     }
 }
@@ -323,7 +432,11 @@ pub(super) async fn cmd_desktop_activate(ctx: &mut AppContext, args: &[String]) 
     {
         let pid = parse_desktop_pid(args)?;
         crate::desktop::native::activate_app(pid)?;
-        out!(ctx, "Activated app (pid {})", pid);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!("Activated app (pid {})", pid)))?
+        );
         Ok(())
     }
 }
@@ -336,7 +449,11 @@ pub(super) async fn cmd_desktop_quit(ctx: &mut AppContext, args: &[String]) -> R
     {
         let pid = parse_desktop_pid(args)?;
         crate::desktop::native::quit_app(pid)?;
-        out!(ctx, "Quit app (pid {})", pid);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!("Quit app (pid {})", pid)))?
+        );
         Ok(())
     }
 }
@@ -352,7 +469,11 @@ pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> 
             bail!("Usage: sidekar desktop press <key|combo>");
         }
         crate::desktop::input::press_chord(&spec)?;
-        out!(ctx, "Pressed {}", spec);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!("Pressed {}", spec)))?
+        );
         Ok(())
     }
 }
@@ -368,7 +489,14 @@ pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> R
             bail!("Usage: sidekar desktop type <text>");
         }
         crate::desktop::input::type_text(&text)?;
-        out!(ctx, "Typed {} chars", text.chars().count());
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!(
+                "Typed {} chars",
+                text.chars().count()
+            )))?
+        );
         Ok(())
     }
 }
@@ -384,7 +512,14 @@ pub(super) async fn cmd_desktop_paste(ctx: &mut AppContext, args: &[String]) -> 
             bail!("Usage: sidekar desktop paste <text>");
         }
         crate::desktop::input::paste_text(&text)?;
-        out!(ctx, "Pasted {} chars", text.chars().count());
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!(
+                "Pasted {} chars",
+                text.chars().count()
+            )))?
+        );
         Ok(())
     }
 }
@@ -402,25 +537,21 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
         }
 
         let result = crate::desktop::native::click_element(pid, &query)?;
-        match result.kind.as_str() {
+        let msg = match result.kind.as_str() {
             "axPress" => {
                 let role = result.role.as_deref().unwrap_or("element");
                 let title = result.title.as_deref().unwrap_or("");
-                out!(ctx, "Clicked {} \"{}\"", role, title);
+                format!("Clicked {} \"{}\"", role, title)
             }
             "fallbackClick" => {
                 if let (Some(x), Some(y)) = (result.x, result.y) {
                     crate::desktop::input::click_at(x, y)?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
-                    out!(
-                        ctx,
+                    format!(
                         "Clicked {} \"{}\" at ({:.0}, {:.0}) via coordinate fallback",
-                        role,
-                        title,
-                        x,
-                        y
-                    );
+                        role, title, x, y
+                    )
                 } else {
                     bail!("Element found but no coordinates available for fallback click");
                 }
@@ -434,7 +565,12 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
             other => {
                 bail!("Unexpected click result: {}", other);
             }
-        }
+        };
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(msg))?
+        );
         Ok(())
     }
 }

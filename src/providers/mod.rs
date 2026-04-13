@@ -807,13 +807,17 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
             if !r.status().is_success() {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
-                eprintln!("\x1b[2m[models API {status}: {text}]\x1b[0m");
+                crate::broker::try_log_error(
+                    "models",
+                    &format!("API {status}"),
+                    Some(&text),
+                );
                 return Vec::new();
             }
             r
         }
         Err(e) => {
-            eprintln!("\x1b[2m[models API error: {e}]\x1b[0m");
+            crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
             return Vec::new();
         }
     };
@@ -868,13 +872,17 @@ async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
             if !r.status().is_success() {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
-                eprintln!("\x1b[2m[models API {status}: {text}]\x1b[0m");
+                crate::broker::try_log_error(
+                    "models",
+                    &format!("API {status}"),
+                    Some(&text),
+                );
                 return Vec::new();
             }
             r
         }
         Err(e) => {
-            eprintln!("\x1b[2m[models API error: {e}]\x1b[0m");
+            crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
             return Vec::new();
         }
     };

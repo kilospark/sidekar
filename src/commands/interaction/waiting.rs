@@ -1,4 +1,39 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct WaitForOutput {
+    found_line: String,
+    page_brief: String,
+}
+
+impl crate::output::CommandOutput for WaitForOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "{}", self.found_line)?;
+        writeln!(w, "{}", self.page_brief)?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ScrollOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_brief: Option<String>,
+}
+
+impl crate::output::CommandOutput for ScrollOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(l) = &self.action_line {
+            writeln!(w, "{l}")?;
+        }
+        if let Some(b) = &self.page_brief {
+            writeln!(w, "{b}")?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_wait_for(
     ctx: &mut AppContext,
@@ -39,13 +74,17 @@ pub(crate) async fn cmd_wait_for(
     if !val.get("found").and_then(Value::as_bool).unwrap_or(false) {
         bail!("Element not found after {}ms: {}", timeout, selector);
     }
-    out!(
-        ctx,
+    let found_line = format!(
         "Found {} \"{}\"",
         val.get("tag").and_then(Value::as_str).unwrap_or("element"),
         val.get("text").and_then(Value::as_str).unwrap_or_default()
     );
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
+    let output = WaitForOutput {
+        found_line,
+        page_brief,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -170,7 +209,8 @@ pub(crate) async fn cmd_wait_for_nav(ctx: &mut AppContext, timeout_ms: Option<&s
                 true,
             )
             .await;
-            out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+            let brief = get_page_brief(&mut cdp).await?;
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
             cdp.close().await;
             return Ok(());
         }
@@ -183,7 +223,8 @@ pub(crate) async fn cmd_wait_for_nav(ctx: &mut AppContext, timeout_ms: Option<&s
                 true,
             )
             .await;
-            out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+            let brief = get_page_brief(&mut cdp).await?;
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
             cdp.close().await;
             return Ok(());
         }
@@ -243,7 +284,8 @@ pub(crate) async fn cmd_wait_for_nav(ctx: &mut AppContext, timeout_ms: Option<&s
         );
     }
 
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let brief = get_page_brief(&mut cdp).await?;
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
     cdp.close().await;
     Ok(())
 }
@@ -306,7 +348,8 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
                 let key = if lower == "up" { "PageUp" } else { "PageDown" };
                 cdp.close().await;
                 cmd_press(ctx, key).await?;
-                out!(ctx, "Scrolled {lower} (keyboard fallback)");
+                let msg = format!("Scrolled {lower} (keyboard fallback)");
+                out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
                 return Ok(());
             }
         } else {
@@ -332,7 +375,8 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
             if !scrolled {
                 cdp.close().await;
                 cmd_press(ctx, fallback_key).await?;
-                out!(ctx, "Scrolled {lower} (keyboard fallback)");
+                let msg = format!("Scrolled {lower} (keyboard fallback)");
+                out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
                 return Ok(());
             }
         }
@@ -361,8 +405,7 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
         let result =
             runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
         crate::check_js_error(&result)?;
-        out!(
-            ctx,
+        let action_line = format!(
             "Scrolled {} within {} {}",
             result
                 .pointer("/result/value/dir")
@@ -374,6 +417,15 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
                 .unwrap_or("element"),
             selector
         );
+        sleep(Duration::from_millis(100)).await;
+        let page_brief = get_page_brief(&mut cdp).await?;
+        cdp.close().await;
+        let output = ScrollOutput {
+            action_line: Some(action_line),
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
+        return Ok(());
     } else {
         let script = format!(
             r#"(function() {{
@@ -387,8 +439,7 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
         let result =
             runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
         crate::check_js_error(&result)?;
-        out!(
-            ctx,
+        let action_line = format!(
             "Scrolled to {} {}",
             result
                 .pointer("/result/value/tag")
@@ -396,10 +447,25 @@ pub(crate) async fn cmd_scroll(ctx: &mut AppContext, args: &[String]) -> Result<
                 .unwrap_or("element"),
             first
         );
+        sleep(Duration::from_millis(100)).await;
+        let page_brief = get_page_brief(&mut cdp).await?;
+        cdp.close().await;
+        let output = ScrollOutput {
+            action_line: Some(action_line),
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
+        return Ok(());
     }
 
+    // up/down direction branches that reached here without early return
     sleep(Duration::from_millis(100)).await;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;
+    let output = ScrollOutput {
+        action_line: None,
+        page_brief: Some(page_brief),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }

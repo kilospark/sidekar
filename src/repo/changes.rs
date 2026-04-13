@@ -4,7 +4,6 @@ use super::*;
 pub(super) struct RepoChangesArgs {
     pub(super) target: Option<String>,
     pub(super) since_ref: Option<String>,
-    pub(super) style: RepoStructuredStyle,
     pub(super) max_files: usize,
     pub(super) max_symbols: usize,
 }
@@ -68,15 +67,12 @@ pub(super) struct ChangeEntry {
 pub(super) fn parse_repo_changes_args(args: &[String]) -> Result<RepoChangesArgs> {
     let mut target = None;
     let mut since_ref = None;
-    let mut style = RepoStructuredStyle::Plain;
     let mut max_files = DEFAULT_CHANGES_MAX_FILES;
     let mut max_symbols = DEFAULT_CHANGES_MAX_SYMBOLS;
 
     for arg in args {
         if let Some(value) = arg.strip_prefix("--since=") {
             since_ref = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--style=") {
-            style = RepoStructuredStyle::parse(value)?;
         } else if let Some(value) = arg.strip_prefix("--max-files=") {
             max_files = value
                 .parse::<usize>()
@@ -91,7 +87,7 @@ pub(super) fn parse_repo_changes_args(args: &[String]) -> Result<RepoChangesArgs
             target = Some(arg.clone());
         } else {
             bail!(
-                "Usage: sidekar repo changes [path] [--since=<ref>] [--style=json|plain] [--max-files=N] [--max-symbols=N]"
+                "Usage: sidekar repo changes [path] [--since=<ref>] [--max-files=N] [--max-symbols=N]"
             );
         }
     }
@@ -99,10 +95,9 @@ pub(super) fn parse_repo_changes_args(args: &[String]) -> Result<RepoChangesArgs
     Ok(RepoChangesArgs {
         target,
         since_ref,
-        style,
         max_files,
         max_symbols,
-    })
+        })
 }
 
 pub(super) fn build_repo_changes_summary(args: &RepoChangesArgs) -> Result<RepoChangesSummary> {
@@ -440,52 +435,46 @@ fn extract_heading_symbols(content: &str, max_symbols: usize) -> Vec<RepoSymbol>
     symbols
 }
 
-pub(super) fn render_repo_changes_plain(summary: &RepoChangesSummary) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "Repo Changes: {}", summary.root.display());
-    let _ = writeln!(out, "Scope: {}", summary.scope);
-    let _ = writeln!(
-        out,
-        "Base: {}",
-        summary
-            .since_ref
-            .as_deref()
-            .map(|value| format!("diff since {value}"))
-            .unwrap_or_else(|| "current worktree".to_string())
-    );
-    let _ = writeln!(
-        out,
-        "modified={} added={} deleted={} renamed={} untracked={} reported={} remaining={}",
-        summary.modified_files,
-        summary.added_files,
-        summary.deleted_files,
-        summary.renamed_files,
-        summary.untracked_files,
-        summary.reported_files,
-        summary.remaining_files
-    );
-    if summary.files.is_empty() {
-        let _ = writeln!(out, "\nNo changes found.");
-        return out;
-    }
-    for file in &summary.files {
-        let _ = writeln!(out, "\n- {} {}", file.status, file.path);
-        if file.symbols.is_empty() {
-            let _ = writeln!(out, "  symbols: -");
-        } else {
-            let _ = writeln!(out, "  symbols:");
-            for symbol in &file.symbols {
-                let _ = writeln!(
-                    out,
-                    "    - {} {} @{}",
-                    symbol.kind, symbol.name, symbol.line
-                );
+impl crate::output::CommandOutput for RepoChangesSummary {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Repo Changes: {}", self.root.display())?;
+        writeln!(w, "Scope: {}", self.scope)?;
+        writeln!(
+            w,
+            "Base: {}",
+            self.since_ref
+                .as_deref()
+                .map(|value| format!("diff since {value}"))
+                .unwrap_or_else(|| "current worktree".to_string())
+        )?;
+        writeln!(
+            w,
+            "modified={} added={} deleted={} renamed={} untracked={} reported={} remaining={}",
+            self.modified_files,
+            self.added_files,
+            self.deleted_files,
+            self.renamed_files,
+            self.untracked_files,
+            self.reported_files,
+            self.remaining_files
+        )?;
+        if self.files.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "No changes found.")?;
+            return Ok(());
+        }
+        for file in &self.files {
+            writeln!(w)?;
+            writeln!(w, "- {} {}", file.status, file.path)?;
+            if file.symbols.is_empty() {
+                writeln!(w, "  symbols: -")?;
+            } else {
+                writeln!(w, "  symbols:")?;
+                for symbol in &file.symbols {
+                    writeln!(w, "    - {} {} @{}", symbol.kind, symbol.name, symbol.line)?;
+                }
             }
         }
+        Ok(())
     }
-    out
-}
-
-pub(super) fn render_repo_changes_json(summary: &RepoChangesSummary) -> Result<String> {
-    serde_json::to_string_pretty(summary).context("failed to render repo changes JSON")
 }

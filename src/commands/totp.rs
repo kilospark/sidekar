@@ -77,33 +77,69 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let _ = totp.generate(now);
 
     crate::broker::totp_add(service, account, secret, &algorithm, digits, period)?;
-    out!(
-        ctx,
+    let msg = format!(
         "Added TOTP for {} ({}). Current code: {}",
         service,
         account,
         totp.generate(now)
     );
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct TotpSecretOut {
+    id: i64,
+    service: String,
+    account: String,
+    algorithm: String,
+    digits: i32,
+    period: i32,
+}
+
+#[derive(serde::Serialize)]
+struct TotpListOutput {
+    items: Vec<TotpSecretOut>,
+}
+
+impl crate::output::CommandOutput for TotpListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "0 TOTP secrets.")?;
+            return Ok(());
+        }
+        writeln!(w, "{} TOTP secrets:", self.items.len())?;
+        for s in &self.items {
+            writeln!(
+                w,
+                "  {} {} ({} digits, {}s period)",
+                s.service, s.account, s.digits, s.period
+            )?;
+        }
+        Ok(())
+    }
 }
 
 async fn cmd_totp_list(ctx: &mut AppContext) -> Result<()> {
     let secrets = crate::broker::totp_list()?;
-    if secrets.is_empty() {
-        out!(ctx, "0 TOTP secrets.");
-        return Ok(());
-    }
-    out!(ctx, "{} TOTP secrets:", secrets.len());
-    for s in secrets {
-        out!(
-            ctx,
-            "  {} {} ({} digits, {}s period)",
-            s.service,
-            s.account,
-            s.digits,
-            s.period
-        );
-    }
+    let output = TotpListOutput {
+        items: secrets
+            .into_iter()
+            .map(|s| TotpSecretOut {
+                id: s.id,
+                service: s.service,
+                account: s.account,
+                algorithm: s.algorithm,
+                digits: s.digits,
+                period: s.period,
+            })
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -141,7 +177,11 @@ async fn cmd_totp_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     let now = unix_now();
     let code = totp.generate(now);
-    out!(ctx, "{code}");
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(code))?
+    );
     Ok(())
 }
 
@@ -151,6 +191,11 @@ async fn cmd_totp_remove(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let id = args[0].parse::<i64>().context("Invalid ID")?;
     crate::broker::totp_delete(id)?;
-    out!(ctx, "Deleted TOTP secret {}.", id);
+    let msg = format!("Deleted TOTP secret {}.", id);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }

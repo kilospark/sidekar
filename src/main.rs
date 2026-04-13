@@ -49,7 +49,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         sidekar::runtime::set_quiet(true);
     }
 
-    let json_flag = extract_global_json_flag(&mut args);
+    let format_flag = extract_global_format_flag(&mut args)?;
+    if let Some(fmt) = format_flag {
+        sidekar::runtime::set_output_format(fmt);
+    }
 
     sidekar::runtime::init(verbose_flag);
 
@@ -103,9 +106,14 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         args.append(&mut pt);
     }
 
+    let format_is_structured = matches!(
+        sidekar::runtime::output_format(),
+        sidekar::output::OutputFormat::Json | sidekar::output::OutputFormat::Toon
+    );
+
     if args.is_empty() {
-        if json_flag {
-            print_json_info();
+        if format_is_structured {
+            print_version_info();
         } else {
             print_help();
         }
@@ -117,11 +125,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         .unwrap_or(raw_command.as_str())
         .to_string();
     if matches!(command.as_str(), "-v" | "-V" | "--version") {
-        if json_flag {
-            print_json_info();
-        } else {
-            println!("{}", env!("CARGO_PKG_VERSION"));
-        }
+        print_version_info();
         return Ok(());
     }
     if matches!(command.as_str(), "-h" | "--help" | "help") {
@@ -139,9 +143,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     {
         print_command_help(&command);
         return Ok(());
-    }
-    if json_flag {
-        args.push("--json".to_string());
     }
     if command == "skill" {
         sidekar::skill::print_skill();
@@ -356,22 +357,77 @@ fn should_handle_sidekar_help_flag(raw_command: &str, command: &str) -> bool {
         || sidekar::removed_command_replacement(raw_command).is_some()
 }
 
-fn extract_global_json_flag(args: &mut Vec<String>) -> bool {
-    let saw_json = args.iter().any(|a| a == "--json");
-    if saw_json {
-        args.retain(|a| a != "--json");
+/// Parse the global output-format selector.
+///
+/// Accepts `--format=<name>` / `--format <name>`, plus shorthand `--json`
+/// and `--toon`. Consumes the matching args from the vector and returns the
+/// selected format (last wins). Returns `None` if no format flag was
+/// provided. Unknown `--format=<name>` values return `Err`.
+fn extract_global_format_flag(
+    args: &mut Vec<String>,
+) -> Result<Option<sidekar::output::OutputFormat>> {
+    use sidekar::output::OutputFormat;
+    let mut fmt: Option<OutputFormat> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--json" {
+            fmt = Some(OutputFormat::Json);
+            args.remove(i);
+            continue;
+        }
+        if a == "--toon" {
+            fmt = Some(OutputFormat::Toon);
+            args.remove(i);
+            continue;
+        }
+        if a == "--markdown" || a == "--md" {
+            fmt = Some(OutputFormat::Markdown);
+            args.remove(i);
+            continue;
+        }
+        if let Some(value) = a.strip_prefix("--format=") {
+            let parsed = OutputFormat::parse(value)
+                .ok_or_else(|| anyhow::anyhow!("Unknown format '{value}' (use text|json|toon)"))?;
+            fmt = Some(parsed);
+            args.remove(i);
+            continue;
+        }
+        if a == "--format" && i + 1 < args.len() {
+            let value = args[i + 1].clone();
+            let parsed = OutputFormat::parse(&value)
+                .ok_or_else(|| anyhow::anyhow!("Unknown format '{value}' (use text|json|toon)"))?;
+            fmt = Some(parsed);
+            args.remove(i);
+            args.remove(i);
+            continue;
+        }
+        i += 1;
     }
-    saw_json
+    Ok(fmt)
 }
 
-fn print_json_info() {
-    println!(
-        "{}",
-        serde_json::json!({
-            "name": "sidekar",
-            "version": env!("CARGO_PKG_VERSION"),
-        })
-    );
+#[derive(serde::Serialize)]
+struct VersionInfo {
+    name: &'static str,
+    version: &'static str,
+}
+
+impl sidekar::output::CommandOutput for VersionInfo {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "{}", self.version)
+    }
+}
+
+fn version_info() -> VersionInfo {
+    VersionInfo {
+        name: "sidekar",
+        version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
+fn print_version_info() {
+    let _ = sidekar::output::emit(&version_info());
 }
 
 fn format_age(timestamp: f64) -> String {
@@ -412,25 +468,72 @@ mod tests {
 
     #[test]
     fn json_flag_is_extracted_before_command_selection() {
+        use sidekar::output::OutputFormat;
         let mut args = vec![
             "--json".to_string(),
             "daemon".to_string(),
             "status".to_string(),
         ];
 
-        assert!(extract_global_json_flag(&mut args));
+        assert_eq!(
+            extract_global_format_flag(&mut args).unwrap(),
+            Some(OutputFormat::Json)
+        );
         assert_eq!(args, vec!["daemon", "status"]);
     }
 
     #[test]
     fn json_flag_is_extracted_from_command_args() {
+        use sidekar::output::OutputFormat;
         let mut args = vec![
             "daemon".to_string(),
             "status".to_string(),
             "--json".to_string(),
         ];
 
-        assert!(extract_global_json_flag(&mut args));
+        assert_eq!(
+            extract_global_format_flag(&mut args).unwrap(),
+            Some(OutputFormat::Json)
+        );
+        assert_eq!(args, vec!["daemon", "status"]);
+    }
+
+    #[test]
+    fn format_equals_value_is_parsed() {
+        use sidekar::output::OutputFormat;
+        let mut args = vec!["--format=toon".to_string(), "kv".to_string()];
+        assert_eq!(
+            extract_global_format_flag(&mut args).unwrap(),
+            Some(OutputFormat::Toon)
+        );
+        assert_eq!(args, vec!["kv"]);
+    }
+
+    #[test]
+    fn format_space_value_is_parsed() {
+        use sidekar::output::OutputFormat;
+        let mut args = vec![
+            "--format".to_string(),
+            "json".to_string(),
+            "kv".to_string(),
+        ];
+        assert_eq!(
+            extract_global_format_flag(&mut args).unwrap(),
+            Some(OutputFormat::Json)
+        );
+        assert_eq!(args, vec!["kv"]);
+    }
+
+    #[test]
+    fn unknown_format_is_rejected() {
+        let mut args = vec!["--format=xml".to_string(), "kv".to_string()];
+        assert!(extract_global_format_flag(&mut args).is_err());
+    }
+
+    #[test]
+    fn no_format_flag_returns_none() {
+        let mut args = vec!["daemon".to_string(), "status".to_string()];
+        assert_eq!(extract_global_format_flag(&mut args).unwrap(), None);
         assert_eq!(args, vec!["daemon", "status"]);
     }
 }

@@ -1,7 +1,9 @@
 use std::env;
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+use crate::output::OutputFormat;
 
 struct RuntimeState {
     verbose: AtomicBool,
@@ -11,6 +13,30 @@ struct RuntimeState {
     agent_name: Mutex<Option<String>>,
     channel: Mutex<Option<String>>,
     cron_depth: AtomicUsize,
+    output_format: AtomicU8,
+}
+
+const FMT_TEXT: u8 = 0;
+const FMT_JSON: u8 = 1;
+const FMT_TOON: u8 = 2;
+const FMT_MARKDOWN: u8 = 3;
+
+fn fmt_to_u8(fmt: OutputFormat) -> u8 {
+    match fmt {
+        OutputFormat::Text => FMT_TEXT,
+        OutputFormat::Json => FMT_JSON,
+        OutputFormat::Toon => FMT_TOON,
+        OutputFormat::Markdown => FMT_MARKDOWN,
+    }
+}
+
+fn u8_to_fmt(v: u8) -> OutputFormat {
+    match v {
+        FMT_JSON => OutputFormat::Json,
+        FMT_TOON => OutputFormat::Toon,
+        FMT_MARKDOWN => OutputFormat::Markdown,
+        _ => OutputFormat::Text,
+    }
 }
 
 fn initial_var(name: &str) -> Option<String> {
@@ -34,8 +60,19 @@ fn state() -> &'static RuntimeState {
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(0),
             ),
+            output_format: AtomicU8::new(FMT_TEXT),
         }
     })
+}
+
+pub fn output_format() -> OutputFormat {
+    u8_to_fmt(state().output_format.load(Ordering::SeqCst))
+}
+
+pub fn set_output_format(fmt: OutputFormat) {
+    state()
+        .output_format
+        .store(fmt_to_u8(fmt), Ordering::SeqCst);
 }
 
 pub fn init(verbose_flag: bool) {

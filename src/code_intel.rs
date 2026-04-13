@@ -74,7 +74,8 @@ impl fmt::Display for Lang {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SymbolKind {
     Function,
     Method,
@@ -107,7 +108,7 @@ impl fmt::Display for SymbolKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
@@ -119,7 +120,7 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Reference {
     pub file: String,
     pub line: u32,

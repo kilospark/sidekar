@@ -217,13 +217,74 @@ fn send_directed_envelope(
 
 // --- Tool handlers ---
 
-pub fn cmd_who(
-    state: &SidekarBusState,
-    ctx: &mut AppContext,
+#[derive(serde::Serialize)]
+struct WhoAgent {
+    name: String,
+    nick: Option<String>,
+    pane: Option<String>,
+    channel: Option<String>,
+    cwd: Option<String>,
+    is_you: bool,
+}
+
+#[derive(serde::Serialize)]
+struct WhoOutput {
+    scope: String,
     show_all: bool,
-    json_output: bool,
-) -> Result<()> {
-    let my_name = state.name().unwrap_or("unknown");
+    my_name: String,
+    agents: Vec<WhoAgent>,
+}
+
+impl crate::output::CommandOutput for WhoOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.agents.is_empty() {
+            if self.show_all {
+                writeln!(w, "0 agents on any channel.")?;
+            } else {
+                writeln!(w, "0 agents on \"{}\".", self.scope)?;
+            }
+            return Ok(());
+        }
+        let format_agent = |a: &WhoAgent| -> String {
+            let you = if a.is_you { " (you)" } else { "" };
+            let nick = a
+                .nick
+                .as_deref()
+                .map(|n| format!(" \"{n}\""))
+                .unwrap_or_default();
+            let pane = a.pane.as_deref().unwrap_or("?");
+            let cwd = a
+                .cwd
+                .as_deref()
+                .map(|c| format!(", cwd: {c}"))
+                .unwrap_or_default();
+            format!("- {}{}{} (pane {}{})", a.name, nick, you, pane, cwd)
+        };
+        if self.show_all {
+            let mut by_channel: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            for a in &self.agents {
+                let ch = a.channel.clone().unwrap_or_else(|| "unknown".into());
+                by_channel.entry(ch).or_default().push(format_agent(a));
+            }
+            for (ch, lines) in &by_channel {
+                writeln!(w, "Channel \"{ch}\":")?;
+                for l in lines {
+                    writeln!(w, "{l}")?;
+                }
+            }
+        } else {
+            writeln!(w, "Channel \"{}\":", self.scope)?;
+            for a in &self.agents {
+                writeln!(w, "{}", format_agent(a))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) -> Result<()> {
+    let my_name = state.name().unwrap_or("unknown").to_string();
 
     let agents = if show_all {
         broker::list_agents(None).unwrap_or_default()
@@ -234,77 +295,72 @@ pub fn cmd_who(
         }
     };
 
-    if json_output {
-        let entries: Vec<serde_json::Value> = agents
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "name": a.id.name,
-                    "nick": a.id.nick,
-                    "pane": a.id.pane,
-                    "channel": a.id.session,
-                    "cwd": a.cwd,
-                    "is_you": a.id.name == my_name,
-                })
-            })
-            .collect();
-        out!(
-            ctx,
-            "{}",
-            serde_json::to_string_pretty(&entries).unwrap_or_default()
-        );
-        return Ok(());
-    }
-
-    if agents.is_empty() {
-        if show_all {
-            out!(ctx, "0 agents on any channel.");
-        } else {
-            let scope = state.channel().unwrap_or("any channel");
-            out!(ctx, "0 agents on \"{scope}\".");
-        }
-        return Ok(());
-    }
-
-    // Group agents by channel when showing all
-    let format_agent = |a: &broker::BrokerAgent| -> String {
-        let you = if a.id.name == my_name { " (you)" } else { "" };
-        let nick =
-            a.id.nick
-                .as_deref()
-                .map(|n| format!(" \"{n}\""))
-                .unwrap_or_default();
-        let pane = a.id.pane.as_deref().unwrap_or("?");
-        let cwd = a
-            .cwd
-            .as_deref()
-            .map(|c| format!(", cwd: {c}"))
-            .unwrap_or_default();
-        format!("- {}{}{} (pane {}{})", a.id.name, nick, you, pane, cwd)
+    let scope = if show_all {
+        "any channel".to_string()
+    } else {
+        state.channel().unwrap_or("all").to_string()
     };
 
-    if show_all {
-        // Group by channel
-        let mut by_channel: std::collections::BTreeMap<String, Vec<String>> =
-            std::collections::BTreeMap::new();
-        for a in &agents {
-            let ch = a.id.session.clone().unwrap_or_else(|| "unknown".into());
-            by_channel.entry(ch).or_default().push(format_agent(a));
-        }
-        let mut out_lines = Vec::new();
-        for (ch, lines) in &by_channel {
-            out_lines.push(format!("Channel \"{ch}\":"));
-            for l in lines {
-                out_lines.push(l.clone());
-            }
-        }
-        out!(ctx, "{}", out_lines.join("\n"));
-    } else {
-        let channel_label = state.channel().unwrap_or("all");
-        let lines: Vec<String> = agents.iter().map(format_agent).collect();
-        out!(ctx, "Channel \"{channel_label}\":\n{}", lines.join("\n"));
-    }
+    let output = WhoOutput {
+        scope,
+        show_all,
+        my_name: my_name.clone(),
+        agents: agents
+            .into_iter()
+            .map(|a| WhoAgent {
+                is_you: a.id.name == my_name,
+                name: a.id.name,
+                nick: a.id.nick,
+                pane: a.id.pane,
+                channel: a.id.session,
+                cwd: a.cwd,
+            })
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct RequestOut {
+    msg_id: String,
+    status: String,
+    kind: String,
+    to: String,
+    created_at: u64,
+    answered_at: Option<u64>,
+    preview: String,
+}
+
+#[derive(serde::Serialize)]
+struct RequestsOutput {
+    items: Vec<RequestOut>,
+}
+
+impl crate::output::CommandOutput for RequestsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No outbound requests.")?;
+            return Ok(());
+        }
+        writeln!(w, "msg_id\tstatus\tkind\tto\tcreated_at\tanswered_at\tpreview")?;
+        for r in &self.items {
+            writeln!(
+                w,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                r.msg_id,
+                r.status,
+                r.kind,
+                r.to,
+                r.created_at,
+                r.answered_at
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                r.preview.replace('\n', " "),
+            )?;
+        }
+        Ok(())
+    }
 }
 
 pub fn cmd_requests(
@@ -322,32 +378,60 @@ pub fn cmd_requests(
         anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
     })?;
     let requests = broker::list_outbound_requests_for_sender(self_name, status, limit)?;
-    if requests.is_empty() {
-        out!(ctx, "No outbound requests.");
-        return Ok(());
-    }
-
-    out!(
-        ctx,
-        "msg_id\tstatus\tkind\tto\tcreated_at\tanswered_at\tpreview"
-    );
-    for request in requests {
-        out!(
-            ctx,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            request.msg_id,
-            request.status,
-            request.kind,
-            request.recipient_name,
-            request.created_at,
-            request
-                .answered_at
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
-            request.message_preview.replace('\n', " "),
-        );
-    }
+    let output = RequestsOutput {
+        items: requests
+            .into_iter()
+            .map(|r| RequestOut {
+                msg_id: r.msg_id,
+                status: r.status,
+                kind: r.kind,
+                to: r.recipient_name,
+                created_at: r.created_at,
+                answered_at: r.answered_at,
+                preview: r.message_preview,
+            })
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ReplyOut {
+    reply_to: String,
+    reply_id: String,
+    from: String,
+    kind: String,
+    created_at: u64,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct RepliesOutput {
+    items: Vec<ReplyOut>,
+}
+
+impl crate::output::CommandOutput for RepliesOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No replies.")?;
+            return Ok(());
+        }
+        writeln!(w, "reply_to\treply_id\tfrom\tkind\tcreated_at\tmessage")?;
+        for r in &self.items {
+            writeln!(
+                w,
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                r.reply_to,
+                r.reply_id,
+                r.from,
+                r.kind,
+                r.created_at,
+                r.message.replace('\n', " "),
+            )?;
+        }
+        Ok(())
+    }
 }
 
 pub fn cmd_replies(
@@ -365,25 +449,87 @@ pub fn cmd_replies(
         anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
     })?;
     let replies = broker::list_bus_replies_for_sender(self_name, reply_to_msg_id, limit)?;
-    if replies.is_empty() {
-        out!(ctx, "No replies.");
-        return Ok(());
-    }
-
-    out!(ctx, "reply_to\treply_id\tfrom\tkind\tcreated_at\tmessage");
-    for reply in replies {
-        out!(
-            ctx,
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            reply.reply_to_msg_id,
-            reply.reply_msg_id,
-            reply.sender_label,
-            reply.kind,
-            reply.created_at,
-            reply.message.replace('\n', " "),
-        );
-    }
+    let output = RepliesOutput {
+        items: replies
+            .into_iter()
+            .map(|r| ReplyOut {
+                reply_to: r.reply_to_msg_id,
+                reply_id: r.reply_msg_id,
+                from: r.sender_label,
+                kind: r.kind,
+                created_at: r.created_at,
+                message: r.message,
+            })
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ShowReplyOut {
+    reply_id: String,
+    from: String,
+    kind: String,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct ShowRequestOutput {
+    msg_id: String,
+    status: String,
+    kind: String,
+    to: String,
+    channel: Option<String>,
+    project: Option<String>,
+    created_at: u64,
+    answered_at: Option<u64>,
+    timed_out_at: Option<u64>,
+    preview: String,
+    replies: Vec<ShowReplyOut>,
+}
+
+impl crate::output::CommandOutput for ShowRequestOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "msg_id: {}", self.msg_id)?;
+        writeln!(w, "status: {}", self.status)?;
+        writeln!(w, "kind: {}", self.kind)?;
+        writeln!(w, "to: {}", self.to)?;
+        writeln!(w, "channel: {}", self.channel.as_deref().unwrap_or("-"))?;
+        writeln!(w, "project: {}", self.project.as_deref().unwrap_or("-"))?;
+        writeln!(w, "created_at: {}", self.created_at)?;
+        writeln!(
+            w,
+            "answered_at: {}",
+            self.answered_at
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into())
+        )?;
+        writeln!(
+            w,
+            "timed_out_at: {}",
+            self.timed_out_at
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into())
+        )?;
+        writeln!(w, "preview: {}", self.preview)?;
+        if self.replies.is_empty() {
+            writeln!(w, "replies: none")?;
+        } else {
+            writeln!(w, "replies:")?;
+            for reply in &self.replies {
+                writeln!(
+                    w,
+                    "- {} {} {} {}",
+                    reply.reply_id,
+                    reply.kind,
+                    reply.from,
+                    reply.message.replace('\n', " ")
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn cmd_show_request(state: &SidekarBusState, ctx: &mut AppContext, msg_id: &str) -> Result<()> {
@@ -396,56 +542,29 @@ pub fn cmd_show_request(state: &SidekarBusState, ctx: &mut AppContext, msg_id: &
         bail!("Request {msg_id} does not belong to the current agent.");
     }
 
-    out!(ctx, "msg_id: {}", request.msg_id);
-    out!(ctx, "status: {}", request.status);
-    out!(ctx, "kind: {}", request.kind);
-    out!(ctx, "to: {}", request.recipient_name);
-    out!(
-        ctx,
-        "channel: {}",
-        request.channel.as_deref().unwrap_or("-")
-    );
-    out!(
-        ctx,
-        "project: {}",
-        request.project.as_deref().unwrap_or("-")
-    );
-    out!(ctx, "created_at: {}", request.created_at);
-    out!(
-        ctx,
-        "answered_at: {}",
-        request
-            .answered_at
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".into())
-    );
-    out!(
-        ctx,
-        "timed_out_at: {}",
-        request
-            .timed_out_at
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".into())
-    );
-    out!(ctx, "preview: {}", request.message_preview);
-
     let replies = broker::replies_for_request(msg_id)?;
-    if replies.is_empty() {
-        out!(ctx, "replies: none");
-        return Ok(());
-    }
-
-    out!(ctx, "replies:");
-    for reply in replies {
-        out!(
-            ctx,
-            "- {} {} {} {}",
-            reply.reply_msg_id,
-            reply.kind,
-            reply.sender_label,
-            reply.message.replace('\n', " ")
-        );
-    }
+    let output = ShowRequestOutput {
+        msg_id: request.msg_id,
+        status: request.status,
+        kind: request.kind,
+        to: request.recipient_name,
+        channel: request.channel,
+        project: request.project,
+        created_at: request.created_at,
+        answered_at: request.answered_at,
+        timed_out_at: request.timed_out_at,
+        preview: request.message_preview,
+        replies: replies
+            .into_iter()
+            .map(|r| ShowReplyOut {
+                reply_id: r.reply_msg_id,
+                from: r.sender_label,
+                kind: r.kind,
+                message: r.message,
+            })
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -515,6 +634,11 @@ pub fn cmd_unregister(state: &mut SidekarBusState, ctx: &mut AppContext) -> Resu
     }
     let old_name = state.name().unwrap_or("unknown").to_string();
     state.unregister();
-    out!(ctx, "Unregistered \"{old_name}\". You are now off the bus.");
+    let msg = format!("Unregistered \"{old_name}\". You are now off the bus.");
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }

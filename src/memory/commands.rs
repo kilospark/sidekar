@@ -23,7 +23,7 @@ pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 /// content — the starter skips the brief entirely in that case.
 ///
 /// Deliberately excludes the title, "Last Session" summary, and session
-/// snapshot that `build_context_text` renders. Those sections are populated
+/// snapshot that `cmd_memory_context` renders. Those sections are populated
 /// by self-generated session bookkeeping (every PTY launch records a
 /// "session-start" intent event) and produce pure noise when the memory DB
 /// has no user content.
@@ -111,8 +111,52 @@ fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "explicit",
         "user",
     )?;
-    out!(ctx, "{message}");
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(message))?
+    );
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct MemoryHit {
+    id: i64,
+    summary: String,
+    event_type: String,
+    scope: String,
+    score: f64,
+    tags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct MemorySearchOutput {
+    query: String,
+    items: Vec<MemoryHit>,
+}
+
+impl crate::output::CommandOutput for MemorySearchOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "0 memories matching '{}'.", self.query)?;
+            return Ok(());
+        }
+        writeln!(w, "{} memories matching '{}':", self.items.len(), self.query)?;
+        for item in &self.items {
+            let scope = if item.scope == "global" { " [global]" } else { "" };
+            let tags = if item.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" tags={}", item.tags.join(","))
+            };
+            writeln!(
+                w,
+                "[{}] {} ({}, {:.2}){}{}",
+                item.id, item.summary, item.event_type, item.score, scope, tags
+            )?;
+        }
+        Ok(())
+    }
 }
 
 fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -147,36 +191,23 @@ fn cmd_memory_search(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         event_type.as_deref(),
         limit,
     )?;
-    if results.is_empty() {
-        out!(ctx, "0 memories matching '{}'.", query);
-        return Ok(());
-    }
-
-    out!(ctx, "{} memories matching '{}':", results.len(), query);
     reinforce_events(results.iter().map(|item| item.row.id))?;
 
-    for item in results {
-        let scope = if item.row.scope == "global" {
-            " [global]"
-        } else {
-            ""
-        };
-        let tags = if item.row.tags.is_empty() {
-            String::new()
-        } else {
-            format!(" tags={}", item.row.tags.join(","))
-        };
-        out!(
-            ctx,
-            "[{}] {} ({}, {:.2}){}{}",
-            item.row.id,
-            item.row.summary,
-            item.row.event_type,
-            item.score,
-            scope,
-            tags
-        );
-    }
+    let output = MemorySearchOutput {
+        query,
+        items: results
+            .into_iter()
+            .map(|item| MemoryHit {
+                id: item.row.id,
+                summary: item.row.summary,
+                event_type: item.row.event_type,
+                scope: item.row.scope,
+                score: item.score,
+                tags: item.row.tags,
+            })
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -223,22 +254,12 @@ fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let type_str = event_type.as_deref().unwrap_or("");
     let mut rows = stmt.query(params![project_str, type_str, limit as i64])?;
 
-    // Collect all rows first for count header
-    struct MemRow {
-        id: i64,
-        proj: String,
-        etype: String,
-        scope: String,
-        summary: String,
-        confidence: f64,
-        tags: Vec<String>,
-    }
     let mut items = Vec::new();
     while let Some(row) = rows.next()? {
-        items.push(MemRow {
+        items.push(MemoryItem {
             id: row.get(0)?,
-            proj: row.get(1)?,
-            etype: row.get(2)?,
+            project: row.get(1)?,
+            event_type: row.get(2)?,
             scope: row.get(3)?,
             summary: row.get(4)?,
             confidence: row.get(5)?,
@@ -246,36 +267,55 @@ fn cmd_memory_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         });
     }
 
-    if items.is_empty() {
-        out!(ctx, "0 memories.");
-        return Ok(());
-    }
-
-    out!(ctx, "{} memories:", items.len());
-    for item in &items {
-        let scope_label = if item.scope == "global" {
-            " [global]"
-        } else {
-            ""
-        };
-        let tags_label = if item.tags.is_empty() {
-            String::new()
-        } else {
-            format!(" tags={}", item.tags.join(","))
-        };
-        out!(
-            ctx,
-            "[{}] {} ({}, {:.2}, {}){}{}",
-            item.id,
-            item.summary,
-            item.etype,
-            item.confidence,
-            item.proj,
-            scope_label,
-            tags_label
-        );
-    }
+    let output = MemoryListOutput { items };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct MemoryItem {
+    id: i64,
+    project: String,
+    event_type: String,
+    scope: String,
+    summary: String,
+    confidence: f64,
+    tags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct MemoryListOutput {
+    items: Vec<MemoryItem>,
+}
+
+impl crate::output::CommandOutput for MemoryListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "0 memories.")?;
+            return Ok(());
+        }
+        writeln!(w, "{} memories:", self.items.len())?;
+        for item in &self.items {
+            let scope_label = if item.scope == "global" { " [global]" } else { "" };
+            let tags_label = if item.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" tags={}", item.tags.join(","))
+            };
+            writeln!(
+                w,
+                "[{}] {} ({}, {:.2}, {}){}{}",
+                item.id,
+                item.summary,
+                item.event_type,
+                item.confidence,
+                item.project,
+                scope_label,
+                tags_label
+            )?;
+        }
+        Ok(())
+    }
 }
 
 fn cmd_memory_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -299,8 +339,70 @@ fn cmd_memory_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     conn.execute("DELETE FROM memory_events WHERE id = ?1", [id])?;
 
-    out!(ctx, "Deleted memory [{}]: {}", id, summary);
+    let msg = format!("Deleted memory [{}]: {}", id, summary);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct MemoryContextEntry {
+    id: i64,
+    summary: String,
+    scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f64>,
+}
+
+#[derive(serde::Serialize)]
+struct MemoryContextSection {
+    event_type: String,
+    label: String,
+    items: Vec<MemoryContextEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct MemoryContextOutput {
+    title: String,
+    scope_view: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    sections: Vec<MemoryContextSection>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    relevant: Vec<MemoryContextEntry>,
+}
+
+impl crate::output::CommandOutput for MemoryContextOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.sections.is_empty() && self.relevant.is_empty() {
+            return Ok(());
+        }
+        writeln!(w, "{}", self.title)?;
+        for section in &self.sections {
+            writeln!(w)?;
+            writeln!(w, "## {}", section.label)?;
+            for item in &section.items {
+                let scope = if item.scope == "global" {
+                    " [global]"
+                } else {
+                    ""
+                };
+                writeln!(w, "- {}{}", item.summary, scope)?;
+            }
+        }
+        if !self.relevant.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "## Relevant To Current Task")?;
+            for item in &self.relevant {
+                let score = item.score.unwrap_or(0.0);
+                writeln!(w, "- [{:.2}] {}", score, item.summary)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -318,10 +420,78 @@ fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let limit = extract_optional_value(args, "--limit=")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(3);
-    let text = build_context_text(scope_view, project.as_deref(), hint.as_deref(), limit)?;
-    if !text.is_empty() {
-        out!(ctx, "{}", text);
+
+    let title = match scope_view {
+        crate::scope::ScopeView::Project => format!(
+            "# Sidekar Memory: {}",
+            project.as_deref().unwrap_or(crate::scope::PROJECT_SCOPE)
+        ),
+        crate::scope::ScopeView::Global => "# Sidekar Memory: global".to_string(),
+        crate::scope::ScopeView::All => "# Sidekar Memory: all".to_string(),
+    };
+
+    let conn = crate::broker::open_db()?;
+    let ranked = ranked_recent_events(&conn, scope_view, project.as_deref(), limit * 4)?;
+    let deduped = dedupe_rows_by_norm(ranked.into_iter().map(|item| item.row).collect());
+    let ids_to_reinforce: Vec<i64> =
+        deduped.iter().take(limit * 4).map(|row| row.id).collect();
+    reinforce_events(ids_to_reinforce)?;
+
+    let mut sections: Vec<MemoryContextSection> = Vec::new();
+    for event_type in [
+        "constraint",
+        "decision",
+        "convention",
+        "preference",
+        "open-thread",
+        "artifact-pointer",
+    ] {
+        let items: Vec<MemoryContextEntry> = deduped
+            .iter()
+            .filter(|row| row.event_type == event_type)
+            .take(limit)
+            .map(|row| MemoryContextEntry {
+                id: row.id,
+                summary: row.summary.clone(),
+                scope: row.scope.clone(),
+                score: None,
+            })
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        sections.push(MemoryContextSection {
+            event_type: event_type.to_string(),
+            label: event_type_label(event_type).to_string(),
+            items,
+        });
     }
+
+    let mut relevant: Vec<MemoryContextEntry> = Vec::new();
+    if let Some(hint_str) = hint.as_deref() {
+        let matches = search_events(hint_str, scope_view, project.as_deref(), None, 5)?;
+        for item in matches.into_iter().take(5) {
+            relevant.push(MemoryContextEntry {
+                id: item.row.id,
+                summary: item.row.summary,
+                scope: item.row.scope,
+                score: Some(item.score),
+            });
+        }
+    }
+
+    let output = MemoryContextOutput {
+        title,
+        scope_view: match scope_view {
+            crate::scope::ScopeView::Project => "project".to_string(),
+            crate::scope::ScopeView::Global => "global".to_string(),
+            crate::scope::ScopeView::All => "all".to_string(),
+        },
+        project,
+        sections,
+        relevant,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -393,6 +563,71 @@ fn cmd_memory_rate(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct MemoryDetailOutput {
+    id: i64,
+    summary: String,
+    event_type: String,
+    project: String,
+    scope: String,
+    confidence: f64,
+    trigger: String,
+    source: String,
+    tags: Vec<String>,
+    supersedes: Vec<i64>,
+    superseded_by: Option<i64>,
+    reinforcement_count: i64,
+    last_reinforced_at: Option<i64>,
+    summary_hash: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl crate::output::CommandOutput for MemoryDetailOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "[{}] {}", self.id, self.summary)?;
+        writeln!(w, "type: {}", self.event_type)?;
+        writeln!(w, "project: {}", self.project)?;
+        writeln!(w, "scope: {}", self.scope)?;
+        writeln!(w, "confidence: {:.2}", self.confidence)?;
+        writeln!(w, "trigger: {}", self.trigger)?;
+        writeln!(w, "source: {}", self.source)?;
+        writeln!(
+            w,
+            "tags: {}",
+            serde_json::to_string(&self.tags).unwrap_or_default()
+        )?;
+        writeln!(
+            w,
+            "supersedes: {}",
+            serde_json::to_string(&self.supersedes).unwrap_or_default()
+        )?;
+        writeln!(
+            w,
+            "superseded_by: {}",
+            self.superseded_by
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )?;
+        writeln!(w, "reinforcement_count: {}", self.reinforcement_count)?;
+        writeln!(
+            w,
+            "last_reinforced_at: {}",
+            self.last_reinforced_at
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )?;
+        writeln!(
+            w,
+            "summary_hash: {}",
+            self.summary_hash.as_deref().unwrap_or("-")
+        )?;
+        writeln!(w, "created_at: {}", self.created_at)?;
+        writeln!(w, "updated_at: {}", self.updated_at)?;
+        Ok(())
+    }
+}
+
 fn cmd_memory_detail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let id: i64 = args
         .first()
@@ -427,36 +662,26 @@ fn cmd_memory_detail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             ))
         },
     )?;
-    out!(ctx, "[{}] {}", row.0, row.1);
-    out!(ctx, "type: {}", row.2);
-    out!(ctx, "project: {}", row.3);
-    out!(ctx, "scope: {}", row.4);
-    out!(ctx, "confidence: {:.2}", row.5);
-    out!(ctx, "trigger: {}", row.6);
-    out!(ctx, "source: {}", row.7);
-    out!(ctx, "tags: {}", row.8);
-    out!(ctx, "supersedes: {}", row.9);
-    out!(
-        ctx,
-        "superseded_by: {}",
-        row.10
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_string())
-    );
-    out!(ctx, "reinforcement_count: {}", row.11);
-    out!(
-        ctx,
-        "last_reinforced_at: {}",
-        row.12
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_string())
-    );
-    out!(
-        ctx,
-        "summary_hash: {}",
-        row.13.unwrap_or_else(|| "-".to_string())
-    );
-    out!(ctx, "created_at: {}", row.14);
-    out!(ctx, "updated_at: {}", row.15);
+    let tags: Vec<String> = serde_json::from_str(&row.8).unwrap_or_default();
+    let supersedes: Vec<i64> = serde_json::from_str(&row.9).unwrap_or_default();
+    let output = MemoryDetailOutput {
+        id: row.0,
+        summary: row.1,
+        event_type: row.2,
+        project: row.3,
+        scope: row.4,
+        confidence: row.5,
+        trigger: row.6,
+        source: row.7,
+        tags,
+        supersedes,
+        superseded_by: row.10,
+        reinforcement_count: row.11,
+        last_reinforced_at: row.12,
+        summary_hash: row.13,
+        created_at: row.14,
+        updated_at: row.15,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }

@@ -1,4 +1,76 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct ScreenshotOutput {
+    path: String,
+    size_kb: u64,
+    est_vision_tokens: u64,
+    annotated: usize,
+    tip: Option<String>,
+}
+
+impl crate::output::CommandOutput for ScreenshotOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Screenshot saved to {}", self.path)?;
+        writeln!(
+            w,
+            "Size: {}KB | Est. vision tokens: ~{}",
+            self.size_kb, self.est_vision_tokens
+        )?;
+        if self.annotated > 0 {
+            writeln!(w, "Annotated {} interactive elements", self.annotated)?;
+        }
+        if let Some(t) = &self.tip {
+            writeln!(w, "{t}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct GridOutput {
+    action: String,
+    cols: u64,
+    rows: u64,
+}
+
+impl crate::output::CommandOutput for GridOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.action == "off" {
+            writeln!(w, "Grid overlay removed.")?;
+        } else if self.cols > 0 && self.rows > 0 {
+            writeln!(
+                w,
+                "Grid overlay: {}x{}. Each cell shows its center coordinate. Use 'grid off' to remove.",
+                self.cols, self.rows
+            )?;
+        } else {
+            writeln!(w, "Grid overlay applied.")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ScreencastOutput {
+    action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl crate::output::CommandOutput for ScreencastOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(msg) = &self.message {
+            writeln!(w, "{msg}")?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut selector: Option<String> = None;
@@ -249,19 +321,19 @@ pub(crate) async fn cmd_screenshot(ctx: &mut AppContext, args: &[String]) -> Res
         let ph = (viewport_h / dpr) as u64;
         (pw * ph) / 750
     };
-    out!(ctx, "Screenshot saved to {}", out.display());
-    out!(
-        ctx,
-        "Size: {}KB | Est. vision tokens: ~{}",
-        file_kb,
-        est_tokens
-    );
-    if annotate && annotation_count > 0 {
-        out!(ctx, "Annotated {} interactive elements", annotation_count);
-    }
-    if est_tokens > 500 && ref_id.is_none() && selector.is_none() {
-        out!(ctx, "Tip: Use ref=N, selector, or --width to reduce cost.");
-    }
+    let tip = if est_tokens > 500 && ref_id.is_none() && selector.is_none() {
+        Some("Tip: Use ref=N, selector, or --width to reduce cost.".to_string())
+    } else {
+        None
+    };
+    let output = ScreenshotOutput {
+        path: out.display().to_string(),
+        size_kb: file_kb as u64,
+        est_vision_tokens: est_tokens,
+        annotated: if annotate { annotation_count } else { 0 },
+        tip,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -293,7 +365,8 @@ pub(crate) async fn cmd_pdf(ctx: &mut AppContext, output_path: Option<&str>) -> 
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.tmp_dir().join(format!("sidekar-page-{sid}.pdf")));
     fs::write(&out, bytes).with_context(|| format!("failed writing {}", out.display()))?;
-    out!(ctx, "PDF saved to {}", out.display());
+    let msg = format!("PDF saved to {}", out.display());
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -314,7 +387,12 @@ pub(crate) async fn cmd_grid(ctx: &mut AppContext, args: &[String]) -> Result<()
             context_id,
         )
         .await?;
-        out!(ctx, "Grid overlay removed.");
+        let output = GridOutput {
+            action: "off".to_string(),
+            cols: 0,
+            rows: 0,
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
 
@@ -386,17 +464,20 @@ pub(crate) async fn cmd_grid(ctx: &mut AppContext, args: &[String]) -> Result<()
 
     let result = runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
 
-    if let Some(val) = result.pointer("/result/value") {
-        let c = val.get("cols").and_then(Value::as_u64).unwrap_or(0);
-        let r = val.get("rows").and_then(Value::as_u64).unwrap_or(0);
-        out!(
-            ctx,
-            "Grid overlay: {c}x{r}. Each cell shows its center coordinate. Use 'grid off' to remove."
-        );
+    let output = if let Some(val) = result.pointer("/result/value") {
+        GridOutput {
+            action: "on".to_string(),
+            cols: val.get("cols").and_then(Value::as_u64).unwrap_or(0),
+            rows: val.get("rows").and_then(Value::as_u64).unwrap_or(0),
+        }
     } else {
-        out!(ctx, "Grid overlay applied.");
-    }
-
+        GridOutput {
+            action: "on".to_string(),
+            cols: 0,
+            rows: 0,
+        }
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -478,15 +559,25 @@ pub(crate) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
             state.screencast_active = Some(true);
             ctx.save_session_state(&state)?;
 
-            if frames_received > 0 {
-                out!(
-                    ctx,
-                    "Screencast started. Latest frame: {}",
-                    frame_path.display()
-                );
+            let output = if frames_received > 0 {
+                ScreencastOutput {
+                    action: "start".to_string(),
+                    frame_path: Some(frame_path.display().to_string()),
+                    frame_size: None,
+                    message: Some(format!(
+                        "Screencast started. Latest frame: {}",
+                        frame_path.display()
+                    )),
+                }
             } else {
-                out!(ctx, "Screencast started (no initial frame captured).");
-            }
+                ScreencastOutput {
+                    action: "start".to_string(),
+                    frame_path: None,
+                    frame_size: None,
+                    message: Some("Screencast started (no initial frame captured).".to_string()),
+                }
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             cdp.close().await;
         }
         "stop" => {
@@ -496,7 +587,13 @@ pub(crate) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
             let mut state = ctx.load_session_state()?;
             state.screencast_active = Some(false);
             ctx.save_session_state(&state)?;
-            out!(ctx, "Screencast stopped.");
+            let output = ScreencastOutput {
+                action: "stop".to_string(),
+                frame_path: None,
+                frame_size: None,
+                message: Some("Screencast stopped.".to_string()),
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             cdp.close().await;
         }
         "frame" => {
@@ -542,7 +639,13 @@ pub(crate) async fn cmd_screencast(ctx: &mut AppContext, args: &[String]) -> Res
                 let size = fs::metadata(&frame_path)
                     .map(|m| human_size(m.len()))
                     .unwrap_or_else(|_| "?".to_string());
-                out!(ctx, "Frame: {} ({})", frame_path.display(), size);
+                let output = ScreencastOutput {
+                    action: "frame".to_string(),
+                    frame_path: Some(frame_path.display().to_string()),
+                    frame_size: Some(size.clone()),
+                    message: Some(format!("Frame: {} ({})", frame_path.display(), size)),
+                };
+                out!(ctx, "{}", crate::output::to_string(&output)?);
             } else {
                 bail!("No screencast frame available. Run: screencast start");
             }

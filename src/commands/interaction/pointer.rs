@@ -1,4 +1,27 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct PointerActionOutput {
+    action_line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adopted_line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_brief: Option<String>,
+}
+
+impl crate::output::CommandOutput for PointerActionOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "{}", self.action_line)?;
+        if let Some(a) = &self.adopted_line {
+            writeln!(w, "{a}")?;
+        }
+        if let Some(b) = &self.page_brief {
+            writeln!(w, "{b}")?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if let Some((raw_x, raw_y)) = parse_coordinates(args) {
@@ -22,15 +45,14 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
             json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
         )
         .await?;
-        out!(ctx, "Clicked at ({x}, {y})");
+        let action_line = format!("Clicked at ({x}, {y})");
         sleep(Duration::from_millis(150)).await;
         let adopted = adopt_new_tabs(ctx, &tabs_before, Duration::from_millis(800)).await?;
         if !adopted.is_empty() {
             cdp.close().await;
             let mut adopted_cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut adopted_cdp).await?;
-            out!(
-                ctx,
+            let adopted_line = format!(
                 "Adopted {} new tab(s); switched to [{}]",
                 adopted.len(),
                 adopted
@@ -40,12 +62,24 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                     .map(|tab| tab.id.as_str())
                     .unwrap_or("unknown")
             );
-            out!(ctx, "{}", get_page_brief(&mut adopted_cdp).await?);
+            let page_brief = get_page_brief(&mut adopted_cdp).await?;
             adopted_cdp.close().await;
+            let output = PointerActionOutput {
+                action_line,
+                adopted_line: Some(adopted_line),
+                page_brief: Some(page_brief),
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             return Ok(());
         }
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("--text") {
@@ -75,8 +109,7 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                     json!({ "type": "mouseReleased", "x": loc.x, "y": loc.y, "button": "left", "clickCount": 1 }),
                 )
                 .await?;
-                out!(
-                    ctx,
+                let action_line = format!(
                     "Clicked {} \"{}\" (text match)",
                     loc.tag.to_lowercase(),
                     loc.text
@@ -87,8 +120,7 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                     cdp.close().await;
                     let mut adopted_cdp = open_cdp(ctx).await?;
                     prepare_cdp(ctx, &mut adopted_cdp).await?;
-                    out!(
-                        ctx,
+                    let adopted_line = format!(
                         "Adopted {} new tab(s); switched to [{}]",
                         adopted.len(),
                         adopted
@@ -98,12 +130,24 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                             .map(|tab| tab.id.as_str())
                             .unwrap_or("unknown")
                     );
-                    out!(ctx, "{}", get_page_brief(&mut adopted_cdp).await?);
+                    let page_brief = get_page_brief(&mut adopted_cdp).await?;
                     adopted_cdp.close().await;
+                    let output = PointerActionOutput {
+                        action_line,
+                        adopted_line: Some(adopted_line),
+                        page_brief: Some(page_brief),
+                    };
+                    out!(ctx, "{}", crate::output::to_string(&output)?);
                     return Ok(());
                 }
-                out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+                let page_brief = get_page_brief(&mut cdp).await?;
                 cdp.close().await;
+                let output = PointerActionOutput {
+                    action_line,
+                    adopted_line: None,
+                    page_brief: Some(page_brief),
+                };
+                out!(ctx, "{}", crate::output::to_string(&output)?);
                 return Ok(());
             }
             Err(browser_err) => {
@@ -113,7 +157,7 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                     && let Ok(msg) =
                         super::super::desktop::try_desktop_click_fallback(browser, &text)
                 {
-                    out!(ctx, "{msg}");
+                    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
                     return Ok(());
                 }
                 return Err(browser_err);
@@ -129,7 +173,7 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
                 && let Ok(msg) =
                     super::super::desktop::try_desktop_click_fallback(browser, &selector)
             {
-                out!(ctx, "{msg}");
+                out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
                 return Ok(());
             }
             Err(browser_err)
@@ -143,10 +187,16 @@ pub(crate) async fn cmd_double_click_dispatch(ctx: &mut AppContext, args: &[Stri
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;
         dispatch_double_click(&mut cdp, x, y).await?;
-        out!(ctx, "Double-clicked at ({x}, {y})");
+        let action_line = format!("Double-clicked at ({x}, {y})");
         sleep(Duration::from_millis(150)).await;
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("--text") {
@@ -158,15 +208,20 @@ pub(crate) async fn cmd_double_click_dispatch(ctx: &mut AppContext, args: &[Stri
         prepare_cdp(ctx, &mut cdp).await?;
         let loc = locate_element_by_text(ctx, &mut cdp, &text).await?;
         dispatch_double_click(&mut cdp, loc.x, loc.y).await?;
-        out!(
-            ctx,
+        let action_line = format!(
             "Double-clicked {} \"{}\" (text match)",
             loc.tag.to_lowercase(),
             loc.text
         );
         sleep(Duration::from_millis(150)).await;
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     let selector = resolve_selector(ctx, &args.join(" "))?;
@@ -179,10 +234,16 @@ pub(crate) async fn cmd_right_click_dispatch(ctx: &mut AppContext, args: &[Strin
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;
         dispatch_right_click(&mut cdp, x, y).await?;
-        out!(ctx, "Right-clicked at ({x}, {y})");
+        let action_line = format!("Right-clicked at ({x}, {y})");
         sleep(Duration::from_millis(150)).await;
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("--text") {
@@ -194,15 +255,20 @@ pub(crate) async fn cmd_right_click_dispatch(ctx: &mut AppContext, args: &[Strin
         prepare_cdp(ctx, &mut cdp).await?;
         let loc = locate_element_by_text(ctx, &mut cdp, &text).await?;
         dispatch_right_click(&mut cdp, loc.x, loc.y).await?;
-        out!(
-            ctx,
+        let action_line = format!(
             "Right-clicked {} \"{}\" (text match)",
             loc.tag.to_lowercase(),
             loc.text
         );
         sleep(Duration::from_millis(150)).await;
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     let selector = resolve_selector(ctx, &args.join(" "))?;
@@ -219,10 +285,16 @@ pub(crate) async fn cmd_hover_dispatch(ctx: &mut AppContext, args: &[String]) ->
             json!({ "type": "mouseMoved", "x": x, "y": y }),
         )
         .await?;
-        out!(ctx, "Hovered at ({x}, {y})");
+        let action_line = format!("Hovered at ({x}, {y})");
         sleep(Duration::from_millis(150)).await;
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("--text") {
@@ -238,15 +310,20 @@ pub(crate) async fn cmd_hover_dispatch(ctx: &mut AppContext, args: &[String]) ->
             json!({ "type": "mouseMoved", "x": loc.x, "y": loc.y }),
         )
         .await?;
-        out!(
-            ctx,
+        let action_line = format!(
             "Hovered {} \"{}\" (text match)",
             loc.tag.to_lowercase(),
             loc.text
         );
         sleep(Duration::from_millis(150)).await;
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let page_brief = get_page_brief(&mut cdp).await?;
         cdp.close().await;
+        let output = PointerActionOutput {
+            action_line,
+            adopted_line: None,
+            page_brief: Some(page_brief),
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
     let selector = resolve_selector(ctx, &args.join(" "))?;
@@ -258,15 +335,20 @@ pub(crate) async fn cmd_double_click(ctx: &mut AppContext, selector: &str) -> Re
     prepare_cdp(ctx, &mut cdp).await?;
     let loc = locate_element(ctx, &mut cdp, selector).await?;
     dispatch_double_click(&mut cdp, loc.x, loc.y).await?;
-    out!(
-        ctx,
+    let action_line = format!(
         "Double-clicked {} \"{}\"",
         loc.tag.to_lowercase(),
         loc.text
     );
     sleep(Duration::from_millis(150)).await;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;
+    let output = PointerActionOutput {
+        action_line,
+        adopted_line: None,
+        page_brief: Some(page_brief),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -275,15 +357,20 @@ pub(crate) async fn cmd_right_click(ctx: &mut AppContext, selector: &str) -> Res
     prepare_cdp(ctx, &mut cdp).await?;
     let loc = locate_element(ctx, &mut cdp, selector).await?;
     dispatch_right_click(&mut cdp, loc.x, loc.y).await?;
-    out!(
-        ctx,
+    let action_line = format!(
         "Right-clicked {} \"{}\"",
         loc.tag.to_lowercase(),
         loc.text
     );
     sleep(Duration::from_millis(150)).await;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;
+    let output = PointerActionOutput {
+        action_line,
+        adopted_line: None,
+        page_brief: Some(page_brief),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -296,10 +383,16 @@ pub(crate) async fn cmd_hover(ctx: &mut AppContext, selector: &str) -> Result<()
         json!({ "type": "mouseMoved", "x": loc.x, "y": loc.y }),
     )
     .await?;
-    out!(ctx, "Hovered {} \"{}\"", loc.tag.to_lowercase(), loc.text);
+    let action_line = format!("Hovered {} \"{}\"", loc.tag.to_lowercase(), loc.text);
     sleep(Duration::from_millis(150)).await;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;
+    let output = PointerActionOutput {
+        action_line,
+        adopted_line: None,
+        page_brief: Some(page_brief),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -336,14 +429,19 @@ pub(crate) async fn cmd_drag(
         json!({ "type": "mouseReleased", "x": to.x, "y": to.y, "button": "left", "clickCount": 1 }),
     )
     .await?;
-    out!(
-        ctx,
+    let action_line = format!(
         "Dragged {} to {}",
         from.tag.to_lowercase(),
         to.tag.to_lowercase()
     );
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;
+    let output = PointerActionOutput {
+        action_line,
+        adopted_line: None,
+        page_brief: Some(page_brief),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -411,7 +509,8 @@ pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<(
             state.mouse_x = Some(x);
             state.mouse_y = Some(y);
             ctx.save_session_state(&state)?;
-            out!(ctx, "Mouse moved to ({x}, {y})");
+            let msg = format!("Mouse moved to ({x}, {y})");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
         "down" => {
@@ -429,7 +528,8 @@ pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<(
                 json!({ "type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": 1 }),
             )
             .await?;
-            out!(ctx, "Mouse {button} down at ({x}, {y})");
+            let msg = format!("Mouse {button} down at ({x}, {y})");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
         "up" => {
@@ -447,7 +547,8 @@ pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<(
                 json!({ "type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": 1 }),
             )
             .await?;
-            out!(ctx, "Mouse {button} up at ({x}, {y})");
+            let msg = format!("Mouse {button} up at ({x}, {y})");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
         "wheel" => {
@@ -466,10 +567,8 @@ pub(crate) async fn cmd_mouse(ctx: &mut AppContext, args: &[String]) -> Result<(
                 json!({ "type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y }),
             )
             .await?;
-            out!(
-                ctx,
-                "Mouse wheel deltaY={delta_y} deltaX={delta_x} at ({x}, {y})"
-            );
+            let msg = format!("Mouse wheel deltaY={delta_y} deltaX={delta_x} at ({x}, {y})");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
         _ => bail!(

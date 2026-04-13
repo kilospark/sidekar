@@ -3,7 +3,7 @@ use super::{CommandGroup, CommandSpec, spec};
 pub const COMMANDS: &[CommandSpec] = &[
     spec(
         "proxy",
-        "<log|show|clear> [--last=N] [--json]",
+        "<log|show|clear> [--last=N]",
         "View captured proxy request/response payloads",
         CommandGroup::System,
         false,

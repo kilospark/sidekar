@@ -93,9 +93,11 @@ pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
         match encrypt(value) {
             Ok(enc) => enc,
             Err(e) => {
-                eprintln!(
-                    "Warning: encryption key available but encrypt failed: {}. Storing plaintext.",
-                    e
+                crate::broker::try_log_event(
+                    "warn",
+                    "kv",
+                    "encryption key available but encrypt failed; storing plaintext",
+                    Some(&format!("{e:#}")),
                 );
                 value.to_string()
             }

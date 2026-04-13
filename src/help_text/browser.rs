@@ -352,9 +352,7 @@ sidekar desktop <subcommand> [args...]
     sidekar desktop screenshot --app Safari
     sidekar desktop click --app Finder \"New Folder\""
         }
-        "tabs" => {
-            "sidekar tabs [--json]\n\n  List all tabs owned by this session.\n\n  Options:\n    --json    Output as JSON array"
-        }
+        "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
         "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
         "new-tab" => "sidekar new-tab [url]\n\n  Open a new tab, optionally navigating to URL.",
         "close" => {

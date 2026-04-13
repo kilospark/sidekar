@@ -68,9 +68,8 @@ async fn dispatch_bus_root(ctx: &mut AppContext, args: &[String]) -> Result<()> 
 
 fn cmd_bus_who(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let show_all = args.iter().any(|a| a == "--all" || a == "-a");
-    let json_output = args.iter().any(|a| a == "--json");
     let bus_state = recovered_bus_state(ctx);
-    crate::bus::cmd_who(&bus_state, ctx, show_all, json_output)?;
+    crate::bus::cmd_who(&bus_state, ctx, show_all)?;
     Ok(())
 }
 

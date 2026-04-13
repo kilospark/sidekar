@@ -47,10 +47,10 @@ async fn handle_login(args: &[String]) -> Result<()> {
         let creds =
             sidekar::providers::oauth::login_openai_compat(name, Some(name), base_url, api_key)
                 .await?;
-        println!(
+        sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
             "Logged in as '{name}' ({} at {}).",
             creds.name, creds.base_url
-        );
+        )))?;
         return Ok(());
     }
     let provider_type =
@@ -77,30 +77,38 @@ async fn handle_login(args: &[String]) -> Result<()> {
     match provider_type {
         "anthropic" => {
             let _ = sidekar::providers::oauth::login_anthropic(Some(nickname)).await?;
-            println!("Logged in as '{nickname}' (Claude OAuth).");
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (Claude OAuth)."
+            )))?;
         }
         "codex" => {
             let (_, account_id) = sidekar::providers::oauth::login_codex(Some(nickname)).await?;
-            println!(
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
                 "Logged in as '{nickname}' (Codex, account: {}).",
                 if account_id.is_empty() {
                     "unknown"
                 } else {
                     &account_id
                 }
-            );
+            )))?;
         }
         "openrouter" => {
             let _ = sidekar::providers::oauth::login_openrouter(Some(nickname)).await?;
-            println!("Logged in as '{nickname}' (OpenRouter).");
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (OpenRouter)."
+            )))?;
         }
         "opencode" => {
             let _ = sidekar::providers::oauth::login_opencode(Some(nickname)).await?;
-            println!("Logged in as '{nickname}' (OpenCode).");
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (OpenCode)."
+            )))?;
         }
         "grok" => {
             let _ = sidekar::providers::oauth::login_grok(Some(nickname)).await?;
-            println!("Logged in as '{nickname}' (Grok).");
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (Grok)."
+            )))?;
         }
         "oac" => {
             let base_url = args.get(2).map(String::as_str);
@@ -112,10 +120,10 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 api_key,
             )
             .await?;
-            println!(
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
                 "Logged in as '{nickname}' ({} at {}).",
                 creds.name, creds.base_url
-            );
+            )))?;
         }
         _ => {
             eprintln!("Unknown provider type for nickname '{nickname}'.");
@@ -135,25 +143,51 @@ fn handle_logout(args: &[String]) -> Result<()> {
         for (name, _) in &creds {
             let _ = sidekar::broker::kv_delete(&sidekar::providers::oauth::kv_key_for(name));
         }
-        println!("All OAuth credentials removed.");
+        sidekar::output::emit(&sidekar::output::PlainOutput::new(
+            "All OAuth credentials removed.",
+        ))?;
     } else {
         let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
         let _ = sidekar::broker::kv_delete(&kv_key);
-        println!("Credentials for '{nickname}' removed.");
+        sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+            "Credentials for '{nickname}' removed."
+        )))?;
     }
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct CredentialEntry {
+    name: String,
+    provider: String,
+}
+
+#[derive(serde::Serialize)]
+struct CredentialsListOutput {
+    credentials: Vec<CredentialEntry>,
+}
+
+impl sidekar::output::CommandOutput for CredentialsListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.credentials.is_empty() {
+            writeln!(w, "No stored credentials. Use: sidekar repl login <nickname>")?;
+        } else {
+            writeln!(w, "Stored credentials:")?;
+            for c in &self.credentials {
+                writeln!(w, "  {} ({})", c.name, c.provider)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn handle_credentials() -> Result<()> {
     let creds = sidekar::providers::oauth::list_credentials();
-    if creds.is_empty() {
-        println!("No stored credentials. Use: sidekar repl login <nickname>");
-    } else {
-        println!("Stored credentials:");
-        for (name, provider) in &creds {
-            println!("  {name} ({provider})");
-        }
-    }
+    let credentials = creds
+        .into_iter()
+        .map(|(name, provider)| CredentialEntry { name, provider })
+        .collect();
+    sidekar::output::emit(&CredentialsListOutput { credentials })?;
     Ok(())
 }
 
@@ -220,34 +254,116 @@ async fn handle_models(args: &[String]) -> Result<()> {
     } else {
         sidekar::providers::fetch_model_list(provider_type, &api_key).await
     };
-    if models.is_empty() {
-        println!("No models found.");
-    } else {
-        println!("Models for \x1b[1m{cred}\x1b[0m ({provider_type}):\n");
-        for m in &models {
-            let ctx = if m.context_window > 0 {
-                format!("{}k ctx", m.context_window / 1000)
-            } else {
-                String::new()
-            };
-            println!(
-                "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
-                m.id,
-                m.display_name,
-                if ctx.is_empty() {
-                    String::new()
-                } else {
-                    format!(", {ctx}")
-                }
-            );
-        }
-        println!("\n\x1b[2m{} models\x1b[0m", models.len());
-    }
+    let items: Vec<ModelEntry> = models
+        .iter()
+        .map(|m| ModelEntry {
+            id: m.id.clone(),
+            display_name: m.display_name.clone(),
+            context_window: m.context_window,
+        })
+        .collect();
+    sidekar::output::emit(&ModelsListOutput {
+        credential: cred.clone(),
+        provider_type: provider_type.to_string(),
+        count: items.len(),
+        models: items,
+    })?;
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct ModelEntry {
+    id: String,
+    display_name: String,
+    context_window: u32,
+}
+
+#[derive(serde::Serialize)]
+struct ModelsListOutput {
+    credential: String,
+    provider_type: String,
+    count: usize,
+    models: Vec<ModelEntry>,
+}
+
+impl sidekar::output::CommandOutput for ModelsListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.models.is_empty() {
+            writeln!(w, "No models found.")?;
+            return Ok(());
+        }
+        writeln!(
+            w,
+            "Models for \x1b[1m{}\x1b[0m ({}):\n",
+            self.credential, self.provider_type
+        )?;
+        for m in &self.models {
+            let ctx = if m.context_window > 0 {
+                format!(", {}k ctx", m.context_window / 1000)
+            } else {
+                String::new()
+            };
+            writeln!(
+                w,
+                "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
+                m.id, m.display_name, ctx
+            )?;
+        }
+        writeln!(w, "\n\x1b[2m{} models\x1b[0m", self.count)?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ReplSessionOut {
+    id: String,
+    name: Option<String>,
+    credential: String,
+    model: String,
+    message_count: usize,
+    updated_at: f64,
+    cwd: String,
+}
+
+#[derive(serde::Serialize)]
+struct ReplSessionsOutput {
+    show_cwd: bool,
+    items: Vec<ReplSessionOut>,
+}
+
+impl sidekar::output::CommandOutput for ReplSessionsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No sessions found.")?;
+            return Ok(());
+        }
+        writeln!(w, "Sessions (most recent first):\n")?;
+        for s in &self.items {
+            let name = s
+                .name
+                .as_deref()
+                .unwrap_or(&s.id[..s.id.len().min(8)]);
+            let age = super::format_age(s.updated_at);
+            if self.show_cwd {
+                let dir = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);
+                writeln!(
+                    w,
+                    "  \x1b[36m{name}\x1b[0m  {} msgs, {}/{}, {age}  \x1b[2m{dir}\x1b[0m",
+                    s.message_count, s.credential, s.model
+                )?;
+            } else {
+                writeln!(
+                    w,
+                    "  \x1b[36m{name}\x1b[0m  {} msgs, {}/{}, {age}",
+                    s.message_count, s.credential, s.model
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn handle_sessions(args: &[String]) -> Result<()> {
-    // Prune empty sessions from disk
     let pruned = sidekar::session::prune_empty_sessions().unwrap_or(0);
     if pruned > 0 {
         eprintln!("\x1b[2mPruned {pruned} empty sessions.\x1b[0m");
@@ -262,30 +378,35 @@ fn handle_sessions(args: &[String]) -> Result<()> {
     } else {
         sidekar::session::list_sessions(&cwd, 20)?
     };
-    if sessions.is_empty() {
-        println!("No sessions found.");
-    } else {
-        println!("Sessions (most recent first):\n");
-        for s in &sessions {
+    let items = sessions
+        .into_iter()
+        .map(|s| {
             let msgs = sidekar::session::message_count(&s.id).unwrap_or(0);
-            let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-            let model = if s.model.is_empty() { "?" } else { &s.model };
-            let cred = if s.provider.is_empty() {
-                "?"
+            let model = if s.model.is_empty() {
+                "?".to_string()
             } else {
-                s.provider.as_str()
+                s.model.clone()
             };
-            let age = super::format_age(s.updated_at);
-            if all {
-                let dir = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);
-                println!(
-                    "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {cred}/{model}, {age}  \x1b[2m{dir}\x1b[0m",
-                );
+            let credential = if s.provider.is_empty() {
+                "?".to_string()
             } else {
-                println!("  \x1b[36m{name}\x1b[0m  {msgs} msgs, {cred}/{model}, {age}",);
+                s.provider.clone()
+            };
+            ReplSessionOut {
+                id: s.id,
+                name: s.name,
+                credential,
+                model,
+                message_count: msgs,
+                updated_at: s.updated_at,
+                cwd: s.cwd,
             }
-        }
-    }
+        })
+        .collect();
+    sidekar::output::emit(&ReplSessionsOutput {
+        show_cwd: all,
+        items,
+    })?;
     Ok(())
 }
 

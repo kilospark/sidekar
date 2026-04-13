@@ -3,14 +3,12 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct RepoActionsListArgs {
     pub(super) target: Option<String>,
-    pub(super) style: RepoStructuredStyle,
 }
 
 #[derive(Debug)]
 pub(super) struct RepoActionsRunArgs {
     pub(super) action_id: String,
     pub(super) target: Option<String>,
-    pub(super) style: RepoStructuredStyle,
     pub(super) timeout_secs: u64,
     pub(super) max_output_chars: usize,
     pub(super) include_output: bool,
@@ -70,10 +68,7 @@ fn cmd_repo_actions_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         root: root.clone(),
         actions: discover_project_actions(&root)?,
     };
-    match opts.style {
-        RepoStructuredStyle::Json => write_output(ctx, &render_project_actions_json(&summary)?),
-        RepoStructuredStyle::Plain => write_output(ctx, &render_project_actions_plain(&summary)),
-    }
+    out!(ctx, "{}", crate::output::to_string(&summary)?);
     Ok(())
 }
 
@@ -88,47 +83,40 @@ fn cmd_repo_actions_run(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         opts.max_output_chars,
         opts.include_output,
     )?;
-    match opts.style {
-        RepoStructuredStyle::Json => write_output(ctx, &render_project_action_run_json(&result)?),
-        RepoStructuredStyle::Plain => write_output(ctx, &render_project_action_run_plain(&result)),
-    }
-    if !result.ok {
-        bail!("project action failed: {}", result.summary.headline);
+    let ok = result.ok;
+    let headline = result.summary.headline.clone();
+    out!(ctx, "{}", crate::output::to_string(&result)?);
+    if !ok {
+        bail!("project action failed: {headline}");
     }
     Ok(())
 }
 
 fn parse_repo_actions_list_args(args: &[String]) -> Result<RepoActionsListArgs> {
     let mut target = None;
-    let mut style = RepoStructuredStyle::Plain;
 
     for arg in args {
-        if let Some(value) = arg.strip_prefix("--style=") {
-            style = RepoStructuredStyle::parse(value)?;
-        } else if arg.starts_with("--") {
+        if arg.starts_with("--") {
             bail!("Unknown flag: {arg}");
         } else if target.is_none() {
             target = Some(arg.clone());
         } else {
-            bail!("Usage: sidekar repo actions [path] [--style=json|plain]");
+            bail!("Usage: sidekar repo actions [path]");
         }
     }
 
-    Ok(RepoActionsListArgs { target, style })
+    Ok(RepoActionsListArgs { target })
 }
 
 fn parse_repo_actions_run_args(args: &[String]) -> Result<RepoActionsRunArgs> {
     let mut action_id = None;
     let mut target = None;
-    let mut style = RepoStructuredStyle::Plain;
     let mut timeout_secs = DEFAULT_ACTION_TIMEOUT_SECS;
     let mut max_output_chars = DEFAULT_ACTION_MAX_OUTPUT_CHARS;
     let mut include_output = false;
 
     for arg in args {
-        if let Some(value) = arg.strip_prefix("--style=") {
-            style = RepoStructuredStyle::parse(value)?;
-        } else if let Some(value) = arg.strip_prefix("--timeout=") {
+        if let Some(value) = arg.strip_prefix("--timeout=") {
             timeout_secs = value
                 .parse::<u64>()
                 .context("--timeout must be a positive integer")?;
@@ -146,15 +134,14 @@ fn parse_repo_actions_run_args(args: &[String]) -> Result<RepoActionsRunArgs> {
             target = Some(arg.clone());
         } else {
             bail!(
-                "Usage: sidekar repo actions run <action-id> [path] [--timeout=N] [--max-output-chars=N] [--include-output] [--style=json|plain]"
+                "Usage: sidekar repo actions run <action-id> [path] [--timeout=N] [--max-output-chars=N] [--include-output]"
             );
         }
     }
 
     Ok(RepoActionsRunArgs {
-        action_id: action_id.context("Usage: sidekar repo actions run <action-id> [path] [--timeout=N] [--max-output-chars=N] [--include-output] [--style=json|plain]")?,
+        action_id: action_id.context("Usage: sidekar repo actions run <action-id> [path] [--timeout=N] [--max-output-chars=N] [--include-output]")?,
         target,
-        style,
         timeout_secs,
         max_output_chars,
         include_output,
@@ -433,58 +420,54 @@ fn summarize_command_output(
     }
 }
 
-fn render_project_actions_plain(summary: &ProjectActionsSummary) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "Project Actions: {}", summary.root.display());
-    let _ = writeln!(out, "Actions: {}", summary.actions.len());
-    if summary.actions.is_empty() {
-        let _ = writeln!(out, "\nNo actions discovered.");
-        return out;
-    }
-    for action in &summary.actions {
-        let _ = writeln!(
-            out,
-            "\n- {} [{}] ({})",
-            action.id, action.kind, action.source
-        );
-        let _ = writeln!(out, "  cmd: {}", action.command.join(" "));
-        let _ = writeln!(out, "  {}", action.description);
-    }
-    out
-}
-
-fn render_project_actions_json(summary: &ProjectActionsSummary) -> Result<String> {
-    serde_json::to_string_pretty(summary).context("failed to render project actions JSON")
-}
-
-fn render_project_action_run_plain(result: &ProjectActionRunResult) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "Project Action: {}", result.action.id);
-    let _ = writeln!(out, "Root: {}", result.root.display());
-    let _ = writeln!(out, "Command: {}", result.action.command.join(" "));
-    let _ = writeln!(out, "Exit Code: {:?}", result.exit_code);
-    let _ = writeln!(out, "Duration: {:.3}s", result.duration_sec);
-    let _ = writeln!(out, "Headline: {}", result.summary.headline);
-    let _ = writeln!(
-        out,
-        "stdout_lines={} stderr_lines={}",
-        result.summary.stdout_lines, result.summary.stderr_lines
-    );
-    if !result.summary.tail.is_empty() {
-        let _ = writeln!(out, "Tail:");
-        for line in &result.summary.tail {
-            let _ = writeln!(out, "- {line}");
+impl crate::output::CommandOutput for ProjectActionsSummary {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Project Actions: {}", self.root.display())?;
+        writeln!(w, "Actions: {}", self.actions.len())?;
+        if self.actions.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "No actions discovered.")?;
+            return Ok(());
         }
+        for action in &self.actions {
+            writeln!(w)?;
+            writeln!(w, "- {} [{}] ({})", action.id, action.kind, action.source)?;
+            writeln!(w, "  cmd: {}", action.command.join(" "))?;
+            writeln!(w, "  {}", action.description)?;
+        }
+        Ok(())
     }
-    if let Some(stdout) = &result.stdout {
-        let _ = writeln!(out, "\nStdout\n{stdout}");
-    }
-    if let Some(stderr) = &result.stderr {
-        let _ = writeln!(out, "\nStderr\n{stderr}");
-    }
-    out
 }
 
-fn render_project_action_run_json(result: &ProjectActionRunResult) -> Result<String> {
-    serde_json::to_string_pretty(result).context("failed to render project action result JSON")
+impl crate::output::CommandOutput for ProjectActionRunResult {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Project Action: {}", self.action.id)?;
+        writeln!(w, "Root: {}", self.root.display())?;
+        writeln!(w, "Command: {}", self.action.command.join(" "))?;
+        writeln!(w, "Exit Code: {:?}", self.exit_code)?;
+        writeln!(w, "Duration: {:.3}s", self.duration_sec)?;
+        writeln!(w, "Headline: {}", self.summary.headline)?;
+        writeln!(
+            w,
+            "stdout_lines={} stderr_lines={}",
+            self.summary.stdout_lines, self.summary.stderr_lines
+        )?;
+        if !self.summary.tail.is_empty() {
+            writeln!(w, "Tail:")?;
+            for line in &self.summary.tail {
+                writeln!(w, "- {line}")?;
+            }
+        }
+        if let Some(stdout) = &self.stdout {
+            writeln!(w)?;
+            writeln!(w, "Stdout")?;
+            writeln!(w, "{stdout}")?;
+        }
+        if let Some(stderr) = &self.stderr {
+            writeln!(w)?;
+            writeln!(w, "Stderr")?;
+            writeln!(w, "{stderr}")?;
+        }
+        Ok(())
+    }
 }

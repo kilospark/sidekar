@@ -1,4 +1,104 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct LaunchOutput {
+    browser: String,
+    profile: String,
+    headless: bool,
+    already_running: bool,
+    session_id: String,
+    command_file: String,
+}
+
+impl crate::output::CommandOutput for LaunchOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.already_running {
+            writeln!(w, "Browser already running.")?;
+        } else if self.headless {
+            writeln!(w, "{} launched successfully (headless).", self.browser)?;
+        } else {
+            writeln!(w, "{} launched successfully.", self.browser)?;
+        }
+        if self.profile != "default" {
+            writeln!(w, "Profile: {}", self.profile)?;
+        }
+        writeln!(w, "Session: {}", self.session_id)?;
+        writeln!(w, "Command file: {}", self.command_file)?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ConnectOutput {
+    session_id: String,
+    command_file: String,
+}
+
+impl crate::output::CommandOutput for ConnectOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Session: {}", self.session_id)?;
+        writeln!(w, "Command file: {}", self.command_file)?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct NewTabOutput {
+    id: String,
+    url: String,
+}
+
+impl crate::output::CommandOutput for NewTabOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "New tab: [{}] {}", self.id, self.url)
+    }
+}
+
+#[derive(serde::Serialize)]
+struct CloseTabOutput {
+    closed_tab_id: String,
+    remaining_tabs: usize,
+}
+
+impl crate::output::CommandOutput for CloseTabOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Closed tab {}", self.closed_tab_id)?;
+        if self.remaining_tabs == 0 {
+            writeln!(w, "No tabs remaining in this session.")?;
+        } else {
+            writeln!(
+                w,
+                "No active tab is selected now. Choose one explicitly with: sidekar tab <id>"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ReadUrlsOutput {
+    sections: Vec<ReadUrlSection>,
+}
+
+#[derive(serde::Serialize)]
+struct ReadUrlSection {
+    url: String,
+    text: String,
+}
+
+impl crate::output::CommandOutput for ReadUrlsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for (i, s) in self.sections.iter().enumerate() {
+            if i > 0 {
+                writeln!(w)?;
+            }
+            writeln!(w, "--- {} ---", s.url)?;
+            writeln!(w, "{}", s.text)?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let preferred_browser = args
@@ -58,8 +158,17 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
                 }
                 ctx.headless = headless;
                 ctx.launch_browser_name = detect_browser_from_port(ctx).await;
-                out!(ctx, "Browser already running.");
-                cmd_connect(ctx).await?;
+                let (_has_own, session_id) = connect_inner(ctx).await?;
+                let browser_label = ctx.launch_browser_name.clone().unwrap_or_default();
+                let output = LaunchOutput {
+                    browser: browser_label,
+                    profile: profile.clone(),
+                    headless,
+                    already_running: true,
+                    session_id: session_id.clone(),
+                    command_file: ctx.command_file(&session_id).display().to_string(),
+                };
+                out!(ctx, "{}", crate::output::to_string(&output)?);
                 return Ok(());
             }
         }
@@ -209,16 +318,17 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
 
     fs::write(&port_file, ctx.cdp_port.to_string())
         .with_context(|| format!("failed writing {}", port_file.display()))?;
-    if headless {
-        out!(ctx, "{} launched successfully (headless).", browser.name);
-    } else {
-        out!(ctx, "{} launched successfully.", browser.name);
-    }
-    if profile != "default" {
-        out!(ctx, "Profile: {profile}");
-    }
 
-    let has_own_window = cmd_connect(ctx).await?;
+    let (has_own_window, session_id) = connect_inner(ctx).await?;
+    let output = LaunchOutput {
+        browser: browser.name.clone(),
+        profile: profile.clone(),
+        headless,
+        already_running: false,
+        session_id: session_id.clone(),
+        command_file: ctx.command_file(&session_id).display().to_string(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
 
     if has_own_window && !ctx.headless {
         for tab_id in &initial_tabs {
@@ -232,6 +342,16 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
 }
 
 pub(crate) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
+    let (has_own_window, session_id) = connect_inner(ctx).await?;
+    let output = ConnectOutput {
+        session_id: session_id.clone(),
+        command_file: ctx.command_file(&session_id).display().to_string(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
+    Ok(has_own_window)
+}
+
+async fn connect_inner(ctx: &mut AppContext) -> Result<(bool, String)> {
     let session_id = new_session_id();
     ctx.set_current_session(session_id.clone());
 
@@ -239,7 +359,12 @@ pub(crate) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
         match create_new_window(ctx, None).await {
             Ok(tab) => (tab, true),
             Err(e) => {
-                eprintln!("New window failed ({e}), falling back to tab");
+                crate::broker::try_log_event(
+                    "warn",
+                    "browser",
+                    "new window failed, falling back to tab",
+                    Some(&format!("{e:#}")),
+                );
                 (create_new_tab(ctx, None).await?, false)
             }
         }
@@ -294,13 +419,7 @@ pub(crate) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
     fs::write(ctx.last_session_file(), &session_id)
         .context("failed writing last session pointer")?;
 
-    out!(ctx, "Session: {session_id}");
-    out!(
-        ctx,
-        "Command file: {}",
-        ctx.command_file(&session_id).display()
-    );
-    Ok(has_own_window)
+    Ok((has_own_window, session_id))
 }
 
 pub(crate) async fn cmd_kill(ctx: &mut AppContext) -> Result<()> {
@@ -333,12 +452,46 @@ pub(crate) async fn cmd_kill(ctx: &mut AppContext) -> Result<()> {
     let session_id = ctx.require_session_id()?.to_string();
     let _ = fs::remove_file(ctx.session_state_file(&session_id));
 
-    out!(ctx, "Killed profile '{profile}' and cleaned up.");
+    let msg = format!("Killed profile '{profile}' and cleaned up.");
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     Ok(())
 }
 
-pub(crate) async fn cmd_tabs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let json_output = args.iter().any(|a| a == "--json");
+#[derive(serde::Serialize)]
+struct TabOut {
+    id: String,
+    title: Option<String>,
+    url: Option<String>,
+    active: bool,
+}
+
+#[derive(serde::Serialize)]
+struct TabsOutput {
+    items: Vec<TabOut>,
+}
+
+impl crate::output::CommandOutput for TabsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No tabs owned by this session.")?;
+            return Ok(());
+        }
+        for tab in &self.items {
+            let active = if tab.active { " *" } else { "" };
+            writeln!(
+                w,
+                "[{}] {} - {}{}",
+                tab.id,
+                tab.title.clone().unwrap_or_else(|| "(untitled)".to_string()),
+                tab.url.clone().unwrap_or_else(|| "(no url)".to_string()),
+                active
+            )?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn cmd_tabs(ctx: &mut AppContext, _args: &[String]) -> Result<()> {
     let all_tabs = get_debug_tabs(ctx).await?;
     let state = ctx.load_session_state()?;
     let owned_ids = state
@@ -346,52 +499,22 @@ pub(crate) async fn cmd_tabs(ctx: &mut AppContext, args: &[String]) -> Result<()
         .iter()
         .cloned()
         .collect::<std::collections::HashSet<_>>();
-    let owned = all_tabs
-        .into_iter()
-        .filter(|t| owned_ids.contains(&t.id))
-        .collect::<Vec<_>>();
-
-    if json_output {
-        let items: Vec<serde_json::Value> = owned
-            .iter()
+    let output = TabsOutput {
+        items: all_tabs
+            .into_iter()
+            .filter(|t| owned_ids.contains(&t.id))
             .map(|t| {
-                serde_json::json!({
-                    "id": t.id,
-                    "title": t.title,
-                    "url": t.url,
-                    "active": state.active_tab_id.as_deref() == Some(t.id.as_str()),
-                })
+                let active = state.active_tab_id.as_deref() == Some(t.id.as_str());
+                TabOut {
+                    id: t.id,
+                    title: t.title,
+                    url: t.url,
+                    active,
+                }
             })
-            .collect();
-        out!(
-            ctx,
-            "{}",
-            serde_json::to_string_pretty(&items).unwrap_or_default()
-        );
-        return Ok(());
-    }
-
-    if owned.is_empty() {
-        out!(ctx, "No tabs owned by this session.");
-        return Ok(());
-    }
-
-    for tab in owned {
-        let active = if state.active_tab_id.as_deref() == Some(tab.id.as_str()) {
-            " *"
-        } else {
-            ""
-        };
-        out!(
-            ctx,
-            "[{}] {} - {}{}",
-            tab.id,
-            tab.title.unwrap_or_else(|| "(untitled)".to_string()),
-            tab.url.unwrap_or_else(|| "(no url)".to_string()),
-            active
-        );
-    }
-
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -414,13 +537,13 @@ pub(crate) async fn cmd_tab(ctx: &mut AppContext, tab_id: &str) -> Result<()> {
     if !ctx.isolated {
         let _ = http_put_text(ctx, &format!("/json/activate/{tab_id}")).await;
     }
-    out!(
-        ctx,
+    let msg = format!(
         "Switched to tab: {}",
         tab.title
             .or(tab.url)
             .unwrap_or_else(|| "(untitled)".to_string())
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     Ok(())
 }
 
@@ -454,12 +577,11 @@ pub(crate) async fn cmd_new_tab(ctx: &mut AppContext, url: Option<&str>) -> Resu
     state.active_tab_id = Some(new_tab.id.clone());
     ctx.save_session_state(&state)?;
 
-    out!(
-        ctx,
-        "New tab: [{}] {}",
-        new_tab.id,
-        new_tab.url.unwrap_or_else(|| "about:blank".to_string())
-    );
+    let output = NewTabOutput {
+        id: new_tab.id,
+        url: new_tab.url.unwrap_or_else(|| "about:blank".to_string()),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -475,16 +597,11 @@ pub(crate) async fn cmd_close(ctx: &mut AppContext) -> Result<()> {
     state.active_tab_id = None;
     ctx.save_session_state(&state)?;
 
-    out!(ctx, "Closed tab {tab_id}");
-    if state.tabs.is_empty() {
-        out!(ctx, "No tabs remaining in this session.");
-    } else {
-        out!(
-            ctx,
-            "No active tab is selected now. Choose one explicitly with: sidekar tab <id>"
-        );
-    }
-
+    let output = CloseTabOutput {
+        closed_tab_id: tab_id,
+        remaining_tabs: state.tabs.len(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -517,7 +634,8 @@ pub(crate) async fn cmd_back(ctx: &mut AppContext) -> Result<()> {
     )
     .await?;
     sleep(Duration::from_millis(500)).await;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let brief = get_page_brief(&mut cdp).await?;
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
     cdp.close().await;
     Ok(())
 }
@@ -551,7 +669,8 @@ pub(crate) async fn cmd_forward(ctx: &mut AppContext) -> Result<()> {
     )
     .await?;
     sleep(Duration::from_millis(500)).await;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let brief = get_page_brief(&mut cdp).await?;
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
     cdp.close().await;
     Ok(())
 }
@@ -561,7 +680,8 @@ pub(crate) async fn cmd_reload(ctx: &mut AppContext) -> Result<()> {
     prepare_cdp(ctx, &mut cdp).await?;
     cdp.send("Page.reload", json!({})).await?;
     wait_for_ready_state_complete(&mut cdp, Duration::from_secs(15)).await?;
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let brief = get_page_brief(&mut cdp).await?;
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
     cdp.close().await;
     Ok(())
 }
@@ -618,7 +738,7 @@ pub(crate) async fn cmd_readurls(
     let original_state = ctx.load_session_state()?;
     let original_tab = original_state.active_tab_id.clone();
 
-    let mut combined = String::new();
+    let mut sections: Vec<ReadUrlSection> = Vec::new();
     for (i, tab_id) in tab_ids.iter().enumerate() {
         let mut state = ctx.load_session_state()?;
         state.active_tab_id = Some(tab_id.clone());
@@ -644,7 +764,10 @@ pub(crate) async fn cmd_readurls(
             output = format!("{}\n... (truncated)", &output[..boundary]);
         }
 
-        combined.push_str(&format!("--- {} ---\n{}\n\n", urls[i], output));
+        sections.push(ReadUrlSection {
+            url: urls[i].clone(),
+            text: output,
+        });
         cdp.close().await;
     }
 
@@ -661,6 +784,7 @@ pub(crate) async fn cmd_readurls(
         ctx.save_session_state(&state)?;
     }
 
-    out!(ctx, "{}", combined.trim());
+    let output = ReadUrlsOutput { sections };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }

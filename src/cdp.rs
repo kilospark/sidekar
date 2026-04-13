@@ -216,8 +216,13 @@ impl DirectCdp {
 
 impl Drop for DirectCdp {
     fn drop(&mut self) {
-        if !self.closed && std::env::var_os("SIDEKAR_DEBUG").is_some() {
-            eprintln!("sidekar: DirectCdp dropped without close()");
+        if !self.closed {
+            crate::broker::try_log_event(
+                "debug",
+                "cdp",
+                "DirectCdp dropped without close()",
+                None,
+            );
         }
     }
 }

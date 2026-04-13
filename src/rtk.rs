@@ -184,6 +184,78 @@ fn read_stdin() -> Result<String> {
     Ok(input)
 }
 
+#[derive(serde::Serialize)]
+#[serde(tag = "result")]
+enum ClassifyOutput {
+    #[serde(rename = "supported")]
+    Supported {
+        command: String,
+        equivalent: String,
+        category: String,
+        estimated_savings_pct: u8,
+    },
+    #[serde(rename = "unsupported")]
+    Unsupported {
+        command: String,
+        base_command: String,
+    },
+    #[serde(rename = "ignored")]
+    Ignored { command: String },
+}
+
+impl crate::output::CommandOutput for ClassifyOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        match self {
+            ClassifyOutput::Supported {
+                command,
+                equivalent,
+                category,
+                estimated_savings_pct,
+            } => {
+                writeln!(w, "supported")?;
+                writeln!(w, "command: {command}")?;
+                writeln!(w, "equivalent: {equivalent}")?;
+                writeln!(w, "category: {category}")?;
+                writeln!(w, "estimated savings: {estimated_savings_pct}%")?;
+            }
+            ClassifyOutput::Unsupported {
+                command,
+                base_command,
+            } => {
+                writeln!(w, "unsupported")?;
+                writeln!(w, "command: {command}")?;
+                writeln!(w, "base command: {base_command}")?;
+            }
+            ClassifyOutput::Ignored { command } => {
+                writeln!(w, "ignored")?;
+                writeln!(w, "command: {command}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct CompactRunOutput {
+    compacted: String,
+    exit_code: Option<i32>,
+    terminated_by_signal: bool,
+}
+
+impl crate::output::CommandOutput for CompactRunOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if !self.compacted.is_empty() {
+            writeln!(w, "{}", self.compacted)?;
+        }
+        if self.terminated_by_signal {
+            writeln!(w, "[process terminated by signal]")?;
+        } else if let Some(code) = self.exit_code {
+            writeln!(w, "[exit {code}]")?;
+        }
+        Ok(())
+    }
+}
+
 pub fn cmd_compact(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     match sub {
@@ -192,28 +264,24 @@ pub fn cmd_compact(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             if command.trim().is_empty() {
                 bail!("Usage: sidekar compact classify <command...>");
             }
-            match classify_command(&command) {
+            let output = match classify_command(&command) {
                 Classification::Supported {
                     equivalent,
                     category,
                     estimated_savings_pct,
-                } => {
-                    out!(ctx, "supported");
-                    out!(ctx, "command: {command}");
-                    out!(ctx, "equivalent: {equivalent}");
-                    out!(ctx, "category: {category}");
-                    out!(ctx, "estimated savings: {estimated_savings_pct}%");
-                }
-                Classification::Unsupported { base_command } => {
-                    out!(ctx, "unsupported");
-                    out!(ctx, "command: {command}");
-                    out!(ctx, "base command: {base_command}");
-                }
-                Classification::Ignored => {
-                    out!(ctx, "ignored");
-                    out!(ctx, "command: {command}");
-                }
-            }
+                } => ClassifyOutput::Supported {
+                    command,
+                    equivalent: equivalent.to_string(),
+                    category: category.to_string(),
+                    estimated_savings_pct,
+                },
+                Classification::Unsupported { base_command } => ClassifyOutput::Unsupported {
+                    command,
+                    base_command: base_command.to_string(),
+                },
+                Classification::Ignored => ClassifyOutput::Ignored { command },
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             Ok(())
         }
         "filter" => {
@@ -223,7 +291,11 @@ pub fn cmd_compact(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             }
             let input = read_stdin()?;
             let compacted = compact_output(&command, &input);
-            out!(ctx, "{compacted}");
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(compacted))?
+            );
             Ok(())
         }
         "run" => {
@@ -249,16 +321,19 @@ pub fn cmd_compact(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 combined.push_str(&String::from_utf8_lossy(&output.stderr));
             }
             let compacted = compact_output(&rendered, &combined);
-            if !compacted.is_empty() {
-                out!(ctx, "{compacted}");
-            }
-            if !output.status.success() {
-                if let Some(code) = output.status.code() {
-                    out!(ctx, "[exit {code}]");
-                } else {
-                    out!(ctx, "[process terminated by signal]");
-                }
-            }
+            let (exit_code, terminated_by_signal) = if output.status.success() {
+                (None, false)
+            } else if let Some(code) = output.status.code() {
+                (Some(code), false)
+            } else {
+                (None, true)
+            };
+            let result = CompactRunOutput {
+                compacted,
+                exit_code,
+                terminated_by_signal,
+            };
+            out!(ctx, "{}", crate::output::to_string(&result)?);
             Ok(())
         }
         _ => bail!(

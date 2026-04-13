@@ -182,11 +182,15 @@ async fn start_monitor(ctx: &mut AppContext, tab_ids: Vec<String>) -> Result<()>
         task_handle,
     });
 
-    out!(
-        ctx,
+    let msg = format!(
         "Monitor started. Watching {} tab(s): {}",
         watched_names.len(),
         watched_names.join(", ")
+    );
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
     );
     Ok(())
 }
@@ -576,6 +580,43 @@ async fn run_title_watcher(
 }
 
 /// Handle the `monitor` tool command.
+#[derive(serde::Serialize)]
+struct MonitorStatusOutput {
+    active: bool,
+    running: bool,
+    watched_tabs: usize,
+    events_delivered: u64,
+    last_event_secs_ago: Option<u64>,
+    delivery_errors: u64,
+    last_error: Option<String>,
+}
+
+impl crate::output::CommandOutput for MonitorStatusOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if !self.active {
+            writeln!(w, "No monitor is running.")?;
+            return Ok(());
+        }
+        writeln!(
+            w,
+            "Monitor: {}",
+            if self.running { "running" } else { "stopped" }
+        )?;
+        writeln!(w, "Watching: {} tab(s)", self.watched_tabs)?;
+        writeln!(w, "Events delivered: {}", self.events_delivered)?;
+        let last_event = match self.last_event_secs_ago {
+            Some(s) => format!("{s}s ago"),
+            None => "never".to_string(),
+        };
+        writeln!(w, "Last event: {last_event}")?;
+        writeln!(w, "Delivery errors: {}", self.delivery_errors)?;
+        if let Some(err) = &self.last_error {
+            writeln!(w, "Last error: {err}")?;
+        }
+        Ok(())
+    }
+}
+
 pub async fn cmd_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("status");
 
@@ -597,53 +638,56 @@ pub async fn cmd_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "stop" => {
             let cell = monitor_cell().await;
             let mut guard = cell.lock().await;
-            if let Some(mon) = guard.take() {
+            let msg = if let Some(mon) = guard.take() {
                 mon.running.store(false, Ordering::Relaxed);
                 mon.task_handle.abort();
-                out!(ctx, "Monitor stopped.");
+                "Monitor stopped."
             } else {
-                out!(ctx, "No monitor is running.");
-            }
+                "No monitor is running."
+            };
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+            );
             Ok(())
         }
         "status" => {
             let cell = monitor_cell().await;
             let guard = cell.lock().await;
-            match guard.as_ref() {
+            let output = match guard.as_ref() {
                 Some(mon) => {
-                    let running = mon.running.load(Ordering::Relaxed);
-                    let events = mon.event_count.load(Ordering::Relaxed);
                     let last_ms = mon.last_event_ms.load(Ordering::Relaxed);
-                    let errors = mon.error_count.load(Ordering::Relaxed);
-                    let last_err = mon.last_error.lock().await;
-
-                    let last_event_ago = if last_ms > 0 {
+                    let last_event_secs_ago = if last_ms > 0 {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis() as u64;
-                        format!("{}s ago", (now - last_ms) / 1000)
+                        Some((now - last_ms) / 1000)
                     } else {
-                        "never".to_string()
+                        None
                     };
-
-                    out!(
-                        ctx,
-                        "Monitor: {}",
-                        if running { "running" } else { "stopped" }
-                    );
-                    out!(ctx, "Watching: {} tab(s)", mon.watched_tabs.len());
-                    out!(ctx, "Events delivered: {events}");
-                    out!(ctx, "Last event: {last_event_ago}");
-                    out!(ctx, "Delivery errors: {errors}");
-                    if let Some(err) = last_err.as_ref() {
-                        out!(ctx, "Last error: {err}");
+                    MonitorStatusOutput {
+                        active: true,
+                        running: mon.running.load(Ordering::Relaxed),
+                        watched_tabs: mon.watched_tabs.len(),
+                        events_delivered: mon.event_count.load(Ordering::Relaxed),
+                        last_event_secs_ago,
+                        delivery_errors: mon.error_count.load(Ordering::Relaxed),
+                        last_error: mon.last_error.lock().await.clone(),
                     }
                 }
-                None => {
-                    out!(ctx, "No monitor is running.");
-                }
-            }
+                None => MonitorStatusOutput {
+                    active: false,
+                    running: false,
+                    watched_tabs: 0,
+                    events_delivered: 0,
+                    last_event_secs_ago: None,
+                    delivery_errors: 0,
+                    last_error: None,
+                },
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             Ok(())
         }
         _ => bail!("Usage: monitor <start|stop|status>"),

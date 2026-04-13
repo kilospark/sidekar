@@ -79,6 +79,7 @@ pub mod help_text;
 pub mod md;
 pub mod memory;
 pub mod message;
+pub mod output;
 pub mod pakt;
 pub mod poller;
 pub mod providers;

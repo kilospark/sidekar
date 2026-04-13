@@ -46,40 +46,6 @@ use changes::*;
 use pack::*;
 use render::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RepoStyle {
-    Markdown,
-    Json,
-    Plain,
-}
-
-impl RepoStyle {
-    fn parse(value: &str) -> Result<Self> {
-        match value {
-            "markdown" | "md" => Ok(Self::Markdown),
-            "json" => Ok(Self::Json),
-            "plain" | "text" | "txt" => Ok(Self::Plain),
-            other => bail!("Unsupported repo style: {other}. Valid: markdown, json, plain"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RepoStructuredStyle {
-    Json,
-    Plain,
-}
-
-impl RepoStructuredStyle {
-    fn parse(value: &str) -> Result<Self> {
-        match value {
-            "json" => Ok(Self::Json),
-            "plain" | "text" | "txt" => Ok(Self::Plain),
-            other => bail!("Unsupported repo style: {other}. Valid: json, plain"),
-        }
-    }
-}
-
 #[derive(Debug)]
 struct RepoArgs {
     target: Option<String>,
@@ -92,7 +58,6 @@ struct RepoArgs {
 #[derive(Debug)]
 struct RepoPackArgs {
     common: RepoArgs,
-    style: RepoStyle,
     diff: bool,
     logs: Option<usize>,
 }
@@ -125,6 +90,12 @@ struct RepoSnapshot {
     git_log: Option<String>,
 }
 
+impl crate::output::CommandOutput for RepoSnapshot {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        write!(w, "{}", render_markdown(self))
+    }
+}
+
 #[derive(Debug)]
 struct RepoScope {
     root: PathBuf,
@@ -155,36 +126,52 @@ pub fn cmd_repo(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 fn cmd_repo_pack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let opts = parse_repo_pack_args(args)?;
     let snapshot = build_repo_snapshot(&opts.common, opts.diff, opts.logs)?;
-    match opts.style {
-        RepoStyle::Markdown => write_output(ctx, &render_markdown(&snapshot)),
-        RepoStyle::Json => write_output(ctx, &render_json(&snapshot)?),
-        RepoStyle::Plain => write_output(ctx, &render_plain(&snapshot)),
-    }
+    out!(ctx, "{}", crate::output::to_string(&snapshot)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct RepoTreeOutput {
+    root: String,
+    tree: String,
+    file_count: usize,
+    total_chars: usize,
+    total_est_tokens: usize,
+    skipped_count: usize,
+}
+
+impl crate::output::CommandOutput for RepoTreeOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "{}", self.tree.trim_end())?;
+        writeln!(w)?;
+        writeln!(
+            w,
+            "files={} chars={} est_tokens={} skipped={}",
+            self.file_count, self.total_chars, self.total_est_tokens, self.skipped_count
+        )?;
+        Ok(())
+    }
 }
 
 fn cmd_repo_tree(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let opts = parse_repo_args(args)?;
     let snapshot = build_repo_snapshot(&opts, false, None)?;
-    out!(ctx, "{}", snapshot.tree.trim_end());
-    out!(
-        ctx,
-        "\nfiles={} chars={} est_tokens={} skipped={}",
-        snapshot.files.len(),
-        snapshot.total_chars,
-        snapshot.total_est_tokens,
-        snapshot.skipped.len()
-    );
+    let output = RepoTreeOutput {
+        root: snapshot.display_root.clone(),
+        tree: snapshot.tree.clone(),
+        file_count: snapshot.files.len(),
+        total_chars: snapshot.total_chars,
+        total_est_tokens: snapshot.total_est_tokens,
+        skipped_count: snapshot.skipped.len(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
 fn cmd_repo_changes(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let opts = parse_repo_changes_args(args)?;
     let summary = build_repo_changes_summary(&opts)?;
-    match opts.style {
-        RepoStructuredStyle::Json => write_output(ctx, &render_repo_changes_json(&summary)?),
-        RepoStructuredStyle::Plain => write_output(ctx, &render_repo_changes_plain(&summary)),
-    }
+    out!(ctx, "{}", crate::output::to_string(&summary)?);
     Ok(())
 }
 

@@ -1,4 +1,33 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct SelectOutput {
+    selected: Vec<String>,
+    page_brief: String,
+}
+
+impl crate::output::CommandOutput for SelectOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Selected: {}", self.selected.join(", "))?;
+        writeln!(w, "{}", self.page_brief)?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FillOutput {
+    filled: usize,
+    page_brief: String,
+}
+
+impl crate::output::CommandOutput for FillOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Filled {} field(s)", self.filled)?;
+        writeln!(w, "{}", self.page_brief)?;
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_focus(ctx: &mut AppContext, selector: &str) -> Result<()> {
     let mut cdp = open_cdp(ctx).await?;
@@ -27,8 +56,7 @@ pub(crate) async fn cmd_focus(ctx: &mut AppContext, selector: &str) -> Result<()
     if let Some(err) = val.get("error").and_then(Value::as_str) {
         bail!("{err}");
     }
-    out!(
-        ctx,
+    let msg = format!(
         "Focused <{}> \"{}\"",
         val.get("tag")
             .and_then(Value::as_str)
@@ -36,6 +64,7 @@ pub(crate) async fn cmd_focus(ctx: &mut AppContext, selector: &str) -> Result<()
             .to_lowercase(),
         val.get("text").and_then(Value::as_str).unwrap_or_default()
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -75,8 +104,7 @@ pub(crate) async fn cmd_clear(ctx: &mut AppContext, selector: &str) -> Result<()
     if let Some(err) = val.get("error").and_then(Value::as_str) {
         bail!("{err}");
     }
-    out!(
-        ctx,
+    let msg = format!(
         "Cleared {} {}",
         val.get("tag")
             .and_then(Value::as_str)
@@ -84,6 +112,7 @@ pub(crate) async fn cmd_clear(ctx: &mut AppContext, selector: &str) -> Result<()
             .to_lowercase(),
         selector
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -107,7 +136,8 @@ pub(crate) async fn cmd_keyboard(ctx: &mut AppContext, text: &str) -> Result<()>
         )
         .await?;
     }
-    out!(ctx, "OK keyboard \"{}\"", truncate(text, 50));
+    let msg = format!("OK keyboard \"{}\"", truncate(text, 50));
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -137,7 +167,8 @@ pub(crate) async fn cmd_paste(ctx: &mut AppContext, text: &str) -> Result<()> {
     );
     let result = runtime_evaluate_with_context(&mut cdp, &script, true, false, context_id).await?;
     crate::check_js_error(&result)?;
-    out!(ctx, "OK pasted \"{}\"", truncate(text, 50));
+    let msg = format!("OK pasted \"{}\"", truncate(text, 50));
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -254,8 +285,7 @@ pub(crate) async fn cmd_clipboard(
 
     let html_len = html_content.len();
     let has_html = !html_content.is_empty();
-    out!(
-        ctx,
+    let msg = format!(
         "OK clipboard paste ({} chars{})",
         text_content.len(),
         if has_html {
@@ -264,6 +294,7 @@ pub(crate) async fn cmd_clipboard(
             String::new()
         }
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -276,7 +307,8 @@ pub(crate) async fn cmd_inserttext(ctx: &mut AppContext, text: &str) -> Result<(
     prepare_cdp(ctx, &mut cdp).await?;
     cdp.send("Input.insertText", json!({ "text": text }))
         .await?;
-    out!(ctx, "OK insert-text \"{}\"", truncate(text, 50));
+    let msg = format!("OK insert-text \"{}\"", truncate(text, 50));
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -329,8 +361,12 @@ pub(crate) async fn cmd_select(
         .filter_map(Value::as_str)
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    out!(ctx, "Selected: {}", selected.join(", "));
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
+    let output = SelectOutput {
+        selected,
+        page_brief,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -381,8 +417,7 @@ pub(crate) async fn cmd_upload(
     )
     .await?;
 
-    out!(
-        ctx,
+    let msg = format!(
         "Uploaded {} file(s) to {}: {}",
         resolved.len(),
         selector,
@@ -396,6 +431,7 @@ pub(crate) async fn cmd_upload(
             .collect::<Vec<_>>()
             .join(", ")
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -415,8 +451,9 @@ pub(crate) async fn cmd_fill(ctx: &mut AppContext, fields: &[(String, String)]) 
         filled += 1;
     }
 
-    out!(ctx, "Filled {} field(s)", filled);
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let page_brief = get_page_brief(&mut cdp).await?;
+    let output = FillOutput { filled, page_brief };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -438,19 +475,18 @@ pub(crate) async fn cmd_dialog(
         prompt_text: prompt_text.clone(),
     });
     ctx.save_session_state(&state)?;
-    if prompt_text.is_empty() {
-        out!(
-            ctx,
+    let msg = if prompt_text.is_empty() {
+        format!(
             "Dialog handler set: will {} the next dialog",
             if accept { "accept" } else { "dismiss" }
-        );
+        )
     } else {
-        out!(
-            ctx,
+        format!(
             "Dialog handler set: will {} the next dialog with text: \"{}\"",
             if accept { "accept" } else { "dismiss" },
             prompt_text
-        );
-    }
+        )
+    };
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::output::{CommandOutput, PlainOutput};
 
 pub(super) async fn cmd_download(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("path");
@@ -29,12 +30,23 @@ pub(super) async fn cmd_download(ctx: &mut AppContext, args: &[String]) -> Resul
                 }),
             )
             .await?;
-            out!(ctx, "Downloads will be saved to: {}", dir.display());
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!(
+                    "Downloads will be saved to: {}",
+                    dir.display()
+                )))?
+            );
             cdp.close().await;
         }
         "list" => {
             if !download_dir.exists() {
-                out!(ctx, "No downloads directory.");
+                out!(
+                    ctx,
+                    "{}",
+                    crate::output::to_string(&PlainOutput::new("No downloads directory."))?
+                );
                 return Ok(());
             }
             let mut files = fs::read_dir(&download_dir)
@@ -42,22 +54,47 @@ pub(super) async fn cmd_download(ctx: &mut AppContext, args: &[String]) -> Resul
                 .filter_map(|e| e.ok())
                 .collect::<Vec<_>>();
             files.sort_by_key(|e| e.file_name());
-            if files.is_empty() {
-                out!(ctx, "No downloaded files.");
-            } else {
-                for entry in files {
-                    let path = entry.path();
-                    let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let stat = fs::metadata(&path)
-                        .with_context(|| format!("failed stat {}", path.display()))?;
-                    let size = human_size(stat.len());
-                    out!(ctx, "{} ({})", name, size);
+            #[derive(serde::Serialize)]
+            struct DownloadEntry {
+                name: String,
+                size_bytes: u64,
+                size: String,
+            }
+            #[derive(serde::Serialize)]
+            struct DownloadsOutput {
+                files: Vec<DownloadEntry>,
+            }
+            impl CommandOutput for DownloadsOutput {
+                fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                    if self.files.is_empty() {
+                        writeln!(w, "No downloaded files.")?;
+                        return Ok(());
+                    }
+                    for f in &self.files {
+                        writeln!(w, "{} ({})", f.name, f.size)?;
+                    }
+                    Ok(())
                 }
             }
+            let mut entries = Vec::new();
+            for entry in files {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let stat = fs::metadata(&path)
+                    .with_context(|| format!("failed stat {}", path.display()))?;
+                let size_bytes = stat.len();
+                entries.push(DownloadEntry {
+                    name,
+                    size_bytes,
+                    size: human_size(size_bytes),
+                });
+            }
+            let output = DownloadsOutput { files: entries };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
         }
         _ => bail!("Usage: sidekar download [path <dir>|list]"),
     }
@@ -84,7 +121,11 @@ pub(super) async fn cmd_activate(ctx: &mut AppContext) -> Result<()> {
             {
                 let _ = activate_browser(name);
             }
-            out!(ctx, "Brought session window to front.");
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new("Brought session window to front."))?
+            );
             return Ok(());
         }
         // CDP failed — fall through to app-wide activate
@@ -96,7 +137,14 @@ pub(super) async fn cmd_activate(ctx: &mut AppContext) -> Result<()> {
         .or_else(|| find_browser().map(|b| b.name))
         .ok_or_else(|| anyhow!("Cannot determine browser."))?;
     activate_browser(&browser_name)?;
-    out!(ctx, "Brought {} to front.", browser_name);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(format!(
+            "Brought {} to front.",
+            browser_name
+        )))?
+    );
     Ok(())
 }
 
@@ -112,7 +160,11 @@ pub(super) async fn cmd_minimize(ctx: &mut AppContext) -> Result<()> {
             && let Some(ws_url) = &tab.web_socket_debugger_url
             && minimize_window_by_id(ctx, ws_url, wid).await.is_ok()
         {
-            out!(ctx, "Minimized session window.");
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new("Minimized session window."))?
+            );
             return Ok(());
         }
         // CDP failed — fall through to app-wide minimize
@@ -124,7 +176,11 @@ pub(super) async fn cmd_minimize(ctx: &mut AppContext) -> Result<()> {
         .or_else(|| find_browser().map(|b| b.name))
         .ok_or_else(|| anyhow!("Cannot determine browser."))?;
     minimize_browser(&browser_name)?;
-    out!(ctx, "Minimized {}.", browser_name);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(format!("Minimized {}.", browser_name)))?
+    );
     Ok(())
 }
 
@@ -135,29 +191,37 @@ pub(super) async fn cmd_human_click_dispatch(ctx: &mut AppContext, args: &[Strin
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;
         human_click(&mut cdp, x, y).await?;
-        out!(ctx, "Human-clicked at ({x}, {y})");
+        let action_msg = format!("Human-clicked at ({x}, {y})");
         sleep(Duration::from_millis(150)).await;
         let adopted = adopt_new_tabs(ctx, &tabs_before, Duration::from_millis(800)).await?;
         if !adopted.is_empty() {
             cdp.close().await;
             let mut adopted_cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut adopted_cdp).await?;
+            let adopt_msg = format_adopted_msg(&adopted);
+            let brief = get_page_brief(&mut adopted_cdp).await?;
             out!(
                 ctx,
-                "Adopted {} new tab(s); switched to [{}]",
-                adopted.len(),
-                adopted
-                    .iter()
-                    .find(|tab| tab.url.as_deref().is_some_and(|url| url != "about:blank"))
-                    .or_else(|| adopted.first())
-                    .map(|tab| tab.id.as_str())
-                    .unwrap_or("unknown")
+                "{}",
+                crate::output::to_string(&HumanClickOutput {
+                    action: action_msg,
+                    adopted: Some(adopt_msg),
+                    page_brief: brief,
+                })?
             );
-            out!(ctx, "{}", get_page_brief(&mut adopted_cdp).await?);
             adopted_cdp.close().await;
             return Ok(());
         }
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let brief = get_page_brief(&mut cdp).await?;
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&HumanClickOutput {
+                action: action_msg,
+                adopted: None,
+                page_brief: brief,
+            })?
+        );
         cdp.close().await;
         return Ok(());
     }
@@ -171,8 +235,7 @@ pub(super) async fn cmd_human_click_dispatch(ctx: &mut AppContext, args: &[Strin
         prepare_cdp(ctx, &mut cdp).await?;
         let loc = locate_element_by_text(ctx, &mut cdp, &text).await?;
         human_click(&mut cdp, loc.x, loc.y).await?;
-        out!(
-            ctx,
+        let action_msg = format!(
             "Human-clicked {} \"{}\" (text match)",
             loc.tag.to_lowercase(),
             loc.text
@@ -183,27 +246,62 @@ pub(super) async fn cmd_human_click_dispatch(ctx: &mut AppContext, args: &[Strin
             cdp.close().await;
             let mut adopted_cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut adopted_cdp).await?;
+            let adopt_msg = format_adopted_msg(&adopted);
+            let brief = get_page_brief(&mut adopted_cdp).await?;
             out!(
                 ctx,
-                "Adopted {} new tab(s); switched to [{}]",
-                adopted.len(),
-                adopted
-                    .iter()
-                    .find(|tab| tab.url.as_deref().is_some_and(|url| url != "about:blank"))
-                    .or_else(|| adopted.first())
-                    .map(|tab| tab.id.as_str())
-                    .unwrap_or("unknown")
+                "{}",
+                crate::output::to_string(&HumanClickOutput {
+                    action: action_msg,
+                    adopted: Some(adopt_msg),
+                    page_brief: brief,
+                })?
             );
-            out!(ctx, "{}", get_page_brief(&mut adopted_cdp).await?);
             adopted_cdp.close().await;
             return Ok(());
         }
-        out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+        let brief = get_page_brief(&mut cdp).await?;
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&HumanClickOutput {
+                action: action_msg,
+                adopted: None,
+                page_brief: brief,
+            })?
+        );
         cdp.close().await;
         return Ok(());
     }
     let selector = resolve_selector(ctx, &args.join(" "))?;
     cmd_human_click(ctx, &selector).await
+}
+
+#[derive(serde::Serialize)]
+struct HumanClickOutput {
+    action: String,
+    adopted: Option<String>,
+    page_brief: String,
+}
+
+impl CommandOutput for HumanClickOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "{}", self.action)?;
+        if let Some(a) = &self.adopted {
+            writeln!(w, "{}", a)?;
+        }
+        writeln!(w, "{}", self.page_brief)
+    }
+}
+
+fn format_adopted_msg(adopted: &[crate::types::DebugTab]) -> String {
+    let id = adopted
+        .iter()
+        .find(|tab| tab.url.as_deref().is_some_and(|url| url != "about:blank"))
+        .or_else(|| adopted.first())
+        .map(|tab| tab.id.as_str())
+        .unwrap_or("unknown");
+    format!("Adopted {} new tab(s); switched to [{}]", adopted.len(), id)
 }
 
 pub(super) async fn cmd_human_click(ctx: &mut AppContext, selector: &str) -> Result<()> {
@@ -212,34 +310,37 @@ pub(super) async fn cmd_human_click(ctx: &mut AppContext, selector: &str) -> Res
     prepare_cdp(ctx, &mut cdp).await?;
     let loc = locate_element(ctx, &mut cdp, selector).await?;
     human_click(&mut cdp, loc.x, loc.y).await?;
-    out!(
-        ctx,
-        "Human-clicked {} \"{}\"",
-        loc.tag.to_lowercase(),
-        loc.text
-    );
+    let action_msg = format!("Human-clicked {} \"{}\"", loc.tag.to_lowercase(), loc.text);
     sleep(Duration::from_millis(150)).await;
     let adopted = adopt_new_tabs(ctx, &tabs_before, Duration::from_millis(800)).await?;
     if !adopted.is_empty() {
         cdp.close().await;
         let mut adopted_cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut adopted_cdp).await?;
+        let adopt_msg = format_adopted_msg(&adopted);
+        let brief = get_page_brief(&mut adopted_cdp).await?;
         out!(
             ctx,
-            "Adopted {} new tab(s); switched to [{}]",
-            adopted.len(),
-            adopted
-                .iter()
-                .find(|tab| tab.url.as_deref().is_some_and(|url| url != "about:blank"))
-                .or_else(|| adopted.first())
-                .map(|tab| tab.id.as_str())
-                .unwrap_or("unknown")
+            "{}",
+            crate::output::to_string(&HumanClickOutput {
+                action: action_msg,
+                adopted: Some(adopt_msg),
+                page_brief: brief,
+            })?
         );
-        out!(ctx, "{}", get_page_brief(&mut adopted_cdp).await?);
         adopted_cdp.close().await;
         return Ok(());
     }
-    out!(ctx, "{}", get_page_brief(&mut cdp).await?);
+    let brief = get_page_brief(&mut cdp).await?;
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&HumanClickOutput {
+            action: action_msg,
+            adopted: None,
+            page_brief: brief,
+        })?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -260,9 +361,12 @@ pub(super) async fn cmd_human_type(ctx: &mut AppContext, selector: &str, text: &
     human_type_text(&mut cdp, text, false).await?;
     out!(
         ctx,
-        "Human-typed \"{}\" into {}",
-        truncate(text, 50),
-        selector
+        "{}",
+        crate::output::to_string(&PlainOutput::new(format!(
+            "Human-typed \"{}\" into {}",
+            truncate(text, 50),
+            selector
+        )))?
     );
     cdp.close().await;
     Ok(())
@@ -299,7 +403,14 @@ pub(super) async fn cmd_lock(ctx: &mut AppContext, ttl_seconds: Option<&str>) ->
         );
         Ok(())
     })?;
-    out!(ctx, "Tab {} locked for {}s by session {}", tab_id, ttl, sid);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(format!(
+            "Tab {} locked for {}s by session {}",
+            tab_id, ttl, sid
+        )))?
+    );
     Ok(())
 }
 
@@ -320,7 +431,11 @@ pub(super) async fn cmd_unlock(ctx: &mut AppContext) -> Result<()> {
             Ok(format!("Tab {} unlocked.", tab_id))
         }
     })?;
-    out!(ctx, "{msg}");
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -428,14 +543,30 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
             let cookie_count = cookies.as_array().map(|a| a.len()).unwrap_or(0);
             let ls_count = local_storage.as_object().map(|m| m.len()).unwrap_or(0);
             let ss_count = session_storage.as_object().map(|m| m.len()).unwrap_or(0);
-            out!(
-                ctx,
-                "State saved to {}\n  {} cookies, {} localStorage, {} sessionStorage entries",
-                file.display(),
-                cookie_count,
-                ls_count,
-                ss_count
-            );
+            #[derive(serde::Serialize)]
+            struct StateSaveOutput {
+                file: String,
+                cookies: usize,
+                local_storage: usize,
+                session_storage: usize,
+            }
+            impl CommandOutput for StateSaveOutput {
+                fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                    writeln!(w, "State saved to {}", self.file)?;
+                    writeln!(
+                        w,
+                        "  {} cookies, {} localStorage, {} sessionStorage entries",
+                        self.cookies, self.local_storage, self.session_storage
+                    )
+                }
+            }
+            let output = StateSaveOutput {
+                file: file.display().to_string(),
+                cookies: cookie_count,
+                local_storage: ls_count,
+                session_storage: ss_count,
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             cdp.close().await;
         }
         "load" => {
@@ -527,13 +658,30 @@ pub(super) async fn cmd_state(ctx: &mut AppContext, args: &[String]) -> Result<(
                 }
             }
 
-            out!(
-                ctx,
-                "State loaded from {path}\n  {} cookies, {} localStorage, {} sessionStorage entries restored",
-                cookie_count,
-                ls_count,
-                ss_count
-            );
+            #[derive(serde::Serialize)]
+            struct StateLoadOutput {
+                file: String,
+                cookies: usize,
+                local_storage: usize,
+                session_storage: usize,
+            }
+            impl CommandOutput for StateLoadOutput {
+                fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                    writeln!(w, "State loaded from {}", self.file)?;
+                    writeln!(
+                        w,
+                        "  {} cookies, {} localStorage, {} sessionStorage entries restored",
+                        self.cookies, self.local_storage, self.session_storage
+                    )
+                }
+            }
+            let output = StateLoadOutput {
+                file: path.to_string(),
+                cookies: cookie_count,
+                local_storage: ls_count,
+                session_storage: ss_count,
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             cdp.close().await;
         }
         _ => bail!("Usage: state <save|load> [path]"),
@@ -578,7 +726,13 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
             });
             let key = format!("auth:{name}");
             crate::broker::kv_set(&key, &entry.to_string(), None)?;
-            out!(ctx, "Auth \"{name}\" saved (username: {username})");
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!(
+                    "Auth \"{name}\" saved (username: {username})"
+                )))?
+            );
         }
         "login" => {
             let name = args.get(1).context("Usage: auth login <name>")?;
@@ -726,44 +880,114 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                     json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
                 )
                 .await?;
-                out!(
-                    ctx,
-                    "Auth \"{name}\": filled credentials and clicked submit"
-                );
+                let action_msg =
+                    format!("Auth \"{name}\": filled credentials and clicked submit");
+                sleep(Duration::from_millis(500)).await;
+                let brief = get_page_brief(&mut cdp).await?;
+                #[derive(serde::Serialize)]
+                struct AuthLoginOutput {
+                    action: String,
+                    page_brief: String,
+                }
+                impl CommandOutput for AuthLoginOutput {
+                    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                        writeln!(w, "{}", self.action)?;
+                        writeln!(w, "{}", self.page_brief)
+                    }
+                }
+                let output = AuthLoginOutput {
+                    action: action_msg,
+                    page_brief: brief,
+                };
+                out!(ctx, "{}", crate::output::to_string(&output)?);
             } else {
-                out!(
-                    ctx,
+                let action_msg = format!(
                     "Auth \"{name}\": filled credentials (no submit button found — press Enter or click manually)"
                 );
+                sleep(Duration::from_millis(500)).await;
+                let brief = get_page_brief(&mut cdp).await?;
+                #[derive(serde::Serialize)]
+                struct AuthLoginOutput2 {
+                    action: String,
+                    page_brief: String,
+                }
+                impl CommandOutput for AuthLoginOutput2 {
+                    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                        writeln!(w, "{}", self.action)?;
+                        writeln!(w, "{}", self.page_brief)
+                    }
+                }
+                let output = AuthLoginOutput2 {
+                    action: action_msg,
+                    page_brief: brief,
+                };
+                out!(ctx, "{}", crate::output::to_string(&output)?);
             }
-            sleep(Duration::from_millis(500)).await;
-            out!(ctx, "{}", get_page_brief(&mut cdp).await?);
             cdp.close().await;
         }
         "list" => {
             let all = crate::broker::kv_list(None)?;
             let auth_entries: Vec<_> = all.iter().filter(|e| e.key.starts_with("auth:")).collect();
-            if auth_entries.is_empty() {
-                out!(ctx, "No saved auth entries.");
-            } else {
-                for kv in &auth_entries {
-                    let name = kv.key.strip_prefix("auth:").unwrap_or(&kv.key);
-                    let entry: Value = serde_json::from_str(&kv.value).unwrap_or(Value::Null);
-                    let user = entry.get("username").and_then(Value::as_str).unwrap_or("?");
-                    let url = entry.get("url").and_then(Value::as_str).unwrap_or("");
-                    if url.is_empty() {
-                        out!(ctx, "  {name} — user: {user}");
-                    } else {
-                        out!(ctx, "  {name} — user: {user} url: {url}");
+            #[derive(serde::Serialize)]
+            struct AuthListEntry {
+                name: String,
+                username: String,
+                url: String,
+            }
+            #[derive(serde::Serialize)]
+            struct AuthListOutput {
+                entries: Vec<AuthListEntry>,
+            }
+            impl CommandOutput for AuthListOutput {
+                fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                    if self.entries.is_empty() {
+                        writeln!(w, "No saved auth entries.")?;
+                        return Ok(());
                     }
+                    for e in &self.entries {
+                        if e.url.is_empty() {
+                            writeln!(w, "  {} — user: {}", e.name, e.username)?;
+                        } else {
+                            writeln!(w, "  {} — user: {} url: {}", e.name, e.username, e.url)?;
+                        }
+                    }
+                    Ok(())
                 }
             }
+            let entries: Vec<_> = auth_entries
+                .iter()
+                .map(|kv| {
+                    let name = kv.key.strip_prefix("auth:").unwrap_or(&kv.key).to_string();
+                    let entry: Value = serde_json::from_str(&kv.value).unwrap_or(Value::Null);
+                    let user = entry
+                        .get("username")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string();
+                    let url = entry
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    AuthListEntry {
+                        name,
+                        username: user,
+                        url,
+                    }
+                })
+                .collect();
+            let output = AuthListOutput { entries };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
         }
         "delete" => {
             let name = args.get(1).context("Usage: auth delete <name>")?;
             let key = format!("auth:{name}");
             crate::broker::kv_delete(&key)?;
-            out!(ctx, "Auth \"{name}\" deleted.");
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!("Auth \"{name}\" deleted.")))?
+            );
         }
         _ => bail!("Usage: auth <save|login|list|delete> [args]"),
     }

@@ -30,9 +30,11 @@ pub fn totp_add(
         match encrypt(secret) {
             Ok(enc) => enc,
             Err(e) => {
-                eprintln!(
-                    "Warning: encryption key available but encrypt failed: {}. Storing plaintext.",
-                    e
+                crate::broker::try_log_event(
+                    "warn",
+                    "totp",
+                    "encryption key available but encrypt failed; storing plaintext",
+                    Some(&format!("{e:#}")),
                 );
                 secret.to_string()
             }

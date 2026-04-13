@@ -51,7 +51,12 @@ async fn cmd_kv_set(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .as_ref()
         .map(|t| format!(" [{}]", t.join(",")))
         .unwrap_or_default();
-    out!(ctx, "Set {}{}", key, tag_str);
+    let msg = format!("Set {}{}", key, tag_str);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -64,12 +69,52 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let entry =
         crate::broker::kv_get(key)?.ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
 
-    if !entry.tags.is_empty() {
-        out!(ctx, "{} [{}]", entry.value, entry.tags.join(","));
+    let text = if !entry.tags.is_empty() {
+        format!("{} [{}]", entry.value, entry.tags.join(","))
     } else {
-        out!(ctx, "{}", entry.value);
-    }
+        entry.value.clone()
+    };
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(text))?
+    );
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct KvEntryOut {
+    key: String,
+    value: String,
+    tags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct KvListOutput {
+    items: Vec<KvEntryOut>,
+}
+
+impl crate::output::CommandOutput for KvListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "0 KV entries.")?;
+            return Ok(());
+        }
+        let tagged = self.items.iter().filter(|e| !e.tags.is_empty()).count();
+        if tagged > 0 {
+            writeln!(w, "{} entries ({} tagged):", self.items.len(), tagged)?;
+        } else {
+            writeln!(w, "{} entries:", self.items.len())?;
+        }
+        for e in &self.items {
+            if e.tags.is_empty() {
+                writeln!(w, "  {} = {}", e.key, e.value)?;
+            } else {
+                writeln!(w, "  {} = {}  [{}]", e.key, e.value, e.tags.join(","))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -82,47 +127,18 @@ async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .and_then(|i| args.get(i + 1).cloned())
         });
 
-    let json_output = args.iter().any(|a| a == "--json");
     let entries = crate::broker::kv_list(filter_tag.as_deref())?;
-
-    if json_output {
-        let items: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "key": e.key,
-                    "value": e.value,
-                    "tags": e.tags,
-                })
+    let output = KvListOutput {
+        items: entries
+            .into_iter()
+            .map(|e| KvEntryOut {
+                key: e.key,
+                value: e.value,
+                tags: e.tags,
             })
-            .collect();
-        out!(
-            ctx,
-            "{}",
-            serde_json::to_string_pretty(&items).unwrap_or_default()
-        );
-        return Ok(());
-    }
-
-    if entries.is_empty() {
-        out!(ctx, "0 KV entries.");
-        return Ok(());
-    }
-
-    let tagged = entries.iter().filter(|e| !e.tags.is_empty()).count();
-    if tagged > 0 {
-        out!(ctx, "{} entries ({} tagged):", entries.len(), tagged);
-    } else {
-        out!(ctx, "{} entries:", entries.len());
-    }
-    for e in entries {
-        let tag_str = if e.tags.is_empty() {
-            String::new()
-        } else {
-            format!("  [{}]", e.tags.join(","))
-        };
-        out!(ctx, "  {} = {}{}", e.key, e.value, tag_str);
-    }
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -133,7 +149,12 @@ async fn cmd_kv_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
 
     crate::broker::kv_delete(key)?;
-    out!(ctx, "Deleted key '{}'.", key);
+    let msg = format!("Deleted key '{}'.", key);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -145,18 +166,65 @@ async fn cmd_kv_tag(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[1];
     let tag_list: Vec<String> = args[2].split(',').map(|s| s.trim().to_string()).collect();
 
-    match action.as_str() {
+    let msg = match action.as_str() {
         "add" => {
             crate::broker::kv_tag_add(key, &tag_list)?;
-            out!(ctx, "Added tags [{}] to '{}'.", tag_list.join(","), key);
+            format!("Added tags [{}] to '{}'.", tag_list.join(","), key)
         }
         "remove" | "rm" => {
             crate::broker::kv_tag_remove(key, &tag_list)?;
-            out!(ctx, "Removed tags [{}] from '{}'.", tag_list.join(","), key);
+            format!("Removed tags [{}] from '{}'.", tag_list.join(","), key)
         }
         _ => bail!("Usage: sidekar kv tag <add|remove> <key> <tags>"),
-    }
+    };
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct KvHistoryEntryOut {
+    version: String,
+    value: String,
+    tags: Vec<String>,
+    age: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct KvHistoryOutput {
+    key: String,
+    versions: Vec<KvHistoryEntryOut>,
+}
+
+impl crate::output::CommandOutput for KvHistoryOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        // Count only the archived versions (those with an age); current is extra.
+        let archived = self.versions.iter().filter(|v| v.age.is_some()).count();
+        if archived == 0 {
+            writeln!(w, "0 history entries for '{}'.", self.key)?;
+            return Ok(());
+        }
+        writeln!(w, "{} versions for '{}':", archived, self.key)?;
+        for e in &self.versions {
+            let tag_str = if e.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", e.tags.join(","))
+            };
+            match &e.age {
+                Some(age) => writeln!(
+                    w,
+                    "  {}  {}{}  ({})",
+                    e.version, e.value, tag_str, age
+                )?,
+                None => writeln!(w, "  {}  {}{}", e.version, e.value, tag_str)?,
+            }
+        }
+        Ok(())
+    }
 }
 
 async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -166,42 +234,43 @@ async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
     let entries = crate::broker::kv_history(key)?;
 
-    if entries.is_empty() {
-        out!(ctx, "0 history entries for '{}'.", key);
-        return Ok(());
-    }
+    let mut versions: Vec<KvHistoryEntryOut> = Vec::new();
 
-    out!(ctx, "{} versions for '{}':", entries.len(), key);
-    // Also show current value
-    if let Ok(Some(current)) = crate::broker::kv_get(key) {
-        let tag_str = if current.tags.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", current.tags.join(","))
-        };
-        out!(ctx, "  current  {}{}", current.value, tag_str);
-    }
-
-    for e in &entries {
-        let tag_str = if e.tags.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", e.tags.join(","))
-        };
-        // Show relative time
+    if !entries.is_empty() {
+        if let Ok(Some(current)) = crate::broker::kv_get(key) {
+            versions.push(KvHistoryEntryOut {
+                version: "current".to_string(),
+                value: current.value,
+                tags: current.tags,
+                age: None,
+            });
+        }
         let now = crate::message::epoch_secs();
-        let ago = now.saturating_sub(e.archived_at);
-        let age = if ago < 60 {
-            format!("{}s ago", ago)
-        } else if ago < 3600 {
-            format!("{}m ago", ago / 60)
-        } else if ago < 86400 {
-            format!("{}h ago", ago / 3600)
-        } else {
-            format!("{}d ago", ago / 86400)
-        };
-        out!(ctx, "  v{}  {}{}  ({})", e.version, e.value, tag_str, age);
+        for e in &entries {
+            let ago = now.saturating_sub(e.archived_at);
+            let age = if ago < 60 {
+                format!("{}s ago", ago)
+            } else if ago < 3600 {
+                format!("{}m ago", ago / 60)
+            } else if ago < 86400 {
+                format!("{}h ago", ago / 3600)
+            } else {
+                format!("{}d ago", ago / 86400)
+            };
+            versions.push(KvHistoryEntryOut {
+                version: format!("v{}", e.version),
+                value: e.value.clone(),
+                tags: e.tags.clone(),
+                age: Some(age),
+            });
+        }
     }
+
+    let output = KvHistoryOutput {
+        key: key.to_string(),
+        versions,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -215,7 +284,12 @@ async fn cmd_kv_rollback(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .map_err(|_| anyhow!("Version must be a number"))?;
 
     crate::broker::kv_rollback(key, version)?;
-    out!(ctx, "Rolled back '{}' to v{}.", key, version);
+    let msg = format!("Rolled back '{}' to v{}.", key, version);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -305,13 +379,23 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     // Output stdout with secrets masked
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.is_empty() {
-        out!(ctx, "{}", mask_secrets(&stdout, &secret_values));
+        let masked = mask_secrets(&stdout, &secret_values);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(masked))?
+        );
     }
 
     // Output stderr with secrets masked
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !stderr.is_empty() {
-        out!(ctx, "{}", mask_secrets(&stderr, &secret_values));
+        let masked = mask_secrets(&stderr, &secret_values);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(masked))?
+        );
     }
 
     if !output.status.success() {

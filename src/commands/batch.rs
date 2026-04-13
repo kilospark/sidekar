@@ -1,4 +1,5 @@
 use super::*;
+use crate::output::CommandOutput;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BatchActionOptions {
@@ -67,15 +68,36 @@ pub(crate) async fn cmd_batch(ctx: &mut AppContext, args: &[String]) -> Result<(
     }
 
     let completed = results.len();
-    let output = json!({
-        "completed": completed,
-        "total": total,
-        "error": error,
-        "results": results
-    });
-
-    out!(ctx, "{}", serde_json::to_string_pretty(&output)?);
+    let output = BatchOutput {
+        completed,
+        total,
+        error,
+        results,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct BatchOutput {
+    completed: usize,
+    total: usize,
+    error: Option<String>,
+    results: Vec<Value>,
+}
+
+impl CommandOutput for BatchOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        let v = serde_json::json!({
+            "completed": self.completed,
+            "total": self.total,
+            "error": self.error,
+            "results": self.results,
+        });
+        let s = serde_json::to_string_pretty(&v)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        writeln!(w, "{s}")
+    }
 }
 
 fn parse_action_options(action: &Value) -> BatchActionOptions {

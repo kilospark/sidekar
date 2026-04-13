@@ -2,6 +2,69 @@ use crate::code_intel;
 use crate::*;
 use std::path::Path;
 
+#[derive(serde::Serialize)]
+struct SymbolOut {
+    name: String,
+    kind: code_intel::SymbolKind,
+    rel_path: String,
+    line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+    children: Vec<SymbolOut>,
+}
+
+#[derive(serde::Serialize)]
+struct SymbolsOutput {
+    items: Vec<SymbolOut>,
+}
+
+impl crate::output::CommandOutput for SymbolsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No symbols found.")?;
+            return Ok(());
+        }
+        for s in &self.items {
+            if let Some(sig) = &s.signature {
+                writeln!(w, "{:<8} {}  {}:{}", s.kind, sig, s.rel_path, s.line)?;
+            } else {
+                writeln!(w, "{:<8} {:<30} {}:{}", s.kind, s.name, s.rel_path, s.line)?;
+            }
+            for child in &s.children {
+                if let Some(sig) = &child.signature {
+                    writeln!(
+                        w,
+                        "  {:<6} {}  {}:{}",
+                        child.kind, sig, child.rel_path, child.line
+                    )?;
+                } else {
+                    writeln!(
+                        w,
+                        "  {:<6} {:<28} {}:{}",
+                        child.kind, child.name, child.rel_path, child.line
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn symbol_to_out(sym: &code_intel::Symbol, root: &Path) -> SymbolOut {
+    SymbolOut {
+        name: sym.name.clone(),
+        kind: sym.kind.clone(),
+        rel_path: rel_path(root, &sym.file),
+        line: sym.line_start + 1,
+        signature: sym.signature.clone(),
+        children: sym
+            .children
+            .iter()
+            .map(|c| symbol_to_out(c, root))
+            .collect(),
+    }
+}
+
 pub fn cmd_symbols(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let show_imports = args.iter().any(|a| a == "--imports");
     let path_arg = args.iter().find(|a| !a.starts_with('-'));
@@ -21,57 +84,58 @@ pub fn cmd_symbols(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         code_intel::extract_symbols(&path)?
     };
 
-    if symbols.is_empty() {
-        out!(ctx, "No symbols found.");
-        return Ok(());
-    }
-
     let root = if path.is_dir() {
         path.clone()
     } else {
         path.parent().unwrap_or(Path::new(".")).to_path_buf()
     };
 
-    for s in &symbols {
-        if !show_imports && s.kind == code_intel::SymbolKind::Import {
-            continue;
-        }
-        let rel = rel_path(&root, &s.file);
-        if let Some(sig) = &s.signature {
-            out!(ctx, "{:<8} {}  {}:{}", s.kind, sig, rel, s.line_start + 1);
-        } else {
-            out!(
-                ctx,
-                "{:<8} {:<30} {}:{}",
-                s.kind,
-                s.name,
-                rel,
-                s.line_start + 1
-            );
-        }
-        for child in &s.children {
-            if let Some(sig) = &child.signature {
-                out!(
-                    ctx,
-                    "  {:<6} {}  {}:{}",
-                    child.kind,
-                    sig,
-                    rel,
-                    child.line_start + 1
-                );
-            } else {
-                out!(
-                    ctx,
-                    "  {:<6} {:<28} {}:{}",
-                    child.kind,
-                    child.name,
-                    rel,
-                    child.line_start + 1
-                );
-            }
-        }
-    }
+    let items: Vec<SymbolOut> = symbols
+        .iter()
+        .filter(|s| show_imports || s.kind != code_intel::SymbolKind::Import)
+        .map(|s| symbol_to_out(s, &root))
+        .collect();
+
+    let output = SymbolsOutput { items };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct DefinitionMatchOut {
+    rel_path: String,
+    line: u32,
+    doc_comment: Option<String>,
+    body: String,
+    start_line: u32,
+}
+
+#[derive(serde::Serialize)]
+struct DefinitionOutput {
+    name: String,
+    matches: Vec<DefinitionMatchOut>,
+}
+
+impl crate::output::CommandOutput for DefinitionOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for (i, m) in self.matches.iter().enumerate() {
+            if m.line == 0 {
+                writeln!(w, "── {} ──", m.rel_path)?;
+                writeln!(w, "{}", m.body)?;
+            } else {
+                writeln!(w, "── {}:{} ──", m.rel_path, m.line)?;
+                if let Some(doc) = &m.doc_comment {
+                    writeln!(w, "{doc}")?;
+                }
+                for (j, line) in m.body.lines().enumerate() {
+                    writeln!(w, "{:>4} {}", m.start_line as usize + j, line)?;
+                }
+                writeln!(w)?;
+            }
+            let _ = i;
+        }
+        Ok(())
+    }
 }
 
 pub fn cmd_definition(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -86,15 +150,23 @@ pub fn cmd_definition(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         None => std::env::current_dir()?,
     };
 
-    // If root is a file, try to get the symbol body directly
     if root.is_file() {
         let body = code_intel::get_symbol_body(&root, name)?;
         let rel = rel_path(
             root.parent().unwrap_or(Path::new(".")),
             &root.to_string_lossy(),
         );
-        out!(ctx, "── {} ──", rel);
-        out!(ctx, "{body}");
+        let output = DefinitionOutput {
+            name: name.to_string(),
+            matches: vec![DefinitionMatchOut {
+                rel_path: rel,
+                line: 0,
+                doc_comment: None,
+                body,
+                start_line: 0,
+            }],
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         return Ok(());
     }
 
@@ -103,27 +175,60 @@ pub fn cmd_definition(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         bail!("no definition found for '{name}'");
     }
 
+    let mut match_outs: Vec<DefinitionMatchOut> = Vec::new();
     for sym in &matches {
         let rel = rel_path(&root, &sym.file);
         let file_path = Path::new(&sym.file);
-        out!(ctx, "── {}:{} ──", rel, sym.line_start + 1);
-
-        if let Some(doc) = &sym.doc_comment {
-            out!(ctx, "{doc}");
-        }
-
-        // Read and output the source lines
-        if let Ok(source) = std::fs::read_to_string(file_path) {
+        let body = if let Ok(source) = std::fs::read_to_string(file_path) {
             let lines: Vec<&str> = source.lines().collect();
             let start = sym.line_start as usize;
             let end = (sym.line_end as usize + 1).min(lines.len());
-            for (i, line) in lines[start..end].iter().enumerate() {
-                out!(ctx, "{:>4} {}", start + i + 1, line);
-            }
-        }
-        out!(ctx, "");
+            lines[start..end].join("\n")
+        } else {
+            String::new()
+        };
+        match_outs.push(DefinitionMatchOut {
+            rel_path: rel,
+            line: sym.line_start + 1,
+            doc_comment: sym.doc_comment.clone(),
+            body,
+            start_line: sym.line_start + 1,
+        });
     }
+    let output = DefinitionOutput {
+        name: name.to_string(),
+        matches: match_outs,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ReferenceOut {
+    rel_path: String,
+    line: u32,
+    column: u32,
+    context: String,
+}
+
+#[derive(serde::Serialize)]
+struct ReferencesOutput {
+    name: String,
+    items: Vec<ReferenceOut>,
+}
+
+impl crate::output::CommandOutput for ReferencesOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No references found for '{}'.", self.name)?;
+            return Ok(());
+        }
+        writeln!(w, "{} references to '{}':", self.items.len(), self.name)?;
+        for r in &self.items {
+            writeln!(w, "  {}:{}:{} {}", r.rel_path, r.line, r.column, r.context)?;
+        }
+        Ok(())
+    }
 }
 
 pub fn cmd_references(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -139,24 +244,65 @@ pub fn cmd_references(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     };
 
     let refs = code_intel::find_references(&root, name)?;
-    if refs.is_empty() {
-        out!(ctx, "No references found for '{name}'.");
-        return Ok(());
-    }
+    let items: Vec<ReferenceOut> = refs
+        .into_iter()
+        .map(|r| ReferenceOut {
+            rel_path: rel_path(&root, &r.file),
+            line: r.line + 1,
+            column: r.column + 1,
+            context: r.context,
+        })
+        .collect();
 
-    out!(ctx, "{} references to '{name}':", refs.len());
-    for r in &refs {
-        let rel = rel_path(&root, &r.file);
-        out!(
-            ctx,
-            "  {}:{}:{} {}",
-            rel,
-            r.line + 1,
-            r.column + 1,
-            r.context
-        );
-    }
+    let output = ReferencesOutput {
+        name: name.clone(),
+        items,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct StructureChildOut {
+    kind: code_intel::SymbolKind,
+    name: String,
+}
+
+#[derive(serde::Serialize)]
+struct StructureSymbolOut {
+    kind: code_intel::SymbolKind,
+    name: String,
+    children: Vec<StructureChildOut>,
+}
+
+#[derive(serde::Serialize)]
+struct StructureFileOut {
+    file: String,
+    symbols: Vec<StructureSymbolOut>,
+}
+
+#[derive(serde::Serialize)]
+struct StructureOutput {
+    files: Vec<StructureFileOut>,
+}
+
+impl crate::output::CommandOutput for StructureOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.files.is_empty() {
+            writeln!(w, "No symbols found.")?;
+            return Ok(());
+        }
+        for file in &self.files {
+            writeln!(w, "{}", file.file)?;
+            for s in &file.symbols {
+                writeln!(w, "  {} {}", s.kind, s.name)?;
+                for child in &s.children {
+                    writeln!(w, "    {} {}", child.kind, child.name)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn cmd_structure(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -182,12 +328,6 @@ pub fn cmd_structure(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         code_intel::extract_symbols(&path)?
     };
 
-    if symbols.is_empty() {
-        out!(ctx, "No symbols found.");
-        return Ok(());
-    }
-
-    // Group by file
     let mut by_file: std::collections::BTreeMap<String, Vec<&code_intel::Symbol>> =
         std::collections::BTreeMap::new();
     for s in &symbols {
@@ -198,15 +338,30 @@ pub fn cmd_structure(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         by_file.entry(rel).or_default().push(s);
     }
 
-    for (file, syms) in &by_file {
-        out!(ctx, "{file}");
-        for s in syms {
-            out!(ctx, "  {} {}", s.kind, s.name);
-            for child in &s.children {
-                out!(ctx, "    {} {}", child.kind, child.name);
-            }
-        }
-    }
+    let files: Vec<StructureFileOut> = by_file
+        .into_iter()
+        .map(|(file, syms)| StructureFileOut {
+            file,
+            symbols: syms
+                .into_iter()
+                .map(|s| StructureSymbolOut {
+                    kind: s.kind.clone(),
+                    name: s.name.clone(),
+                    children: s
+                        .children
+                        .iter()
+                        .map(|c| StructureChildOut {
+                            kind: c.kind.clone(),
+                            name: c.name.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
+
+    let output = StructureOutput { files };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 

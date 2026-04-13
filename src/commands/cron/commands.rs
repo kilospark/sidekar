@@ -87,17 +87,162 @@ pub(crate) async fn cmd_cron_create(
         });
     }
 
-    out!(ctx, "Cron job created: {id}");
-    if let Some(n) = name {
-        out!(ctx, "Name: {n}");
-    }
-    out!(ctx, "Schedule: {schedule_expr}");
-    out!(ctx, "Target: {effective_target}");
-    if once {
-        out!(ctx, "Mode: one-shot (auto-deletes after first run)");
-    }
+    let create_out = CronCreateOutput {
+        id: id.clone(),
+        name: name.map(String::from),
+        schedule: schedule_expr.to_string(),
+        target: effective_target.clone(),
+        once,
+    };
+    out!(ctx, "{}", crate::output::to_string(&create_out)?);
 
     Ok(id)
+}
+
+#[derive(serde::Serialize)]
+struct CronCreateOutput {
+    id: String,
+    name: Option<String>,
+    schedule: String,
+    target: String,
+    once: bool,
+}
+
+impl crate::output::CommandOutput for CronCreateOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Cron job created: {}", self.id)?;
+        if let Some(n) = &self.name {
+            writeln!(w, "Name: {n}")?;
+        }
+        writeln!(w, "Schedule: {}", self.schedule)?;
+        writeln!(w, "Target: {}", self.target)?;
+        if self.once {
+            writeln!(w, "Mode: one-shot (auto-deletes after first run)")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct CronListItem {
+    id: String,
+    name: Option<String>,
+    schedule: String,
+    target: String,
+    owner: String,
+    last_run_at: Option<u64>,
+    last_run_secs_ago: Option<u64>,
+    running: bool,
+    action: Value,
+    run_count: u64,
+    error_count: u64,
+    last_error: Option<String>,
+    persisted_only: bool,
+}
+
+#[derive(serde::Serialize)]
+struct CronListOutput {
+    items: Vec<CronListItem>,
+    running: usize,
+    persisted_only_mode: bool,
+}
+
+fn action_brief(action: &Value) -> String {
+    if let Some(tool) = action.get("tool").and_then(|v| v.as_str()) {
+        let args = action.get("args").cloned().unwrap_or(Value::Null);
+        let args_brief = if args.is_null() || args == json!({}) {
+            String::new()
+        } else {
+            let s = serde_json::to_string(&args).unwrap_or_default();
+            if s.len() > 80 {
+                format!(" {}", &s[..80])
+            } else {
+                format!(" {s}")
+            }
+        };
+        return format!("{tool}{args_brief}");
+    }
+    if let Some(arr) = action.get("batch").and_then(|v| v.as_array()) {
+        return format!("batch ({} steps)", arr.len());
+    }
+    if let Some(cmd) = action.get("command").and_then(|v| v.as_str()) {
+        let brief = if cmd.len() > 80 { &cmd[..80] } else { cmd };
+        return format!("bash `{brief}`");
+    }
+    if let Some(prompt) = action.get("prompt").and_then(|v| v.as_str()) {
+        let brief = if prompt.len() > 80 {
+            &prompt[..80]
+        } else {
+            prompt
+        };
+        return format!("prompt \"{brief}\"");
+    }
+    serde_json::to_string(action).unwrap_or_default()
+}
+
+impl crate::output::CommandOutput for CronListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "0 cron jobs.")?;
+            return Ok(());
+        }
+        if self.persisted_only_mode {
+            writeln!(
+                w,
+                "{} persisted cron job(s) (cron loop not yet started):",
+                self.items.len()
+            )?;
+            for it in &self.items {
+                writeln!(
+                    w,
+                    "[{}] {} — schedule: {} — target: {} — owner: {} — {} runs",
+                    it.id,
+                    it.name.as_deref().unwrap_or("(unnamed)"),
+                    it.schedule,
+                    it.target,
+                    it.owner,
+                    it.run_count
+                )?;
+            }
+            return Ok(());
+        }
+        if self.running > 0 {
+            writeln!(w, "{} cron jobs ({} running):", self.items.len(), self.running)?;
+        } else {
+            writeln!(w, "{} cron jobs:", self.items.len())?;
+        }
+        for it in &self.items {
+            let last_run = it
+                .last_run_secs_ago
+                .map(|s| format!("last run: {s}s ago"))
+                .unwrap_or_else(|| "never run".to_string());
+            let running = if it.running { " [running]" } else { "" };
+            writeln!(
+                w,
+                "[{}] {} — schedule: {} — target: {} — owner: {} — {}{}",
+                it.id,
+                it.name.as_deref().unwrap_or("(unnamed)"),
+                it.schedule,
+                it.target,
+                it.owner,
+                last_run,
+                running
+            )?;
+            writeln!(w, "  action: {}", action_brief(&it.action))?;
+            if it.run_count > 0 || it.error_count > 0 {
+                let err = if it.error_count > 0 {
+                    format!(", {} errors", it.error_count)
+                } else {
+                    String::new()
+                };
+                writeln!(w, "  [{}] stats: {} runs{}", it.id, it.run_count, err)?;
+                if let Some(e) = &it.last_error {
+                    writeln!(w, "  [{}] last error: {}", it.id, e)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) async fn cmd_cron_list(
@@ -105,171 +250,159 @@ pub(crate) async fn cmd_cron_list(
     scope: crate::scope::ScopeView,
 ) -> Result<()> {
     let current_project = crate::scope::resolve_project_name(None);
+    let persisted = broker::list_cron_jobs(true, scope, &current_project).unwrap_or_default();
+    let stats_by_id: std::collections::HashMap<String, (u64, u64, Option<String>)> = persisted
+        .iter()
+        .map(|r| {
+            (
+                r.id.clone(),
+                (r.run_count, r.error_count, r.last_error.clone()),
+            )
+        })
+        .collect();
+
     let cell = cron_cell().await;
     let guard = cell.lock().await;
 
-    match guard.as_ref() {
+    let (items, persisted_only_mode, running) = match guard.as_ref() {
         Some(state) => {
             let jobs = state.jobs.lock().await;
-            if jobs.is_empty() {
-                out!(ctx, "0 cron jobs.");
-                return Ok(());
-            }
+            let now = epoch_now();
             let running = jobs
                 .iter()
                 .filter(|j| j.running.load(Ordering::Relaxed))
                 .count();
-            if running > 0 {
-                out!(ctx, "{} cron jobs ({} running):", jobs.len(), running);
-            } else {
-                out!(ctx, "{} cron jobs:", jobs.len());
-            }
-            for job in jobs.iter() {
-                let name_str = job.name.as_deref().unwrap_or("(unnamed)");
-                let last_run = job
-                    .last_run_at
-                    .map(|ts| format!("last run: {}s ago", epoch_now().saturating_sub(ts)))
-                    .unwrap_or_else(|| "never run".to_string());
-                let running_str = if job.running.load(Ordering::Relaxed) {
-                    " [running]"
-                } else {
-                    ""
-                };
-
-                out!(
-                    ctx,
-                    "[{}] {} — schedule: {} — target: {} — owner: {} — {}{}",
-                    job.id,
-                    name_str,
-                    job.schedule_expr,
-                    job.target,
-                    job.created_by,
-                    last_run,
-                    running_str
-                );
-
-                match &job.action {
-                    CronAction::Tool { tool, args } => {
-                        let args_brief = if args.is_null() || args == &json!({}) {
-                            String::new()
-                        } else {
-                            let s = serde_json::to_string(args).unwrap_or_default();
-                            if s.len() > 80 {
-                                format!(" {}", &s[..80])
-                            } else {
-                                format!(" {s}")
-                            }
-                        };
-                        out!(ctx, "  action: {tool}{args_brief}");
+            let items = jobs
+                .iter()
+                .map(|job| {
+                    let (run_count, error_count, last_error) = stats_by_id
+                        .get(&job.id)
+                        .cloned()
+                        .unwrap_or((0, 0, None));
+                    let secs_ago = job.last_run_at.map(|ts| now.saturating_sub(ts));
+                    let action = serde_json::to_value(&job.action).unwrap_or(Value::Null);
+                    CronListItem {
+                        id: job.id.clone(),
+                        name: job.name.clone(),
+                        schedule: job.schedule_expr.clone(),
+                        target: job.target.clone(),
+                        owner: job.created_by.clone(),
+                        last_run_at: job.last_run_at,
+                        last_run_secs_ago: secs_ago,
+                        running: job.running.load(Ordering::Relaxed),
+                        action,
+                        run_count,
+                        error_count,
+                        last_error,
+                        persisted_only: false,
                     }
-                    CronAction::Batch { batch } => {
-                        out!(ctx, "  action: batch ({} steps)", batch.len());
-                    }
-                    CronAction::Bash { command } => {
-                        let brief = if command.len() > 80 {
-                            &command[..80]
-                        } else {
-                            command
-                        };
-                        out!(ctx, "  action: bash `{brief}`");
-                    }
-                    CronAction::Prompt { prompt } => {
-                        let brief = if prompt.len() > 80 {
-                            &prompt[..80]
-                        } else {
-                            prompt
-                        };
-                        out!(ctx, "  action: prompt \"{brief}\"");
-                    }
-                }
-            }
-            if let Ok(records) = broker::list_cron_jobs(true, scope, &current_project) {
-                for rec in &records {
-                    if rec.run_count > 0 || rec.error_count > 0 {
-                        let err_str = if rec.error_count > 0 {
-                            format!(", {} errors", rec.error_count)
-                        } else {
-                            String::new()
-                        };
-                        out!(
-                            ctx,
-                            "  [{}] stats: {} runs{}",
-                            rec.id,
-                            rec.run_count,
-                            err_str
-                        );
-                        if let Some(ref e) = rec.last_error {
-                            out!(ctx, "  [{}] last error: {}", rec.id, e);
-                        }
-                    }
-                }
-            }
+                })
+                .collect::<Vec<_>>();
+            (items, false, running)
         }
         None => {
-            if let Ok(records) = broker::list_cron_jobs(true, scope, &current_project) {
-                if records.is_empty() {
-                    out!(ctx, "0 cron jobs.");
-                } else {
-                    out!(
-                        ctx,
-                        "{} persisted cron job(s) (cron loop not yet started):",
-                        records.len()
-                    );
-                    for rec in &records {
-                        let name_str = rec.name.as_deref().unwrap_or("(unnamed)");
-                        out!(
-                            ctx,
-                            "[{}] {} — schedule: {} — target: {} — owner: {} — {} runs",
-                            rec.id,
-                            name_str,
-                            rec.schedule,
-                            rec.target,
-                            rec.created_by,
-                            rec.run_count
-                        );
+            let items = persisted
+                .iter()
+                .map(|rec| {
+                    let action: Value = serde_json::from_str(&rec.action_json).unwrap_or(Value::Null);
+                    CronListItem {
+                        id: rec.id.clone(),
+                        name: rec.name.clone(),
+                        schedule: rec.schedule.clone(),
+                        target: rec.target.clone(),
+                        owner: rec.created_by.clone(),
+                        last_run_at: rec.last_run_at,
+                        last_run_secs_ago: None,
+                        running: false,
+                        action,
+                        run_count: rec.run_count,
+                        error_count: rec.error_count,
+                        last_error: rec.last_error.clone(),
+                        persisted_only: true,
                     }
-                }
-            } else {
-                out!(ctx, "0 cron jobs.");
-            }
+                })
+                .collect::<Vec<_>>();
+            (items, true, 0)
         }
-    }
+    };
+
+    let output = CronListOutput {
+        items,
+        running,
+        persisted_only_mode,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct CronShowOutput {
+    id: String,
+    name: Option<String>,
+    active: bool,
+    once: bool,
+    schedule: String,
+    target: String,
+    owner: String,
+    created_at: u64,
+    last_run_at: Option<u64>,
+    run_count: u64,
+    error_count: u64,
+    last_error: Option<String>,
+    action: Value,
+}
+
+impl crate::output::CommandOutput for CronShowOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "id: {}", self.id)?;
+        writeln!(w, "name: {}", self.name.as_deref().unwrap_or("(unnamed)"))?;
+        writeln!(w, "active: {}", if self.active { "yes" } else { "no" })?;
+        writeln!(w, "once: {}", if self.once { "yes" } else { "no" })?;
+        writeln!(w, "schedule: {}", self.schedule)?;
+        writeln!(w, "target: {}", self.target)?;
+        writeln!(w, "owner: {}", self.owner)?;
+        writeln!(w, "created_at: {}", self.created_at)?;
+        writeln!(
+            w,
+            "last_run_at: {}",
+            self.last_run_at
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into())
+        )?;
+        writeln!(w, "run_count: {}", self.run_count)?;
+        writeln!(w, "error_count: {}", self.error_count)?;
+        writeln!(
+            w,
+            "last_error: {}",
+            self.last_error.as_deref().unwrap_or("-")
+        )?;
+        let action_str = serde_json::to_string_pretty(&self.action).unwrap_or_default();
+        writeln!(w, "action_json: {action_str}")?;
+        Ok(())
+    }
 }
 
 pub(crate) async fn cmd_cron_show(ctx: &mut AppContext, job_id: &str) -> Result<()> {
     let rec =
         broker::get_cron_job(job_id)?.ok_or_else(|| anyhow!("Cron job '{job_id}' not found."))?;
-    let action_value: Value = serde_json::from_str(&rec.action_json)
+    let action: Value = serde_json::from_str(&rec.action_json)
         .context("failed to parse stored cron action JSON")?;
-
-    out!(ctx, "id: {}", rec.id);
-    out!(ctx, "name: {}", rec.name.as_deref().unwrap_or("(unnamed)"));
-    out!(ctx, "active: {}", if rec.active { "yes" } else { "no" });
-    out!(ctx, "once: {}", if rec.once { "yes" } else { "no" });
-    out!(ctx, "schedule: {}", rec.schedule);
-    out!(ctx, "target: {}", rec.target);
-    out!(ctx, "owner: {}", rec.created_by);
-    out!(ctx, "created_at: {}", rec.created_at);
-    out!(
-        ctx,
-        "last_run_at: {}",
-        rec.last_run_at
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".into())
-    );
-    out!(ctx, "run_count: {}", rec.run_count);
-    out!(ctx, "error_count: {}", rec.error_count);
-    out!(
-        ctx,
-        "last_error: {}",
-        rec.last_error.as_deref().unwrap_or("-")
-    );
-    out!(
-        ctx,
-        "action_json: {}",
-        serde_json::to_string_pretty(&action_value).unwrap_or_else(|_| rec.action_json.clone())
-    );
+    let output = CronShowOutput {
+        id: rec.id,
+        name: rec.name,
+        active: rec.active,
+        once: rec.once,
+        schedule: rec.schedule,
+        target: rec.target,
+        owner: rec.created_by,
+        created_at: rec.created_at,
+        last_run_at: rec.last_run_at,
+        run_count: rec.run_count,
+        error_count: rec.error_count,
+        last_error: rec.last_error,
+        action,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -282,7 +415,12 @@ pub(crate) async fn cmd_cron_delete(ctx: &mut AppContext, job_id: &str) -> Resul
     }
 
     if broker::delete_cron_job(job_id)? {
-        out!(ctx, "Cron job {job_id} deleted.");
+        let msg = format!("Cron job {job_id} deleted.");
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+        );
     } else {
         bail!("Cron job '{job_id}' not found.");
     }

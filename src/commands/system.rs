@@ -19,63 +19,72 @@ pub(super) async fn dispatch_system_command(
     Some(result)
 }
 
+#[derive(serde::Serialize)]
+struct EventRowOut {
+    id: i64,
+    created_at: i64,
+    level: String,
+    source: String,
+    message: String,
+    details: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct EventListOutput {
+    items: Vec<EventRowOut>,
+}
+
+impl crate::output::CommandOutput for EventListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No events.")?;
+            return Ok(());
+        }
+        writeln!(w, "id\tcreated_at\tlevel\tsource\tmessage")?;
+        for r in &self.items {
+            let details = r.details.as_deref().unwrap_or("");
+            let msg = if details.is_empty() {
+                r.message.clone()
+            } else {
+                format!("{} | {}", r.message, details)
+            };
+            writeln!(
+                w,
+                "{}\t{}\t{}\t{}\t{}",
+                r.id, r.created_at, r.level, r.source, msg
+            )?;
+        }
+        Ok(())
+    }
+}
+
 fn cmd_event(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
             let options = parse_event_list_options(args)?;
             let rows = crate::broker::events_recent(options.limit, options.level_filter)?;
-
-            if options.json_output {
-                let items: Vec<serde_json::Value> = rows
-                    .iter()
-                    .map(|r| {
-                        serde_json::json!({
-                            "id": r.id,
-                            "created_at": r.created_at,
-                            "level": r.level,
-                            "source": r.source,
-                            "message": r.message,
-                            "details": r.details,
-                        })
+            let output = EventListOutput {
+                items: rows
+                    .into_iter()
+                    .map(|r| EventRowOut {
+                        id: r.id,
+                        created_at: r.created_at,
+                        level: r.level,
+                        source: r.source,
+                        message: r.message,
+                        details: r.details,
                     })
-                    .collect();
-                out!(
-                    ctx,
-                    "{}",
-                    serde_json::to_string_pretty(&items).unwrap_or_default()
-                );
-                return Ok(());
-            }
-
-            if rows.is_empty() {
-                out!(ctx, "No events.");
-                return Ok(());
-            }
-            out!(ctx, "id\tcreated_at\tlevel\tsource\tmessage");
-            for r in rows {
-                let details = r.details.as_deref().unwrap_or("");
-                let msg = if details.is_empty() {
-                    r.message.clone()
-                } else {
-                    format!("{} | {}", r.message, details)
-                };
-                out!(
-                    ctx,
-                    "{}\t{}\t{}\t{}\t{}",
-                    r.id,
-                    r.created_at,
-                    r.level,
-                    r.source,
-                    msg
-                );
-            }
+                    .collect(),
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             Ok(())
         }
         "clear" => {
             let level_filter = parse_event_clear_level(args)?;
             let deleted = crate::broker::events_clear(level_filter)?;
-            out!(ctx, "Deleted {deleted} events.");
+            let msg = format!("Deleted {deleted} events.");
+            out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
             Ok(())
         }
         _ => bail!("Unknown subcommand: event {sub}. Use: event list, event clear"),
@@ -86,19 +95,16 @@ fn cmd_event(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 struct EventListOptions<'a> {
     limit: usize,
     level_filter: Option<&'a str>,
-    json_output: bool,
 }
 
 fn parse_event_list_options(args: &[String]) -> Result<EventListOptions<'_>> {
     let mut options = EventListOptions {
         limit: 50,
         level_filter: None,
-        json_output: false,
     };
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--json" => options.json_output = true,
             "--limit" => {
                 let value = iter.next().context(
                     "Usage: sidekar event list [--level=error|debug|info] [N|--limit=N]",
@@ -149,70 +155,112 @@ fn parse_event_level(level: &str) -> Result<&str> {
     }
 }
 
+#[derive(serde::Serialize)]
+struct ConfigEntryOut {
+    key: String,
+    value: String,
+    is_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ConfigListOutput {
+    items: Vec<ConfigEntryOut>,
+}
+
+impl crate::output::CommandOutput for ConfigListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        let max_key = self.items.iter().map(|e| e.key.len()).max().unwrap_or(0);
+        for entry in &self.items {
+            let display_val = if entry.value.is_empty() {
+                "(not set)"
+            } else {
+                entry.value.as_str()
+            };
+            let marker = if entry.is_default { " (default)" } else { "" };
+            writeln!(
+                w,
+                "{:<width$}  {}{}",
+                entry.key,
+                display_val,
+                marker,
+                width = max_key
+            )?;
+            if let Some(desc) = entry.description.as_deref()
+                && !desc.is_empty()
+            {
+                writeln!(w, "{:<width$}  # {}", "", desc, width = max_key)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ConfigGetOutput {
+    key: String,
+    value: String,
+    is_set: bool,
+}
+
+impl crate::output::CommandOutput for ConfigGetOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.is_set {
+            writeln!(w, "{}", self.value)
+        } else {
+            writeln!(w, "(not set)")
+        }
+    }
+}
+
+fn build_config_list_output(include_descriptions: bool) -> ConfigListOutput {
+    let items = crate::config::config_list();
+    ConfigListOutput {
+        items: items
+            .into_iter()
+            .map(|(key, value, is_default)| {
+                let description = if include_descriptions {
+                    crate::config::find_key(&key)
+                        .map(|k| k.description.to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                };
+                ConfigEntryOut {
+                    key,
+                    value,
+                    is_default,
+                    description,
+                }
+            })
+            .collect(),
+    }
+}
+
 fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("list");
     match action {
         "list" | "ls" => {
-            let items = crate::config::config_list();
-            let max_key = items.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
-            for (key, val, is_default) in &items {
-                let display_val = if val.is_empty() {
-                    "(not set)"
-                } else {
-                    val.as_str()
-                };
-                let marker = if *is_default { " (default)" } else { "" };
-                let desc = crate::config::find_key(key)
-                    .map(|k| k.description)
-                    .unwrap_or("");
-                out!(
-                    ctx,
-                    "{:<width$}  {}{}",
-                    key,
-                    display_val,
-                    marker,
-                    width = max_key
-                );
-                if !desc.is_empty() {
-                    out!(ctx, "{:<width$}  # {}", "", desc, width = max_key);
-                }
-            }
+            let output = build_config_list_output(true);
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             Ok(())
         }
         "get" => {
             let key = args.get(1).map(String::as_str).unwrap_or("");
             if key.is_empty() {
-                let items = crate::config::config_list();
-                let max_key = items.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
-                for (key, val, is_default) in &items {
-                    let display_val = if val.is_empty() {
-                        "(not set)"
-                    } else {
-                        val.as_str()
-                    };
-                    let marker = if *is_default { " (default)" } else { "" };
-                    out!(
-                        ctx,
-                        "{:<width$}  {}{}",
-                        key,
-                        display_val,
-                        marker,
-                        width = max_key
-                    );
-                }
+                let output = build_config_list_output(false);
+                out!(ctx, "{}", crate::output::to_string(&output)?);
                 return Ok(());
             }
             ensure_valid_config_key(key)?;
             let val = crate::config::config_get(key);
-            out!(
-                ctx,
-                "{}",
-                if val.is_empty() {
-                    "(not set)".to_string()
-                } else {
-                    val
-                }
-            );
+            let output = ConfigGetOutput {
+                key: key.to_string(),
+                is_set: !val.is_empty(),
+                value: val,
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
             Ok(())
         }
         "set" => {
@@ -225,7 +273,8 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             if key == "browser" {
                 if matches!(raw_value, "false" | "none" | "default") {
                     crate::config::config_delete(key)?;
-                    out!(ctx, "Cleared browser preference (will use system default)");
+                    let msg = "Cleared browser preference (will use system default)".to_string();
+                    out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
                     return Ok(());
                 }
                 if find_browser_by_name(raw_value).is_none() {
@@ -238,7 +287,8 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 bail!("relay must be one of: auto, on, off");
             }
             crate::config::config_set(key, raw_value)?;
-            out!(ctx, "Set {key} = {raw_value}");
+            let msg = format!("Set {key} = {raw_value}");
+            out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
             Ok(())
         }
         "reset" => {
@@ -254,7 +304,8 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             } else {
                 default
             };
-            out!(ctx, "Reset {key} to default: {display}");
+            let msg = format!("Reset {key} to default: {display}");
+            out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
             Ok(())
         }
         _ => bail!("Usage: sidekar config [list|get <key>|set <key> <value>|reset <key>]"),
@@ -272,28 +323,71 @@ fn ensure_valid_config_key(key: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_update(ctx: &mut AppContext) -> Result<()> {
-    let current = env!("CARGO_PKG_VERSION");
-    out!(ctx, "Current version: {current}");
-    out!(ctx, "Checking for updates...");
-    match crate::api_client::check_for_update().await {
-        Ok(Some(latest)) => {
-            out!(ctx, "Update available: v{latest}");
-            out!(ctx, "Downloading...");
-            crate::api_client::self_update(&latest).await?;
-            match crate::daemon::restart_if_running() {
-                Ok(true) => out!(ctx, "Daemon restarted."),
-                Ok(false) => {}
-                Err(e) => out!(ctx, "Updated, but failed to restart daemon: {e}"),
+#[derive(serde::Serialize)]
+struct UpdateOutput {
+    current: String,
+    latest: Option<String>,
+    updated: bool,
+    daemon_restarted: bool,
+    daemon_restart_error: Option<String>,
+}
+
+impl crate::output::CommandOutput for UpdateOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(w, "Current version: {}", self.current)?;
+        writeln!(w, "Checking for updates...")?;
+        match &self.latest {
+            Some(latest) if self.updated => {
+                writeln!(w, "Update available: v{latest}")?;
+                writeln!(w, "Downloading...")?;
+                if self.daemon_restarted {
+                    writeln!(w, "Daemon restarted.")?;
+                }
+                if let Some(err) = &self.daemon_restart_error {
+                    writeln!(w, "Updated, but failed to restart daemon: {err}")?;
+                }
+                writeln!(
+                    w,
+                    "Updated to v{latest}. Restart sidekar to use the new version."
+                )?;
             }
-            out!(
-                ctx,
-                "Updated to v{latest}. Restart sidekar to use the new version."
-            );
+            _ => {
+                writeln!(w, "Already up to date (v{}).", self.current)?;
+            }
         }
-        Ok(None) => out!(ctx, "Already up to date (v{current})."),
-        Err(e) => bail!("Failed to check for updates: {e}"),
+        Ok(())
     }
+}
+
+async fn cmd_update(ctx: &mut AppContext) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let output = match crate::api_client::check_for_update().await {
+        Ok(Some(latest)) => {
+            crate::api_client::self_update(&latest).await?;
+            let (daemon_restarted, daemon_restart_error) = match crate::daemon::restart_if_running()
+            {
+                Ok(true) => (true, None),
+                Ok(false) => (false, None),
+                Err(e) => (false, Some(e.to_string())),
+            };
+            UpdateOutput {
+                current,
+                latest: Some(latest),
+                updated: true,
+                daemon_restarted,
+                daemon_restart_error,
+            }
+        }
+        Ok(None) => UpdateOutput {
+            current,
+            latest: None,
+            updated: false,
+            daemon_restarted: false,
+            daemon_restart_error: None,
+        },
+        Err(e) => bail!("Failed to check for updates: {e}"),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -310,7 +404,7 @@ fn cmd_proxy(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             cmd_proxy_show(ctx, id)?;
         }
         "clear" => cmd_proxy_clear(ctx)?,
-        _ => bail!("Usage: sidekar proxy <log|show|clear> [--last=N] [--json]"),
+        _ => bail!("Usage: sidekar proxy <log|show|clear> [--last=N]"),
     }
     Ok(())
 }
@@ -325,85 +419,99 @@ fn format_bytes(n: usize) -> String {
     }
 }
 
+#[derive(serde::Serialize)]
+struct ProxyLogEntryOut {
+    id: i64,
+    created_at: i64,
+    method: String,
+    path: String,
+    upstream_host: String,
+    response_status: i64,
+    duration_ms: i64,
+    request_size: usize,
+    response_size: usize,
+}
+
+#[derive(serde::Serialize)]
+struct ProxyLogOutput {
+    items: Vec<ProxyLogEntryOut>,
+}
+
+impl crate::output::CommandOutput for ProxyLogOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(
+                w,
+                "No proxy log entries. Run an agent with --proxy to capture payloads."
+            )?;
+            return Ok(());
+        }
+        writeln!(
+            w,
+            "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
+            "ID", "TIME", "METHOD", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ", "RESP"
+        )?;
+        for r in &self.items {
+            let time = {
+                let secs = r.created_at % 86400;
+                let h = secs / 3600;
+                let m = (secs % 3600) / 60;
+                let s = secs % 60;
+                format!("{h:02}:{m:02}:{s:02}")
+            };
+            let path_short = if r.path.len() > 20 {
+                format!("{}...", &r.path[..17])
+            } else {
+                r.path.clone()
+            };
+            let host_short = if r.upstream_host.len() > 20 {
+                format!("{}...", &r.upstream_host[..17])
+            } else {
+                r.upstream_host.clone()
+            };
+            writeln!(
+                w,
+                "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
+                r.id,
+                time,
+                r.method,
+                path_short,
+                host_short,
+                r.response_status,
+                r.duration_ms,
+                format_bytes(r.request_size),
+                format_bytes(r.response_size),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 fn cmd_proxy_log(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let limit = args
         .iter()
         .find_map(|a| a.strip_prefix("--last="))
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(20);
-    let json_output = args.iter().any(|a| a == "--json");
 
     let rows = crate::broker::proxy_log_recent(limit)?;
-    if rows.is_empty() {
-        out!(
-            ctx,
-            "No proxy log entries. Run an agent with --proxy to capture payloads."
-        );
-        return Ok(());
-    }
-
-    if json_output {
-        let entries: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "id": r.id,
-                    "created_at": r.created_at,
-                    "method": r.method,
-                    "path": r.path,
-                    "upstream_host": r.upstream_host,
-                    "response_status": r.response_status,
-                    "duration_ms": r.duration_ms,
-                    "request_size": r.request_body.len(),
-                    "response_size": r.response_body.len(),
-                })
+    let output = ProxyLogOutput {
+        items: rows
+            .into_iter()
+            .map(|r| ProxyLogEntryOut {
+                id: r.id,
+                created_at: r.created_at,
+                method: r.method,
+                path: r.path,
+                upstream_host: r.upstream_host,
+                response_status: r.response_status,
+                duration_ms: r.duration_ms,
+                request_size: r.request_body.len(),
+                response_size: r.response_body.len(),
             })
-            .collect();
-        out!(
-            ctx,
-            "{}",
-            serde_json::to_string_pretty(&entries).unwrap_or_default()
-        );
-        return Ok(());
-    }
-
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
-        "ID", "TIME", "METHOD", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ", "RESP"
-    ));
-    for r in &rows {
-        let time = {
-            let secs = r.created_at % 86400;
-            let h = secs / 3600;
-            let m = (secs % 3600) / 60;
-            let s = secs % 60;
-            format!("{h:02}:{m:02}:{s:02}")
-        };
-        let path_short = if r.path.len() > 20 {
-            format!("{}...", &r.path[..17])
-        } else {
-            r.path.clone()
-        };
-        let host_short = if r.upstream_host.len() > 20 {
-            format!("{}...", &r.upstream_host[..17])
-        } else {
-            r.upstream_host.clone()
-        };
-        lines.push(format!(
-            "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
-            r.id,
-            time,
-            r.method,
-            path_short,
-            host_short,
-            r.response_status,
-            r.duration_ms,
-            format_bytes(r.request_body.len()),
-            format_bytes(r.response_body.len()),
-        ));
-    }
-    out!(ctx, "{}", lines.join("\n"));
+            .collect(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
 
@@ -508,13 +616,22 @@ fn cmd_proxy_show(ctx: &mut AppContext, id: i64) -> Result<()> {
         lines.push(resp_text.into_owned());
     }
 
-    out!(ctx, "{}", lines.join("\n"));
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(lines.join("\n")))?
+    );
     Ok(())
 }
 
 fn cmd_proxy_clear(ctx: &mut AppContext) -> Result<()> {
     let count = crate::broker::proxy_log_clear()?;
-    out!(ctx, "Deleted {count} proxy log entries.");
+    let msg = format!("Deleted {count} proxy log entries.");
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -527,14 +644,13 @@ mod tests {
     }
 
     #[test]
-    fn event_list_accepts_positional_limit_and_json() {
-        let args = args(&["list", "--json", "--level=debug", "10"]);
+    fn event_list_accepts_positional_limit_and_level() {
+        let args = args(&["list", "--level=debug", "10"]);
 
         let options = parse_event_list_options(&args).unwrap();
 
         assert_eq!(options.limit, 10);
         assert_eq!(options.level_filter, Some("debug"));
-        assert!(options.json_output);
     }
 
     #[test]

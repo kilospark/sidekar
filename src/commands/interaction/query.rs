@@ -1,4 +1,162 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct FindOutput {
+    best: Option<FindMatch>,
+    also: Vec<FindMatch>,
+}
+
+#[derive(serde::Serialize)]
+struct FindMatch {
+    ref_id: usize,
+    role: String,
+    name: String,
+    confidence: Option<String>,
+    score: f64,
+}
+
+impl crate::output::CommandOutput for FindOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(b) = &self.best {
+            writeln!(
+                w,
+                "Best: [{}] {} \"{}\" ({} confidence, score:{:.2})",
+                b.ref_id,
+                b.role,
+                b.name,
+                b.confidence.as_deref().unwrap_or(""),
+                b.score
+            )?;
+        }
+        if !self.also.is_empty() {
+            writeln!(w, "Also:")?;
+            for m in &self.also {
+                writeln!(w, "  [{}] {} \"{}\" ({:.2})", m.ref_id, m.role, m.name, m.score)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FindRoleOutput {
+    matches: Vec<FindRoleRow>,
+}
+
+#[derive(serde::Serialize)]
+struct FindRoleRow {
+    ref_id: usize,
+    role: String,
+    name: String,
+}
+
+impl crate::output::CommandOutput for FindRoleOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for m in &self.matches {
+            writeln!(w, "[{}] {} \"{}\"", m.ref_id, m.role, truncate(&m.name, 80))?;
+        }
+        writeln!(w, "{} match(es)", self.matches.len())?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FindTextOutput {
+    matches: Vec<FindTextRow>,
+}
+
+#[derive(serde::Serialize)]
+struct FindTextRow {
+    tag: String,
+    text: String,
+    selector: String,
+}
+
+impl crate::output::CommandOutput for FindTextOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for m in &self.matches {
+            writeln!(w, "<{}> \"{}\" — {}", m.tag, truncate(&m.text, 60), m.selector)?;
+        }
+        writeln!(w, "{} match(es)", self.matches.len())?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FindLabelOutput {
+    matches: Vec<FindLabelRow>,
+}
+
+#[derive(serde::Serialize)]
+struct FindLabelRow {
+    tag: String,
+    label: String,
+    selector: String,
+}
+
+impl crate::output::CommandOutput for FindLabelOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for m in &self.matches {
+            writeln!(
+                w,
+                "<{}> label=\"{}\" — {}",
+                m.tag,
+                truncate(&m.label, 60),
+                m.selector
+            )?;
+        }
+        writeln!(w, "{} match(es)", self.matches.len())?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ResolveOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    href: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    onclick: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    tag: String,
+    text: String,
+}
+
+impl crate::output::CommandOutput for ResolveOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(v) = &self.href {
+            writeln!(w, "href: {v}")?;
+        }
+        if let Some(v) = &self.action {
+            writeln!(w, "action: {v}")?;
+        }
+        if let Some(v) = &self.form_action {
+            writeln!(w, "formAction: {v}")?;
+        }
+        if let Some(v) = &self.src {
+            writeln!(w, "src: {v}")?;
+        }
+        if let Some(v) = &self.onclick {
+            writeln!(w, "onclick: {v}")?;
+        }
+        if let Some(v) = &self.target {
+            writeln!(w, "target: {v}")?;
+        }
+        if !self.text.is_empty() {
+            writeln!(w, "element: <{}> \"{}\"", self.tag, self.text)?;
+        } else {
+            writeln!(w, "element: <{}>", self.tag)?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_eval(ctx: &mut AppContext, expression: &str) -> Result<()> {
     if expression.is_empty() {
@@ -16,7 +174,7 @@ pub(crate) async fn cmd_eval(ctx: &mut AppContext, expression: &str) -> Result<(
         cdp.close().await;
         return Ok(());
     }
-    if r_type == "object" {
+    let msg: String = if r_type == "object" {
         if let Some(object_id) = r.get("objectId").and_then(Value::as_str) {
             let ser = cdp
                 .send(
@@ -29,39 +187,31 @@ pub(crate) async fn cmd_eval(ctx: &mut AppContext, expression: &str) -> Result<(
                 )
                 .await?;
             if let Some(v) = ser.pointer("/result/value").and_then(Value::as_str) {
-                out!(ctx, "{v}");
+                v.to_string()
             } else {
-                out!(
-                    ctx,
-                    "{}",
-                    r.get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(object)")
-                );
-            }
-        } else {
-            out!(
-                ctx,
-                "{}",
                 r.get("description")
                     .and_then(Value::as_str)
                     .unwrap_or("(object)")
-            );
+                    .to_string()
+            }
+        } else {
+            r.get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("(object)")
+                .to_string()
         }
     } else if let Some(v) = r.get("value") {
         match v {
-            Value::String(s) => out!(ctx, "{s}"),
-            _ => out!(ctx, "{v}"),
+            Value::String(s) => s.clone(),
+            _ => v.to_string(),
         }
     } else {
-        out!(
-            ctx,
-            "{}",
-            r.get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("(value)")
-        );
-    }
+        r.get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("(value)")
+            .to_string()
+    };
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -71,7 +221,11 @@ pub(crate) async fn cmd_observe(ctx: &mut AppContext) -> Result<()> {
     prepare_cdp(ctx, &mut cdp).await?;
     let data = fetch_interactive_elements(ctx, &mut cdp).await?;
     if data.elements.is_empty() {
-        out!(ctx, "(no interactive elements found)");
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new("(no interactive elements found)"))?
+        );
         cdp.close().await;
         return Ok(());
     }
@@ -90,7 +244,11 @@ pub(crate) async fn cmd_observe(ctx: &mut AppContext) -> Result<()> {
         };
         observe_buf.push_str(&format!("[{}] {}  — {}\n", el.ref_id, cmd, desc));
     }
-    out!(ctx, "{}", observe_buf.trim_end());
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(observe_buf.trim_end().to_string()))?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -182,21 +340,29 @@ pub(crate) async fn cmd_find(ctx: &mut AppContext, query: &str) -> Result<()> {
     } else {
         "low"
     };
-    out!(
-        ctx,
-        "Best: [{}] {} \"{}\" ({} confidence, score:{:.2})",
-        best_ref,
-        best_el.role,
-        best_el.name,
-        confidence,
-        best_score
-    );
-    if top.len() > 1 {
-        out!(ctx, "Also:");
-        for (r, s, e) in top.iter().skip(1) {
-            out!(ctx, "  [{}] {} \"{}\" ({:.2})", r, e.role, e.name, s);
-        }
-    }
+    let best = FindMatch {
+        ref_id: *best_ref,
+        role: best_el.role.clone(),
+        name: best_el.name.clone(),
+        confidence: Some(confidence.to_string()),
+        score: *best_score,
+    };
+    let also = top
+        .iter()
+        .skip(1)
+        .map(|(r, s, e)| FindMatch {
+            ref_id: *r,
+            role: e.role.clone(),
+            name: e.name.clone(),
+            confidence: None,
+            score: *s,
+        })
+        .collect();
+    let output = FindOutput {
+        best: Some(best),
+        also,
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -233,16 +399,16 @@ async fn cmd_find_by_role(ctx: &mut AppContext, args: &[&str]) -> Result<()> {
                 .unwrap_or_default()
         );
     }
-    for el in &matches {
-        out!(
-            ctx,
-            "[{}] {} \"{}\"",
-            el.ref_id,
-            el.role,
-            truncate(&el.name, 80)
-        );
-    }
-    out!(ctx, "{} match(es)", matches.len());
+    let rows: Vec<FindRoleRow> = matches
+        .iter()
+        .map(|el| FindRoleRow {
+            ref_id: el.ref_id,
+            role: el.role.clone(),
+            name: el.name.clone(),
+        })
+        .collect();
+    let output = FindRoleOutput { matches: rows };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -287,13 +453,16 @@ async fn cmd_find_by_text(ctx: &mut AppContext, text: &str) -> Result<()> {
     if items.is_empty() {
         bail!("No elements containing text \"{text}\"");
     }
-    for item in &items {
-        let tag = item.get("tag").and_then(Value::as_str).unwrap_or("?");
-        let found_text = item.get("text").and_then(Value::as_str).unwrap_or("");
-        let sel = item.get("selector").and_then(Value::as_str).unwrap_or("");
-        out!(ctx, "<{tag}> \"{}\" — {sel}", truncate(found_text, 60));
-    }
-    out!(ctx, "{} match(es)", items.len());
+    let rows: Vec<FindTextRow> = items
+        .iter()
+        .map(|item| FindTextRow {
+            tag: item.get("tag").and_then(Value::as_str).unwrap_or("?").to_string(),
+            text: item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+            selector: item.get("selector").and_then(Value::as_str).unwrap_or("").to_string(),
+        })
+        .collect();
+    let output = FindTextOutput { matches: rows };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -348,17 +517,16 @@ async fn cmd_find_by_label(ctx: &mut AppContext, label: &str) -> Result<()> {
     if items.is_empty() {
         bail!("No elements with label matching \"{label}\"");
     }
-    for item in &items {
-        let tag = item.get("tag").and_then(Value::as_str).unwrap_or("?");
-        let found_label = item.get("label").and_then(Value::as_str).unwrap_or("");
-        let sel = item.get("selector").and_then(Value::as_str).unwrap_or("");
-        out!(
-            ctx,
-            "<{tag}> label=\"{}\" — {sel}",
-            truncate(found_label, 60)
-        );
-    }
-    out!(ctx, "{} match(es)", items.len());
+    let rows: Vec<FindLabelRow> = items
+        .iter()
+        .map(|item| FindLabelRow {
+            tag: item.get("tag").and_then(Value::as_str).unwrap_or("?").to_string(),
+            label: item.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
+            selector: item.get("selector").and_then(Value::as_str).unwrap_or("").to_string(),
+        })
+        .collect();
+    let output = FindLabelOutput { matches: rows };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -394,11 +562,11 @@ async fn cmd_find_by_testid(ctx: &mut AppContext, testid: &str) -> Result<()> {
     let tag = value.get("tag").and_then(Value::as_str).unwrap_or("?");
     let text = value.get("text").and_then(Value::as_str).unwrap_or("");
     let sel = value.get("selector").and_then(Value::as_str).unwrap_or("");
-    out!(
-        ctx,
+    let msg = format!(
         "<{tag}> testid=\"{testid}\" \"{}\" — {sel}",
         truncate(text, 60)
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -438,31 +606,25 @@ pub(crate) async fn cmd_resolve(ctx: &mut AppContext, selector: &str) -> Result<
         bail!("{err}: {selector}");
     }
 
-    if let Some(href) = parsed.get("href").and_then(Value::as_str) {
-        out!(ctx, "href: {href}");
-    }
-    if let Some(action) = parsed.get("action").and_then(Value::as_str) {
-        out!(ctx, "action: {action}");
-    }
-    if let Some(form_action) = parsed.get("formAction").and_then(Value::as_str) {
-        out!(ctx, "formAction: {form_action}");
-    }
-    if let Some(src) = parsed.get("src").and_then(Value::as_str) {
-        out!(ctx, "src: {src}");
-    }
-    if let Some(onclick) = parsed.get("onclick").and_then(Value::as_str) {
-        out!(ctx, "onclick: {onclick}");
-    }
-    if let Some(target) = parsed.get("target").and_then(Value::as_str) {
-        out!(ctx, "target: {target}");
-    }
-    let tag = parsed.get("tagName").and_then(Value::as_str).unwrap_or("?");
-    let text = parsed.get("text").and_then(Value::as_str).unwrap_or("");
-    if !text.is_empty() {
-        out!(ctx, "element: <{tag}> \"{text}\"");
-    } else {
-        out!(ctx, "element: <{tag}>");
-    }
+    let output = ResolveOutput {
+        href: parsed.get("href").and_then(Value::as_str).map(String::from),
+        action: parsed.get("action").and_then(Value::as_str).map(String::from),
+        form_action: parsed.get("formAction").and_then(Value::as_str).map(String::from),
+        src: parsed.get("src").and_then(Value::as_str).map(String::from),
+        onclick: parsed.get("onclick").and_then(Value::as_str).map(String::from),
+        target: parsed.get("target").and_then(Value::as_str).map(String::from),
+        tag: parsed
+            .get("tagName")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string(),
+        text: parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
 
     cdp.close().await;
     Ok(())

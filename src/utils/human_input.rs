@@ -125,7 +125,12 @@ pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Res
                 )
                 .await
             {
-                eprintln!("Warning: failed to send Backspace: {}", e);
+                crate::broker::try_log_event(
+                    "warn",
+                    "input",
+                    "failed to send Backspace",
+                    Some(&format!("{e:#}")),
+                );
             }
             if let Err(e) = cdp
                 .send(
@@ -140,7 +145,12 @@ pub async fn human_type_text(cdp: &mut CdpClient, text: &str, fast: bool) -> Res
                 )
                 .await
             {
-                eprintln!("Warning: failed to send Backspace keyUp: {}", e);
+                crate::broker::try_log_event(
+                    "warn",
+                    "input",
+                    "failed to send Backspace keyUp",
+                    Some(&format!("{e:#}")),
+                );
             }
             sleep(Duration::from_millis(
                 (30.0 + rand::random::<f64>() * 70.0) as u64,

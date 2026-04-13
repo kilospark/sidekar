@@ -1,4 +1,5 @@
 use super::*;
+use crate::output::PlainOutput;
 
 pub(crate) async fn cmd_viewport(
     ctx: &mut AppContext,
@@ -38,14 +39,14 @@ pub(crate) async fn cmd_viewport(
         }),
     )
     .await?;
-    out!(
-        ctx,
+    let msg = format!(
         "Viewport set to {}x{} (dpr:{}{})",
         w,
         h,
         dpr,
         if mobile { " mobile" } else { "" }
     );
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -79,9 +80,81 @@ pub(crate) async fn cmd_zoom(ctx: &mut AppContext, level: Option<&str>) -> Resul
     };
     ctx.save_session_state(&state)?;
 
-    out!(ctx, "Zoom: {}%", new_level as u32);
+    let msg = format!("Zoom: {}%", new_level as u32);
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct FrameNode {
+    id: String,
+    name: Option<String>,
+    url: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<FrameNode>,
+}
+
+#[derive(serde::Serialize)]
+struct FramesOutput {
+    tree: Option<FrameNode>,
+}
+
+fn frame_node_from_value(node: &Value) -> Option<FrameNode> {
+    if node.is_null() {
+        return None;
+    }
+    let frame = node.get("frame").cloned().unwrap_or(Value::Null);
+    let id = frame
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let name = frame
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let url = frame
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let children = node
+        .get("childFrames")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(frame_node_from_value)
+        .collect();
+    Some(FrameNode {
+        id,
+        name,
+        url,
+        children,
+    })
+}
+
+fn write_frame_node(w: &mut dyn std::io::Write, node: &FrameNode, depth: usize) -> std::io::Result<()> {
+    let indent = "  ".repeat(depth);
+    match &node.name {
+        Some(name) => writeln!(w, "{}[{}] name=\"{}\" {}", indent, node.id, name, node.url)?,
+        None => writeln!(w, "{}[{}] {}", indent, node.id, node.url)?,
+    }
+    for child in &node.children {
+        write_frame_node(w, child, depth + 1)?;
+    }
+    Ok(())
+}
+
+impl crate::output::CommandOutput for FramesOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(tree) = &self.tree {
+            write_frame_node(w, tree, 0)?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) async fn cmd_frames(ctx: &mut AppContext) -> Result<()> {
@@ -89,11 +162,10 @@ pub(crate) async fn cmd_frames(ctx: &mut AppContext) -> Result<()> {
     prepare_cdp(ctx, &mut cdp).await?;
     cdp.send("Page.enable", json!({})).await?;
     let tree = cdp.send("Page.getFrameTree", json!({})).await?;
-    print_frame_tree(
-        &mut ctx.output,
-        tree.get("frameTree").unwrap_or(&Value::Null),
-        0,
-    );
+    let output = FramesOutput {
+        tree: frame_node_from_value(tree.get("frameTree").unwrap_or(&Value::Null)),
+    };
+    out!(ctx, "{}", crate::output::to_string(&output)?);
     cdp.close().await;
     Ok(())
 }
@@ -111,7 +183,7 @@ pub(crate) async fn cmd_frame(
     if matches!(frame_id_or_selector, "main" | "top") {
         state.active_frame_id = None;
         ctx.save_session_state(&state)?;
-        out!(ctx, "Switched to main frame.");
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Switched to main frame."))?);
         return Ok(());
     }
 
@@ -164,7 +236,8 @@ pub(crate) async fn cmd_frame(
     let frame = found.ok_or_else(|| anyhow!("Frame not found: {}", frame_id_or_selector))?;
     state.active_frame_id = Some(frame.0.clone());
     ctx.save_session_state(&state)?;
-    out!(ctx, "Switched to frame: [{}] {}", frame.0, frame.1);
+    let msg = format!("Switched to frame: [{}] {}", frame.0, frame.1);
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }

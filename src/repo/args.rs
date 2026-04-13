@@ -1,15 +1,12 @@
 use super::*;
 
 pub(super) fn parse_repo_pack_args(args: &[String]) -> Result<RepoPackArgs> {
-    let mut style = RepoStyle::Markdown;
     let mut diff = false;
     let mut logs = None;
     let mut repo_args = Vec::new();
 
     for arg in args {
-        if let Some(value) = arg.strip_prefix("--style=") {
-            style = RepoStyle::parse(value)?;
-        } else if arg == "--diff" {
+        if arg == "--diff" {
             diff = true;
         } else if arg == "--logs" {
             logs = Some(DEFAULT_LOG_COUNT);
@@ -26,7 +23,6 @@ pub(super) fn parse_repo_pack_args(args: &[String]) -> Result<RepoPackArgs> {
 
     Ok(RepoPackArgs {
         common: parse_repo_args(&repo_args)?,
-        style,
         diff,
         logs,
     })

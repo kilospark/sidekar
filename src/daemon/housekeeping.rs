@@ -217,13 +217,31 @@ async fn check_for_update() {
     }
     match crate::api_client::check_for_update().await {
         Ok(Some(latest)) => {
-            eprintln!("sidekar: update v{latest} available, installing in background...");
+            crate::broker::try_log_event(
+                "info",
+                "updater",
+                &format!("update v{latest} available, installing in background"),
+                None,
+            );
             if let Err(e) = crate::api_client::self_update(&latest).await {
-                eprintln!("sidekar: background update failed: {e:#}");
+                crate::broker::try_log_error(
+                    "updater",
+                    "background update failed",
+                    Some(&format!("{e:#}")),
+                );
             } else {
-                eprintln!("sidekar: updated to v{latest}; restarting daemon...");
+                crate::broker::try_log_event(
+                    "info",
+                    "updater",
+                    &format!("updated to v{latest}; restarting daemon"),
+                    None,
+                );
                 if let Err(e) = restart_current_process() {
-                    eprintln!("sidekar: updated, but failed to restart daemon: {e:#}");
+                    crate::broker::try_log_error(
+                        "updater",
+                        "updated, but failed to restart daemon",
+                        Some(&format!("{e:#}")),
+                    );
                 }
             }
         }
@@ -237,9 +255,11 @@ pub(super) async fn discover_heartbeat(port: u16) {
         return;
     }
     crate::api_client::deregister_discover_port().await;
-    if let Err(e) = crate::api_client::register_discover_port(port).await
-        && crate::runtime::verbose()
-    {
-        eprintln!("sidekar: discover heartbeat failed: {e:#}");
+    if let Err(e) = crate::api_client::register_discover_port(port).await {
+        crate::broker::try_log_error(
+            "discover",
+            "heartbeat failed",
+            Some(&format!("{e:#}")),
+        );
     }
 }

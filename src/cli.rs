@@ -75,7 +75,19 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--json{RST}              {DIM}Machine-readable JSON output (where supported){RST}"
+        "  {GREEN}--format <fmt>{RST}      {DIM}Output format: text (default), json, toon, markdown{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--json{RST}              {DIM}Shorthand for --format=json (where supported){RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--toon{RST}              {DIM}Shorthand for --format=toon — compact LLM-friendly output{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--markdown{RST}, {GREEN}--md{RST}    {DIM}Shorthand for --format=markdown (where supported){RST}"
     );
     let _ = writeln!(
         out,

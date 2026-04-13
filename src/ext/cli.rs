@@ -81,33 +81,77 @@ pub async fn send_cli_command(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct ExtConnectionOut {
+    id: u64,
+    browser: String,
+    owner: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ExtStatusOutput {
+    running: bool,
+    connections: Vec<ExtConnectionOut>,
+}
+
+impl crate::output::CommandOutput for ExtStatusOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if !self.running {
+            writeln!(w, "Extension bridge not running")?;
+            return Ok(());
+        }
+        if self.connections.is_empty() {
+            writeln!(w, "No extension connections")?;
+            return Ok(());
+        }
+        writeln!(w, "{} connection(s):", self.connections.len())?;
+        for c in &self.connections {
+            write!(w, "  [{}] {}", c.id, c.browser)?;
+            if let Some(o) = &c.owner {
+                write!(w, " (owner: {o})")?;
+            }
+            writeln!(w)?;
+        }
+        Ok(())
+    }
+}
+
 fn show_status() -> Result<()> {
     if !crate::daemon::is_running() {
-        println!("Extension bridge not running");
+        let out = ExtStatusOutput {
+            running: false,
+            connections: Vec::new(),
+        };
+        crate::output::emit(&out)?;
         return Ok(());
     }
 
     let status = crate::daemon::send_command(&json!({"type": "ext_status"}))?;
-    let conns = status.get("connections").and_then(|v| v.as_array());
-
-    match conns {
-        Some(list) if !list.is_empty() => {
-            println!("{} connection(s):", list.len());
-            for c in list {
-                let id = c.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let browser = c.get("browser").and_then(|v| v.as_str()).unwrap_or("?");
-                let owner = c.get("owner").and_then(|v| v.as_str());
-                print!("  [{id}] {browser}");
-                if let Some(o) = owner {
-                    print!(" (owner: {o})");
-                }
-                println!();
-            }
-        }
-        _ => {
-            println!("No extension connections");
-        }
-    }
+    let conns = status
+        .get("connections")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let connections: Vec<ExtConnectionOut> = conns
+        .iter()
+        .map(|c| ExtConnectionOut {
+            id: c.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+            browser: c
+                .get("browser")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
+            owner: c
+                .get("owner")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        })
+        .collect();
+    let out = ExtStatusOutput {
+        running: true,
+        connections,
+    };
+    crate::output::emit(&out)?;
     Ok(())
 }
 
@@ -144,14 +188,12 @@ fn extract_extension() -> Result<()> {
         }
     }
 
-    println!(
-        "Chrome extension extracted/updated to {}",
+    let msg = format!(
+        "Chrome extension extracted/updated to {}\nTo load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}",
+        target_dir.display(),
         target_dir.display()
     );
-    println!(
-        "To load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}",
-        target_dir.display()
-    );
+    crate::output::emit(&crate::output::PlainOutput::new(msg))?;
     Ok(())
 }
 
@@ -419,32 +461,215 @@ fn format_time_ago(ts_ms: f64) -> String {
     }
 }
 
+#[derive(serde::Serialize)]
+struct ExtTabOut {
+    id: u64,
+    title: String,
+    url: String,
+    active: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ExtTabsOutput {
+    items: Vec<ExtTabOut>,
+}
+
+impl crate::output::CommandOutput for ExtTabsOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for tab in &self.items {
+            let marker = if tab.active { " *" } else { "" };
+            writeln!(w, "[{}]{} {}", tab.id, marker, tab.title)?;
+            writeln!(w, "  {}", tab.url)?;
+        }
+        if !self.items.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "{} tab(s)", self.items.len())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ExtWatcherOut {
+    watch_id: String,
+    selector: String,
+    tab_id: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ExtWatchersOutput {
+    items: Vec<ExtWatcherOut>,
+}
+
+impl crate::output::CommandOutput for ExtWatchersOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "No active watchers")?;
+            return Ok(());
+        }
+        for watcher in &self.items {
+            writeln!(
+                w,
+                "[{}] tab:{} {}",
+                watcher.watch_id, watcher.tab_id, watcher.selector
+            )?;
+        }
+        writeln!(w)?;
+        writeln!(w, "{} watcher(s)", self.items.len())?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ExtHistoryOut {
+    title: String,
+    url: String,
+    visit_count: u64,
+    last_visit_ms: f64,
+    last_visit_ago: String,
+}
+
+#[derive(serde::Serialize)]
+struct ExtHistoryOutput {
+    items: Vec<ExtHistoryOut>,
+}
+
+impl crate::output::CommandOutput for ExtHistoryOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for entry in &self.items {
+            writeln!(w, "{}", entry.title)?;
+            writeln!(w, "  {}", entry.url)?;
+            writeln!(
+                w,
+                "  {} | {} visit(s)",
+                entry.last_visit_ago, entry.visit_count
+            )?;
+            writeln!(w)?;
+        }
+        writeln!(w, "{} result(s)", self.items.len())?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ExtContextTab {
+    id: u64,
+    title: String,
+    url: String,
+    active: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ExtContextWindow {
+    window_id: String,
+    tabs: Vec<ExtContextTab>,
+}
+
+#[derive(serde::Serialize)]
+struct ExtContextOutput {
+    active_tab: Option<ExtContextTab>,
+    tab_count: u64,
+    window_count: u64,
+    windows: Vec<ExtContextWindow>,
+    recent_history: Vec<ExtHistoryOut>,
+    watcher_count: usize,
+}
+
+impl crate::output::CommandOutput for ExtContextOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if let Some(tab) = &self.active_tab {
+            writeln!(w, "Active: {}", tab.title)?;
+            writeln!(w, "  {}", tab.url)?;
+            writeln!(w)?;
+        }
+        if !self.windows.is_empty() {
+            writeln!(
+                w,
+                "{} tab(s) across {} window(s):",
+                self.tab_count, self.window_count
+            )?;
+            for window in &self.windows {
+                writeln!(w, "  Window {}:", window.window_id)?;
+                for t in &window.tabs {
+                    let marker = if t.active { " *" } else { "" };
+                    let short_title = if t.title.len() > 60 {
+                        &t.title[..60]
+                    } else {
+                        t.title.as_str()
+                    };
+                    writeln!(w, "    [{}]{} {}", t.id, marker, short_title)?;
+                }
+            }
+        }
+        if !self.recent_history.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "Recent activity:")?;
+            for h in &self.recent_history {
+                let short_title = if h.title.len() > 50 {
+                    &h.title[..50]
+                } else {
+                    h.title.as_str()
+                };
+                let domain = h
+                    .url
+                    .strip_prefix("https://")
+                    .or_else(|| h.url.strip_prefix("http://"))
+                    .unwrap_or(&h.url)
+                    .split('/')
+                    .next()
+                    .unwrap_or("");
+                writeln!(w, "  {} | {} | {}", h.last_visit_ago, domain, short_title)?;
+            }
+        }
+        if self.watcher_count > 0 {
+            writeln!(w)?;
+            writeln!(w, "{} active watcher(s)", self.watcher_count)?;
+        }
+        Ok(())
+    }
+}
+
 fn print_result(command: &str, result: &Value) {
     match command {
         "tabs" => {
-            if let Some(tabs) = result.get("tabs").and_then(|v| v.as_array()) {
-                for tab in tabs {
-                    let id = tab.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let url = tab.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                    let active = tab.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let marker = if active { " *" } else { "" };
-                    println!("[{id}]{marker} {title}");
-                    println!("  {url}");
-                }
-                println!("\n{} tab(s)", tabs.len());
-            }
+            let tabs = result
+                .get("tabs")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let items: Vec<ExtTabOut> = tabs
+                .iter()
+                .map(|tab| ExtTabOut {
+                    id: tab.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                    title: tab
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    url: tab
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    active: tab.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
+                })
+                .collect();
+            let _ = crate::output::emit(&ExtTabsOutput { items });
         }
         "read" => {
+            let mut buf = String::new();
             if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
-                println!("--- {} ---", title);
+                buf.push_str(&format!("--- {} ---\n", title));
             }
             if let Some(url) = result.get("url").and_then(|v| v.as_str()) {
-                println!("{url}\n");
+                buf.push_str(&format!("{url}\n\n"));
             }
             if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-                println!("{text}");
+                buf.push_str(&format!("{text}\n"));
             }
+            // Strip trailing newline so PlainOutput's writeln doesn't double it.
+            let text = buf.trim_end_matches('\n').to_string();
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
         "screenshot" => {
             if let Some(data_url) = result.get("screenshot").and_then(|v| v.as_str()) {
@@ -454,45 +679,58 @@ fn print_result(command: &str, result: &Value) {
                 {
                     let path = format!("/tmp/sidekar-ext-screenshot-{}.jpg", rand::random::<u32>());
                     if std::fs::write(&path, &bytes).is_ok() {
-                        println!("Screenshot saved: {path}");
+                        let _ = crate::output::emit(&crate::output::PlainOutput::new(format!(
+                            "Screenshot saved: {path}"
+                        )));
                         return;
                     }
                 }
-                println!("Screenshot captured ({} bytes)", data_url.len());
+                let _ = crate::output::emit(&crate::output::PlainOutput::new(format!(
+                    "Screenshot captured ({} bytes)",
+                    data_url.len()
+                )));
             }
         }
         "ax-tree" => {
+            let mut buf = String::new();
             if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
-                println!("--- {} ---", title);
+                buf.push_str(&format!("--- {} ---\n", title));
             }
             if let Some(elements) = result.get("elements").and_then(|v| v.as_array()) {
                 for el in elements {
                     let r = el.get("ref").and_then(|v| v.as_u64()).unwrap_or(0);
                     let role = el.get("role").and_then(|v| v.as_str()).unwrap_or("");
                     let name = el.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("[{r}] {role}: {name}");
+                    buf.push_str(&format!("[{r}] {role}: {name}\n"));
                 }
-                println!("\n{} interactive element(s)", elements.len());
+                buf.push_str(&format!("\n{} interactive element(s)\n", elements.len()));
             }
+            let text = buf.trim_end_matches('\n').to_string();
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
         "navigate" => {
+            let mut buf = String::new();
             if let Some(title) = result.get("title").and_then(|v| v.as_str()) {
-                println!("--- {} ---", title);
+                buf.push_str(&format!("--- {} ---\n", title));
             }
             if let Some(url) = result.get("url").and_then(|v| v.as_str()) {
-                println!("{url}");
+                buf.push_str(&format!("{url}\n"));
             }
+            let text = buf.trim_end_matches('\n').to_string();
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
         "new-tab" => {
             let id = result.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
             let title = result.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            println!("Opened tab [{id}] {title}");
-            println!("  {url}");
+            let text = format!("Opened tab [{id}] {title}\n  {url}");
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
         "close" => {
             let id = result.get("tabId").and_then(|v| v.as_u64()).unwrap_or(0);
-            println!("Closed tab [{id}]");
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(format!(
+                "Closed tab [{id}]"
+            )));
         }
         "paste" => {
             let mode = result
@@ -504,32 +742,37 @@ fn print_result(command: &str, result: &Value) {
                 .get("verified")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
+            let mut buf = String::new();
             if verified {
-                println!("Pasted {len} chars via {mode}");
+                buf.push_str(&format!("Pasted {len} chars via {mode}\n"));
             } else {
-                println!("Paste attempted via {mode} ({len} chars, not verified)");
+                buf.push_str(&format!(
+                    "Paste attempted via {mode} ({len} chars, not verified)\n"
+                ));
             }
             if let Some(err) = result.get("clipboard_error").and_then(|v| v.as_str()) {
-                println!("Clipboard write warning: {err}");
+                buf.push_str(&format!("Clipboard write warning: {err}\n"));
             }
             if result
                 .get("plain_text_fallback")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                println!("Used plain-text fallback for HTML content");
+                buf.push_str("Used plain-text fallback for HTML content\n");
             }
             if let Some(from) = result.get("fallback_from").and_then(|v| v.as_str())
                 && from != "none"
             {
-                println!("Fallback source: {from}");
+                buf.push_str(&format!("Fallback source: {from}\n"));
             }
             if let Some(err) = result.get("debugger_error").and_then(|v| v.as_str()) {
-                println!("Debugger warning: {err}");
+                buf.push_str(&format!("Debugger warning: {err}\n"));
             }
             if let Some(err) = result.get("insert_text_error").and_then(|v| v.as_str()) {
-                println!("InsertText warning: {err}");
+                buf.push_str(&format!("InsertText warning: {err}\n"));
             }
+            let text = buf.trim_end_matches('\n').to_string();
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
         "set-value" => {
             let mode = result
@@ -537,46 +780,56 @@ fn print_result(command: &str, result: &Value) {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             let len = result.get("length").and_then(|v| v.as_u64()).unwrap_or(0);
-            println!("Set value via {mode} ({len} chars)");
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(format!(
+                "Set value via {mode} ({len} chars)"
+            )));
         }
         "eval-page" => {
-            if let Some(value) = result.get("result") {
+            let text = if let Some(value) = result.get("result") {
                 if value.is_string() {
-                    println!("{}", value.as_str().unwrap_or_default());
+                    value.as_str().unwrap_or_default().to_string()
                 } else {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(value).unwrap_or_default()
-                    );
+                    serde_json::to_string_pretty(value).unwrap_or_default()
                 }
             } else {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(result).unwrap_or_default()
-                );
-            }
+                serde_json::to_string_pretty(result).unwrap_or_default()
+            };
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
         "history" => {
-            if let Some(entries) = result.get("entries").and_then(|v| v.as_array()) {
-                for entry in entries {
-                    let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                    let visits = entry
-                        .get("visitCount")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+            let entries = result
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let items: Vec<ExtHistoryOut> = entries
+                .iter()
+                .map(|entry| {
                     let ts = entry
                         .get("lastVisitTime")
                         .and_then(|v| v.as_f64())
                         .unwrap_or(0.0);
-                    let ago = format_time_ago(ts);
-                    println!("{title}");
-                    println!("  {url}");
-                    println!("  {ago} | {visits} visit(s)");
-                    println!();
-                }
-                println!("{} result(s)", entries.len());
-            }
+                    ExtHistoryOut {
+                        title: entry
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        url: entry
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        visit_count: entry
+                            .get("visitCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        last_visit_ms: ts,
+                        last_visit_ago: format_time_ago(ts),
+                    }
+                })
+                .collect();
+            let _ = crate::output::emit(&ExtHistoryOutput { items });
         }
         "watch" => {
             if let Some(watch_id) = result.get("watchId").and_then(|v| v.as_str()) {
@@ -584,10 +837,11 @@ fn print_result(command: &str, result: &Value) {
                     .get("selector")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                println!("Watching: {selector}");
-                println!("Watch ID: {watch_id}");
+                let mut buf = String::new();
+                buf.push_str(&format!("Watching: {selector}\n"));
+                buf.push_str(&format!("Watch ID: {watch_id}\n"));
                 if let Some(deliver) = result.get("deliverTo").and_then(|v| v.as_str()) {
-                    println!("Events will be delivered to: {deliver}");
+                    buf.push_str(&format!("Events will be delivered to: {deliver}\n"));
                 }
                 if let Some(state) = result.get("initialState").and_then(|v| v.as_str())
                     && !state.is_empty()
@@ -597,108 +851,155 @@ fn print_result(command: &str, result: &Value) {
                     } else {
                         state
                     };
-                    println!("Current state: {preview}");
+                    buf.push_str(&format!("Current state: {preview}\n"));
                 }
+                let text = buf.trim_end_matches('\n').to_string();
+                let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
             }
         }
         "unwatch" => {
-            if let Some(count) = result.get("count").and_then(|v| v.as_u64()) {
-                println!("Removed {count} watcher(s)");
-            } else if let Some(wid) = result.get("watchId").and_then(|v| v.as_str()) {
-                println!("Removed watcher: {wid}");
+            let msg = if let Some(count) = result.get("count").and_then(|v| v.as_u64()) {
+                Some(format!("Removed {count} watcher(s)"))
+            } else {
+                result
+                    .get("watchId")
+                    .and_then(|v| v.as_str())
+                    .map(|wid| format!("Removed watcher: {wid}"))
+            };
+            if let Some(m) = msg {
+                let _ = crate::output::emit(&crate::output::PlainOutput::new(m));
             }
         }
         "watchers" => {
-            if let Some(watchers) = result.get("watchers").and_then(|v| v.as_array()) {
-                if watchers.is_empty() {
-                    println!("No active watchers");
-                } else {
-                    for w in watchers {
-                        let wid = w.get("watchId").and_then(|v| v.as_str()).unwrap_or("?");
-                        let sel = w.get("selector").and_then(|v| v.as_str()).unwrap_or("?");
-                        let tab = w.get("tabId").and_then(|v| v.as_u64()).unwrap_or(0);
-                        println!("[{wid}] tab:{tab} {sel}");
-                    }
-                    println!("\n{} watcher(s)", watchers.len());
-                }
-            }
+            let watchers = result
+                .get("watchers")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let items: Vec<ExtWatcherOut> = watchers
+                .iter()
+                .map(|w| ExtWatcherOut {
+                    watch_id: w
+                        .get("watchId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    selector: w
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    tab_id: w.get("tabId").and_then(|v| v.as_u64()).unwrap_or(0),
+                })
+                .collect();
+            let _ = crate::output::emit(&ExtWatchersOutput { items });
         }
         "context" => {
-            if let Some(tab) = result.get("active_tab") {
-                let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let url = tab.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                println!("Active: {title}");
-                println!("  {url}\n");
-            }
+            let active_tab = result.get("active_tab").map(|tab| ExtContextTab {
+                id: tab.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                title: tab
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                url: tab
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                active: true,
+            });
 
-            if let Some(windows) = result.get("windows").and_then(|v| v.as_object()) {
-                let tab_count = result
-                    .get("tab_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let win_count = result
-                    .get("window_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                println!("{tab_count} tab(s) across {win_count} window(s):");
-                for (wid, tabs) in windows {
-                    if let Some(tabs) = tabs.as_array() {
-                        println!("  Window {wid}:");
-                        for t in tabs {
-                            let id = t.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                            let active = t.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let marker = if active { " *" } else { "" };
-                            let short_title = if title.len() > 60 {
-                                &title[..60]
-                            } else {
-                                title
-                            };
-                            println!("    [{id}]{marker} {short_title}");
-                        }
+            let tab_count = result
+                .get("tab_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let window_count = result
+                .get("window_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let mut windows: Vec<ExtContextWindow> = Vec::new();
+            if let Some(wins) = result.get("windows").and_then(|v| v.as_object()) {
+                for (wid, tabs) in wins {
+                    if let Some(tabs_arr) = tabs.as_array() {
+                        windows.push(ExtContextWindow {
+                            window_id: wid.clone(),
+                            tabs: tabs_arr
+                                .iter()
+                                .map(|t| ExtContextTab {
+                                    id: t.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    title: t
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    url: t
+                                        .get("url")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    active: t
+                                        .get("active")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                })
+                                .collect(),
+                        });
                     }
                 }
             }
 
-            if let Some(history) = result.get("recent_history").and_then(|v| v.as_array())
-                && !history.is_empty()
-            {
-                println!("\nRecent activity:");
-                for h in history.iter().take(10) {
-                    let title = h.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let url = h.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let recent_history: Vec<ExtHistoryOut> = result
+                .get("recent_history")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .take(10)
+                .map(|h| {
                     let ts = h
                         .get("lastVisitTime")
                         .and_then(|v| v.as_f64())
                         .unwrap_or(0.0);
-                    let ago = format_time_ago(ts);
-                    let short_title = if title.len() > 50 {
-                        &title[..50]
-                    } else {
-                        title
-                    };
-                    let domain = url
-                        .strip_prefix("https://")
-                        .or_else(|| url.strip_prefix("http://"))
-                        .unwrap_or(url)
-                        .split('/')
-                        .next()
-                        .unwrap_or("");
-                    println!("  {ago} | {domain} | {short_title}");
-                }
-            }
+                    ExtHistoryOut {
+                        title: h
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        url: h
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        visit_count: h
+                            .get("visitCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        last_visit_ms: ts,
+                        last_visit_ago: format_time_ago(ts),
+                    }
+                })
+                .collect();
 
-            if let Some(watchers) = result.get("watchers").and_then(|v| v.as_array())
-                && !watchers.is_empty()
-            {
-                println!("\n{} active watcher(s)", watchers.len());
-            }
+            let watcher_count = result
+                .get("watchers")
+                .and_then(|v| v.as_array())
+                .map(|w| w.len())
+                .unwrap_or(0);
+
+            let _ = crate::output::emit(&ExtContextOutput {
+                active_tab,
+                tab_count,
+                window_count,
+                windows,
+                recent_history,
+                watcher_count,
+            });
         }
         _ => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(result).unwrap_or_default()
-            );
+            let text = serde_json::to_string_pretty(result).unwrap_or_default();
+            let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
         }
     }
 }

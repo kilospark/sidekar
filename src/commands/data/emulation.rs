@@ -1,4 +1,67 @@
 use super::*;
+use crate::output::PlainOutput;
+
+#[derive(serde::Serialize)]
+struct StorageItem {
+    key: String,
+    value: String,
+}
+
+#[derive(serde::Serialize)]
+struct StorageSection {
+    label: String,
+    items: Vec<StorageItem>,
+}
+
+#[derive(serde::Serialize)]
+struct StorageListOutput {
+    sections: Vec<StorageSection>,
+}
+
+impl crate::output::CommandOutput for StorageListOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for section in &self.sections {
+            writeln!(w, "{}:", section.label)?;
+            for item in &section.items {
+                writeln!(w, "  {} = {}", item.key, item.value)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ServiceWorkerEntry {
+    scope: String,
+    active: Option<String>,
+    waiting: Option<String>,
+    installing: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ServiceWorkersOutput {
+    origin: String,
+    workers: Vec<ServiceWorkerEntry>,
+}
+
+impl crate::output::CommandOutput for ServiceWorkersOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.workers.is_empty() {
+            writeln!(w, "No service workers registered for {}", self.origin)?;
+        } else {
+            writeln!(w, "Service workers for {}:", self.origin)?;
+            for wkr in &self.workers {
+                writeln!(
+                    w,
+                    "  {} — active: {}",
+                    wkr.scope,
+                    wkr.active.as_deref().unwrap_or("none")
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
 
 pub(crate) async fn cmd_media(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut cdp = open_cdp(ctx).await?;
@@ -10,7 +73,7 @@ pub(crate) async fn cmd_media(ctx: &mut AppContext, args: &[String]) -> Result<(
             json!({"media": "", "features": []}),
         )
         .await?;
-        out!(ctx, "Media emulation reset.");
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Media emulation reset."))?);
         cdp.close().await;
         return Ok(());
     }
@@ -39,7 +102,7 @@ pub(crate) async fn cmd_media(ctx: &mut AppContext, args: &[String]) -> Result<(
                     json!({"media": "", "features": []}),
                 )
                 .await?;
-                out!(ctx, "Media emulation reset.");
+                out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Media emulation reset."))?);
                 cdp.close().await;
                 return Ok(());
             }
@@ -67,7 +130,8 @@ pub(crate) async fn cmd_media(ctx: &mut AppContext, args: &[String]) -> Result<(
         let val = f["value"].as_str().unwrap_or("");
         parts.push(format!("{name}={val}"));
     }
-    out!(ctx, "Media emulation: {}", parts.join(", "));
+    let msg = format!("Media emulation: {}", parts.join(", "));
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }
@@ -76,27 +140,28 @@ pub(crate) async fn cmd_animations(ctx: &mut AppContext, action: Option<&str>) -
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
 
-    match action.unwrap_or("pause") {
+    let msg = match action.unwrap_or("pause") {
         "pause" | "freeze" | "stop" => {
             cdp.send("Animation.enable", json!({})).await?;
             cdp.send("Animation.setPlaybackRate", json!({"playbackRate": 0}))
                 .await?;
-            out!(ctx, "Animations paused.");
+            "Animations paused."
         }
         "resume" | "play" => {
             cdp.send("Animation.enable", json!({})).await?;
             cdp.send("Animation.setPlaybackRate", json!({"playbackRate": 1}))
                 .await?;
-            out!(ctx, "Animations resumed.");
+            "Animations resumed."
         }
         "slow" => {
             cdp.send("Animation.enable", json!({})).await?;
             cdp.send("Animation.setPlaybackRate", json!({"playbackRate": 0.1}))
                 .await?;
-            out!(ctx, "Animations slowed to 10%.");
+            "Animations slowed to 10%."
         }
         other => bail!("Unknown action: {other}. Valid: pause, resume, slow"),
-    }
+    };
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
 
     cdp.close().await;
     Ok(())
@@ -107,14 +172,14 @@ pub(crate) async fn cmd_security(ctx: &mut AppContext, args: &[String]) -> Resul
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
 
-    match action {
+    let msg = match action {
         "ignore-certs" | "ignore-cert-errors" => {
             cdp.send(
                 "Security.setIgnoreCertificateErrors",
                 json!({"ignore": true}),
             )
             .await?;
-            out!(ctx, "Certificate errors will be ignored for this session.");
+            "Certificate errors will be ignored for this session."
         }
         "strict" | "enforce-certs" => {
             cdp.send(
@@ -122,10 +187,11 @@ pub(crate) async fn cmd_security(ctx: &mut AppContext, args: &[String]) -> Resul
                 json!({"ignore": false}),
             )
             .await?;
-            out!(ctx, "Certificate validation restored.");
+            "Certificate validation restored."
         }
         _ => bail!("Usage: sidekar security <ignore-certs|strict>"),
-    }
+    };
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
 
     cdp.close().await;
     Ok(())
@@ -146,6 +212,7 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
     match action {
         "get" | "list" => {
             let key = args.get(1).map(String::as_str);
+            let mut sections: Vec<StorageSection> = Vec::new();
             for (label, is_local) in [("localStorage", true), ("sessionStorage", false)] {
                 let storage_id = json!({"securityOrigin": origin, "isLocalStorage": is_local});
                 let result = cdp
@@ -162,7 +229,7 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
                 if entries.is_empty() {
                     continue;
                 }
-                let mut lines = vec![format!("{}:", label)];
+                let mut items: Vec<StorageItem> = Vec::new();
                 for entry in &entries {
                     let arr = entry.as_array();
                     let k = arr
@@ -183,12 +250,20 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
                     } else {
                         v.to_string()
                     };
-                    lines.push(format!("  {k} = {display_v}"));
+                    items.push(StorageItem {
+                        key: k.to_string(),
+                        value: display_v,
+                    });
                 }
-                if lines.len() > 1 {
-                    out!(ctx, "{}", lines.join("\n"));
+                if !items.is_empty() {
+                    sections.push(StorageSection {
+                        label: label.to_string(),
+                        items,
+                    });
                 }
             }
+            let output = StorageListOutput { sections };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
         }
         "set" => {
             let key = args
@@ -207,7 +282,8 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
             } else {
                 "sessionStorage"
             };
-            out!(ctx, "Set {label}[{key}] = {value}");
+            let msg = format!("Set {label}[{key}] = {value}");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
         "remove" | "delete" => {
             let key = args
@@ -225,22 +301,23 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
             } else {
                 "sessionStorage"
             };
-            out!(ctx, "Removed {label}[{key}]");
+            let msg = format!("Removed {label}[{key}]");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
         "clear" => {
             let target = args.get(1).map(String::as_str).unwrap_or("all");
-            match target {
+            let msg = match target {
                 "local" | "localStorage" => {
                     let storage_id = json!({"securityOrigin": origin, "isLocalStorage": true});
                     cdp.send("DOMStorage.clear", json!({"storageId": storage_id}))
                         .await?;
-                    out!(ctx, "Cleared localStorage for {origin}");
+                    format!("Cleared localStorage for {origin}")
                 }
                 "session" | "sessionStorage" => {
                     let storage_id = json!({"securityOrigin": origin, "isLocalStorage": false});
                     cdp.send("DOMStorage.clear", json!({"storageId": storage_id}))
                         .await?;
-                    out!(ctx, "Cleared sessionStorage for {origin}");
+                    format!("Cleared sessionStorage for {origin}")
                 }
                 "all" => {
                     cdp.send(
@@ -248,7 +325,7 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
                         json!({"origin": origin, "storageTypes": "local_storage,session_storage"}),
                     )
                     .await?;
-                    out!(ctx, "Cleared all storage for {origin}");
+                    format!("Cleared all storage for {origin}")
                 }
                 "everything" => {
                     cdp.send(
@@ -256,13 +333,13 @@ pub(crate) async fn cmd_storage(ctx: &mut AppContext, args: &[String]) -> Result
                         json!({"origin": origin, "storageTypes": "all"}),
                     )
                     .await?;
-                    out!(
-                        ctx,
+                    format!(
                         "Cleared all data (storage, cache, cookies, service workers) for {origin}"
-                    );
+                    )
                 }
                 _ => bail!("Usage: storage clear [local|session|all|everything]"),
-            }
+            };
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
         _ => bail!("Usage: storage <get|set|remove|clear> [args]"),
     }
@@ -309,17 +386,33 @@ pub(crate) async fn cmd_sw(ctx: &mut AppContext, args: &[String]) -> Result<()> 
                 .cloned()
                 .unwrap_or_default();
 
-            if regs.is_empty() {
-                out!(ctx, "No service workers registered for {origin}");
-            } else {
-                let mut lines = vec![format!("Service workers for {origin}:")];
-                for r in &regs {
-                    let scope = r.get("scope").and_then(Value::as_str).unwrap_or("?");
-                    let active = r.get("active").and_then(Value::as_str).unwrap_or("none");
-                    lines.push(format!("  {scope} — active: {active}"));
-                }
-                out!(ctx, "{}", lines.join("\n"));
-            }
+            let workers = regs
+                .iter()
+                .map(|r| ServiceWorkerEntry {
+                    scope: r
+                        .get("scope")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                        .to_string(),
+                    active: r
+                        .get("active")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    waiting: r
+                        .get("waiting")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    installing: r
+                        .get("installing")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                })
+                .collect();
+            let output = ServiceWorkersOutput {
+                origin: origin.to_string(),
+                workers,
+            };
+            out!(ctx, "{}", crate::output::to_string(&output)?);
         }
         "unregister" | "remove" | "reset" => {
             let result = runtime_evaluate(
@@ -343,7 +436,8 @@ pub(crate) async fn cmd_sw(ctx: &mut AppContext, args: &[String]) -> Result<()> 
                 .pointer("/result/value")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            out!(ctx, "Unregistered {count} service worker(s).");
+            let msg = format!("Unregistered {count} service worker(s).");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
         "update" => {
             let result = runtime_evaluate(
@@ -363,7 +457,8 @@ pub(crate) async fn cmd_sw(ctx: &mut AppContext, args: &[String]) -> Result<()> 
                 .pointer("/result/value")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            out!(ctx, "Triggered update for {count} service worker(s).");
+            let msg = format!("Triggered update for {count} service worker(s).");
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
         _ => bail!("Usage: sidekar service-workers <list|unregister|update>"),
     }
@@ -383,7 +478,7 @@ pub(crate) async fn cmd_geo(ctx: &mut AppContext, args: &[String]) -> Result<()>
     if args.first().map(String::as_str) == Some("off") {
         cdp.send("Emulation.clearGeolocationOverride", json!({}))
             .await?;
-        out!(ctx, "Geolocation override cleared");
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Geolocation override cleared"))?);
         cdp.close().await;
         return Ok(());
     }
@@ -410,10 +505,8 @@ pub(crate) async fn cmd_geo(ctx: &mut AppContext, args: &[String]) -> Result<()>
         json!({ "latitude": lat, "longitude": lng, "accuracy": accuracy }),
     )
     .await?;
-    out!(
-        ctx,
-        "Geolocation set to ({lat}, {lng}) accuracy={accuracy}m"
-    );
+    let msg = format!("Geolocation set to ({lat}, {lng}) accuracy={accuracy}m");
+    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     cdp.close().await;
     Ok(())
 }

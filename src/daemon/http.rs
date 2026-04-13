@@ -18,7 +18,11 @@ pub(super) fn bind_http_listener() -> Option<(std::net::TcpListener, u16)> {
             Err(_) => continue,
         }
     }
-    eprintln!("sidekar: could not bind HTTP listener on ports {HTTP_PORT_START}-{HTTP_PORT_END}");
+    crate::broker::try_log_error(
+        "daemon",
+        &format!("could not bind HTTP listener on ports {HTTP_PORT_START}-{HTTP_PORT_END}"),
+        None,
+    );
     None
 }
 
@@ -33,7 +37,7 @@ pub(super) async fn accept_http_connections(
                 tokio::spawn(handle_http_connection(stream, s));
             }
             Err(e) => {
-                eprintln!("HTTP accept error: {e}");
+                crate::broker::try_log_error("http", "accept error", Some(&format!("{e:#}")));
             }
         }
     }
@@ -76,9 +80,7 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
         match tokio_tungstenite::accept_async(stream).await {
             Ok(ws) => handle_ext_websocket(ws, ext_state).await,
             Err(e) => {
-                if crate::runtime::verbose() {
-                    eprintln!("WS handshake failed: {e}");
-                }
+                crate::broker::try_log_error("http", "WS handshake failed", Some(&format!("{e:#}")));
             }
         }
         return;
@@ -193,8 +195,11 @@ async fn handle_ext_websocket(
         return;
     }
 
-    eprintln!(
-        "[sidekar] Extension bridge connected via WebSocket (conn: {conn_id}, browser: {browser_name}, user: {user_id})"
+    crate::broker::try_log_event(
+        "info",
+        "ext",
+        &format!("bridge connected (conn: {conn_id}, browser: {browser_name}, user: {user_id})"),
+        None,
     );
 
     let ka_state = ext_state.clone();
@@ -222,7 +227,12 @@ async fn handle_ext_websocket(
                 }
             }
             if should_disconnect {
-                eprintln!("[sidekar] Extension WS keepalive timeout (conn {ka_conn_id})");
+                crate::broker::try_log_event(
+                    "warn",
+                    "ext",
+                    &format!("WS keepalive timeout (conn {ka_conn_id})"),
+                    None,
+                );
                 crate::ext::disconnect_bridge_by_id(&ka_state, ka_conn_id).await;
                 break;
             }
@@ -257,7 +267,11 @@ async fn handle_ext_websocket(
                                     )
                                     .await
                                     {
-                                        eprintln!("[sidekar] watch event delivery failed: {e}");
+                                        crate::broker::try_log_error(
+                                            "ext",
+                                            "watch event delivery failed",
+                                            Some(&format!("{e:#}")),
+                                        );
                                     }
                                 continue;
                             }
@@ -354,5 +368,10 @@ async fn handle_ext_websocket(
     }
 
     crate::ext::disconnect_bridge_by_id(&ext_state, conn_id).await;
-    eprintln!("[sidekar] Extension WS bridge disconnected (conn: {conn_id})");
+    crate::broker::try_log_event(
+        "info",
+        "ext",
+        &format!("bridge disconnected (conn: {conn_id})"),
+        None,
+    );
 }
