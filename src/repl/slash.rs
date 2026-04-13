@@ -45,7 +45,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
 
     let result = match cmd {
         "/quit" | "/exit" | "/q" => SlashResult::Quit,
-        "/new" | "/reset" => match session::create_session(cwd, model, "anthropic") {
+        "/new" | "/reset" => match session::create_session(cwd, model, cred_name) {
             Ok(id) => SlashResult::SwitchSession(id),
             Err(e) => {
                 broker::try_log_error("session", &format!("failed to create: {e}"), None);
@@ -77,7 +77,15 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         for (i, s) in sessions.iter().enumerate() {
                             let msgs = session::message_count(&s.id).unwrap_or(0);
                             let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-                            tunnel_println(&format!("  [{i}] {name} — {msgs} msgs, {}", s.model));
+                            let cred = if s.provider.is_empty() {
+                            "?"
+                        } else {
+                            s.provider.as_str()
+                        };
+                        tunnel_println(&format!(
+                            "  [{i}] {name} — {msgs} msgs, {cred}/{}",
+                            s.model
+                        ));
                         }
                         print!("Enter number or Enter: ");
                         let _ = io::stdout().flush();
@@ -561,23 +569,3 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
     }
 }
 
-pub(super) fn init_session(cwd: &str, model: &str) -> Result<(String, Vec<ChatMessage>)> {
-    match session::latest_session(cwd)? {
-        Some(s) => {
-            let hist = session::load_history(&s.id)?;
-            if !hist.is_empty() {
-                broker::try_log_event(
-                    "debug",
-                    "session",
-                    "resuming",
-                    Some(&format!("{} messages", hist.len())),
-                );
-            }
-            Ok((s.id, hist))
-        }
-        None => {
-            let id = session::create_session(cwd, model, "anthropic")?;
-            Ok((id, Vec::new()))
-        }
-    }
-}

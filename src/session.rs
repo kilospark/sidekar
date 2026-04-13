@@ -18,6 +18,9 @@ pub struct Session {
     pub id: String,
     pub cwd: String,
     pub model: String,
+    /// Credential nickname that created this session (e.g. "claude",
+    /// "codex-work"). Empty string for legacy rows. Column is named
+    /// `provider` in SQL for historical reasons.
     pub provider: String,
     pub name: Option<String>,
     pub created_at: f64,

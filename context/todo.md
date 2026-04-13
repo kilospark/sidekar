@@ -3,8 +3,8 @@
 ## High Priority
 
 - [ ] Token usage tracking: side-by-side comparison of Claude, Codex, Sidekar consumption
-- [ ] Evaluate adding sidekar as a native tool (avoid skills/SKILL.md ceremony)
-- [ ] Evaluate adding edit-file and other precision tools (read, grep, glob)
+- [x] Evaluate adding sidekar as a native tool (avoid skills/SKILL.md ceremony) — REPL ships a native `Sidekar` tool with embedded catalog + operating rules (`src/agent/tools.rs:242`)
+- [x] Evaluate adding edit-file and other precision tools (read, grep, glob) — REPL has Read/Write/Edit/Glob/Grep native (`src/agent/tools.rs`)
 - [x] Evaluate mempalace integration (https://github.com/milla-jovovich/mempalace) — no major benefits; sidekar already covers dedup, FTS, confidence, supersession
 - [ ] Persona system for agents
 - [ ] Skills system (agent-defined capabilities)

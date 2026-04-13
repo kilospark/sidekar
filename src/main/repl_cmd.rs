@@ -270,14 +270,19 @@ fn handle_sessions(args: &[String]) -> Result<()> {
             let msgs = sidekar::session::message_count(&s.id).unwrap_or(0);
             let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
             let model = if s.model.is_empty() { "?" } else { &s.model };
+            let cred = if s.provider.is_empty() {
+                "?"
+            } else {
+                s.provider.as_str()
+            };
             let age = super::format_age(s.updated_at);
             if all {
                 let dir = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);
                 println!(
-                    "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}  \x1b[2m{dir}\x1b[0m",
+                    "  \x1b[36m{name}\x1b[0m  {msgs} msgs, {cred}/{model}, {age}  \x1b[2m{dir}\x1b[0m",
                 );
             } else {
-                println!("  \x1b[36m{name}\x1b[0m  {msgs} msgs, {model}, {age}",);
+                println!("  \x1b[36m{name}\x1b[0m  {msgs} msgs, {cred}/{model}, {age}",);
             }
         }
     }

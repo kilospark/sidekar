@@ -18,7 +18,6 @@ use self::relay::{inject_bus_messages, start_relay, stop_relay};
 use self::renderer::EventRenderer;
 use self::slash::{
     SlashAction, SlashContext, apply_slash_result, build_provider, handle_slash_command,
-    init_session,
 };
 use self::system_prompt::build_system_prompt;
 use crate::broker;
@@ -31,6 +30,50 @@ const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
 fn repl_status_dim(msg: &str) {
     tunnel_println(&format!("\x1b[2m{msg}\x1b[0m"));
+}
+
+/// Resolve a session from the resume option, creating a fresh one if needed.
+/// `credential` is stored on new sessions so `/sessions` can show which
+/// credential authored them.
+fn resolve_session(
+    cwd: &str,
+    model: &str,
+    credential: &str,
+    resume: Option<&Option<String>>,
+) -> Result<(String, Vec<ChatMessage>)> {
+    match resume {
+        Some(Some(sid)) => match session::find_session_by_prefix(sid)? {
+            Some(s) => {
+                let hist = session::load_history(&s.id)?;
+                broker::try_log_event(
+                    "debug",
+                    "session",
+                    "resumed",
+                    Some(&format!(
+                        "{} ({} messages)",
+                        &s.id[..s.id.len().min(8)],
+                        hist.len()
+                    )),
+                );
+                Ok((s.id, hist))
+            }
+            None => anyhow::bail!("No session matching '{sid}'"),
+        },
+        Some(None) => match session::latest_session(cwd)? {
+            Some(s) => {
+                let hist = session::load_history(&s.id)?;
+                Ok((s.id, hist))
+            }
+            None => {
+                let id = session::create_session(cwd, model, credential)?;
+                Ok((id, Vec::new()))
+            }
+        },
+        None => {
+            let id = session::create_session(cwd, model, credential)?;
+            Ok((id, Vec::new()))
+        }
+    }
 }
 
 /// REPL options parsed from CLI flags.
@@ -166,7 +209,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let cron_project = crate::scope::resolve_project_name(None);
     crate::commands::cron::start_default_cron_loop(bus_name.clone(), cron_project).await;
 
-    // Single-prompt mode: fresh session, one turn, exit
+    // Single-prompt mode: one turn, exit. Honors -r/--resume-session so the
+    // prompt is appended to an existing session's history.
     if let Some(input) = prompt {
         let Some(ref prov) = provider else {
             anyhow::bail!("Single-prompt mode requires -c <credential>");
@@ -174,8 +218,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let Some(ref mdl) = model else {
             anyhow::bail!("Single-prompt mode requires -m <model>");
         };
-        let session_id = session::create_session(&cwd, mdl, "oneshot")?;
-        let mut history: Vec<ChatMessage> = Vec::new();
+        let cred_tag = cred_name.as_deref().unwrap_or("");
+        let (session_id, mut history) =
+            resolve_session(&cwd, mdl, cred_tag, opts.resume.as_ref())?;
         let user_msg = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text: input }],
@@ -233,40 +278,11 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     }
 
     let model_for_session = model.as_deref().unwrap_or("(not set)");
+    let cred_tag = cred_name.as_deref().unwrap_or("");
 
     // Default: fresh session. -r to resume.
-    let (mut session_id, mut history) = match &opts.resume {
-        Some(Some(sid)) => {
-            // Resume specific session by ID (prefix match)
-            match session::find_session_by_prefix(sid)? {
-                Some(s) => {
-                    let hist = session::load_history(&s.id)?;
-                    broker::try_log_event(
-                        "debug",
-                        "session",
-                        "resumed",
-                        Some(&format!(
-                            "{} ({} messages)",
-                            &s.id[..s.id.len().min(8)],
-                            hist.len()
-                        )),
-                    );
-                    (s.id, hist)
-                }
-                None => {
-                    anyhow::bail!("No session matching '{sid}'");
-                }
-            }
-        }
-        Some(None) => {
-            // Interactive picker
-            init_session(&cwd, model_for_session)?
-        }
-        None => {
-            let id = session::create_session(&cwd, model_for_session, "repl")?;
-            (id, Vec::new())
-        }
-    };
+    let (mut session_id, mut history) =
+        resolve_session(&cwd, model_for_session, cred_tag, opts.resume.as_ref())?;
 
     print_banner(model.as_deref(), cred_name.as_deref());
 
