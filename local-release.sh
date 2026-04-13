@@ -59,7 +59,7 @@ cp "${NAME}.tar.gz" "${NAME}.tar.gz.minisig" "www/public/binaries/${TAG}/"
 echo ""
 echo "=== Deploying to Vercel ==="
 cd www
-vercel --prod
+npx vercel --prod
 
 echo ""
 echo "=== Installing locally ==="
