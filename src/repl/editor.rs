@@ -107,9 +107,11 @@ pub(super) fn emit_shared_line(text: &str) {
 
 pub(super) fn emit_transient_status(text: &str) {
     if with_active_prompt(|editor| {
+        let cols = editor.terminal_columns();
+        let truncated = truncate_ansi_to_width(text, cols.saturating_sub(1));
         editor.clear_prompt_and_status_inner();
         emit_raw("\r\x1b[2K");
-        emit_raw(text);
+        emit_raw(&truncated);
         emit_raw("\n");
         editor.status_visible = true;
         editor.redraw_inner();
@@ -119,7 +121,7 @@ pub(super) fn emit_transient_status(text: &str) {
         // Truncate to terminal width so the preview never wraps to a second
         // line — clear_transient_status can only erase one row.
         let cols = standalone_terminal_columns();
-        let truncated = truncate_preview_to_width(text, cols.saturating_sub(1));
+        let truncated = truncate_ansi_to_width(text, cols.saturating_sub(1));
         emit_raw("\r\x1b[2K");
         emit_raw(&truncated);
     }
@@ -486,6 +488,65 @@ fn truncate_preview_to_width(s: &str, max_display_width: usize) -> String {
         out.push_str(g);
         used += gw;
     }
+    out
+}
+
+/// Truncate a string to `max_display_width` visible columns, passing through
+/// ANSI CSI escape sequences without counting them toward the budget. Strips
+/// embedded control characters (tab, newline, vertical tab, CR) which would
+/// otherwise occupy rows beyond the intended single-row status line. Always
+/// emits `\x1b[0m` at the end as a defensive reset.
+pub(super) fn truncate_ansi_to_width(s: &str, max_display_width: usize) -> String {
+    let mut out = String::new();
+    if max_display_width == 0 {
+        out.push_str("\x1b[0m");
+        return out;
+    }
+    let mut used = 0usize;
+    let ellipsis_w = UnicodeWidthStr::width("…");
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut truncated = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // Pass through ANSI CSI escape sequences: ESC '[' ... final-byte [@-~]
+        if b == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let start = i;
+            i += 2;
+            while i < bytes.len() {
+                let c = bytes[i];
+                i += 1;
+                if (0x40..=0x7e).contains(&c) {
+                    break;
+                }
+            }
+            out.push_str(&s[start..i]);
+            continue;
+        }
+        // Drop other control chars that could break single-row layout.
+        if b < 0x20 || b == 0x7f {
+            i += 1;
+            continue;
+        }
+        // Decode a UTF-8 grapheme cluster starting at i.
+        let rest = &s[i..];
+        let g = match rest.graphemes(true).next() {
+            Some(g) => g,
+            None => break,
+        };
+        let gw = UnicodeWidthStr::width(g);
+        if used + gw > max_display_width {
+            truncated = true;
+            break;
+        }
+        out.push_str(g);
+        used += gw;
+        i += g.len();
+    }
+    if truncated && used + ellipsis_w <= max_display_width {
+        out.push('…');
+    }
+    out.push_str("\x1b[0m");
     out
 }
 

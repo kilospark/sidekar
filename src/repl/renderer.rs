@@ -255,6 +255,17 @@ pub(super) fn extract_tool_summary(name: &str, args_json: &str) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or(args_json)
             .to_string(),
+        "Sidekar" | "sidekar" => args
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| args_json.to_string()),
         _ => {
             // Prefer common identifier-like fields over arbitrary string values
             // (e.g. Edit's `new_string` would otherwise win alphabetically and
