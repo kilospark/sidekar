@@ -399,9 +399,23 @@ impl ActivePromptSession {
                 while running_thread.load(std::sync::atomic::Ordering::Relaxed)
                     && !cancel.load(std::sync::atomic::Ordering::Relaxed)
                 {
+                    // Flush any paste-burst held chars before blocking on poll,
+                    // mirroring read_input_or_bus's idle-tick behaviour.
+                    let poll_timeout_ms = if let Ok(mut editor) = editor_thread.lock() {
+                        editor.flush_paste_burst_if_due();
+                        if editor.paste_burst_is_active() { 10 } else { 50 }
+                    } else {
+                        50
+                    };
+
                     let mut fds = build_input_pollfds(stdin_poll_fd, tunnel_fd);
-                    let ready =
-                        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50) };
+                    let ready = unsafe {
+                        libc::poll(
+                            fds.as_mut_ptr(),
+                            fds.len() as libc::nfds_t,
+                            poll_timeout_ms,
+                        )
+                    };
                     let now = std::time::Instant::now();
                     if ready > 0 {
                         for pollfd in fds.iter() {
@@ -433,6 +447,13 @@ impl ActivePromptSession {
                                     return;
                                 }
                             }
+                        }
+                    } else if ready == 0 {
+                        // Idle tick — flush paste burst and resolve pending
+                        // escape sequences, same as read_input_or_bus does.
+                        if let Ok(mut editor) = editor_thread.lock() {
+                            let _ = editor.maybe_resolve_pending_escape();
+                            editor.flush_paste_burst_if_due();
                         }
                     }
                     if detector.check_timeout(now) {
