@@ -60,6 +60,16 @@ pub(super) fn build_system_prompt() -> String {
         }
     }
 
+    // Persona from AGENTS.md in cwd (de-facto standard used by Codex, Cursor, etc.)
+    if let Ok(persona) = std::fs::read_to_string("AGENTS.md") {
+        let persona = persona.trim();
+        if !persona.is_empty() {
+            prompt.push_str("\n## Persona\n");
+            prompt.push_str(persona);
+            prompt.push('\n');
+        }
+    }
+
     prompt
 }
 

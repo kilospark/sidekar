@@ -15,6 +15,7 @@ pub(super) enum SlashResult {
     SetModel(String),
     RelayOn,
     RelayOff,
+    LoadSkill(String),
 }
 
 /// Async slash commands that require an active provider.
@@ -29,6 +30,7 @@ pub(super) struct SlashContext<'a> {
     pub model: &'a str,
     pub session_id: &'a str,
     pub cred_name: &'a str,
+    pub loaded_skills: &'a [String],
 }
 
 pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
@@ -274,12 +276,48 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             }
             SlashResult::Continue
         }
+        "/skill" => {
+            let parts: Vec<_> = input.split_whitespace().collect();
+            match parts.get(1).copied() {
+                None => {
+                    if ctx.loaded_skills.is_empty() {
+                        tunnel_println("No skills loaded this session.");
+                        tunnel_println("\x1b[2mUse /skill list to see available, /skill <name> to load.\x1b[0m");
+                    } else {
+                        tunnel_println("Loaded skills (session-only):");
+                        for name in ctx.loaded_skills {
+                            tunnel_println(&format!("  {name}"));
+                        }
+                    }
+                    SlashResult::Continue
+                }
+                Some("list") => {
+                    let available = super::skills::list_skills();
+                    if available.is_empty() {
+                        tunnel_println("No skills found in standard agent skill dirs.");
+                    } else {
+                        tunnel_println("Available skills:");
+                        for name in available {
+                            let marker = if ctx.loaded_skills.iter().any(|s| s == &name) {
+                                " (loaded)"
+                            } else {
+                                ""
+                            };
+                            tunnel_println(&format!("  {name}{marker}"));
+                        }
+                    }
+                    SlashResult::Continue
+                }
+                Some(name) => SlashResult::LoadSkill(name.to_string()),
+            }
+        }
         "/help" => {
             tunnel_println("Slash commands:");
             tunnel_println("  /credential  — Show/set/list & select stored credentials");
             tunnel_println("  /model       — Show/set/list & select available models");
             tunnel_println("  /new         — Start fresh session");
             tunnel_println("  /session     — List and switch sessions");
+            tunnel_println("  /skill       — Load a skill into the session system prompt");
             tunnel_println("  /compact     — Compact older session context now");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
             tunnel_println(
@@ -325,6 +363,8 @@ pub(super) async fn apply_slash_result(
     cwd: &str,
     nick: &str,
     cached_ws: &mut Option<crate::providers::codex::CachedWs>,
+    system_prompt: &mut String,
+    loaded_skills: &mut Vec<String>,
 ) -> Result<SlashAction> {
     match result {
         SlashResult::Continue => {}
@@ -420,6 +460,38 @@ pub(super) async fn apply_slash_result(
                 tunnel_println("Relay: \x1b[31moff\x1b[0m");
             }
         }
+        SlashResult::LoadSkill(name) => {
+            if loaded_skills.iter().any(|s| s == &name) {
+                tunnel_println(&format!("Skill `{name}` already loaded."));
+                return Ok(SlashAction::Continue);
+            }
+            let Some(path) = super::skills::find_skill(&name) else {
+                tunnel_println(&format!(
+                    "\x1b[31mSkill `{name}` not found.\x1b[0m Use /skill list to see available."
+                ));
+                return Ok(SlashAction::Continue);
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(body) => {
+                    let body = body.trim();
+                    system_prompt.push_str("\n## Skill: ");
+                    system_prompt.push_str(&name);
+                    system_prompt.push('\n');
+                    system_prompt.push_str(body);
+                    system_prompt.push('\n');
+                    loaded_skills.push(name.clone());
+                    tunnel_println(&format!(
+                        "Loaded skill: \x1b[1m{name}\x1b[0m \x1b[2m({})\x1b[0m",
+                        path.display()
+                    ));
+                }
+                Err(e) => {
+                    tunnel_println(&format!(
+                        "\x1b[31mFailed to read skill `{name}`: {e}\x1b[0m"
+                    ));
+                }
+            }
+        }
     }
     Ok(SlashAction::Continue)
 }
@@ -438,6 +510,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/compact"
             | "/relay"
             | "/verbose"
+            | "/skill"
             | "/help"
     )
 }

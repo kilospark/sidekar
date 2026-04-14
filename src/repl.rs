@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Write};
 mod editor;
 mod relay;
 mod renderer;
+mod skills;
 mod slash;
 mod system_prompt;
 mod user_turn;
@@ -149,7 +150,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     };
 
     let prompt = opts.prompt;
-    let system_prompt = build_system_prompt();
+    let mut system_prompt = build_system_prompt();
+    let mut loaded_skills: Vec<String> = Vec::new();
     let tool_defs = crate::agent::tools::definitions();
 
     let cwd = std::env::current_dir()
@@ -376,6 +378,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 model: model.as_deref().unwrap_or("(not set)"),
                 session_id: &session_id,
                 cred_name: cred_name.as_deref().unwrap_or("(none)"),
+                loaded_skills: &loaded_skills,
             };
             if let Some(result) = handle_slash_command(&slash_ctx) {
                 match apply_slash_result(
@@ -391,6 +394,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                     &cwd,
                     &nick,
                     &mut cached_ws,
+                    &mut system_prompt,
+                    &mut loaded_skills,
                 )
                 .await?
                 {

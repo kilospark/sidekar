@@ -6,8 +6,8 @@
 - [x] Evaluate adding sidekar as a native tool (avoid skills/SKILL.md ceremony) — REPL ships a native `Sidekar` tool with embedded catalog + operating rules (`src/agent/tools.rs:242`)
 - [x] Evaluate adding edit-file and other precision tools (read, grep, glob) — REPL has Read/Write/Edit/Glob/Grep native (`src/agent/tools.rs`)
 - [x] Evaluate mempalace integration (https://github.com/milla-jovovich/mempalace) — no major benefits; sidekar already covers dedup, FTS, confidence, supersession
-- [ ] Persona system for agents
-- [ ] Skills system (agent-defined capabilities)
+- [x] Persona system for agents — REPL reads `AGENTS.md` from cwd, appends to system prompt (`src/repl/system_prompt.rs`)
+- [x] Skills system (agent-defined capabilities) — `/skill <name>` loads SKILL.md from standard agent dirs (claude/codex/gemini/pi/opencode), session-scoped (`src/repl/skills.rs`, `src/repl/slash.rs`)
 - [ ] Multi-agent orchestration
 - [ ] Test inter-agent communication across machines
 - [ ] Marketing strategy: public launch vs private/invite-only
