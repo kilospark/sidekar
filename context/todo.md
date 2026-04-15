@@ -36,6 +36,8 @@
 ## Explore Later
 
 - [ ] [vercel-labs/wterm](https://github.com/vercel-labs/wterm) — DOM-rendered terminal emulator (Zig→WASM), potential xterm.js replacement for web terminal
+- [ ] [NousResearch/hermes-agent-self-evolution](https://github.com/NousResearch/hermes-agent-self-evolution) — DSPy+GEPA evolutionary optimization of skills/prompts; concept only (no license, Python); revisit if/when REPL prompt regression evals exist
+- [ ] SKILL.md `requires_secrets` frontmatter — parse YAML frontmatter on `/skill <name>` load, check kv via new `kv_exists` (EXISTS query, no decrypt), fail-closed on missing required keys with actionable `sidekar kv set` hints; strip frontmatter from body before injecting into system prompt; values never enter agent context (skill body documents `sidekar kv exec --keys=...` shape). Files: `src/repl/skills.rs`, `src/repl/slash.rs:463-494`, `src/broker/kv_store.rs`. ~200 LOC + tests. Inspired by [NousResearch/hermes-agent#410](https://github.com/NousResearch/hermes-agent/issues/410)
 
 ## Recently Completed
 
