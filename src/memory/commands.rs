@@ -9,6 +9,7 @@ pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "delete" => cmd_memory_delete(ctx, &args[1..]),
         "context" => cmd_memory_context(ctx, &args[1..]),
         "compact" => cmd_memory_compact(ctx, &args[1..]),
+        "hygiene" => cmd_memory_hygiene(ctx, &args[1..]),
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
         "detail" => cmd_memory_detail(ctx, &args[1..]),
@@ -505,6 +506,13 @@ fn cmd_memory_compact(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "Compacted {} memory clusters.",
         compact_project(event_type.as_deref(), project.as_deref())?
     );
+    Ok(())
+}
+
+fn cmd_memory_hygiene(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let project = extract_optional_value(args, "--project=");
+    let report = run_hygiene(project.as_deref())?;
+    out!(ctx, "{}", crate::output::to_string(&report)?);
     Ok(())
 }
 

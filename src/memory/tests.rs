@@ -101,3 +101,115 @@ fn detect_patterns_promotes_global_memory() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn hygiene_finds_duplicates() -> Result<()> {
+    with_test_home(|| {
+        write_memory_event(
+            "proj",
+            "convention",
+            "project",
+            "Always use snake_case for function names in Python modules",
+            0.8,
+            &[],
+            "explicit",
+            "user",
+        )?;
+        write_memory_event(
+            "proj",
+            "convention",
+            "project",
+            "Always use snake_case for function names in Python source files",
+            0.8,
+            &[],
+            "explicit",
+            "user",
+        )?;
+
+        let report = run_hygiene(Some("proj"))?;
+        assert!(report.total_active >= 2);
+        let dups: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.kind == "duplicate")
+            .collect();
+        assert!(!dups.is_empty(), "should find duplicate cluster");
+        assert!(dups[0].ids.len() >= 2);
+        Ok(())
+    })
+}
+
+#[test]
+fn hygiene_finds_low_confidence() -> Result<()> {
+    with_test_home(|| {
+        write_memory_event(
+            "proj",
+            "decision",
+            "project",
+            "Use PostgreSQL for the main database backend",
+            0.2,
+            &[],
+            "explicit",
+            "user",
+        )?;
+
+        let report = run_hygiene(Some("proj"))?;
+        let low: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.kind == "low-confidence")
+            .collect();
+        assert!(!low.is_empty(), "should flag low confidence memory");
+        Ok(())
+    })
+}
+
+#[test]
+fn hygiene_finds_short_summaries() -> Result<()> {
+    with_test_home(|| {
+        write_memory_event(
+            "proj",
+            "convention",
+            "project",
+            "use ruff",
+            0.8,
+            &[],
+            "explicit",
+            "user",
+        )?;
+
+        let report = run_hygiene(Some("proj"))?;
+        let short: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.kind == "too-short")
+            .collect();
+        assert!(!short.is_empty(), "should flag short summary");
+        Ok(())
+    })
+}
+
+#[test]
+fn hygiene_clean_db_has_no_issues() -> Result<()> {
+    with_test_home(|| {
+        write_memory_event(
+            "proj",
+            "convention",
+            "project",
+            "Use Readability.js before scraping article text from web pages",
+            0.8,
+            &[],
+            "explicit",
+            "user",
+        )?;
+
+        let report = run_hygiene(Some("proj"))?;
+        assert_eq!(report.total_active, 1);
+        assert!(
+            report.issues.is_empty(),
+            "clean DB should have no issues, got: {:?}",
+            report.issues
+        );
+        Ok(())
+    })
+}

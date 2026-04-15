@@ -146,11 +146,13 @@ struct SearchResultRow {
 }
 
 mod commands;
+mod hygiene;
 mod store;
 mod util;
 
 pub use commands::cmd_memory;
 pub use commands::startup_brief;
+use hygiene::*;
 use store::*;
 use util::*;
 

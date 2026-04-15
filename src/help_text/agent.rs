@@ -90,7 +90,7 @@ sidekar monitor <start|stop|status> [tab_id|all]
         }
         "memory" => {
             "\
-sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|detail|history> ...
+sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|rate|detail|history> ...
 
   Local SQLite-backed memory for Sidekar agent sessions.
   Replaces hosted memory/hook flows with in-binary storage and retrieval.
@@ -102,6 +102,7 @@ sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|deta
     observe <tool> <summary>                   Append a raw observation
     sessions                                   List recent memory session summaries
     compact                                    Synthesize related project memories
+    hygiene [--project=P]                      Audit: find duplicates, stale, low-confidence, short entries
     patterns                                   Promote repeated cross-project patterns
     rate <id> <helpful|wrong|outdated>         Adjust confidence on a memory
     detail <id>                                Show the full memory record
@@ -114,6 +115,7 @@ sidekar memory <write|search|context|observe|sessions|compact|patterns|rate|deta
     sidekar memory search readability --scope=all
     sidekar memory context
     sidekar memory compact
+    sidekar memory hygiene
     sidekar memory rate 12 helpful
     sidekar memory detail 12"
         }
