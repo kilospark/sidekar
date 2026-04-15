@@ -33,6 +33,10 @@
 - [ ] Linux support
 - [ ] Windows support
 
+## Explore Later
+
+- [ ] [vercel-labs/wterm](https://github.com/vercel-labs/wterm) — DOM-rendered terminal emulator (Zig→WASM), potential xterm.js replacement for web terminal
+
 ## Recently Completed
 
 - [x] Daemon consolidation (ext-server absorbed into daemon)

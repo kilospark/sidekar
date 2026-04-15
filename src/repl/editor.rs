@@ -718,6 +718,7 @@ impl LineEditor {
     where
         F: FnMut(&mut Self, SubmittedLine),
     {
+        let images_before = self.attached_images.len();
         for &byte in bytes {
             match self.feed_byte(byte) {
                 LineEditResult::Continue => {}
@@ -726,6 +727,15 @@ impl LineEditor {
                 }
                 LineEditResult::Eof => return Err(()),
             }
+        }
+        // Terminal.app appears to defer rendering while it's still processing
+        // a drag-drop/bracketed-paste event. Intermediate redraws fired
+        // during the chunk (e.g., one per `201~` end marker) land on stdout
+        // but don't surface on screen until the next keypress. Re-emit once
+        // the chunk is fully drained so the final frame is guaranteed to
+        // render.
+        if self.attached_images.len() != images_before {
+            self.redraw_inner();
         }
         Ok(())
     }
@@ -887,9 +897,9 @@ impl LineEditor {
         self.preferred_col = None;
     }
 
-    fn clear_prompt_and_status_inner(&mut self) {
+    fn build_clear_string(&self) -> String {
         if self.rendered_rows == 0 && self.rendered_pending_rows == 0 && !self.status_visible {
-            return;
+            return String::new();
         }
         let mut clear = String::new();
         let cursor_up = self.rendered_pending_rows + self.rendered_cursor.row;
@@ -913,6 +923,14 @@ impl LineEditor {
             clear.push_str(&format!("\x1b[{}A", total_rows - 1));
         }
         clear.push('\r');
+        clear
+    }
+
+    fn clear_prompt_and_status_inner(&mut self) {
+        let clear = self.build_clear_string();
+        if clear.is_empty() {
+            return;
+        }
         emit_raw(&clear);
         self.rendered_rows = 0;
         self.rendered_pending_rows = 0;
@@ -929,13 +947,22 @@ impl LineEditor {
     fn redraw_inner(&mut self) {
         let cols = self.terminal_columns();
         let layout = self.compute_layout(cols);
-        self.clear_rendered_prompt_inner();
+        // Build clear + paint as one string so the terminal sees an atomic
+        // frame. Emitting clear and paint as separate writes let some
+        // terminals (Terminal.app during rapid bracketed-paste processing)
+        // drop intermediate frames entirely.
+        let had_status = self.status_visible;
+        self.status_visible = false;
+        let mut out = self.build_clear_string();
+        self.status_visible = had_status;
+        self.rendered_rows = 0;
+        self.rendered_pending_rows = 0;
+        self.rendered_cursor = CursorPos::default();
 
         let pending_bar = self.pending_bar_line(cols);
         let pending_rows = usize::from(pending_bar.is_some());
         let rows = self.wrapped_rows(cols);
         let placeholder_spans = self.placeholder_spans();
-        let mut out = String::new();
         if let Some(ref bar) = pending_bar {
             out.push('\r');
             out.push_str(bar);

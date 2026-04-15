@@ -13,7 +13,38 @@
 //! fires at ~90% of the context window — a rare event that rebuilds the cache
 //! once instead of every few turns.
 
+use std::collections::HashSet;
+
 use crate::providers::{ChatMessage, ContentBlock, Role};
+
+/// Drop `ToolResult` blocks whose `tool_use_id` has no preceding assistant
+/// `ToolCall` with the same id. Compaction and budget trimming can leave such
+/// orphans behind when they remove an assistant turn but its matching tool
+/// result survives in the tail. Anthropic and OpenAI/Codex both reject orphan
+/// tool results ("No tool call found for function call output with call_id …").
+///
+/// Drops user messages that become empty after stripping.
+pub(crate) fn drop_orphan_tool_results(messages: &mut Vec<ChatMessage>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    for msg in messages.iter_mut() {
+        match msg.role {
+            Role::Assistant => {
+                for block in &msg.content {
+                    if let ContentBlock::ToolCall { id, .. } = block {
+                        seen.insert(id.clone());
+                    }
+                }
+            }
+            Role::User => {
+                msg.content.retain(|b| match b {
+                    ContentBlock::ToolResult { tool_use_id, .. } => seen.contains(tool_use_id),
+                    _ => true,
+                });
+            }
+        }
+    }
+    messages.retain(|m| !m.content.is_empty());
+}
 
 /// Rough token estimate: ~4 chars per token (same as compaction).
 fn estimate_tokens(messages: &[ChatMessage]) -> usize {
@@ -41,8 +72,11 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
 /// Build an ephemeral view of history with thinking eviction and optional
 /// budget trimming. Canonical history is not mutated.
 pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<ChatMessage> {
-    // --- Step 1: Thinking block eviction (ephemeral, view-only) ---
+    // --- Step 0: Drop orphan tool results (compaction/trimming can leave them) ---
     let mut view: Vec<ChatMessage> = history.to_vec();
+    drop_orphan_tool_results(&mut view);
+
+    // --- Step 1: Thinking block eviction (ephemeral, view-only) ---
 
     let last_assistant_idx = view
         .iter()
@@ -84,6 +118,7 @@ pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<Chat
             });
             trimmed.extend(view[drop_from..].iter().cloned());
             view = trimmed;
+            drop_orphan_tool_results(&mut view);
         }
     }
 
