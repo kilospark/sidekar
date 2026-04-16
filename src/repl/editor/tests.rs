@@ -51,6 +51,57 @@ fn up_on_top_row_pulls_all_pending_followups_at_once() {
 }
 
 #[test]
+fn drain_pending_followups_as_submit_merges_into_single_pending_submit() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    editor.pending_followups.push_back(SubmittedLine {
+        text: "first queued".into(),
+        image_paths: Vec::new(),
+    });
+    editor.pending_followups.push_back(SubmittedLine {
+        text: "second queued".into(),
+        image_paths: Vec::new(),
+    });
+
+    editor.drain_pending_followups_as_submit();
+
+    assert!(editor.pending_followups.is_empty());
+    assert_eq!(editor.pending_submits.len(), 1);
+    assert_eq!(
+        editor.pending_submits[0].text,
+        "first queued\nsecond queued"
+    );
+}
+
+#[test]
+fn drain_pending_followups_as_submit_is_noop_when_empty() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    editor.drain_pending_followups_as_submit();
+    assert!(editor.pending_submits.is_empty());
+}
+
+#[test]
+fn drain_pending_followups_as_submit_renumbers_image_labels() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    editor.pending_followups.push_back(SubmittedLine {
+        text: "see [Image #1]".into(),
+        image_paths: vec!["/tmp/a.png".into()],
+    });
+    editor.pending_followups.push_back(SubmittedLine {
+        text: "also [Image #1]".into(),
+        image_paths: vec!["/tmp/b.png".into()],
+    });
+
+    editor.drain_pending_followups_as_submit();
+
+    let merged = &editor.pending_submits[0];
+    assert_eq!(merged.text, "see [Image #1]\nalso [Image #2]");
+    assert_eq!(
+        merged.image_paths,
+        vec![std::path::PathBuf::from("/tmp/a.png"), std::path::PathBuf::from("/tmp/b.png")]
+    );
+}
+
+#[test]
 fn active_prompt_pollfds_compact_tunnel_only_fd() {
     let fds = build_input_pollfds(None, Some(42));
     assert_eq!(fds.len(), 1);

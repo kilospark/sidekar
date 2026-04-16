@@ -514,6 +514,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 let _ = session::append_message(&session_id, msg);
             }
         }
+
+        // Auto-submit follow-ups queued during this turn (merged into one message).
+        // Skipped on cancel/error so the user isn't dragged into another turn they didn't ask for.
+        if run_ok {
+            line_editor.drain_pending_followups_as_submit();
+        }
     }
 
     // Show resume command

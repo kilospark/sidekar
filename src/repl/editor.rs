@@ -876,12 +876,11 @@ impl LineEditor {
         Some(format!("\x1b[2m{prefix_plain}{preview}\x1b[0m"))
     }
 
-    /// Drain every queued follow-up into the buffer at once (joined with newlines), replacing the current draft.
-    fn pull_all_pending_into_buffer(&mut self) {
+    /// Merge every queued follow-up into a single `SubmittedLine` (joined with newlines), renumbering `[Image #N]` labels.
+    fn drain_followups_into_merged(&mut self) -> Option<SubmittedLine> {
         if self.pending_followups.is_empty() {
-            return;
+            return None;
         }
-        self.detach_history_nav();
         let items: Vec<SubmittedLine> = self.pending_followups.drain(..).collect();
         let mut merged = String::new();
         let mut paths = Vec::new();
@@ -895,10 +894,29 @@ impl LineEditor {
             paths.extend(sub.image_paths);
             offset += n;
         }
-        self.buffer = merged;
-        self.attached_images = paths;
+        Some(SubmittedLine {
+            text: merged,
+            image_paths: paths,
+        })
+    }
+
+    /// Drain every queued follow-up into the buffer at once (joined with newlines), replacing the current draft.
+    fn pull_all_pending_into_buffer(&mut self) {
+        let Some(merged) = self.drain_followups_into_merged() else {
+            return;
+        };
+        self.detach_history_nav();
+        self.buffer = merged.text;
+        self.attached_images = merged.image_paths;
         self.cursor = self.buffer.len();
         self.preferred_col = None;
+    }
+
+    /// Drain queued follow-ups into a single merged submit, to be consumed by the next input read as a normal user turn.
+    pub(super) fn drain_pending_followups_as_submit(&mut self) {
+        if let Some(merged) = self.drain_followups_into_merged() {
+            self.pending_submits.push_back(merged);
+        }
     }
 
     fn build_clear_string(&self) -> String {
