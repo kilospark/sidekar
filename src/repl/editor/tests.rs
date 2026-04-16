@@ -58,6 +58,42 @@ fn active_prompt_pollfds_compact_tunnel_only_fd() {
 }
 
 #[test]
+fn paste_burst_flush_during_agent_routes_to_followups_not_submits() {
+    // Regression: flush_paste_burst_if_due used to hard-code its submit
+    // destination to pending_submits via submit_current_line. The background
+    // input thread calls it on idle ticks while the agent is running, so any
+    // fast typing with a trailing newline (paste-burst path with `submit=true`)
+    // was delivered straight to the agent on the next turn instead of queueing
+    // as a followup that the user pulls with ↑.
+    //
+    // Feed chars fast enough to activate the burst, append Enter while burst
+    // is active (so it's held, not submitted), sleep past the idle timeout,
+    // then call flush_paste_burst_if_due with the followup-routing callback
+    // used by ActivePromptSession.
+    let mut editor = LineEditor::with_history(Vec::new());
+    editor
+        .process_input_bytes(b"queued msg", |ed, line| {
+            ed.queue_pending_followup(line);
+        })
+        .unwrap();
+    editor
+        .process_input_bytes(b"\n", |ed, line| {
+            ed.queue_pending_followup(line);
+        })
+        .unwrap();
+    std::thread::sleep(PasteBurst::recommended_active_flush_delay());
+    editor.flush_paste_burst_if_due(|ed, line| {
+        ed.queue_pending_followup(line);
+    });
+    assert_eq!(editor.pending_followups.len(), 1);
+    assert_eq!(editor.pending_followups[0].text, "queued msg");
+    assert!(
+        editor.pending_submits.is_empty(),
+        "paste-burst flush during agent must not leak into pending_submits"
+    );
+}
+
+#[test]
 fn active_prompt_submission_queues_followup_immediately() {
     let mut editor = LineEditor::with_history(Vec::new());
     editor

@@ -402,7 +402,9 @@ impl ActivePromptSession {
                     // Flush any paste-burst held chars before blocking on poll,
                     // mirroring read_input_or_bus's idle-tick behaviour.
                     let poll_timeout_ms = if let Ok(mut editor) = editor_thread.lock() {
-                        editor.flush_paste_burst_if_due();
+                        editor.flush_paste_burst_if_due(|ed, line| {
+                            ed.queue_pending_followup(line);
+                        });
                         if editor.paste_burst_is_active() { 10 } else { 50 }
                     } else {
                         50
@@ -453,7 +455,9 @@ impl ActivePromptSession {
                         // escape sequences, same as read_input_or_bus does.
                         if let Ok(mut editor) = editor_thread.lock() {
                             let _ = editor.maybe_resolve_pending_escape();
-                            editor.flush_paste_burst_if_due();
+                            editor.flush_paste_burst_if_due(|ed, line| {
+                                ed.queue_pending_followup(line);
+                            });
                         }
                     }
                     if detector.check_timeout(now) {
@@ -1505,7 +1509,10 @@ impl LineEditor {
     /// trailing newline in the flushed burst means the user pressed Enter
     /// while the burst was still accumulating — submit the line after
     /// attaching so drag-and-drop → Enter works as expected.
-    pub(super) fn flush_paste_burst_if_due(&mut self) {
+    pub(super) fn flush_paste_burst_if_due<F>(&mut self, mut on_submit: F)
+    where
+        F: FnMut(&mut Self, SubmittedLine),
+    {
         let now = std::time::Instant::now();
         match self.paste_burst.flush_if_due(now) {
             FlushResult::None => {}
@@ -1520,7 +1527,9 @@ impl LineEditor {
                 };
                 self.insert_pasted_text(&body);
                 if submit {
-                    self.submit_current_line();
+                    let line = self.take_submittable_line();
+                    on_submit(self, line);
+                    self.redraw_inner();
                 } else {
                     self.redraw();
                 }
@@ -1528,15 +1537,15 @@ impl LineEditor {
         }
     }
 
-    fn submit_current_line(&mut self) {
+    /// Capture the current buffer as a SubmittedLine, emit the trailing newline,
+    /// and reset editor state. Caller decides which queue the line lands in.
+    fn take_submittable_line(&mut self) -> SubmittedLine {
         self.move_to_render_end();
         emit_raw("\r\n");
         let text = self.expand_pending_pastes(self.buffer.clone());
         let image_paths = std::mem::take(&mut self.attached_images);
         self.reset();
-        self.pending_submits
-            .push_back(SubmittedLine { text, image_paths });
-        self.redraw_inner();
+        SubmittedLine { text, image_paths }
     }
 
     pub(super) fn paste_burst_is_active(&self) -> bool {
@@ -1988,7 +1997,9 @@ pub(super) fn read_input_or_bus(
     let mut buf = [0u8; 64];
 
     loop {
-        editor.flush_paste_burst_if_due();
+        editor.flush_paste_burst_if_due(|ed, line| {
+            ed.pending_submits.push_back(line);
+        });
         if let Some(line) = editor.take_next_pending_submit() {
             return InputEvent::User(line);
         }
@@ -2060,7 +2071,9 @@ pub(super) fn read_input_or_bus(
                 }
             } else if ready == 0 {
                 let _ = editor.maybe_resolve_pending_escape();
-                editor.flush_paste_burst_if_due();
+                editor.flush_paste_burst_if_due(|ed, line| {
+                    ed.pending_submits.push_back(line);
+                });
                 if let Some(line) = editor.take_next_pending_submit() {
                     return InputEvent::User(line);
                 }
