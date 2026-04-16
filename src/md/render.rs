@@ -17,6 +17,11 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
     let mut table_cells: Vec<String> = Vec::new();
     let mut table_cell_buf = String::new();
     let mut in_table = false;
+    // Buffered rows of the current table. Index 0 is the header. Rows are
+    // accumulated until `TagEnd::Table` so column widths can be computed
+    // from all cells before any row is emitted — streaming per-row would
+    // never align columns.
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
 
     for event in parser {
         match event {
@@ -58,6 +63,12 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
                     style_stack.push(Style::BlockQuote);
                 }
                 Tag::List(start) => {
+                    // Nested list opening inside an item — flush the parent
+                    // item's own content to a line before the child items
+                    // start rendering beneath it.
+                    if list_depth > 0 && !current_line.is_empty() {
+                        push_line(&mut lines, &mut current_line);
+                    }
                     list_depth += 1;
                     if let Some(n) = start {
                         ordered_indices.push(*n);
@@ -157,36 +168,22 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
                 }
                 TagEnd::Table => {
                     in_table = false;
+                    emit_table(&mut lines, &mut current_line, &mut table_rows);
                 }
-                TagEnd::TableHead => {
-                    let row = format!(
-                        "{DIM}|{RESET} {BOLD}{}{RESET} {DIM}|{RESET}",
-                        table_cells.join(&format!(" {DIM}|{RESET} {BOLD}"))
-                    );
-                    current_line.push_str(&row);
-                    push_line(&mut lines, &mut current_line);
-                    let sep = table_cells
-                        .iter()
-                        .map(|c| "-".repeat(c.chars().count().max(3)))
-                        .collect::<Vec<_>>()
-                        .join(&format!("-{DIM}|{RESET}-"));
-                    current_line.push_str(&format!("{DIM}|{RESET}-{sep}-{DIM}|{RESET}"));
-                    push_line(&mut lines, &mut current_line);
-                    table_cells.clear();
-                }
-                TagEnd::TableRow => {
-                    let row = format!(
-                        "{DIM}|{RESET} {} {DIM}|{RESET}",
-                        table_cells.join(&format!(" {DIM}|{RESET} "))
-                    );
-                    current_line.push_str(&row);
-                    push_line(&mut lines, &mut current_line);
-                    table_cells.clear();
+                TagEnd::TableHead | TagEnd::TableRow => {
+                    table_rows.push(std::mem::take(&mut table_cells));
                 }
                 TagEnd::TableCell => {
                     table_cells.push(std::mem::take(&mut table_cell_buf));
                 }
-                TagEnd::Item => {}
+                TagEnd::Item => {
+                    // Tight lists don't wrap item text in Paragraph tags, so
+                    // TagEnd::Paragraph never fires to push the line. Push
+                    // here when content is pending.
+                    if !current_line.is_empty() {
+                        push_line(&mut lines, &mut current_line);
+                    }
+                }
                 TagEnd::Paragraph => {
                     push_line(&mut lines, &mut current_line);
                 }
@@ -214,10 +211,21 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
                 }
             }
             Event::SoftBreak => {
-                current_line.push(' ');
+                // Inside a blockquote, a soft break is a real line break in
+                // the rendered output so each visual line carries the "> "
+                // prefix. Elsewhere, follow CommonMark and collapse to a space.
+                if style_stack.iter().any(|s| *s == Style::BlockQuote) {
+                    push_line(&mut lines, &mut current_line);
+                    current_line.push_str(&format!("{GREEN}> "));
+                } else {
+                    current_line.push(' ');
+                }
             }
             Event::HardBreak => {
                 push_line(&mut lines, &mut current_line);
+                if style_stack.iter().any(|s| *s == Style::BlockQuote) {
+                    current_line.push_str(&format!("{GREEN}> "));
+                }
             }
             Event::Rule => {
                 push_line(&mut lines, &mut current_line);
@@ -237,6 +245,80 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
 
 pub(super) fn push_line(lines: &mut Vec<String>, current: &mut String) {
     lines.push(std::mem::take(current));
+}
+
+/// Emit a buffered table with columns padded to a common width per column.
+/// Cells are plain text (no ANSI) because inline markup is accumulated into
+/// `table_cell_buf` as raw characters — so `chars().count()` is the display
+/// width.
+fn emit_table(lines: &mut Vec<String>, current_line: &mut String, rows: &mut Vec<Vec<String>>) {
+    if rows.is_empty() {
+        return;
+    }
+
+    let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if num_cols == 0 {
+        rows.clear();
+        return;
+    }
+
+    let mut widths = vec![0usize; num_cols];
+    for row in rows.iter() {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+    for w in widths.iter_mut() {
+        *w = (*w).max(3); // separator dashes need minimum width
+    }
+
+    let cell_sep = format!(" {DIM}|{RESET} ");
+    let row_prefix = format!("{DIM}|{RESET} ");
+    let row_suffix = format!(" {DIM}|{RESET}");
+
+    let pad = |s: &str, width: usize| -> String {
+        let n = s.chars().count();
+        let mut out = String::with_capacity(s.len() + width.saturating_sub(n));
+        out.push_str(s);
+        for _ in n..width {
+            out.push(' ');
+        }
+        out
+    };
+
+    let mut it = rows.drain(..);
+
+    if let Some(header) = it.next() {
+        let styled: Vec<String> = (0..num_cols)
+            .map(|i| {
+                let cell = header.get(i).map(String::as_str).unwrap_or("");
+                format!("{BOLD}{}{RESET}", pad(cell, widths[i]))
+            })
+            .collect();
+        current_line.push_str(&row_prefix);
+        current_line.push_str(&styled.join(&cell_sep));
+        current_line.push_str(&row_suffix);
+        push_line(lines, current_line);
+
+        let dashes: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+        current_line.push_str(&format!("{DIM}|{RESET}-"));
+        current_line.push_str(&dashes.join(&format!("-{DIM}|{RESET}-")));
+        current_line.push_str(&format!("-{DIM}|{RESET}"));
+        push_line(lines, current_line);
+    }
+
+    for row in it {
+        let padded: Vec<String> = (0..num_cols)
+            .map(|i| {
+                let cell = row.get(i).map(String::as_str).unwrap_or("");
+                pad(cell, widths[i])
+            })
+            .collect();
+        current_line.push_str(&row_prefix);
+        current_line.push_str(&padded.join(&cell_sep));
+        current_line.push_str(&row_suffix);
+        push_line(lines, current_line);
+    }
 }
 
 pub(super) fn reapply_inline_styles(current_line: &mut String, style_stack: &[Style]) {
