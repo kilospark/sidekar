@@ -143,9 +143,16 @@ impl MarkdownStream {
 /// buffer can change how the content before this offset renders.
 ///
 /// Safe boundaries:
-///   * A blank line outside any fenced code block (ends a block in
-///     CommonMark — the preceding content cannot merge into a later block).
+///   * A blank line outside any fenced code block.
 ///   * A closing fence line for a fenced code block.
+///   * The start of a new leaf block that unconditionally interrupts a
+///     paragraph — ATX heading (`# foo`) or fenced code opener. These close
+///     the preceding block without requiring a blank line. (Setext
+///     underlines, table delimiters, and thematic breaks are NOT included
+///     because they can retroactively transform the prior line.)
+///
+/// ATX heading lines are committed through; fence opener lines are not —
+/// we wait for the closing fence so the whole code block commits together.
 ///
 /// Scans from `from` forward; returns `from` if no safe boundary is reached.
 fn find_safe_commit_end(source: &str, from: usize) -> usize {
@@ -161,9 +168,9 @@ fn find_safe_commit_end(source: &str, from: usize) -> usize {
             break;
         }
         let content = &line[..line.len() - 1];
-        let trimmed_start = content.trim_start();
 
         if in_fence {
+            let trimmed_start = content.trim_start();
             let count = trimmed_start.chars().take_while(|&c| c == fence_marker).count();
             if count >= fence_len && trimmed_start[count..].trim().is_empty() {
                 in_fence = false;
@@ -176,21 +183,22 @@ fn find_safe_commit_end(source: &str, from: usize) -> usize {
             continue;
         }
 
-        // Outside a fence — detect opening fence.
-        let backticks = trimmed_start.chars().take_while(|&c| c == '`').count();
-        let tildes = trimmed_start.chars().take_while(|&c| c == '~').count();
-        if backticks >= 3 {
+        if let Some((marker, len)) = detect_fence_opener(content) {
+            // Fence opener closes any preceding paragraph — commit up to
+            // this line, then stay buffered until the closing fence.
+            last_safe = offset;
             in_fence = true;
-            fence_marker = '`';
-            fence_len = backticks;
+            fence_marker = marker;
+            fence_len = len;
             offset += line.len();
             continue;
         }
-        if tildes >= 3 {
-            in_fence = true;
-            fence_marker = '~';
-            fence_len = tildes;
+
+        if is_atx_heading(content) {
+            // ATX heading is a single-line leaf block — closes prior content
+            // and itself closes at the newline.
             offset += line.len();
+            last_safe = offset;
             continue;
         }
 
@@ -204,6 +212,57 @@ fn find_safe_commit_end(source: &str, from: usize) -> usize {
     }
 
     last_safe
+}
+
+/// CommonMark ATX heading: 0–3 leading spaces, 1–6 `#`, then space/tab/EOL.
+/// 4+ leading spaces make it an indented code block, not a heading.
+fn is_atx_heading(content: &str) -> bool {
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+        if i > 3 {
+            return false;
+        }
+    }
+    let hash_start = i;
+    while i < bytes.len() && bytes[i] == b'#' {
+        i += 1;
+    }
+    let hashes = i - hash_start;
+    if !(1..=6).contains(&hashes) {
+        return false;
+    }
+    i == bytes.len() || bytes[i] == b' ' || bytes[i] == b'\t'
+}
+
+/// CommonMark fenced code block opener: 0–3 leading spaces, then 3+ of the
+/// same marker character (`` ` `` or `~`). Returns `(marker, length)`.
+fn detect_fence_opener(content: &str) -> Option<(char, usize)> {
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+        if i > 3 {
+            return None;
+        }
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let marker = bytes[i];
+    if marker != b'`' && marker != b'~' {
+        return None;
+    }
+    let marker_start = i;
+    while i < bytes.len() && bytes[i] == marker {
+        i += 1;
+    }
+    let count = i - marker_start;
+    if count < 3 {
+        return None;
+    }
+    Some((marker as char, count))
 }
 
 #[cfg(test)]

@@ -296,18 +296,85 @@ fn preview_shows_last_line_of_multiline_pending() {
 }
 
 #[test]
-fn heading_then_paragraph_commits_together_on_blank_line() {
+fn atx_heading_commits_immediately() {
+    // ATX heading is a single-line leaf block — once the newline arrives,
+    // nothing a future delta can add will change how the heading renders.
     let mut stream = MarkdownStream::new();
     stream.push("# Title\n");
-    // No blank line — heading alone is not committed (future deltas could
-    // still append to the buffer in ways the single newline doesn't rule out).
-    assert!(stream.commit_complete_lines().is_empty());
+    let lines = stream.commit_complete_lines();
+    assert_eq!(lines.len(), 1, "heading should commit on its own newline");
+    assert!(lines[0].contains("Title"));
 
     stream.push("\nBody paragraph.\n\n");
+    let more = stream.commit_complete_lines();
+    let joined: String = more.concat();
+    assert!(joined.contains("Body paragraph."));
+}
+
+#[test]
+fn paragraph_commits_when_heading_starts() {
+    // A paragraph without a trailing blank line is still closed by the next
+    // block starter — the ATX heading line unambiguously ends the paragraph.
+    let mut stream = MarkdownStream::new();
+    stream.push("Intro line.\n");
+    assert!(
+        stream.commit_complete_lines().is_empty(),
+        "no block starter yet — paragraph buffered",
+    );
+
+    stream.push("## Next Section\n");
     let lines = stream.commit_complete_lines();
     let joined: String = lines.concat();
-    assert!(joined.contains("Title"));
-    assert!(joined.contains("Body paragraph."));
+    assert!(joined.contains("Intro line."));
+    assert!(joined.contains("Next Section"));
+}
+
+#[test]
+fn paragraph_commits_when_fence_opens() {
+    // A fenced code block opener also closes a preceding paragraph without
+    // requiring a blank line. The opener itself stays buffered until close.
+    let mut stream = MarkdownStream::new();
+    stream.push("Prose.\n");
+    assert!(stream.commit_complete_lines().is_empty());
+
+    stream.push("```rust\n");
+    let first = stream.commit_complete_lines();
+    assert!(
+        first.iter().any(|l| l.contains("Prose.")),
+        "paragraph should commit when fence opens: {first:?}",
+    );
+    assert!(
+        !first.iter().any(|l| l.contains("rust")),
+        "fence body must not commit until the closing fence",
+    );
+
+    stream.push("let x = 1;\n```\n");
+    let closed = stream.commit_complete_lines();
+    assert!(closed.iter().any(|l| l.contains("let x = 1;")));
+}
+
+#[test]
+fn indented_backticks_not_treated_as_fence_opener() {
+    // 4+ leading spaces make the line an indented code block's content per
+    // CommonMark, not a fence opener. The paragraph must stay buffered.
+    let mut stream = MarkdownStream::new();
+    stream.push("Paragraph one.\n    ```rust\n");
+    assert!(
+        stream.commit_complete_lines().is_empty(),
+        "indented backticks must not be misclassified as a fence opener",
+    );
+}
+
+#[test]
+fn hash_without_trailing_space_not_heading() {
+    // `#foo` (no space after the hash) is a paragraph per CommonMark, not
+    // an ATX heading — so it should NOT be treated as a block starter.
+    let mut stream = MarkdownStream::new();
+    stream.push("Some text.\n#notaheading\n");
+    assert!(
+        stream.commit_complete_lines().is_empty(),
+        "`#notaheading` is a paragraph continuation, not a heading",
+    );
 }
 
 #[test]
