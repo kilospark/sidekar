@@ -63,4 +63,4 @@ When GitHub Actions is unavailable (billing issues etc.):
 - Sessions page queries MongoDB directly (no relay proxy)
 - Session liveness: relay heartbeats every 30s, sessions expire after 90s without heartbeat
 - Domain: sidekar.dev (redirects from *.vercel.app)
-- Minisign key: `~/src/sidekar/minisign.key` (secret), `minisign.pub` (public, in repo)
+- Minisign key: `~/.sidekar/minisign.key` (secret, never committed; override path with `SIDEKAR_MINISIGN_KEY`); `minisign.pub` is the public key committed at repo root.

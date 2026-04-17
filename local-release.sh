@@ -11,7 +11,7 @@ VERSION=$(cat www/version.txt 2>/dev/null | tr -d '[:space:]')
 TAG="v${VERSION}"
 REPO="kilospark/sidekar"
 NAME="sidekar-darwin-arm64"
-KEY="$DIR/minisign.key"
+KEY="${SIDEKAR_MINISIGN_KEY:-$HOME/.sidekar/minisign.key}"
 
 if [ -z "$VERSION" ]; then
   echo "Error: www/version.txt is empty or missing"
