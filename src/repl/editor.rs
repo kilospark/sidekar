@@ -32,6 +32,7 @@ const PROMPT_PREFIX: &str = "\x1b[36m›\x1b[0m ";
 const PROMPT_VISIBLE: &str = "› ";
 const CONTINUATION_PREFIX: &str = "\x1b[2m·\x1b[0m ";
 const CONTINUATION_VISIBLE: &str = "· ";
+const SUBMITTED_BAR: &str = "\x1b[96m▎\x1b[0m ";
 const ESC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 const PLACEHOLDER_DIM_OPEN: &str = "\x1b[2m";
@@ -1025,14 +1026,32 @@ impl LineEditor {
         self.clear_rendered_prompt_inner();
     }
 
-    fn move_to_render_end(&mut self) {
-        if self.cursor == self.buffer.len() {
+    /// Clear the live prompt rendering and replace it with a left-bar block
+    /// so the submitted turn stands out in the transcript. A blank line is
+    /// emitted after the block to frame it against streamed output.
+    fn emit_submitted_block(&mut self) {
+        self.clear_rendered_prompt_inner();
+        if self.buffer.is_empty() {
+            emit_raw("\r\n");
             return;
         }
-        let saved_cursor = self.cursor;
-        self.cursor = self.buffer.len();
-        self.redraw_inner();
-        self.cursor = saved_cursor;
+        let cols = self.terminal_columns().max(1);
+        let rows = self.wrapped_rows(cols);
+        let placeholder_spans = self.placeholder_spans();
+        let mut out = String::new();
+        for row in &rows {
+            out.push('\r');
+            out.push_str(SUBMITTED_BAR);
+            append_row_with_placeholders(
+                &mut out,
+                &self.buffer,
+                row.clone(),
+                &placeholder_spans,
+            );
+            out.push_str("\r\n");
+        }
+        out.push_str("\r\n");
+        emit_raw(&out);
     }
 
     fn reset(&mut self) {
@@ -1124,8 +1143,7 @@ impl LineEditor {
                 if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
                     self.insert_pasted_text(&flushed);
                 }
-                self.move_to_render_end();
-                emit_raw("\r\n");
+                self.emit_submitted_block();
                 let text = self.expand_pending_pastes(self.buffer.clone());
                 let image_paths = std::mem::take(&mut self.attached_images);
                 self.reset();
@@ -1558,8 +1576,7 @@ impl LineEditor {
     /// Capture the current buffer as a SubmittedLine, emit the trailing newline,
     /// and reset editor state. Caller decides which queue the line lands in.
     fn take_submittable_line(&mut self) -> SubmittedLine {
-        self.move_to_render_end();
-        emit_raw("\r\n");
+        self.emit_submitted_block();
         let text = self.expand_pending_pastes(self.buffer.clone());
         let image_paths = std::mem::take(&mut self.attached_images);
         self.reset();
