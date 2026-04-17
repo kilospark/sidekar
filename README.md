@@ -382,6 +382,10 @@ www/                     # Landing page + API (Vercel)
 extension/               # Chrome extension (MV3)
 ```
 
+## Contributing
+
+Issues and PRs welcome at [github.com/kilospark/sidekar](https://github.com/kilospark/sidekar). Build from source with `cargo build --release`; tests run via `cargo test`.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). Portions of this project were ported from or inspired by other open-source projects; see [CREDITS.md](CREDITS.md) for attribution.

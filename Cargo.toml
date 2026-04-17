@@ -3,6 +3,11 @@ name = "sidekar"
 version = "2.5.2"
 edition = "2024"
 build = "build.rs"
+license = "MIT"
+description = "Sidecar for AI agents: browser and desktop automation, inter-agent messaging, local memory, TOTP/KV, Chrome extension control."
+repository = "https://github.com/kilospark/sidekar"
+homepage = "https://sidekar.dev"
+readme = "README.md"
 
 [[bin]]
 name = "sidekar"
