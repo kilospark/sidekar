@@ -596,12 +596,12 @@ pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
 /// Fetch (context_window, max_output) from the provider's models API.
 async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u32)> {
     match provider {
-        Provider::Anthropic { api_key, base_url } => {
-            fetch_anthropic_model_limits(api_key, base_url, model).await
-        }
-        Provider::OpenRouter { api_key, base_url } => {
-            fetch_openrouter_model_limits(api_key, base_url, model).await
-        }
+        Provider::Anthropic {
+            api_key, base_url, ..
+        } => fetch_anthropic_model_limits(api_key, base_url, model).await,
+        Provider::OpenRouter {
+            api_key, base_url, ..
+        } => fetch_openrouter_model_limits(api_key, base_url, model).await,
         Provider::OpenAiCompat {
             api_key, base_url, ..
         } => fetch_openai_compat_model_limits(api_key, base_url, model).await,
@@ -769,9 +769,9 @@ pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteM
 
 pub async fn fetch_model_list_for_provider(provider: &Provider) -> Vec<RemoteModel> {
     match provider {
-        Provider::Anthropic { api_key, base_url } if base_url.contains("opencode.ai") => {
-            fetch_opencode_model_list(api_key).await
-        }
+        Provider::Anthropic {
+            api_key, base_url, ..
+        } if base_url.contains("opencode.ai") => fetch_opencode_model_list(api_key).await,
         Provider::Anthropic { api_key, .. } => fetch_anthropic_model_list(api_key).await,
         Provider::Codex { api_key, .. } => fetch_codex_model_list(api_key).await,
         Provider::OpenRouter { api_key, .. } => fetch_openrouter_model_list(api_key).await,
@@ -1027,71 +1027,87 @@ pub enum Provider {
     Anthropic {
         api_key: String,
         base_url: String,
+        /// Stored credential nickname — enables auto-refresh on 401.
+        credential: Option<String>,
     },
     #[allow(dead_code)]
     Codex {
         api_key: String,
         account_id: String,
         base_url: String,
+        credential: Option<String>,
     },
     OpenRouter {
         api_key: String,
         base_url: String,
+        credential: Option<String>,
     },
     OpenAiCompat {
         api_key: String,
         base_url: String,
         provider_type: String,
         display_name: String,
+        credential: Option<String>,
     },
 }
 
 impl Provider {
-    pub fn anthropic(api_key: String) -> Self {
+    pub fn anthropic(api_key: String, credential: Option<String>) -> Self {
         Provider::Anthropic {
             api_key,
             base_url: "https://api.anthropic.com".to_string(),
+            credential,
         }
     }
 
-    pub fn codex(api_key: String, account_id: String) -> Self {
+    pub fn codex(api_key: String, account_id: String, credential: Option<String>) -> Self {
         Provider::Codex {
             api_key,
             account_id,
             base_url: "https://chatgpt.com/backend-api".to_string(),
+            credential,
         }
     }
 
-    pub fn openrouter(api_key: String) -> Self {
+    pub fn openrouter(api_key: String, credential: Option<String>) -> Self {
         Provider::OpenRouter {
             api_key,
             base_url: "https://openrouter.ai/api".to_string(),
+            credential,
         }
     }
 
-    pub fn grok(api_key: String) -> Self {
+    pub fn grok(api_key: String, credential: Option<String>) -> Self {
         Provider::OpenAiCompat {
             api_key,
             base_url: oauth::GROK_BASE_URL.to_string(),
             provider_type: "grok".to_string(),
             display_name: "Grok".to_string(),
+            credential,
         }
     }
 
-    pub fn openai_compat(api_key: String, base_url: String, display_name: String) -> Self {
+    pub fn openai_compat(
+        api_key: String,
+        base_url: String,
+        display_name: String,
+        credential: Option<String>,
+    ) -> Self {
         Provider::OpenAiCompat {
             api_key,
             base_url,
             provider_type: "oac".to_string(),
             display_name,
+            credential,
         }
     }
 
     /// OpenCode uses the Anthropic API shape with a different base URL.
-    pub fn opencode(api_key: String) -> Self {
+    pub fn opencode(api_key: String, credential: Option<String>) -> Self {
         Provider::Anthropic {
             api_key,
             base_url: "https://opencode.ai/zen".to_string(),
+            credential,
         }
     }
 
@@ -1101,6 +1117,15 @@ impl Provider {
             Provider::Codex { api_key, .. } => api_key,
             Provider::OpenRouter { api_key, .. } => api_key,
             Provider::OpenAiCompat { api_key, .. } => api_key,
+        }
+    }
+
+    pub fn credential(&self) -> Option<&str> {
+        match self {
+            Provider::Anthropic { credential, .. } => credential.as_deref(),
+            Provider::Codex { credential, .. } => credential.as_deref(),
+            Provider::OpenRouter { credential, .. } => credential.as_deref(),
+            Provider::OpenAiCompat { credential, .. } => credential.as_deref(),
         }
     }
 
@@ -1165,6 +1190,8 @@ impl Provider {
         let max_retries = 3u32;
         let mut attempt = 0u32;
         let mut ws = cached_ws;
+        let mut refreshed_key: Option<String> = None;
+        let mut auth_retry_used = false;
 
         loop {
             let result = self
@@ -1176,10 +1203,32 @@ impl Provider {
                     prompt_cache_key,
                     previous_response_id,
                     ws.take(),
+                    refreshed_key.as_deref(),
                 )
                 .await;
 
             match &result {
+                // Token expired server-side (or our expires_at drifted). Force
+                // a refresh via the stored refresh_token and retry once.
+                Err(e) if !auth_retry_used && is_auth_error(e) && self.credential().is_some() => {
+                    auth_retry_used = true;
+                    let cred = self.credential().expect("checked above").to_string();
+                    match oauth::force_refresh_token(&cred).await {
+                        Ok(new_key) => {
+                            refreshed_key = Some(new_key);
+                            eprintln!("\x1b[2m[credential `{cred}` refreshed after 401, retrying]\x1b[0m");
+                        }
+                        Err(refresh_err) => {
+                            eprintln!(
+                                "\x1b[31m[credential `{cred}` refresh failed: {refresh_err:#}]\x1b[0m"
+                            );
+                            eprintln!(
+                                "\x1b[33m[run `/credential {cred}` to re-resolve, or `sidekar repl login {cred}` to re-authenticate]\x1b[0m"
+                            );
+                            return result;
+                        }
+                    }
+                }
                 Err(e) if attempt < max_retries && is_retryable_error(e) => {
                     attempt += 1;
                     let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
@@ -1210,15 +1259,19 @@ impl Provider {
         prompt_cache_key: Option<&str>,
         previous_response_id: Option<&str>,
         cached_ws: Option<codex::CachedWs>,
+        api_key_override: Option<&str>,
     ) -> anyhow::Result<(
         tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
         tokio::sync::oneshot::Receiver<Option<codex::CachedWs>>,
     )> {
         let stream_config = self.default_stream_config();
         match self {
-            Provider::Anthropic { api_key, base_url } => {
+            Provider::Anthropic {
+                api_key, base_url, ..
+            } => {
+                let key = api_key_override.unwrap_or(api_key);
                 let rx = anthropic::stream(
-                    api_key,
+                    key,
                     base_url,
                     model,
                     system_prompt,
@@ -1234,10 +1287,12 @@ impl Provider {
                 api_key,
                 account_id,
                 base_url,
+                ..
             } => {
+                let key = api_key_override.unwrap_or(api_key);
                 if stream_config.use_websocket {
                     codex::stream_ws(
-                        api_key,
+                        key,
                         account_id,
                         base_url,
                         model,
@@ -1252,7 +1307,7 @@ impl Provider {
                     .await
                 } else {
                     let rx = codex::stream(
-                        api_key,
+                        key,
                         account_id,
                         base_url,
                         model,
@@ -1267,9 +1322,12 @@ impl Provider {
                     Ok(no_ws_reclaim(rx))
                 }
             }
-            Provider::OpenRouter { api_key, base_url } => {
+            Provider::OpenRouter {
+                api_key, base_url, ..
+            } => {
+                let key = api_key_override.unwrap_or(api_key);
                 let rx = openrouter::stream(
-                    api_key,
+                    key,
                     base_url,
                     model,
                     system_prompt,
@@ -1286,9 +1344,10 @@ impl Provider {
                 display_name,
                 ..
             } => {
+                let key = api_key_override.unwrap_or(api_key);
                 let rx = openrouter::stream_with_provider(
                     display_name,
-                    api_key,
+                    key,
                     base_url,
                     model,
                     system_prompt,
@@ -1314,6 +1373,14 @@ fn no_ws_reclaim(
     let (tx, reclaim_rx) = tokio::sync::oneshot::channel();
     let _ = tx.send(None);
     (rx, reclaim_rx)
+}
+
+/// Check if an error looks like an auth failure (401 / authentication_error).
+/// Matches the message shape emitted by `anthropic::stream` and peers after a
+/// non-success status.
+fn is_auth_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    msg.contains("(401") || msg.contains("authentication_error") || msg.contains("Unauthorized")
 }
 
 /// Check if an error is retryable (5xx, 429 rate limit, or connection failure).

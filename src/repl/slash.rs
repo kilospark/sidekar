@@ -609,26 +609,27 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
                 "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', 'oc', 'grok', or 'oac'."
             )
         })?;
+    let cred = Some(cred_name.to_string());
     match provider_type {
         "anthropic" => {
             let api_key = providers::oauth::get_anthropic_token(Some(cred_name)).await?;
-            Ok(Provider::anthropic(api_key))
+            Ok(Provider::anthropic(api_key, cred))
         }
         "codex" => {
             let (api_key, account_id) = providers::oauth::get_codex_token(Some(cred_name)).await?;
-            Ok(Provider::codex(api_key, account_id))
+            Ok(Provider::codex(api_key, account_id, cred))
         }
         "openrouter" => {
             let api_key = providers::oauth::get_openrouter_token(Some(cred_name)).await?;
-            Ok(Provider::openrouter(api_key))
+            Ok(Provider::openrouter(api_key, cred))
         }
         "opencode" => {
             let api_key = providers::oauth::get_opencode_token(Some(cred_name)).await?;
-            Ok(Provider::opencode(api_key))
+            Ok(Provider::opencode(api_key, cred))
         }
         "grok" => {
             let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
-            Ok(Provider::grok(api_key))
+            Ok(Provider::grok(api_key, cred))
         }
         "oac" => {
             let creds = providers::oauth::get_openai_compat_credentials(cred_name).await?;
@@ -636,6 +637,7 @@ pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
                 creds.api_key,
                 creds.base_url,
                 creds.name,
+                cred,
             ))
         }
         _ => anyhow::bail!("Unknown provider type: {provider_type}"),

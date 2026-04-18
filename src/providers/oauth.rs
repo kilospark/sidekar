@@ -158,6 +158,45 @@ impl OAuthCredentials {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Force-refresh the stored access token for `cred_name` using its refresh_token,
+/// regardless of the cached `expires_at`. Called after a 401 from the provider —
+/// the server rejected a token we thought was still valid (clock drift,
+/// early rotation, or revocation). Anthropic and Codex only; other providers
+/// store static API keys with no refresh path.
+pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
+    let provider_type = provider_type_for(cred_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown credential '{cred_name}'"))?;
+
+    let (kv_key, refresh_fn): (
+        String,
+        fn(
+            &OAuthCredentials,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>>,
+    ) = match provider_type {
+        "anthropic" => (
+            resolve_kv_key(Some(cred_name), KV_KEY_ANTHROPIC),
+            refresh_token_anthropic,
+        ),
+        "codex" => (
+            resolve_kv_key(Some(cred_name), KV_KEY_CODEX),
+            refresh_token_codex,
+        ),
+        other => anyhow::bail!("provider '{other}' has no refresh flow — re-authenticate via `sidekar repl login {cred_name}`"),
+    };
+
+    let creds = load_credentials(&kv_key)?
+        .ok_or_else(|| anyhow::anyhow!("no stored credentials for '{cred_name}'"))?;
+    if creds.refresh_token.is_empty() {
+        anyhow::bail!(
+            "credential '{cred_name}' has no refresh token — re-authenticate via `sidekar repl login {cred_name}`"
+        );
+    }
+    let new_creds = refresh_fn(&creds).await?;
+    save_credentials(&kv_key, &new_creds)?;
+    Ok(new_creds.access_token)
+}
+
 /// Get a valid Anthropic API token. If `nickname` is provided, use that credential set.
 pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);

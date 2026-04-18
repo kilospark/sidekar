@@ -43,11 +43,12 @@ fn openai_compat_urls_accept_root_or_v1_or_full_endpoint() {
 
 #[test]
 fn openai_compat_provider_type_is_preserved() {
-    let grok = Provider::grok("key".to_string());
+    let grok = Provider::grok("key".to_string(), None);
     let compat = Provider::openai_compat(
         "key".to_string(),
         "http://localhost:11434/v1".to_string(),
         "local".to_string(),
+        None,
     );
 
     assert_eq!(grok.provider_type(), "grok");

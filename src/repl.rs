@@ -410,7 +410,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
 
         // Guard: need provider + model to run the agent
-        let (Some(prov), Some(mdl)) = (&provider, &model) else {
+        if provider.is_none() || model.is_none() {
             let mut missing = Vec::new();
             if provider.is_none() {
                 missing.push("/credential <name>");
@@ -423,13 +423,32 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 missing.join(" and ")
             ));
             continue;
-        };
+        }
 
         // Inject pending bus messages as steering
         let bus_injected = inject_bus_messages(&bus_name, &mut history, &session_id);
         if input.is_none() && bus_injected == 0 {
             continue;
         }
+
+        // Re-resolve the provider before each turn so OAuth tokens near expiry
+        // get refreshed via the stored refresh_token (see providers::oauth).
+        // `Provider::Anthropic { api_key, .. }` is a snapshot, so without this
+        // step long-idle sessions 401 until the user re-picks the credential.
+        if let Some(ref name) = cred_name {
+            match build_provider(name).await {
+                Ok(p) => provider = Some(p),
+                Err(e) => {
+                    tunnel_println(&format!(
+                        "\x1b[31mCredential `{name}` failed to resolve: {e:#}\x1b[0m"
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        let prov = provider.as_ref().expect("guarded above");
+        let mdl = model.as_ref().expect("guarded above");
 
         // Add user message (if any) — persisted only after a successful agent turn (see below).
         let mut had_staged_user = false;
