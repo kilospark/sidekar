@@ -35,6 +35,37 @@ fn process_input_bytes_emits_every_line_in_one_chunk() {
 }
 
 #[test]
+fn empty_enter_is_silent_noop() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let mut lines = Vec::new();
+    editor
+        .process_input_bytes(b"\n", |_, line| lines.push(line))
+        .unwrap();
+    assert!(lines.is_empty(), "empty Enter must not produce a submission");
+    assert!(editor.buffer.is_empty());
+    assert!(editor.pending_submits.is_empty());
+    assert!(editor.pending_followups.is_empty());
+}
+
+#[test]
+fn whitespace_only_enter_is_silent_noop() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let mut lines = Vec::new();
+    editor
+        .process_input_bytes(b"   ", |_, line| lines.push(line))
+        .unwrap();
+    editor.force_flush_paste_burst();
+    editor
+        .process_input_bytes(b"\n", |_, line| lines.push(line))
+        .unwrap();
+    assert!(
+        lines.is_empty(),
+        "whitespace-only Enter must not produce a submission"
+    );
+    assert!(editor.pending_followups.is_empty());
+}
+
+#[test]
 fn up_on_top_row_pulls_all_pending_followups_at_once() {
     let mut editor = LineEditor::with_history(Vec::new());
     editor.pending_followups.push_back(SubmittedLine {

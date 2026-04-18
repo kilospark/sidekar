@@ -1221,6 +1221,9 @@ impl LineEditor {
                 if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
                     self.insert_pasted_text(&flushed);
                 }
+                if self.buffer.trim().is_empty() && self.attached_images.is_empty() {
+                    return LineEditResult::Continue;
+                }
                 self.emit_submitted_block();
                 let text = self.expand_pending_pastes(self.buffer.clone());
                 let image_paths = std::mem::take(&mut self.attached_images);
