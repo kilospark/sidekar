@@ -73,12 +73,9 @@ pub(crate) async fn cmd_cron_create(
     if let Some(state) = guard.as_ref() {
         state.jobs.lock().await.push(CronJob {
             id: id.clone(),
-            name: name.map(String::from),
             schedule,
-            schedule_expr: schedule_expr.to_string(),
             action: action_parsed,
             target: effective_target.clone(),
-            created_by: created_by.to_string(),
             last_run_at: None,
             last_finished_at: None,
             once,
@@ -137,14 +134,12 @@ struct CronListItem {
     run_count: u64,
     error_count: u64,
     last_error: Option<String>,
-    persisted_only: bool,
 }
 
 #[derive(serde::Serialize)]
 struct CronListOutput {
     items: Vec<CronListItem>,
     running: usize,
-    persisted_only_mode: bool,
 }
 
 fn action_brief(action: &Value) -> String {
@@ -184,26 +179,6 @@ impl crate::output::CommandOutput for CronListOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         if self.items.is_empty() {
             writeln!(w, "0 cron jobs.")?;
-            return Ok(());
-        }
-        if self.persisted_only_mode {
-            writeln!(
-                w,
-                "{} persisted cron job(s) (cron loop not yet started):",
-                self.items.len()
-            )?;
-            for it in &self.items {
-                writeln!(
-                    w,
-                    "[{}] {} — schedule: {} — target: {} — owner: {} — {} runs",
-                    it.id,
-                    it.name.as_deref().unwrap_or("(unnamed)"),
-                    it.schedule,
-                    it.target,
-                    it.owner,
-                    it.run_count
-                )?;
-            }
             return Ok(());
         }
         if self.running > 0 {
@@ -251,86 +226,49 @@ pub(crate) async fn cmd_cron_list(
 ) -> Result<()> {
     let current_project = crate::scope::resolve_project_name(None);
     let persisted = broker::list_cron_jobs(true, scope, &current_project).unwrap_or_default();
-    let stats_by_id: std::collections::HashMap<String, (u64, u64, Option<String>)> = persisted
-        .iter()
-        .map(|r| {
-            (
-                r.id.clone(),
-                (r.run_count, r.error_count, r.last_error.clone()),
-            )
+
+    let running_ids: std::collections::HashSet<String> = {
+        let cell = cron_cell().await;
+        let guard = cell.lock().await;
+        match guard.as_ref() {
+            Some(state) => state
+                .jobs
+                .lock()
+                .await
+                .iter()
+                .filter(|j| j.running.load(Ordering::Relaxed))
+                .map(|j| j.id.clone())
+                .collect(),
+            None => std::collections::HashSet::new(),
+        }
+    };
+
+    let now = epoch_now();
+    let items: Vec<CronListItem> = persisted
+        .into_iter()
+        .map(|rec| {
+            let action: Value = serde_json::from_str(&rec.action_json).unwrap_or(Value::Null);
+            let secs_ago = rec.last_run_at.map(|ts| now.saturating_sub(ts));
+            let running = running_ids.contains(&rec.id);
+            CronListItem {
+                id: rec.id,
+                name: rec.name,
+                schedule: rec.schedule,
+                target: rec.target,
+                owner: rec.created_by,
+                last_run_at: rec.last_run_at,
+                last_run_secs_ago: secs_ago,
+                running,
+                action,
+                run_count: rec.run_count,
+                error_count: rec.error_count,
+                last_error: rec.last_error,
+            }
         })
         .collect();
 
-    let cell = cron_cell().await;
-    let guard = cell.lock().await;
-
-    let (items, persisted_only_mode, running) = match guard.as_ref() {
-        Some(state) => {
-            let jobs = state.jobs.lock().await;
-            let now = epoch_now();
-            let running = jobs
-                .iter()
-                .filter(|j| j.running.load(Ordering::Relaxed))
-                .count();
-            let items = jobs
-                .iter()
-                .map(|job| {
-                    let (run_count, error_count, last_error) = stats_by_id
-                        .get(&job.id)
-                        .cloned()
-                        .unwrap_or((0, 0, None));
-                    let secs_ago = job.last_run_at.map(|ts| now.saturating_sub(ts));
-                    let action = serde_json::to_value(&job.action).unwrap_or(Value::Null);
-                    CronListItem {
-                        id: job.id.clone(),
-                        name: job.name.clone(),
-                        schedule: job.schedule_expr.clone(),
-                        target: job.target.clone(),
-                        owner: job.created_by.clone(),
-                        last_run_at: job.last_run_at,
-                        last_run_secs_ago: secs_ago,
-                        running: job.running.load(Ordering::Relaxed),
-                        action,
-                        run_count,
-                        error_count,
-                        last_error,
-                        persisted_only: false,
-                    }
-                })
-                .collect::<Vec<_>>();
-            (items, false, running)
-        }
-        None => {
-            let items = persisted
-                .iter()
-                .map(|rec| {
-                    let action: Value = serde_json::from_str(&rec.action_json).unwrap_or(Value::Null);
-                    CronListItem {
-                        id: rec.id.clone(),
-                        name: rec.name.clone(),
-                        schedule: rec.schedule.clone(),
-                        target: rec.target.clone(),
-                        owner: rec.created_by.clone(),
-                        last_run_at: rec.last_run_at,
-                        last_run_secs_ago: None,
-                        running: false,
-                        action,
-                        run_count: rec.run_count,
-                        error_count: rec.error_count,
-                        last_error: rec.last_error.clone(),
-                        persisted_only: true,
-                    }
-                })
-                .collect::<Vec<_>>();
-            (items, true, 0)
-        }
-    };
-
-    let output = CronListOutput {
-        items,
-        running,
-        persisted_only_mode,
-    };
+    let running = items.iter().filter(|i| i.running).count();
+    let output = CronListOutput { items, running };
     out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }

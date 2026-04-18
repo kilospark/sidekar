@@ -25,12 +25,9 @@ pub(super) enum CronAction {
 
 pub(super) struct CronJob {
     pub(super) id: String,
-    pub(super) name: Option<String>,
     pub(super) schedule: CronSchedule,
-    pub(super) schedule_expr: String,
     pub(super) action: CronAction,
     pub(super) target: String,
-    pub(super) created_by: String,
     pub(super) last_run_at: Option<u64>,
     pub(super) last_finished_at: Option<u64>,
     pub(super) once: bool,
@@ -134,12 +131,9 @@ pub(crate) async fn start_cron_loop(cron_ctx: CronContext) {
                 };
                 loaded.push(CronJob {
                     id: rec.id,
-                    name: rec.name,
                     schedule: sched,
-                    schedule_expr: rec.schedule,
                     action,
                     target: normalize_loaded_target(&rec.target, &rec.created_by),
-                    created_by: rec.created_by,
                     last_run_at: rec.last_run_at,
                     last_finished_at: None,
                     once: rec.once,
@@ -241,12 +235,9 @@ async fn cron_loop(
                         };
                         mem_jobs.push(CronJob {
                             id: rec.id,
-                            name: rec.name,
                             schedule: sched,
-                            schedule_expr: rec.schedule,
                             action,
                             target: normalize_loaded_target(&rec.target, &rec.created_by),
-                            created_by: rec.created_by,
                             last_run_at: rec.last_run_at,
                             last_finished_at: None,
                             once: rec.once,
