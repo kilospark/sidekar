@@ -87,7 +87,7 @@ pub async fn prepare_cdp(ctx: &mut AppContext, cdp: &mut CdpClient) -> Result<()
         ctx.save_session_state(&state)?;
     }
 
-    if let Some(block_patterns) = state.block_patterns {
+    if let Some(block_patterns) = state.block_patterns.clone() {
         let mut blocked = block_patterns.url_patterns;
         for rt in block_patterns.resource_types {
             blocked.extend(resource_type_url_patterns(&rt));
@@ -101,6 +101,24 @@ pub async fn prepare_cdp(ctx: &mut AppContext, cdp: &mut CdpClient) -> Result<()
                 .collect::<Vec<_>>();
             cdp.send("Network.setBlockedURLs", json!({ "urls": uniq }))
                 .await?;
+        }
+    }
+
+    if state.stealth_enabled.unwrap_or(false) {
+        cdp.send("Page.enable", json!({})).await?;
+        let already = state.stealth_script_ids.clone().unwrap_or_default();
+        match crate::cdp::stealth::install_on_target(cdp, &already).await {
+            Ok(added) => {
+                if !added.is_empty() {
+                    let mut merged = already;
+                    merged.extend(added);
+                    state.stealth_script_ids = Some(merged);
+                    ctx.save_session_state(&state)?;
+                }
+            }
+            Err(e) => {
+                wlog!("stealth script install failed: {e:#}");
+            }
         }
     }
 

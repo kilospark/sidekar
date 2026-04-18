@@ -105,7 +105,7 @@ async fn handle_ext_websocket(
         return;
     }
 
-    let (ext_token, agent_id, browser_name) = loop {
+    let (ext_token, agent_id, browser_name, install_id) = loop {
         match ws_rx.next().await {
             Some(Ok(Message::Text(text))) => {
                 if let Ok(val) = serde_json::from_str::<Value>(&text)
@@ -125,7 +125,12 @@ async fn handle_ext_websocket(
                         .and_then(|v| v.as_str())
                         .unwrap_or("Chrome")
                         .to_string();
-                    break (token, aid, browser);
+                    let install_id = val
+                        .get("installId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    break (token, aid, browser, install_id);
                 }
             }
             _ => return,
@@ -181,9 +186,14 @@ async fn handle_ext_websocket(
         }
     };
 
-    let (conn_id, mut bridge_rx, profile) =
-        crate::ext::register_bridge_ws(&ext_state, user_id.clone(), agent_id, browser_name.clone())
-            .await;
+    let (conn_id, mut bridge_rx, profile) = crate::ext::register_bridge_ws(
+        &ext_state,
+        user_id.clone(),
+        agent_id,
+        browser_name.clone(),
+        install_id.clone(),
+    )
+    .await;
 
     let ok = json!({"type": "auth_ok", "cli_logged_in": cli_logged_in, "profile": profile});
     if ws_tx
@@ -254,6 +264,41 @@ async fn handle_ext_websocket(
                             crate::ext::touch_connection(&ext_state, conn_id).await;
                             let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             if msg_type == "pong" {
+                                continue;
+                            }
+                            if msg_type == "net_passive_event" {
+                                let tab_id = val
+                                    .get("tabId")
+                                    .and_then(|v| v.as_i64());
+                                let tab_url = val
+                                    .get("tabUrl")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let frame_url = val
+                                    .get("frameUrl")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let dropped = val
+                                    .get("dropped")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let events: Vec<Value> = val
+                                    .get("events")
+                                    .and_then(|v| v.as_array())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                crate::ext::ingest_passive_firehose(
+                                    &ext_state,
+                                    conn_id,
+                                    tab_id,
+                                    tab_url,
+                                    frame_url,
+                                    events,
+                                    dropped,
+                                )
+                                .await;
                                 continue;
                             }
                             if msg_type == "watch_event" {

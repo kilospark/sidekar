@@ -299,7 +299,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let tab_id = ctx.override_tab_id.as_ref().unwrap();
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
-    } else if sidekar::command_requires_session(&command) {
+    } else if sidekar::command_requires_session(&command)
+        && !is_sessionless_subcommand(&command, &args)
+    {
         bail!(
             "Command '{command}' requires an explicit browser session. Create one with `sidekar launch` or `sidekar connect`, list sessions with `sidekar browser-sessions list`, then rerun with `sidekar run <sessionId> {command} ...`."
         );
@@ -339,6 +341,16 @@ async fn run_command_file(ctx: &mut AppContext) -> Result<()> {
 }
 
 /// Parse `--tab <id>` global flag into a numeric tab id, or exit on invalid input.
+/// Subcommands on session-requiring commands that don't actually need a
+/// browser session — e.g. `network passive` reads a daemon ring buffer.
+fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
+    match (command, args.first().map(String::as_str)) {
+        ("network", Some("passive")) => true,
+        ("network", Some("sse")) => true,
+        _ => false,
+    }
+}
+
 fn tab_id_from_global_flag(override_tab_id: &Option<String>) -> Option<u64> {
     match override_tab_id.as_deref() {
         None => None,

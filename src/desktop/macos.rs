@@ -57,6 +57,7 @@ struct CGSize {
 }
 
 const kAXWindowsAttribute: &str = "AXWindows";
+const kAXMenuBarAttribute: &str = "AXMenuBar";
 const kAXTitleAttribute: &str = "AXTitle";
 const kAXRoleAttribute: &str = "AXRole";
 const kAXValueAttribute: &str = "AXValue";
@@ -69,6 +70,10 @@ const kAXIdentifierAttribute: &str = "AXIdentifier";
 const kAXPressAction: &str = "AXPress";
 
 unsafe extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(
+        options: core_foundation_sys::dictionary::CFDictionaryRef,
+    ) -> bool;
     fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
@@ -239,6 +244,184 @@ fn ax_action_names(element: AXUIElementRef) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // frontmost_app_pid — NSWorkspace.shared.frontmostApplication
 // ---------------------------------------------------------------------------
+
+/// Permission state for a macOS privacy-gated capability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PermissionState {
+    Granted,
+    Denied,
+    NotRequested,
+    Unknown,
+}
+
+impl PermissionState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PermissionState::Granted => "granted",
+            PermissionState::Denied => "denied",
+            PermissionState::NotRequested => "not_requested",
+            PermissionState::Unknown => "unknown",
+        }
+    }
+}
+
+/// Summary of macOS privacy permissions relevant to sidekar.
+#[derive(Debug, Clone)]
+pub struct TrustStatus {
+    pub accessibility: PermissionState,
+    pub screen_recording: PermissionState,
+    pub microphone: PermissionState,
+}
+
+/// Check whether our process is trusted for the Accessibility API.
+/// Required for AX tree walks and any reliable CGEvent input posting.
+pub fn accessibility_granted() -> bool {
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// Probe screen-recording permission without prompting. We attempt a zero-cost
+/// CGWindowListCopyWindowInfo with `kCGWindowListOptionOnScreenOnly` and
+/// inspect whether window **titles** come back populated. macOS returns
+/// window metadata regardless of permission, but `kCGWindowName` is only
+/// populated when screen-recording is granted.
+pub fn screen_recording_granted() -> PermissionState {
+    unsafe {
+        let opt = 1u32 | 16u32; // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+        let arr = CGWindowListCopyWindowInfo(opt, 0);
+        if arr.is_null() {
+            return PermissionState::Unknown;
+        }
+        let count = CFArrayGetCount(arr);
+        let mut saw_title = false;
+        for i in 0..count {
+            let dict = CFArrayGetValueAtIndex(arr, i);
+            if dict.is_null() {
+                continue;
+            }
+            let key = core_foundation::string::CFString::new("kCGWindowName");
+            let mut value: core_foundation_sys::base::CFTypeRef = std::ptr::null();
+            let got = core_foundation_sys::dictionary::CFDictionaryGetValueIfPresent(
+                dict as core_foundation_sys::dictionary::CFDictionaryRef,
+                core_foundation::base::TCFType::as_concrete_TypeRef(&key) as *const _,
+                &mut value as *mut _ as *mut *const c_void,
+            );
+            if got != 0 && !value.is_null() {
+                let as_str = core_foundation::string::CFString::wrap_under_get_rule(
+                    value as core_foundation_sys::string::CFStringRef,
+                );
+                if !as_str.to_string().is_empty() {
+                    saw_title = true;
+                    break;
+                }
+            }
+        }
+        CFRelease(arr as *const c_void);
+        if saw_title {
+            PermissionState::Granted
+        } else {
+            // Could be either "no windows on screen have titles" (unusual) or
+            // denied. Treat absence as denied — user can verify in Settings.
+            PermissionState::Denied
+        }
+    }
+}
+
+/// Microphone status. Without linking AVFoundation we cannot query this
+/// cleanly from pure Rust FFI without adding weight. For v1 we report
+/// `Unknown` and let the user check in System Settings. Revisit when a
+/// concrete sidekar feature needs mic input.
+pub fn microphone_granted() -> PermissionState {
+    PermissionState::Unknown
+}
+
+pub fn trust_status() -> TrustStatus {
+    TrustStatus {
+        accessibility: if accessibility_granted() {
+            PermissionState::Granted
+        } else {
+            PermissionState::Denied
+        },
+        screen_recording: screen_recording_granted(),
+        microphone: microphone_granted(),
+    }
+}
+
+/// Prompt the user to grant Accessibility permission if not already granted.
+/// Shows the macOS system settings pane. Safe to call repeatedly — if
+/// already granted, this is a no-op.
+pub fn prompt_accessibility() -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
+    let key = CFString::new("AXTrustedCheckOptionPrompt");
+    let value = CFBoolean::true_value();
+    let dict = CFDictionary::from_CFType_pairs(&[(
+        key.as_CFType(),
+        value.as_CFType(),
+    )]);
+    unsafe {
+        AXIsProcessTrustedWithOptions(
+            dict.as_concrete_TypeRef() as core_foundation_sys::dictionary::CFDictionaryRef,
+        )
+    }
+}
+
+/// Enumerate the macOS menu bar for an app as a flattened path list.
+/// Each entry is the `>`-joined menu path, e.g. "File > New Window".
+/// Disabled items are omitted. Separators are skipped.
+pub fn list_menu(pid: i32) -> Result<Vec<String>> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let menu_bar_raw = ax_copy_attribute(app, kAXMenuBarAttribute);
+    let mut out = Vec::new();
+    if let Some(bar) = menu_bar_raw {
+        let bar_el = bar as AXUIElementRef;
+        let top_items = ax_children(bar_el);
+        for top in top_items {
+            walk_menu(top, &mut Vec::new(), &mut out);
+            unsafe { CFRelease(top as *const c_void) };
+        }
+        unsafe { CFRelease(bar as *const c_void) };
+    }
+    unsafe { CFRelease(app as *const c_void) };
+    Ok(out)
+}
+
+fn walk_menu(element: AXUIElementRef, path: &mut Vec<String>, out: &mut Vec<String>) {
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_default();
+    let title = ax_string_attribute(element, kAXTitleAttribute).unwrap_or_default();
+    if role == "AXMenuItem" && !title.is_empty() {
+        let mut full = path.clone();
+        full.push(title.clone());
+        out.push(full.join(" > "));
+    }
+    // Push title into path when it's a MenuBarItem (top-level) or MenuItem
+    // with a submenu; descend into children.
+    let mut pushed = false;
+    if role == "AXMenuBarItem" && !title.is_empty() {
+        path.push(title.clone());
+        pushed = true;
+    } else if role == "AXMenuItem" && !title.is_empty() {
+        // For menu items with submenus, the submenu is usually a child;
+        // push title so nested items render with the full path.
+        let has_submenu = ax_children(element)
+            .iter()
+            .any(|c| ax_string_attribute(*c, kAXRoleAttribute).as_deref() == Some("AXMenu"));
+        if has_submenu {
+            path.push(title.clone());
+            pushed = true;
+        }
+    }
+    let children = ax_children(element);
+    for child in &children {
+        walk_menu(*child, path, out);
+        unsafe { CFRelease(*child as *const c_void) };
+    }
+    if pushed {
+        path.pop();
+    }
+}
 
 pub fn frontmost_app_pid() -> Option<i32> {
     unsafe {

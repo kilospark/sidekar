@@ -158,3 +158,15 @@ pub fn paste_text(text: &str) -> Result<()> {
     set_clipboard_text(text)?;
     press_chord("cmd+v")
 }
+
+#[cfg(target_os = "macos")]
+pub fn read_clipboard_text() -> Result<String> {
+    let output = Command::new("pbpaste")
+        .output()
+        .context("failed to run pbpaste")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("pbpaste failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}

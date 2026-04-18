@@ -81,17 +81,35 @@ sidekar console [action]
         }
         "network" => {
             "\
-sidekar network [action] [duration] [filter]
+sidekar network [action] [args]
 
-  Actions:
+  CDP-sourced actions (attach debugger, shows infobar):
     capture [secs] [filter]   Record requests with headers/timing (default 10s)
     show [filter]             Re-display last capture
     har [output_path]         Export last capture as HAR 1.2
 
+  Passive actions (extension page-world patch, no infobar):
+    passive log [-n N]        Show buffered fetch/XHR/EventSource events
+    passive tail [-n N]       Same as log (alias)
+    passive stats             Buffer depth, totals, cap
+    passive clear             Empty the passive buffer
+    passive emit-off          Mute capture on already-injected documents
+    passive emit-on            Resume capture (inject still runs on new docs)
+    passive ... [--profile P] Target a specific extension profile
+
+  SSE-focused views (filter + reassemble from the passive ring):
+    sse streams               List captured SSE streams (active + done)
+    sse log [url-substring]   Reassembled body of a stream (joined chunks)
+    sse tail [url] [-n N]     Last N chunks of a stream
+
+  Passive capture requires the Sidekar extension to be connected (see
+  `sidekar ext status`). It sees requests as the page sees them and cannot
+  modify them; use `network capture` when you need CDP-level completeness.
+
   Examples:
     sidekar network capture 15
-    sidekar network capture 10 api/users
-    sidekar network show
+    sidekar network passive log -n 20
+    sidekar network passive stats
     sidekar network har /tmp/trace.har"
         }
         "block" => {

@@ -615,3 +615,281 @@ pub(crate) fn try_desktop_click_fallback(browser_name: &str, query: &str) -> Res
         }
     }
 }
+
+
+pub(super) async fn cmd_desktop_trust(
+    ctx: &mut AppContext,
+    _args: &[String],
+) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!("Desktop trust check is only available on macOS");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let status = crate::desktop::native::trust_status();
+        let is_json = matches!(
+            crate::runtime::output_format(),
+            crate::output::OutputFormat::Json
+        );
+        if is_json {
+            let obj = serde_json::json!({
+                "accessibility": status.accessibility.as_str(),
+                "screenRecording": status.screen_recording.as_str(),
+                "microphone": status.microphone.as_str(),
+            });
+            out!(ctx, "{}", serde_json::to_string_pretty(&obj)?);
+        } else {
+            let path = |label: &str| {
+                format!(
+                    "    System Settings → Privacy & Security → {label}"
+                )
+            };
+            let lines = format!(
+                "macOS permissions:\n\
+                 \n\
+                 Accessibility    : {ax}\n{ax_path}\n\
+                 Screen Recording : {sr}\n{sr_path}\n\
+                 Microphone       : {mic}\n{mic_path}\n\
+                 \n\
+                 Accessibility is required for AX-based element targeting and\n\
+                 reliable OS-level input. Screen Recording is required for window\n\
+                 titles and screen capture beyond the current app. Microphone is\n\
+                 only needed if sidekar drives speech or audio-capable features.",
+                ax = status.accessibility.as_str(),
+                ax_path = path("Accessibility"),
+                sr = status.screen_recording.as_str(),
+                sr_path = path("Screen Recording"),
+                mic = status.microphone.as_str(),
+                mic_path = path("Microphone"),
+            );
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(lines))?
+            );
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_clipboard(
+    ctx: &mut AppContext,
+    args: &[String],
+) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!("Desktop clipboard is only available on macOS");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let sub = args.first().map(String::as_str).unwrap_or("read");
+        match sub {
+            "read" | "get" => {
+                let text = crate::desktop::input::read_clipboard_text()?;
+                out!(ctx, "{text}");
+            }
+            "write" | "set" => {
+                let text = args.get(1).cloned().ok_or_else(|| {
+                    anyhow!("Usage: sidekar desktop clipboard write <text>")
+                })?;
+                crate::desktop::input::set_clipboard_text(&text)?;
+                out!(
+                    ctx,
+                    "{}",
+                    crate::output::to_string(&PlainOutput::new(format!(
+                        "Wrote {} chars to clipboard.",
+                        text.len()
+                    )))?
+                );
+            }
+            other => bail!("Unknown clipboard subcommand: {other} (use read|write)"),
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_menu(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!("Desktop menu is only available on macOS");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut pid: Option<i32> = None;
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--app" => {
+                    i += 1;
+                    let name = args.get(i).context("--app requires a name")?;
+                    pid = Some(resolve_pid_by_app_name(name)?);
+                }
+                "--pid" => {
+                    i += 1;
+                    pid = Some(
+                        args.get(i)
+                            .context("--pid requires a value")?
+                            .parse()
+                            .context("invalid pid")?,
+                    );
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let pid = pid
+            .or_else(|| crate::desktop::native::frontmost_app_pid())
+            .ok_or_else(|| anyhow!("No app specified; pass --app or --pid"))?;
+        let entries = crate::desktop::native::list_menu(pid)?;
+        if entries.is_empty() {
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(
+                    "No menu entries (app may not have a menu bar or permission denied).",
+                ))?
+            );
+        } else {
+            out!(ctx, "{}", entries.join("\n"));
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_monitor(
+    ctx: &mut AppContext,
+    args: &[String],
+) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!("Desktop monitor is only available on macOS");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let sub = args.first().map(String::as_str).unwrap_or("stats");
+        let mut limit: Option<u64> = None;
+        let mut i = 1;
+        while i < args.len() {
+            if (args[i] == "-n" || args[i] == "--limit")
+                && let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok())
+            {
+                limit = Some(v);
+                i += 2;
+                continue;
+            }
+            i += 1;
+        }
+        let mut cmd = serde_json::json!({
+            "type": "desktop_monitor",
+            "action": sub,
+        });
+        if let Some(l) = limit {
+            cmd["limit"] = serde_json::json!(l);
+        }
+        let resp = crate::daemon::send_command(&cmd)
+            .context("daemon unreachable — try `sidekar daemon start`")?;
+        if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+            bail!("{}", err);
+        }
+
+        let is_json = matches!(
+            crate::runtime::output_format(),
+            crate::output::OutputFormat::Json
+        );
+        match sub {
+            "start" => {
+                out!(
+                    ctx,
+                    "{}",
+                    crate::output::to_string(&PlainOutput::new(
+                        "Monitor started. Use `sidekar desktop monitor tail` to read.",
+                    ))?
+                );
+            }
+            "stop" => {
+                out!(
+                    ctx,
+                    "{}",
+                    crate::output::to_string(&PlainOutput::new("Monitor stopped."))?
+                );
+            }
+            "clear" => {
+                let n = resp.get("cleared").and_then(|v| v.as_u64()).unwrap_or(0);
+                out!(ctx, "Cleared {n} events.");
+            }
+            "stats" => {
+                out!(ctx, "{}", serde_json::to_string_pretty(&resp)?);
+            }
+            "log" | "tail" => {
+                let events = resp
+                    .get("events")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if is_json {
+                    out!(ctx, "{}", serde_json::to_string_pretty(&events)?);
+                } else if events.is_empty() {
+                    out!(ctx, "No events captured.");
+                } else {
+                    for e in events {
+                        let k = e.get("k").and_then(|v| v.as_str()).unwrap_or("?");
+                        let t = e.get("t").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let x = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let y = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let kc = e.get("keycode").and_then(|v| v.as_i64()).unwrap_or(-1);
+                        let kc_str = if kc >= 0 {
+                            format!(" key={kc}")
+                        } else {
+                            String::new()
+                        };
+                        out!(ctx, "[{t}] {k} ({x:.0}, {y:.0}){kc_str}");
+                    }
+                }
+            }
+            other => bail!("Unknown monitor subcommand: {other}"),
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_monitor_watch(
+    _ctx: &mut AppContext,
+    _args: &[String],
+) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        bail!("Desktop monitor is only available on macOS");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Runs the CGEventTap in THIS process (the CLI). The CLI has the
+        // user-interactive TCC context that the detached daemon lacks, so
+        // Accessibility grants actually apply here. Streams events to stdout
+        // until Ctrl-C. No buffer — each event prints as it arrives.
+        use std::time::Duration;
+        use tokio::time::sleep;
+
+        crate::desktop::monitor::start()?;
+        eprintln!("Monitor running in foreground. Ctrl-C to stop.");
+
+        loop {
+            let events = crate::desktop::monitor::snapshot(None);
+            crate::desktop::monitor::clear();
+            for e in &events {
+                let kc = if e.keycode >= 0 {
+                    format!(" key={}", e.keycode)
+                } else {
+                    String::new()
+                };
+                println!("[{}] {} ({:.0}, {:.0}){}", e.t_ms, e.kind, e.x, e.y, kc);
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+}

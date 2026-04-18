@@ -85,6 +85,7 @@ pub async fn send_cli_command(
 struct ExtConnectionOut {
     id: u64,
     browser: String,
+    profile: String,
     owner: Option<String>,
 }
 
@@ -106,7 +107,14 @@ impl crate::output::CommandOutput for ExtStatusOutput {
         }
         writeln!(w, "{} connection(s):", self.connections.len())?;
         for c in &self.connections {
-            write!(w, "  [{}] {}", c.id, c.browser)?;
+            // Install IDs are 36-char UUIDs — truncate for display. Pre-UUID
+            // fallback profiles (just the browser name) stay as-is.
+            let short_profile = if c.profile.len() > 12 && c.profile.contains('-') {
+                &c.profile[..8]
+            } else {
+                c.profile.as_str()
+            };
+            write!(w, "  [{}] {} ({})", c.id, c.browser, short_profile)?;
             if let Some(o) = &c.owner {
                 write!(w, " (owner: {o})")?;
             }
@@ -138,6 +146,11 @@ fn show_status() -> Result<()> {
             id: c.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
             browser: c
                 .get("browser")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
+            profile: c
+                .get("profile")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?")
                 .to_string(),

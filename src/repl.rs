@@ -211,6 +211,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let cron_project = crate::scope::resolve_project_name(None);
     crate::commands::cron::start_default_cron_loop(bus_name.clone(), cron_project).await;
 
+    // Nudge unanswered outbound bus requests on the same schedule as PTY mode.
+    crate::poller::start_nudger(bus_name.clone());
+
     // Single-prompt mode: one turn, exit. Honors -r/--resume-session so the
     // prompt is appended to an existing session's history.
     if let Some(input) = prompt {
@@ -275,6 +278,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
 
         stop_relay(tunnel_tx.take());
+        crate::poller::shutdown_poller();
         let _ = broker::unregister_agent(&bus_name);
         return Ok(());
     }
@@ -534,6 +538,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     tunnel_println(&format!("\n\x1b[2mResume: {resume_cmd}\x1b[0m"));
 
     stop_relay(tunnel_tx);
+    crate::poller::shutdown_poller();
     let _ = broker::unregister_agent(&bus_name);
     Ok(())
 }

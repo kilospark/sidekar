@@ -24,28 +24,35 @@ impl crate::output::CommandOutput for PointerActionOutput {
 }
 
 pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let os_click = args.iter().any(|a| a == "--os");
     if let Some((raw_x, raw_y)) = parse_coordinates(args) {
         let (x, y) = adjust_coords_for_zoom(ctx, raw_x, raw_y);
         let tabs_before = snapshot_tab_ids(ctx).await?;
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;
-        cdp.send(
-            "Input.dispatchMouseEvent",
-            json!({ "type": "mouseMoved", "x": x, "y": y }),
-        )
-        .await?;
-        sleep(Duration::from_millis(80)).await;
-        cdp.send(
-            "Input.dispatchMouseEvent",
-            json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 }),
-        )
-        .await?;
-        cdp.send(
-            "Input.dispatchMouseEvent",
-            json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
-        )
-        .await?;
-        let action_line = format!("Clicked at ({x}, {y})");
+        let action_line = if os_click {
+            let (cx, cy, _m) =
+                crate::browser::os_click::os_click_css(ctx, &mut cdp, raw_x, raw_y).await?;
+            format!("Clicked at CSS ({cx:.0}, {cy:.0}) via OS event")
+        } else {
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x, "y": y }),
+            )
+            .await?;
+            sleep(Duration::from_millis(80)).await;
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+            )
+            .await?;
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+            )
+            .await?;
+            format!("Clicked at ({x}, {y})")
+        };
         sleep(Duration::from_millis(150)).await;
         let adopted = adopt_new_tabs(ctx, &tabs_before, Duration::from_millis(800)).await?;
         if !adopted.is_empty() {

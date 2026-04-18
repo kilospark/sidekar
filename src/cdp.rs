@@ -1,6 +1,7 @@
 use crate::*;
 
 mod tabs;
+pub mod stealth;
 
 pub use tabs::*;
 

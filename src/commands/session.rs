@@ -113,11 +113,17 @@ pub(super) async fn cmd_activate(ctx: &mut AppContext) -> Result<()> {
             && let Some(ws_url) = &tab.web_socket_debugger_url
             && restore_window_by_id(ctx, ws_url, wid).await.is_ok()
         {
-            // Still need AppleScript to bring Chrome to foreground
-            if let Some(name) = state
-                .browser_name
-                .as_ref()
-                .or(ctx.launch_browser_name.as_ref())
+            // Prefer PID-specific activate so multiple instances of the same
+            // browser (multiple user-data-dir profiles) don't clobber each
+            // other. Fall back to app-wide activate only if PID lookup fails.
+            let pid_activated = crate::utils::pid_listening_on(ctx.cdp_port)
+                .and_then(|pid| crate::utils::activate_browser_by_pid(pid).ok())
+                .is_some();
+            if !pid_activated
+                && let Some(name) = state
+                    .browser_name
+                    .as_ref()
+                    .or(ctx.launch_browser_name.as_ref())
             {
                 let _ = activate_browser(name);
             }

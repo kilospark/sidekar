@@ -73,12 +73,13 @@ impl Default for UserInputState {
     }
 }
 
-/// Signal the poller to stop.
+/// Signal all background workers started by this module to stop.
 pub fn shutdown_poller() {
     POLLER_SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
-/// Start the background poller thread. Returns immediately.
+/// Start the full PTY poller: an inbound thread that delivers bus messages
+/// into the wrapped agent's PTY, plus the shared nudge+cleanup sweep.
 pub fn start_poller(
     agent_name: String,
     pty_fd: Arc<OwnedFd>,
@@ -87,32 +88,46 @@ pub fn start_poller(
 ) {
     POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
 
+    let inject_agent = agent_name.clone();
     std::thread::spawn(move || {
-        let mut poll_count: u32 = 0;
+        loop {
+            if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+            if let Ok(messages) = broker::poll_messages(&inject_agent) {
+                for msg in messages {
+                    deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
+                }
+            }
+        }
+    });
+
+    start_nudger(agent_name);
+}
+
+/// Start the nudge + cleanup sweep for this agent. No PTY delivery — use this
+/// from embeds like the REPL that handle inbound messages on their own path.
+/// Stopped by `shutdown_poller`.
+pub fn start_nudger(agent_name: String) {
+    POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
+
+    std::thread::spawn(move || {
+        let mut cleanup_poll_count: u32 = 0;
         let mut nudge_poll_count: u32 = 0;
 
         loop {
             if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
                 break;
             }
-
             std::thread::sleep(POLL_INTERVAL);
 
-            // Poll for messages
-            if let Ok(messages) = broker::poll_messages(&agent_name) {
-                for msg in messages {
-                    deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
-                }
-            }
-
-            // Periodic cleanup
-            poll_count += 1;
-            if poll_count >= CLEANUP_INTERVAL_POLLS {
-                poll_count = 0;
+            cleanup_poll_count += 1;
+            if cleanup_poll_count >= CLEANUP_INTERVAL_POLLS {
+                cleanup_poll_count = 0;
                 let _ = broker::cleanup_old_messages(MAX_MESSAGE_AGE_SECS);
             }
 
-            // Periodic nudge check for this agent's outbound requests
             nudge_poll_count += 1;
             if nudge_poll_count >= NUDGE_INTERVAL_POLLS {
                 nudge_poll_count = 0;

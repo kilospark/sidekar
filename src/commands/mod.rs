@@ -6,6 +6,7 @@ mod batch;
 mod core;
 pub mod cron;
 mod data;
+mod debug;
 mod desktop;
 mod doc;
 mod interaction;
@@ -73,6 +74,8 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
     match command {
         "launch" => cmd_launch(ctx, args).await,
         "connect" => cmd_connect(ctx).await.map(|_| ()),
+        "stealth" => cmd_stealth(ctx, args).await,
+        "debug" => debug::cmd_debug(ctx, args).await,
         "navigate" => {
             if args.is_empty() {
                 bail!("Usage: sidekar navigate <url>");
@@ -357,8 +360,20 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 "launch" => "desktop-launch",
                 "activate" => "desktop-activate",
                 "quit" => "desktop-quit",
+                "trust" => "desktop-trust",
+                "clipboard" => "desktop-clipboard",
+                "menu" => "desktop-menu",
+                "monitor" => {
+                    // `watch` is in-process (no daemon handoff). Everything
+                    // else goes through the daemon.
+                    if args.get(1).map(String::as_str) == Some("watch") {
+                        "desktop-monitor-watch"
+                    } else {
+                        "desktop-monitor"
+                    }
+                }
                 _ => bail!(
-                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|launch|activate|quit> [args...]"
+                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|launch|activate|quit|trust|clipboard|menu|monitor> [args...]"
                 ),
             };
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
@@ -374,6 +389,11 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-launch" => cmd_desktop_launch(ctx, args).await,
         "desktop-activate" => cmd_desktop_activate(ctx, args).await,
         "desktop-quit" => cmd_desktop_quit(ctx, args).await,
+        "desktop-trust" => cmd_desktop_trust(ctx, args).await,
+        "desktop-clipboard" => cmd_desktop_clipboard(ctx, args).await,
+        "desktop-menu" => cmd_desktop_menu(ctx, args).await,
+        "desktop-monitor" => cmd_desktop_monitor(ctx, args).await,
+        "desktop-monitor-watch" => cmd_desktop_monitor_watch(ctx, args).await,
         _ => bail!("Unknown command: {command}"),
     }
 }

@@ -681,7 +681,259 @@ pub(crate) async fn cmd_network(ctx: &mut AppContext, args: &[String]) -> Result
             );
             out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         }
-        _ => bail!("Usage: sidekar network <capture|show|har> [args]"),
+        "passive" => cmd_network_passive(ctx, &args[1..]).await?,
+        "sse" => cmd_network_sse(ctx, &args[1..]).await?,
+        _ => bail!("Usage: sidekar network <capture|show|har|passive|sse> [args]"),
+    }
+    Ok(())
+}
+
+async fn cmd_network_passive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("log");
+    let mut limit: Option<u64> = None;
+    let mut profile: Option<String> = None;
+    let mut conn_id: Option<u64> = None;
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "-n" || a == "--limit" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                limit = Some(v);
+                i += 2;
+                continue;
+            }
+        }
+        if a == "--profile" {
+            if let Some(v) = args.get(i + 1) {
+                profile = Some(v.clone());
+                i += 2;
+                continue;
+            }
+        }
+        if a == "--conn" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                conn_id = Some(v);
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // Normalize CLI sub → daemon action: `emit-off`/`emit-on` map to
+    // `emit_off`/`emit_on` on the wire.
+    let action_name = match sub {
+        "emit-off" => "emit_off",
+        "emit-on" => "emit_on",
+        other => other,
+    };
+    let mut cmd = json!({ "type": "net_passive", "action": action_name });
+    if let Some(l) = limit {
+        cmd["limit"] = json!(l);
+    }
+    if let Some(p) = profile {
+        cmd["profile"] = json!(p);
+    }
+    if let Some(c) = conn_id {
+        cmd["conn_id"] = json!(c);
+    }
+
+    let resp = crate::daemon::send_command(&cmd)
+        .with_context(|| "daemon unreachable — is it running? try `sidekar daemon start`")?;
+
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("{}", err);
+    }
+
+    match sub {
+        "log" | "tail" => {
+            let events = resp
+                .get("events")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let is_json = matches!(
+                crate::runtime::output_format(),
+                crate::output::OutputFormat::Json
+            );
+            if is_json {
+                out!(ctx, "{}", serde_json::to_string_pretty(&events)?);
+            } else if events.is_empty() {
+                out!(ctx, "No passive events captured.");
+            } else {
+                for e in events {
+                    let kind = e
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let detail = e.get("detail").cloned().unwrap_or(Value::Null);
+                    let method = detail
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let url = detail.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let status = detail
+                        .get("status")
+                        .and_then(|v| v.as_i64())
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "-".into());
+                    let t0 = detail.get("t0").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let t1 = detail.get("t1").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let dur = if t0 > 0 && t1 >= t0 { t1 - t0 } else { 0 };
+                    let sse = detail
+                        .get("sse")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let sse_tag = if sse { " [sse]" } else { "" };
+                    out!(
+                        ctx,
+                        "[{kind}] {method} {status} {url} ({dur}ms){sse_tag}"
+                    );
+                }
+            }
+        }
+        "clear" => {
+            let cleared = resp
+                .get("cleared")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            out!(ctx, "Cleared {cleared} passive events.");
+        }
+        "stats" => {
+            out!(ctx, "{}", serde_json::to_string_pretty(&resp)?);
+        }
+        "emit-off" | "emit-on" => {
+            let off = resp
+                .get("emitOff")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            out!(
+                ctx,
+                "Passive emit: {}. Existing patched documents now {} new captures.",
+                if off { "off" } else { "on" },
+                if off { "suppress" } else { "resume" }
+            );
+        }
+        other => bail!("Unknown passive subcommand: {other}"),
+    }
+    Ok(())
+}
+
+async fn cmd_network_sse(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("streams");
+    let mut conn_id: Option<u64> = None;
+    let mut profile: Option<String> = None;
+    let mut limit: Option<u64> = None;
+    let mut url_filter: Option<String> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--conn" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                conn_id = Some(v);
+                i += 2;
+                continue;
+            }
+        }
+        if a == "--profile" {
+            if let Some(v) = args.get(i + 1) {
+                profile = Some(v.clone());
+                i += 2;
+                continue;
+            }
+        }
+        if a == "-n" || a == "--limit" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                limit = Some(v);
+                i += 2;
+                continue;
+            }
+        }
+        if !a.starts_with("--") && url_filter.is_none() && sub != "streams" {
+            url_filter = Some(a.clone());
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    let action = match sub {
+        "streams" | "list" => "sse_streams",
+        "log" | "tail" => "sse_log",
+        other => bail!("Unknown sse subcommand: {other}. Use streams|log|tail."),
+    };
+
+    let mut cmd = json!({ "type": "net_passive", "action": action });
+    if let Some(c) = conn_id {
+        cmd["conn_id"] = json!(c);
+    }
+    if let Some(p) = profile {
+        cmd["profile"] = json!(p);
+    }
+    if let Some(u) = url_filter.as_ref() {
+        cmd["url"] = json!(u);
+    }
+
+    let resp = crate::daemon::send_command(&cmd)
+        .with_context(|| "daemon unreachable — is it running? try `sidekar daemon start`")?;
+
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("{}", err);
+    }
+
+    let is_json = matches!(
+        crate::runtime::output_format(),
+        crate::output::OutputFormat::Json
+    );
+
+    match action {
+        "sse_streams" => {
+            let streams = resp
+                .get("streams")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if is_json {
+                out!(ctx, "{}", serde_json::to_string_pretty(&streams)?);
+            } else if streams.is_empty() {
+                out!(ctx, "No SSE streams captured.");
+            } else {
+                for s in streams {
+                    let url = s.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let chunks = s.get("chunks").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let bytes = s.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let done = s.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let tag = if done { "done" } else { "active" };
+                    out!(ctx, "[{tag}] {url} ({chunks} chunks, {bytes} bytes)");
+                }
+            }
+        }
+        "sse_log" => {
+            let chunks = resp
+                .get("chunks")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let total = chunks.len();
+            let take = limit.map(|n| n as usize).unwrap_or(total).min(total);
+            let skip = total.saturating_sub(take);
+            let slice: Vec<&Value> = chunks.iter().skip(skip).collect();
+            if is_json {
+                out!(ctx, "{}", serde_json::to_string_pretty(&slice)?);
+            } else if slice.is_empty() {
+                out!(ctx, "No SSE chunks captured.");
+            } else {
+                let mut acc = String::new();
+                for c in slice {
+                    if let Some(chunk) = c.get("chunk").and_then(|v| v.as_str()) {
+                        acc.push_str(chunk);
+                    }
+                }
+                out!(ctx, "{acc}");
+            }
+        }
+        _ => unreachable!(),
     }
     Ok(())
 }

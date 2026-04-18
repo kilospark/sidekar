@@ -9,16 +9,22 @@ pub use human_input::*;
 pub use keys::*;
 
 pub fn parse_coordinates(args: &[String]) -> Option<(f64, f64)> {
-    if args.len() == 1 {
-        let arg = args[0].trim();
+    // Skip flags so callers like `click 320 370 --os` still resolve to coords.
+    let coords: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with("--"))
+        .map(String::as_str)
+        .collect();
+    if coords.len() == 1 {
+        let arg = coords[0].trim();
         if let Some((x, y)) = arg.split_once(',')
             && let (Ok(xv), Ok(yv)) = (x.parse::<f64>(), y.parse::<f64>())
         {
             return Some((xv, yv));
         }
     }
-    if args.len() == 2
-        && let (Ok(x), Ok(y)) = (args[0].parse::<f64>(), args[1].parse::<f64>())
+    if coords.len() == 2
+        && let (Ok(x), Ok(y)) = (coords[0].parse::<f64>(), coords[1].parse::<f64>())
     {
         return Some((x, y));
     }
@@ -253,6 +259,38 @@ end try"#,
         let _ = activate_browser_linux(browser_name);
     }
     Ok(())
+}
+
+/// Activate a specific browser **process** by PID. Matters on macOS when
+/// multiple instances of the same browser (multiple user-data-dir profiles)
+/// are running — plain `tell application "Google Chrome" to activate` picks
+/// an arbitrary one.
+pub fn activate_browser_by_pid(pid: u32) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        // System Events can target a process by its POSIX PID.
+        let script = format!(
+            r#"tell application "System Events"
+    set theProc to first process whose unix id is {pid}
+    set frontmost of theProc to true
+end tell"#
+        );
+        run_osascript(&script)?;
+    }
+    Ok(())
+}
+
+/// Find the OS PID that has the given TCP port bound on localhost. Uses
+/// `lsof -nP -iTCP:<port> -sTCP:LISTEN`. Returns the first match.
+pub fn pid_listening_on(port: u16) -> Option<u32> {
+    let out = Command::new("lsof")
+        .arg("-nP")
+        .arg(format!("-iTCP:{port}"))
+        .arg("-sTCP:LISTEN")
+        .arg("-t")
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.lines().next().and_then(|l| l.trim().parse::<u32>().ok())
 }
 
 pub fn minimize_browser(browser_name: &str) -> Result<()> {

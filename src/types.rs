@@ -27,6 +27,13 @@ pub struct SessionState {
     pub mouse_y: Option<f64>,
     pub mouse_buttons: Option<u8>,
     pub screencast_active: Option<bool>,
+    /// If Some(true), install stealth scripts on every target of this session.
+    /// `None` treated as "not set" — current default is off, opt-in via
+    /// `sidekar stealth on`.
+    pub stealth_enabled: Option<bool>,
+    /// CDP script identifiers already installed on the current target. Used by
+    /// `prepare_cdp` to skip re-registration within the same CDP session.
+    pub stealth_script_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

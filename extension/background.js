@@ -201,11 +201,31 @@ async function doConnect(myEpoch) {
       else if (ua.includes("YaBrowser/") || brands.some((b) => b.includes("yandex"))) browser = "Yandex";
       else if (ua.includes("SamsungBrowser/")) browser = "Samsung";
       else if (ua.includes("Chromium/")) browser = "Chromium";
+      // Stable per-profile install ID — one UUID per chrome.storage.local,
+      // which is scoped to the Chrome user-data-dir profile. First run
+      // generates and persists. Same value survives extension reloads.
+      const installId = await new Promise((resolve) => {
+        chrome.storage.local.get(["sk_install_id"], (data) => {
+          const existing = String(data.sk_install_id || "").trim();
+          if (existing) {
+            resolve(existing);
+            return;
+          }
+          const fresh =
+            (crypto.randomUUID && crypto.randomUUID()) ||
+            Math.random().toString(36).slice(2) +
+              Math.random().toString(36).slice(2);
+          chrome.storage.local.set({ sk_install_id: fresh }, () =>
+            resolve(fresh)
+          );
+        });
+      });
       sendWs({
         type: "bridge_register",
         version: chrome.runtime.getManifest().version,
         token: extToken,
         browser,
+        installId,
       });
       return;
     }
@@ -235,6 +255,32 @@ async function doConnect(myEpoch) {
     // Ping from daemon
     if (msg.type === "ping") {
       sendWs({ type: "pong" });
+      return;
+    }
+
+    // Broadcast emit-on/off to every tab's content script. Fire-and-forget:
+    // tabs with no content script installed will throw and we swallow it.
+    if (msg.type === "passive_emit_ctl") {
+      try {
+        const off = !!msg.off;
+        chrome.tabs.query({}, (tabs) => {
+          for (const t of tabs || []) {
+            try {
+              chrome.tabs.sendMessage(
+                t.id,
+                { type: "sk_passive_emit_off", off },
+                () => {
+                  // swallow "no receiver" errors
+                  void chrome.runtime.lastError;
+                }
+              );
+            } catch {}
+          }
+        });
+        sendWs({ id: msg.id, ok: true, emit_off: off });
+      } catch (e) {
+        sendWs({ id: msg.id, ok: false, error: String(e) });
+      }
       return;
     }
 
@@ -2060,6 +2106,23 @@ function sleep(ms) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Passive network firehose from content.js — batch relay to daemon.
+  if (msg.type === "sk_net_firehose") {
+    try {
+      const tabId = (sender && sender.tab && sender.tab.id) || null;
+      sendWs({
+        type: "net_passive_event",
+        v: 1,
+        tabId,
+        tabUrl: msg.tabUrl || "",
+        frameUrl: msg.frameUrl || "",
+        events: msg.events || [],
+        dropped: msg.dropped || 0,
+        t: msg.t || Date.now(),
+      });
+    } catch {}
+    return false;
+  }
   // Watch events from content scripts (injected MutationObservers) — forward to daemon for bus delivery.
   if (msg.type === "watch_event") {
     sendWs({

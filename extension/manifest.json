@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sidekar",
-  "version": "2.5.7",
+  "version": "2.5.26",
   "description": "Bridge between AI agents and your browser",
   "permissions": [
     "activeTab",
@@ -32,5 +32,23 @@
   },
   "host_permissions": [
     "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject-net.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    }
   ]
 }

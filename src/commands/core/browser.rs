@@ -788,3 +788,56 @@ pub(crate) async fn cmd_readurls(
     out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }
+
+pub(crate) async fn cmd_stealth(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    let mut state = ctx.load_session_state()?;
+    match action {
+        "on" | "enable" => {
+            state.stealth_enabled = Some(true);
+            ctx.save_session_state(&state)?;
+            let mut cdp = open_cdp(ctx).await?;
+            crate::prepare_cdp(ctx, &mut cdp).await?;
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(
+                    "Stealth enabled. Scripts install on every new document."
+                ))?
+            );
+        }
+        "off" | "disable" => {
+            let ids = state.stealth_script_ids.clone().unwrap_or_default();
+            if !ids.is_empty() {
+                let mut cdp = open_cdp(ctx).await?;
+                crate::cdp::stealth::uninstall_from_target(&mut cdp, &ids).await?;
+            }
+            state.stealth_enabled = Some(false);
+            state.stealth_script_ids = None;
+            ctx.save_session_state(&state)?;
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(
+                    "Stealth disabled. Reload open tabs to fully remove."
+                ))?
+            );
+        }
+        "status" => {
+            let enabled = state.stealth_enabled.unwrap_or(false);
+            let n = state
+                .stealth_script_ids
+                .as_ref()
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let msg = format!(
+                "Stealth: {}. Scripts installed: {n}.",
+                if enabled { "on" } else { "off" }
+            );
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
+        }
+        other => bail!("Usage: sidekar stealth <on|off|status> (got: {other})"),
+    }
+    Ok(())
+}
+
