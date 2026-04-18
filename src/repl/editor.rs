@@ -33,6 +33,10 @@ const PROMPT_VISIBLE: &str = "› ";
 const CONTINUATION_PREFIX: &str = "\x1b[2m·\x1b[0m ";
 const CONTINUATION_VISIBLE: &str = "· ";
 const SUBMITTED_BAR: &str = "\x1b[96m▎\x1b[0m ";
+/// Queued rows dim the entire line (bar + text) so they don't read as
+/// committed. The closing `\x1b[0m` is emitted after the row content.
+const QUEUED_ROW_OPEN: &str = "\x1b[90m▎ ";
+const QUEUED_ROW_CLOSE: &str = "\x1b[0m";
 const ESC_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(75);
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 const PLACEHOLDER_DIM_OPEN: &str = "\x1b[2m";
@@ -98,6 +102,33 @@ fn append_row_with_placeholders(
     if idx < row.end {
         out.push_str(&buffer[idx..row.end]);
     }
+}
+
+/// Wrap `text` into display rows assuming every row is prefixed with a
+/// 2-cell bar glyph + space (matches SUBMITTED_BAR / QUEUED_BAR width).
+fn wrapped_rows_for_text(text: &str, cols: usize) -> Vec<std::ops::Range<usize>> {
+    let cols = cols.max(1);
+    let prefix_w = 2usize.min(cols);
+    let mut rows = Vec::new();
+    let mut row_start = 0usize;
+    let mut used = prefix_w;
+    for (idx, grapheme) in text.grapheme_indices(true) {
+        if grapheme == "\n" {
+            rows.push(row_start..idx);
+            row_start = idx + 1;
+            used = prefix_w;
+            continue;
+        }
+        let w = UnicodeWidthStr::width(grapheme);
+        if used + w > cols && row_start < idx {
+            rows.push(row_start..idx);
+            row_start = idx;
+            used = 0;
+        }
+        used += w;
+    }
+    rows.push(row_start..text.len());
+    rows
 }
 
 fn emit_raw(text: &str) {
@@ -377,6 +408,7 @@ impl ActivePromptSession {
         let editor = Arc::new(Mutex::new(editor));
         register_active_prompt(&editor);
         if let Ok(mut guard) = editor.lock() {
+            guard.follow_up_mode = true;
             guard.redraw_inner();
         }
 
@@ -489,6 +521,7 @@ impl ActivePromptSession {
 
         let editor_arc = self.editor.take().expect("active prompt editor");
         if let Ok(mut guard) = editor_arc.lock() {
+            guard.follow_up_mode = false;
             guard.clear_rendered_prompt_inner();
         }
 
@@ -669,6 +702,9 @@ pub(super) struct LineEditor {
     /// Detects keyboard-delivered paste bursts (drag-and-drop on terminals
     /// that don't wrap pastes in bracketed-paste sequences).
     paste_burst: PasteBurst,
+    /// True while an `ActivePromptSession` is running (agent is streaming),
+    /// so submits render as queued blocks rather than committed turns.
+    follow_up_mode: bool,
 }
 
 impl Default for LineEditor {
@@ -701,6 +737,7 @@ impl LineEditor {
             large_paste_counters: HashMap::new(),
             rendered_pending_rows: 0,
             paste_burst: PasteBurst::default(),
+            follow_up_mode: false,
         }
     }
 
@@ -916,8 +953,35 @@ impl LineEditor {
     /// Drain queued follow-ups into a single merged submit, to be consumed by the next input read as a normal user turn.
     pub(super) fn drain_pending_followups_as_submit(&mut self) {
         if let Some(merged) = self.drain_followups_into_merged() {
+            // Render the merged batch as a real submitted block so the user
+            // sees what's actually being auto-sent to the LLM. The dim
+            // queued blocks drawn during the turn only marked them pending;
+            // this draws the bright submitted-bar version.
+            self.emit_text_as_submitted_block(&merged.text);
             self.pending_submits.push_back(merged);
         }
+    }
+
+    /// Render `text` as a submitted-turn block (bright bar), independent of
+    /// the current editor buffer. Used when draining queued follow-ups at
+    /// end-of-turn so the auto-submitted batch has a user-turn visual.
+    fn emit_text_as_submitted_block(&mut self, text: &str) {
+        self.clear_rendered_prompt_inner();
+        if text.is_empty() {
+            emit_raw("\r\n");
+            return;
+        }
+        let cols = self.terminal_columns().max(1);
+        let rows = wrapped_rows_for_text(text, cols);
+        let mut out = String::new();
+        for row in &rows {
+            out.push('\r');
+            out.push_str(SUBMITTED_BAR);
+            out.push_str(&text[row.clone()]);
+            out.push_str("\r\n");
+        }
+        out.push_str("\r\n");
+        emit_raw(&out);
     }
 
     fn build_clear_string(&self) -> String {
@@ -1027,8 +1091,11 @@ impl LineEditor {
     }
 
     /// Clear the live prompt rendering and replace it with a left-bar block
-    /// so the submitted turn stands out in the transcript. A blank line is
-    /// emitted after the block to frame it against streamed output.
+    /// so the submitted turn stands out in the transcript. Uses a dim bar
+    /// while in follow-up mode (agent is still running, line is queued, not
+    /// sent) and a bright bar once the line is actually being submitted.
+    /// A blank line is emitted after the block to frame it against streamed
+    /// output.
     fn emit_submitted_block(&mut self) {
         self.clear_rendered_prompt_inner();
         if self.buffer.is_empty() {
@@ -1041,13 +1108,24 @@ impl LineEditor {
         let mut out = String::new();
         for row in &rows {
             out.push('\r');
-            out.push_str(SUBMITTED_BAR);
-            append_row_with_placeholders(
-                &mut out,
-                &self.buffer,
-                row.clone(),
-                &placeholder_spans,
-            );
+            if self.follow_up_mode {
+                out.push_str(QUEUED_ROW_OPEN);
+                append_row_with_placeholders(
+                    &mut out,
+                    &self.buffer,
+                    row.clone(),
+                    &placeholder_spans,
+                );
+                out.push_str(QUEUED_ROW_CLOSE);
+            } else {
+                out.push_str(SUBMITTED_BAR);
+                append_row_with_placeholders(
+                    &mut out,
+                    &self.buffer,
+                    row.clone(),
+                    &placeholder_spans,
+                );
+            }
             out.push_str("\r\n");
         }
         out.push_str("\r\n");
