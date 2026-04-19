@@ -877,12 +877,15 @@ async fn pkce_login(
 
     server.abort();
 
-    // Exchange code for tokens with retry on transient server errors
+    // Exchange code for tokens with retry on transient server errors.
+    // `state` is included because Anthropic's token endpoint rejects the
+    // request as "Invalid request format" without it. OpenAI ignores it.
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "grant_type": "authorization_code",
         "client_id": client_id,
         "code": code,
+        "state": state,
         "redirect_uri": callback,
         "code_verifier": verifier,
     });
