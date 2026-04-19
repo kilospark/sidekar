@@ -131,6 +131,15 @@ pub async fn os_click_css(
 ) -> Result<(f64, f64, WindowMetrics)> {
     let (zx, zy) = crate::utils::adjust_coords_for_zoom(ctx, css_x, css_y);
     let metrics = measure_window(cdp).await?;
-    crate::desktop::input::click_at(zx, zy)?;
+    #[cfg(target_os = "macos")]
+    {
+        crate::desktop::input::click_at(zx, zy)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err(anyhow!(
+            "--os click not yet supported on this platform (macOS only); see TODO.md"
+        ));
+    }
     Ok((zx, zy, metrics))
 }
