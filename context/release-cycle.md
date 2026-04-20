@@ -29,3 +29,4 @@ Limitation: only darwin-arm64 ships. The other three targets (darwin-x64, linux-
 - Always bump version before `cargo build --release`.
 - Always tag and push the tag in the same step as the version-bump push.
 - After tagging, either `pull-release.sh` (CI path) or `local-release.sh` (billing-down path) must run. A tag without one of those is a half-release — the binaries aren't on sidekar.dev.
+- After a release, wipe `target/` — release builds (with the embedded extension zip rebuild) inflate it to ~20GB and the binary we care about is already installed at `~/.local/bin/sidekar`. `local-release.sh` does this automatically via `cargo clean`; for `pull-release.sh` runs (or any standalone `cargo build --release`), run `cargo clean` manually after the install step.

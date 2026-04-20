@@ -75,6 +75,10 @@ echo "=== Restarting daemon ==="
 echo ""
 echo "=== Cleaning up ==="
 rm -f "$NAME" "${NAME}.tar.gz" "${NAME}.tar.gz.minisig"
+# Wipe target/ — release builds bloat it to ~20GB and the artifact we
+# care about (target/release/sidekar) is already installed above. Next
+# build will recompile from scratch; that's the accepted trade.
+cargo clean
 
 echo ""
 echo "=== Done ==="
