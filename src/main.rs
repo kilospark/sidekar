@@ -257,11 +257,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         eprintln!("Warning: could not fetch encryption key: {}", e);
     }
 
-    // Inside a PTY wrapper — enable isolated mode (own window, no tab activation)
-    if sidekar::runtime::pty_mode() {
-        ctx.isolated = true;
-    }
-
     if let Some(port) = env::var("CDP_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
@@ -366,16 +361,26 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     } else if sidekar::command_requires_session(&command)
         && !is_sessionless_subcommand(&command, &args)
     {
-        // Managed mode + no session yet: auto-launch the requested profile
-        // (default if unspecified) so callers don't need a separate `launch`
-        // step. cmd_launch is idempotent — if the profile's Chrome is
-        // already running, it attaches instead of spawning a new one.
-        let profile = global_profile.as_deref().unwrap_or("default");
-        let launch_args = vec!["--profile".to_string(), profile.to_string()];
-        sidekar::commands::dispatch(&mut ctx, "launch", &launch_args).await?;
-        // Discard launch's structured output — the caller asked for the
-        // result of the actual command, not the launch banner.
-        let _ = ctx.drain_output();
+        // Managed mode + no session passed: first try to reuse the last
+        // session (pointed to by the per-agent last-session file). Only
+        // fall back to auto-launch if no session exists or its Chrome is
+        // gone — otherwise every CLI invocation would connect a new
+        // session and (in isolated mode) spawn a new blank window.
+        let reused = match ctx.auto_discover_last_session() {
+            Ok(()) => get_debug_tabs(&ctx).await.is_ok(),
+            Err(_) => false,
+        };
+        if !reused {
+            // Clear any stale session id picked up above so launch creates
+            // a fresh one cleanly.
+            ctx.clear_current_session();
+            let profile = global_profile.as_deref().unwrap_or("default");
+            let launch_args = vec!["--profile".to_string(), profile.to_string()];
+            sidekar::commands::dispatch(&mut ctx, "launch", &launch_args).await?;
+            // Discard launch's structured output — the caller asked for the
+            // result of the actual command, not the launch banner.
+            let _ = ctx.drain_output();
+        }
     }
 
     commands::dispatch(&mut ctx, &command, &args).await?;

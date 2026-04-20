@@ -162,6 +162,10 @@ impl AppContext {
     pub fn set_current_session(&mut self, session_id: String) {
         self.current_session_id = Some(session_id);
     }
+
+    pub fn clear_current_session(&mut self) {
+        self.current_session_id = None;
+    }
 }
 
 /// Atomic JSON write: serialize to temp file, then rename into place.
