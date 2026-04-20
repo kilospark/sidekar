@@ -10,6 +10,34 @@ pub(super) struct EventRenderer {
     tool_args: std::collections::HashMap<usize, (String, String)>,
     spinner: Option<Spinner>,
     partial_visible: bool,
+    /// Last time `update_partial_preview` actually re-rendered. Each token
+    /// triggers `render_markdown` over the full pending region — O(N²) in
+    /// paragraph length. Capping refresh rate keeps long outputs responsive
+    /// without losing the trailing-line preview.
+    last_preview_at: Option<std::time::Instant>,
+}
+
+/// Minimum interval between partial-preview rerenders. ~30 Hz — fast enough
+/// that the trailing line still feels live, slow enough that an LLM streaming
+/// 50+ tokens/sec doesn't trigger a full markdown reparse on every delta.
+const PREVIEW_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
+/// Emit multiple committed markdown lines in a single editor-mutex acquisition
+/// + ANSI clear + redraw. The per-line `emit_shared_line` path repaints the
+/// prompt after every call — so a 50-line code-block flush would otherwise
+/// trigger 50 redraws back-to-back.
+fn emit_lines_batched(lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let mut joined = String::with_capacity(lines.iter().map(|l| l.len() + 2).sum());
+    for line in lines {
+        joined.push_str(line);
+        // \r\n: raw mode (cfmakeraw clears OPOST) doesn't translate \n to
+        // CR+LF, so each line needs an explicit \r to land at column 0.
+        joined.push_str("\r\n");
+    }
+    emit_shared_output(&joined);
 }
 
 impl EventRenderer {
@@ -19,6 +47,7 @@ impl EventRenderer {
             tool_args: std::collections::HashMap::new(),
             spinner: None,
             partial_visible: false,
+            last_preview_at: None,
         }
     }
 
@@ -49,13 +78,28 @@ impl EventRenderer {
             return;
         }
         self.clear_partial_preview();
-        for line in lines {
-            self.emitln(&line);
-        }
+        emit_lines_batched(&lines);
         let _ = io::stdout().flush();
     }
 
-    fn update_partial_preview(&mut self) {
+    /// Refresh the trailing-line preview. Throttled to `PREVIEW_MIN_INTERVAL`
+    /// because each call re-parses the entire uncommitted region — at LLM
+    /// streaming speeds (~50 tokens/sec) without throttling this dominates
+    /// the per-delta budget.
+    ///
+    /// `force = true` bypasses the throttle (used at stream end / cancel).
+    fn update_partial_preview(&mut self, force: bool) {
+        if !force {
+            let now = std::time::Instant::now();
+            if let Some(last) = self.last_preview_at
+                && now.duration_since(last) < PREVIEW_MIN_INTERVAL
+            {
+                return;
+            }
+            self.last_preview_at = Some(now);
+        } else {
+            self.last_preview_at = Some(std::time::Instant::now());
+        }
         match self.md.preview_partial_line() {
             Some(line) => {
                 emit_transient_status(&line);
@@ -72,6 +116,7 @@ impl EventRenderer {
             let _ = io::stdout().flush();
             self.partial_visible = false;
         }
+        self.last_preview_at = None;
     }
 
     pub(super) fn render(&mut self, event: &StreamEvent) {
@@ -108,7 +153,7 @@ impl EventRenderer {
                 self.stop_spinner();
                 self.md.push(delta);
                 self.flush_md_lines();
-                self.update_partial_preview();
+                self.update_partial_preview(false);
             }
             StreamEvent::ThinkingDelta { .. } => {
                 // Stream has started — replace any earlier status label
@@ -119,9 +164,8 @@ impl EventRenderer {
             StreamEvent::ToolCallStart { index, name, .. } => {
                 self.stop_spinner();
                 self.clear_partial_preview();
-                for line in self.md.finalize() {
-                    self.emitln(&line);
-                }
+                let lines = self.md.finalize();
+                emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
                 match self.tool_args.entry(*index) {
                     Entry::Vacant(v) => {
@@ -163,10 +207,9 @@ impl EventRenderer {
             StreamEvent::Done { message } => {
                 self.stop_spinner();
                 self.clear_partial_preview();
-                for line in self.md.finalize() {
-                    self.emitln(&line);
-                }
-                self.emitln("");
+                let mut lines = self.md.finalize();
+                lines.push(String::new());
+                emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
                 let u = &message.usage;
                 if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {

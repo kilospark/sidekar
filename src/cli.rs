@@ -21,6 +21,20 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(out, "       sidekar <agent>  {DIM}(wrap agent in PTY){RST}");
     let _ = writeln!(out, "       sidekar help <command>");
     let _ = writeln!(out);
+    let _ = writeln!(out, "{YELLOW}{BOLD}Browser modes{RST}");
+    let _ = writeln!(
+        out,
+        "  {DIM}Default — managed Chrome with profile 'default', auto-launched on first use.{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--profile <name>{RST}  {DIM}Managed Chrome with a named profile (also auto-launched).{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--host{RST}            {DIM}Use your already-running Chrome via the sidekar extension.{RST}"
+    );
+    let _ = writeln!(out);
 
     let groups = [
         CommandGroup::Browser,
@@ -104,6 +118,14 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(
         out,
         "  {GREEN}--no-relay{RST}          {DIM}Disable relay tunnel for sidekar <agent>{RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--host{RST}              {DIM}Use your already-running Chrome via extension (vs sidekar-managed){RST}"
+    );
+    let _ = writeln!(
+        out,
+        "  {GREEN}--profile <name>{RST}    {DIM}Use named managed-Chrome profile (auto-launch on first use){RST}"
     );
     let _ = writeln!(
         out,

@@ -41,12 +41,18 @@ sidekar navigate <url> [--no-dismiss]
   Auto-dismisses cookie consent banners and common popups after load.
   Returns a page brief with URL, title, visible inputs, buttons, links.
 
+  On first use, auto-launches managed Chrome with the 'default' profile.
+  Pass --profile <name> to use a different managed profile, or --host to
+  drive your already-running Chrome via the sidekar extension.
+
   Options:
     --no-dismiss   Skip automatic popup/banner dismissal
 
   Examples:
     sidekar navigate example.com
-    sidekar navigate https://github.com/search?q=rust --no-dismiss"
+    sidekar navigate https://github.com/search?q=rust --no-dismiss
+    sidekar --profile work navigate https://internal.app
+    sidekar --host navigate https://news.example.com"
         }
         "click" => {
             "\
@@ -278,12 +284,23 @@ sidekar batch '<json>'
             "\
 sidekar launch [options]
 
-  Launch a Chromium browser and create a session.
+  Launch a Chromium browser and create a session. Idempotent — if Chrome
+  for the requested profile is already running, attaches instead of
+  spawning a new process.
+
+  Most callers don't need to invoke this directly: any session-requiring
+  command (navigate, click, etc.) auto-launches the default profile on
+  first use. Use `launch` explicitly only to pre-warm Chrome, pick a
+  non-default browser, or open a named profile.
 
   Options:
     --browser=NAME   chrome, edge, brave, arc, vivaldi, chromium, canary
     --profile=NAME   Named profile for isolated browser data ('new' for auto-ID)
     --headless       No visible window (all tools still work)
+
+  See also:
+    sidekar --host <cmd> ...        Drive your already-running Chrome (no launch)
+    sidekar --profile <name> <cmd>  Managed Chrome with a named profile
 
   Examples:
     sidekar launch
@@ -319,6 +336,11 @@ sidekar browser-sessions <list|show> [sessionId]
 sidekar run <sessionId> [command args...]
 
   Run a command or command file against an explicit browser session.
+
+  Most callers don't need this — `sidekar <cmd>` auto-launches/attaches to
+  the default managed Chrome, and `sidekar --profile <name> <cmd>` uses a
+  named profile. `run` is for cases where you want to dispatch into a
+  specific historical session ID (e.g. from `browser-sessions list`).
 
   Without an inline command, Sidekar reads /tmp/sidekar-command-<sessionId>.json.
   With an inline command, Sidekar executes it directly against that session.

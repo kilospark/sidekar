@@ -7,8 +7,18 @@
 use crate::message::{AgentId, Envelope};
 use crate::*;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::cell::RefCell;
 
 const DB_FILE: &str = "sidekar.sqlite3";
+
+/// Bump when migrations are added to `init_schema`. `ensure_schema` skips
+/// `init_schema` when the file's `PRAGMA user_version` already matches —
+/// without that gate, every `broker::open()` (called from the input loop
+/// ~10/sec while idle, more under paste burst) would re-execute every
+/// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
+/// multi-millisecond stalls that scale with the schema and the
+/// `memory_events` row count.
+const SCHEMA_VERSION: u32 = 1;
 
 mod agent_registry;
 mod agent_sessions;
@@ -67,15 +77,99 @@ pub fn vacuum_db() -> Result<()> {
 }
 
 pub(crate) fn open() -> Result<Connection> {
+    let conn = open_raw()?;
+    ensure_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Open a fresh connection without running schema init. Used by `ensure_schema`
+/// itself (to avoid recursion) and by code that knows the schema is already up.
+fn open_raw() -> Result<Connection> {
     fs::create_dir_all(data_dir())?;
     let path = db_path();
     let conn = Connection::open(&path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    // `journal_mode=WAL` and `foreign_keys=ON` are inexpensive and required
+    // per-connection (foreign_keys especially — it's not file-persistent).
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    init_schema(&conn)?;
     Ok(conn)
+}
+
+fn ensure_schema(conn: &Connection) -> Result<()> {
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+        .unwrap_or(0);
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    init_schema(conn)?;
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    Ok(())
+}
+
+/// Force schema initialization at startup so the first hot-path call doesn't
+/// pay for it. Safe to call multiple times — subsequent calls are no-ops.
+pub fn init_db() -> Result<()> {
+    let conn = open_raw()?;
+    ensure_schema(&conn)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cached connection for hot paths (e.g. the REPL bus poller)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static CACHED_CONN: RefCell<Option<Connection>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with a thread-local cached `Connection`, opening one on first use.
+/// SQLite handles aren't `Sync` but they're cheap to keep open per-thread,
+/// and reuse avoids per-call `open()` syscalls + WAL pragma roundtrips on
+/// the keystroke-frequency polling path.
+pub(crate) fn with_cached_conn<F, R>(f: F) -> Result<R>
+where
+    F: FnOnce(&Connection) -> rusqlite::Result<R>,
+{
+    CACHED_CONN.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(open()?);
+        }
+        let conn = slot.as_ref().expect("just initialized");
+        Ok(f(conn)?)
+    })
+}
+
+/// Explicit rebuild of the memory FTS index. The previous design ran this on
+/// every `open()`, which is O(rows) and writes to the WAL — a hidden cost on
+/// the hot polling path. Call this from housekeeping or after bulk writes.
+pub fn rebuild_memory_fts() -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "INSERT INTO memory_events_fts(memory_events_fts) VALUES ('rebuild')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Reclaim freed pages opportunistically when the freelist exceeds `ratio`.
+/// Returns true if VACUUM ran. Safe to call from a background thread.
+pub fn maybe_vacuum(ratio: f64) -> Result<bool> {
+    let conn = open()?;
+    let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    if page_count == 0 {
+        return Ok(false);
+    }
+    let bloat = freelist as f64 / page_count as f64;
+    if bloat < ratio {
+        return Ok(false);
+    }
+    conn.execute_batch("VACUUM")?;
+    Ok(true)
 }
 
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -382,10 +476,6 @@ fn init_schema(conn: &Connection) -> Result<()> {
         END;
         ",
     )?;
-    let _ = conn.execute(
-        "INSERT INTO memory_events_fts(memory_events_fts) VALUES ('rebuild')",
-        [],
-    );
 
     // Local task graph
     conn.execute_batch(
@@ -422,6 +512,41 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "
         CREATE INDEX IF NOT EXISTS idx_tasks_scope
             ON tasks(scope, project, status, priority DESC, created_at DESC);
+        ",
+    )?;
+
+    // REPL session persistence (previously created lazily by session.rs)
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS repl_sessions (
+            id TEXT PRIMARY KEY,
+            cwd TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
+            provider TEXT NOT NULL DEFAULT '',
+            name TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repl_entries (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES repl_sessions(id),
+            parent_id TEXT,
+            entry_type TEXT NOT NULL DEFAULT 'message',
+            role TEXT,
+            content TEXT NOT NULL DEFAULT '[]',
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_repl_entries_session
+            ON repl_entries(session_id, created_at);
+        CREATE TABLE IF NOT EXISTS repl_input_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_root TEXT NOT NULL,
+            scope_name TEXT NOT NULL DEFAULT '',
+            line TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_repl_input_history_scope
+            ON repl_input_history(scope_root, id);
         ",
     )?;
 

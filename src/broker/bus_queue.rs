@@ -22,13 +22,18 @@ pub fn enqueue_message(sender: &str, recipient: &str, body: &str) -> Result<()> 
 }
 
 /// Check if there are pending bus messages without consuming them.
+///
+/// Called from the REPL input loop on every poll-timeout tick, so it must
+/// stay cheap — uses a thread-local cached connection to avoid the open() +
+/// schema-check syscalls on every keystroke.
 pub fn has_pending_messages(recipient: &str) -> bool {
-    let Ok(conn) = open() else { return false };
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE recipient = ?1)",
-        params![recipient],
-        |row| row.get::<_, bool>(0),
-    )
+    with_cached_conn(|conn| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE recipient = ?1)",
+            params![recipient],
+            |row| row.get::<_, bool>(0),
+        )
+    })
     .unwrap_or(false)
 }
 

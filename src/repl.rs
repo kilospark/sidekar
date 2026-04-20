@@ -12,8 +12,8 @@ mod user_turn;
 
 use self::editor::{
     ActivePromptSession, EscCancelWatcher, InputEvent, LineEditor, RawModeGuard,
-    clear_transient_status, emit_shared_line, emit_transient_status, print_banner,
-    read_input_or_bus,
+    clear_transient_status, emit_shared_line, emit_shared_output, emit_transient_status,
+    print_banner, read_input_or_bus,
 };
 use self::relay::{inject_bus_messages, start_relay, stop_relay};
 use self::renderer::EventRenderer;
@@ -92,6 +92,20 @@ pub struct ReplOptions {
 /// Entry point for the REPL.
 pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     crate::runtime::init(opts.verbose);
+
+    // Eagerly initialize the broker schema so the first hot-path call (the
+    // bus poller in `read_input_or_bus`) doesn't pay for it. Then kick off
+    // an opportunistic VACUUM in the background — long-running REPL users
+    // who never run `sidekar daemon` would otherwise accumulate hundreds of
+    // megabytes of freed pages without ever reclaiming them.
+    if let Err(e) = crate::broker::init_db() {
+        crate::broker::try_log_error("broker", &format!("init_db failed: {e:#}"), None);
+    }
+    std::thread::spawn(|| {
+        if let Ok(true) = crate::broker::maybe_vacuum(0.30) {
+            crate::broker::try_log_event("info", "broker", "vacuumed bloated db", None);
+        }
+    });
 
     // Start the MITM proxy for in-process streaming provider calls if requested.
     // Mirrors PTY proxy semantics: explicit --proxy / --no-proxy wins, otherwise

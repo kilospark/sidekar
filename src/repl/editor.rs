@@ -2111,6 +2111,11 @@ pub(super) fn read_input_or_bus(
     let stdin_fd = _raw_mode.as_ref().map(|_| libc::STDIN_FILENO);
 
     let mut buf = [0u8; 64];
+    // Bus poll runs only on poll() timeouts, not on every iteration. Each
+    // keystroke wakes poll() via stdin → without this gate every keypress
+    // would hit SQLite. Latency for incoming bus messages is bounded by
+    // poll_timeout_ms (100ms idle), which matches the previous behavior.
+    let mut check_bus_now = true;
 
     loop {
         editor.flush_paste_burst_if_due(|ed, line| {
@@ -2120,9 +2125,12 @@ pub(super) fn read_input_or_bus(
             return InputEvent::User(line);
         }
 
-        if broker::has_pending_messages(bus_name) {
-            editor.clear_display();
-            return InputEvent::Bus;
+        if check_bus_now {
+            check_bus_now = false;
+            if broker::has_pending_messages(bus_name) {
+                editor.clear_display();
+                return InputEvent::Bus;
+            }
         }
 
         unsafe {
@@ -2193,6 +2201,7 @@ pub(super) fn read_input_or_bus(
                 if let Some(line) = editor.take_next_pending_submit() {
                     return InputEvent::User(line);
                 }
+                check_bus_now = true;
             } else if ready < 0 {
                 continue;
             }

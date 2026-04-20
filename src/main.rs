@@ -124,6 +124,38 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     let command = sidekar::canonical_command_name(&raw_command)
         .unwrap_or(raw_command.as_str())
         .to_string();
+
+    // Global --host flag: route session-requiring commands through the
+    // extension daemon (which talks to your already-running Chrome) instead
+    // of launching/attaching to a managed Chrome via CDP.
+    let host_mode = if let Some(pos) = args.iter().position(|a| a == "--host") {
+        args.remove(pos);
+        true
+    } else {
+        false
+    };
+
+    // Global --profile <name>: select which managed Chrome profile to use.
+    // Stripped from args here EXCEPT when the command consumes --profile
+    // itself (launch / ext / network), so per-command parsing keeps working.
+    let consumes_own_profile = matches!(command.as_str(), "launch" | "ext" | "network");
+    let global_profile: Option<String> = if !consumes_own_profile {
+        if let Some(pos) = args.iter().position(|a| a == "--profile") {
+            if pos + 1 < args.len() {
+                let val = args[pos + 1].clone();
+                args.remove(pos);
+                args.remove(pos);
+                Some(val)
+            } else {
+                bail!("--profile requires a name argument");
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if matches!(command.as_str(), "-v" | "-V" | "--version") {
         print_version_info();
         return Ok(());
@@ -263,6 +295,21 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    // Two-axis browser routing:
+    //   * Whose Chrome — managed (sidekar owns the process + profile) vs host
+    //     (your already-running Chrome). `--host` selects host mode; absence
+    //     selects managed.
+    //   * Transport — picked automatically. `--host` routes through the
+    //     extension daemon (which finds the host browser); managed mode uses
+    //     CDP against the launched Chrome.
+    //
+    // `--profile <name>` and `--host` are mutually exclusive. `--profile`
+    // implies managed. Without either, managed-default is used and Chrome is
+    // auto-launched on first session-requiring command.
+    if host_mode && global_profile.is_some() {
+        bail!("--host and --profile are mutually exclusive (--host = host Chrome, --profile = managed Chrome with named profile)");
+    }
+
     if ctx.override_tab_id.is_some() {
         // --tab mode: discover Chrome port only, then create an isolated session
         // to avoid polluting the original session's state (ref maps, frame, etc.)
@@ -299,12 +346,36 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let tab_id = ctx.override_tab_id.as_ref().unwrap();
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
+    } else if host_mode
+        && sidekar::command_requires_session(&command)
+        && !is_sessionless_subcommand(&command, &args)
+    {
+        // --host mode: route the command through the extension daemon, which
+        // talks to whichever Chrome (host or managed) the extension is
+        // attached to. Tab targeting via --tab is honored if provided.
+        if !sidekar::is_ext_routable_command(&command) {
+            bail!(
+                "--host doesn't support `{command}` (no extension equivalent yet). \
+                 Drop --host to use managed Chrome, or run an --host-supported command."
+            );
+        }
+        let default_tab = override_tab_id
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok());
+        return sidekar::ext::send_cli_command(&command, &args, default_tab).await;
     } else if sidekar::command_requires_session(&command)
         && !is_sessionless_subcommand(&command, &args)
     {
-        bail!(
-            "Command '{command}' requires an explicit browser session. Create one with `sidekar launch` or `sidekar connect`, list sessions with `sidekar browser-sessions list`, then rerun with `sidekar run <sessionId> {command} ...`."
-        );
+        // Managed mode + no session yet: auto-launch the requested profile
+        // (default if unspecified) so callers don't need a separate `launch`
+        // step. cmd_launch is idempotent — if the profile's Chrome is
+        // already running, it attaches instead of spawning a new one.
+        let profile = global_profile.as_deref().unwrap_or("default");
+        let launch_args = vec!["--profile".to_string(), profile.to_string()];
+        sidekar::commands::dispatch(&mut ctx, "launch", &launch_args).await?;
+        // Discard launch's structured output — the caller asked for the
+        // result of the actual command, not the launch banner.
+        let _ = ctx.drain_output();
     }
 
     commands::dispatch(&mut ctx, &command, &args).await?;

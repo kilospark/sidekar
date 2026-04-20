@@ -1,6 +1,6 @@
 //! Session persistence — SQLite-backed conversation history with tree structure.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
@@ -39,52 +39,14 @@ pub struct SessionEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
-
-pub fn ensure_tables() -> Result<()> {
-    let conn = crate::broker::open()?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS repl_sessions (
-            id TEXT PRIMARY KEY,
-            cwd TEXT NOT NULL,
-            model TEXT NOT NULL DEFAULT '',
-            provider TEXT NOT NULL DEFAULT '',
-            name TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS repl_entries (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL REFERENCES repl_sessions(id),
-            parent_id TEXT,
-            entry_type TEXT NOT NULL DEFAULT 'message',
-            role TEXT,
-            content TEXT NOT NULL DEFAULT '[]',
-            created_at REAL NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_repl_entries_session
-            ON repl_entries(session_id, created_at);
-        CREATE TABLE IF NOT EXISTS repl_input_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            scope_root TEXT NOT NULL,
-            scope_name TEXT NOT NULL DEFAULT '',
-            line TEXT NOT NULL,
-            created_at REAL NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_repl_input_history_scope
-            ON repl_input_history(scope_root, id);",
-    )
-    .context("Failed to create session tables")?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Session CRUD
 // ---------------------------------------------------------------------------
+//
+// Schema lives in `broker::init_schema` and is created once per process on
+// the first `broker::open()` call. Do not re-run `CREATE TABLE` here — it
+// would reinstate the per-call overhead this module used to pay.
 
 pub fn create_session(cwd: &str, model: &str, provider: &str) -> Result<String> {
-    ensure_tables()?;
     let id = generate_id();
     let now = epoch_secs();
     let conn = crate::broker::open()?;
@@ -108,7 +70,6 @@ pub fn update_session_time(session_id: &str) -> Result<()> {
 
 /// List sessions for the current working directory, most recent first.
 pub fn list_sessions(cwd: &str, limit: usize) -> Result<Vec<Session>> {
-    ensure_tables()?;
     let conn = crate::broker::open()?;
     let mut stmt = conn.prepare(
         "SELECT id, cwd, model, provider, name, created_at, updated_at
@@ -135,7 +96,6 @@ pub fn list_sessions(cwd: &str, limit: usize) -> Result<Vec<Session>> {
 
 /// List sessions across all directories.
 pub fn list_all_sessions(limit: usize) -> Result<Vec<Session>> {
-    ensure_tables()?;
     let conn = crate::broker::open()?;
     let mut stmt = conn.prepare(
         "SELECT id, cwd, model, provider, name, created_at, updated_at
@@ -162,7 +122,6 @@ pub fn list_all_sessions(limit: usize) -> Result<Vec<Session>> {
 
 /// Find a session by ID prefix match (across all cwds).
 pub fn find_session_by_prefix(prefix: &str) -> Result<Option<Session>> {
-    ensure_tables()?;
     let conn = crate::broker::open()?;
     let pattern = format!("{prefix}%");
     let mut stmt = conn.prepare(
@@ -225,7 +184,6 @@ pub fn append_message(session_id: &str, msg: &ChatMessage) -> Result<String> {
 
 /// Load all messages for a session in chronological order.
 pub fn load_history(session_id: &str) -> Result<Vec<ChatMessage>> {
-    ensure_tables()?;
     let conn = crate::broker::open()?;
     let mut stmt = conn.prepare(
         "SELECT role, content FROM repl_entries
@@ -340,7 +298,6 @@ pub fn prune_empty_sessions() -> Result<usize> {
 // ---------------------------------------------------------------------------
 
 pub fn load_input_history(scope_root: &str, limit: usize) -> Result<Vec<String>> {
-    ensure_tables()?;
     let conn = crate::broker::open()?;
     let mut stmt = conn.prepare(
         "SELECT line FROM repl_input_history
@@ -366,7 +323,6 @@ pub fn append_input_history(
         return Ok(());
     }
 
-    ensure_tables()?;
     let conn = crate::broker::open()?;
     let tx = conn.unchecked_transaction()?;
 
