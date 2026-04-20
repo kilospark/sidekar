@@ -1,4 +1,5 @@
 use super::*;
+use super::spinner::Spinner;
 
 // ---------------------------------------------------------------------------
 // Stream event rendering
@@ -238,56 +239,6 @@ impl EventRenderer {
 impl Drop for EventRenderer {
     fn drop(&mut self) {
         self.teardown();
-    }
-}
-
-pub(super) struct Spinner {
-    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-const SPINNER_FRAMES: &[&str] = &[
-    "[    ]", "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]", "[    ]",
-];
-const SPINNER_COLOR: &str = "\x1b[36m";
-
-impl Spinner {
-    pub(super) fn start_with_label(label: String) -> Self {
-        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let r = running.clone();
-        let handle = std::thread::spawn(move || {
-            let started = std::time::Instant::now();
-            let label_part = if label.is_empty() {
-                String::new()
-            } else {
-                format!(" {label}")
-            };
-            let mut i = 0;
-            while r.load(std::sync::atomic::Ordering::Relaxed) {
-                let elapsed = started.elapsed().as_secs_f32();
-                let line = format!(
-                    "{SPINNER_COLOR}{} {:.1}s{label_part}\x1b[0m",
-                    SPINNER_FRAMES[i % SPINNER_FRAMES.len()],
-                    elapsed,
-                );
-                emit_transient_status(&line);
-                i += 1;
-                std::thread::sleep(std::time::Duration::from_millis(80));
-            }
-            clear_transient_status();
-        });
-        Self {
-            running,
-            handle: Some(handle),
-        }
-    }
-
-    pub(super) fn stop(&mut self) {
-        self.running
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
     }
 }
 

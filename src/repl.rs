@@ -5,15 +5,16 @@ use std::io::{self, BufRead, Write};
 mod editor;
 mod relay;
 mod renderer;
+mod shell_escape;
 mod skills;
 mod slash;
+mod spinner;
 mod system_prompt;
 mod user_turn;
 
 use self::editor::{
-    ActivePromptSession, EscCancelWatcher, InputEvent, LineEditor, RawModeGuard,
-    clear_transient_status, emit_shared_line, emit_shared_output, emit_transient_status,
-    print_banner, read_input_or_bus,
+    ActivePromptSession, EscCancelWatcher, InputEvent, LineEditor, clear_transient_status,
+    emit_shared_line, emit_shared_output, emit_transient_status, print_banner, read_input_or_bus,
 };
 use self::relay::{inject_bus_messages, start_relay, stop_relay};
 use self::renderer::EventRenderer;
@@ -364,27 +365,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 if cmd.is_empty() {
                     tunnel_println("\x1b[2mUsage: ! <command>\x1b[0m");
                 } else {
-                    // Restore terminal to cooked mode for the subprocess
-                    let _guard = RawModeGuard::enter_cooked();
-                    let status = std::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(cmd)
-                        .stdin(std::process::Stdio::inherit())
-                        .stdout(std::process::Stdio::inherit())
-                        .stderr(std::process::Stdio::inherit())
-                        .status();
-                    match status {
-                        Ok(s) if !s.success() => {
-                            tunnel_println(&format!(
-                                "\x1b[2m[exit {}]\x1b[0m",
-                                s.code().unwrap_or(-1)
-                            ));
-                        }
-                        Err(e) => {
-                            tunnel_println(&format!("\x1b[31mFailed to run command: {e}\x1b[0m"));
-                        }
-                        _ => {}
-                    }
+                    shell_escape::run(cmd);
                 }
                 continue;
             }
