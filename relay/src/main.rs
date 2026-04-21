@@ -17,11 +17,25 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env().add_directive("sidekar_relay=info".parse().unwrap()))
         .init();
 
-    // Required env vars
-    let mongodb_uri =
-        std::env::var("MONGODB_URI").expect("MONGODB_URI environment variable is required");
-    let jwt_secret =
-        std::env::var("JWT_SECRET").expect("JWT_SECRET environment variable is required").trim().to_string();
+    // Required env vars. Trim both — secret stores sometimes attach
+    // trailing whitespace or a newline that breaks URI parsing.
+    let mongodb_uri = std::env::var("MONGODB_URI")
+        .expect("MONGODB_URI environment variable is required")
+        .trim()
+        .to_string();
+    if !(mongodb_uri.starts_with("mongodb://") || mongodb_uri.starts_with("mongodb+srv://")) {
+        // Fail loudly with a hint instead of the opaque "no scheme"
+        // error from the driver.
+        panic!(
+            "MONGODB_URI must start with mongodb:// or mongodb+srv:// (got {} chars, first 12: {:?})",
+            mongodb_uri.len(),
+            mongodb_uri.chars().take(12).collect::<String>()
+        );
+    }
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET environment variable is required")
+        .trim()
+        .to_string();
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
     let instance_id = std::env::var("RELAY_INSTANCE_ID")
         .or_else(|_| std::env::var("HOSTNAME"))
