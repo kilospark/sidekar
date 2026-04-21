@@ -149,11 +149,17 @@ async fn phase2_summarize(
     history: &mut Vec<ChatMessage>,
     on_event: &StreamCallback,
 ) -> anyhow::Result<()> {
-    // Protect first 3 messages and last ~20K tokens worth of messages
+    // Protect first 3 messages and last ~20K tokens worth of messages.
+    //
+    // In addition, ALWAYS protect the most recent assistant turn and the
+    // user message immediately preceding it, verbatim, regardless of token
+    // budget. That's where open questions / pending choices live; summarizing
+    // them into prose loses the "awaiting user response" signal and the
+    // model drifts off-topic after compaction.
     let protect_head = 3.min(history.len());
     let protect_tail_tokens = 20_000;
 
-    // Find the split point from the tail
+    // Find the split point from the tail by token budget.
     let mut tail_tokens = 0;
     let mut split = history.len();
     for (i, msg) in history.iter().enumerate().rev() {
@@ -164,6 +170,27 @@ async fn phase2_summarize(
             break;
         }
     }
+
+    // Force-protect the last assistant message and its preceding user message.
+    // Walk back from the end; find the last Assistant index, then the nearest
+    // User index before it. Clamp `split` so both are in the protected tail.
+    if let Some(last_assistant_idx) = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, m)| (m.role == Role::Assistant).then_some(i))
+    {
+        let pair_start = history[..last_assistant_idx]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, m)| (m.role == Role::User).then_some(i))
+            .unwrap_or(last_assistant_idx);
+        if pair_start < split {
+            split = pair_start;
+        }
+    }
+
     split = split.max(protect_head);
 
     if split <= protect_head {
@@ -221,6 +248,14 @@ async fn phase2_summarize(
         ## Relevant Files\n[Files read/modified]\n\n\
         ## Next Steps\n[What must happen next]\n\n\
         ## Critical Context\n[Values, errors, config details]\n\n\
+        ## Awaiting User Response\n\
+        [If the assistant's LAST message in this range posed a question, \
+        offered options, or requested a decision from the user, quote it \
+        verbatim here and label it \"OPEN QUESTION — do not answer until \
+        the user addresses it\". If the user's next message pivots to a \
+        different topic, the open question remains parked — acknowledge \
+        the pivot explicitly rather than silently dropping it. If no open \
+        question exists, write \"None\".]\n\n\
         ---\n\
         Conversation to summarize:\n\n{summary_input}"
     );
@@ -286,7 +321,13 @@ async fn phase2_summarize(
         role: Role::User,
         content: vec![ContentBlock::Text {
             text: format!(
-                "[CONTEXT COMPACTION] Earlier conversation was summarized:\n\n{summary_text}"
+                "[CONTEXT COMPACTION] Earlier conversation was summarized below. \
+                The messages after this marker are preserved verbatim — treat the \
+                most recent assistant message as your immediate prior turn. If the \
+                summary's \"Awaiting User Response\" section names an open question \
+                and the user's next message does not address it, acknowledge the \
+                pivot explicitly before proceeding (do not silently abandon the \
+                open thread).\n\n{summary_text}"
             ),
         }],
     });
