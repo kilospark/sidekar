@@ -297,7 +297,116 @@ main.container { padding: 32px 24px; }
           '</div></div></div>';
       }
 
+      // Telegram section placeholder — populated asynchronously.
+      html += '<div class="settings-section" id="telegram-section">' +
+        '<h2>Telegram</h2>' +
+        '<div class="provider-row"><div class="provider-info">' +
+        '<span class="provider-name">Loading…</span></div></div></div>';
+
       content.innerHTML = html;
+      loadTelegram();
+    }
+
+    function loadTelegram() {
+      var section = document.getElementById("telegram-section");
+      if (!section) return;
+      fetch("/api/telegram/status")
+        .then(function(r) {
+          if (r.status === 404) return { __unavailable: true };
+          if (!r.ok) throw new Error("status failed");
+          return r.json();
+        })
+        .then(function(data) {
+          renderTelegram(section, data);
+        })
+        .catch(function() {
+          section.innerHTML = '<h2>Telegram</h2>' +
+            '<p style="color:var(--text-muted);font-size:14px;">Failed to load Telegram status.</p>';
+        });
+    }
+
+    function renderTelegram(section, data) {
+      var botUsername = (data && data.bot_username) || "sidekar_bot";
+      var bindings = (data && data.bindings) || [];
+      var html = '<h2>Telegram</h2>';
+
+      if (bindings.length === 0) {
+        html +=
+          '<div class="provider-row">' +
+            '<div class="provider-info">' +
+              '<span class="provider-name">Link your Telegram chat</span>' +
+              '<span class="provider-detail">Text sidekar from anywhere.</span>' +
+            '</div>' +
+            '<button class="btn-link-provider" id="tg-link-btn">Generate code</button>' +
+          '</div>' +
+          '<div id="tg-link-out" style="margin-top:12px;"></div>';
+      } else {
+        bindings.forEach(function(b) {
+          var detail = b.session_id ? ("routed → " + b.session_id) : "no session routed";
+          html +=
+            '<div class="provider-row">' +
+              '<div class="provider-info">' +
+                '<span class="provider-name">Chat #' + escapeHtml(String(b.chat_id)) + '</span>' +
+                '<span class="provider-detail">' + escapeHtml(detail) + '</span>' +
+              '</div>' +
+              '<span class="provider-status linked">Linked</span>' +
+            '</div>';
+        });
+        html +=
+          '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button class="btn-link-provider" id="tg-link-btn">Add another chat</button>' +
+            '<button class="btn-link-provider" id="tg-unlink-btn" style="background:transparent;">Unlink all</button>' +
+          '</div>' +
+          '<div id="tg-link-out" style="margin-top:12px;"></div>';
+      }
+
+      section.innerHTML = html;
+
+      var linkBtn = document.getElementById("tg-link-btn");
+      if (linkBtn) {
+        linkBtn.addEventListener("click", function() {
+          linkBtn.disabled = true;
+          linkBtn.textContent = "Generating…";
+          fetch("/api/telegram/link", { method: "POST" })
+            .then(function(r) {
+              if (!r.ok) throw new Error("mint failed");
+              return r.json();
+            })
+            .then(function(d) {
+              var out = document.getElementById("tg-link-out");
+              var deep = d.deep_link || ("https://t.me/" + botUsername + "?start=" + d.code);
+              out.innerHTML =
+                '<div class="provider-row" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
+                  '<div><b>Code:</b> <code>' + escapeHtml(d.code) + '</code></div>' +
+                  '<div style="font-size:13px;color:var(--text-muted);">' +
+                    'Open <a href="' + escapeHtml(deep) + '">@' + escapeHtml(botUsername) + '</a> and send <code>/start ' + escapeHtml(d.code) + '</code>. ' +
+                    'Expires in ' + Math.floor((d.expires_in_secs || 600) / 60) + ' minutes.' +
+                  '</div>' +
+                '</div>';
+              linkBtn.disabled = false;
+              linkBtn.textContent = "Generate another";
+            })
+            .catch(function() {
+              linkBtn.disabled = false;
+              linkBtn.textContent = "Generate code";
+              showToast("Failed to generate code");
+            });
+        });
+      }
+
+      var unlinkBtn = document.getElementById("tg-unlink-btn");
+      if (unlinkBtn) {
+        unlinkBtn.addEventListener("click", function() {
+          if (!window.confirm("Unlink all Telegram chats?")) return;
+          fetch("/api/telegram/status?unlink=1", { method: "POST" })
+            .then(function(r) {
+              if (!r.ok) throw new Error();
+              showToast("Telegram unlinked");
+              loadTelegram();
+            })
+            .catch(function() { showToast("Unlink failed"); });
+        });
+      }
     }
 
     checkAuth().then(function(user) {

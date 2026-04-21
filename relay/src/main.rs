@@ -44,21 +44,30 @@ async fn main() {
     registry.start_bus_dispatcher();
 
     // Optional Telegram integration.
-    let telegram_cfg = telegram::TelegramConfig::from_env();
-    if telegram_cfg.is_some() {
-        tracing::info!("telegram integration enabled");
-    } else {
-        tracing::info!(
-            "telegram integration disabled (TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET unset)"
-        );
-    }
+    let telegram = match telegram::TelegramConfig::from_env() {
+        Some(cfg) => {
+            tracing::info!("telegram integration enabled");
+            // Ensure unique index on update_id so dedup relies on the
+            // insert-or-duplicate-key contract.
+            if let Err(e) = telegram::ensure_indexes(&db).await {
+                tracing::warn!("telegram index setup failed (dedup may be soft): {e}");
+            }
+            Some(telegram::TelegramState::new(cfg))
+        }
+        None => {
+            tracing::info!(
+                "telegram integration disabled (TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET unset)"
+            );
+            None
+        }
+    };
 
     // App state
     let state = AppState {
         db,
         registry,
         jwt_secret,
-        telegram: telegram_cfg,
+        telegram,
     };
 
     // CORS — allow sidekar.dev
@@ -79,6 +88,7 @@ async fn main() {
         .route("/sessions", get(bridge::handle_list_sessions))
         .route("/relay/bus", post(bridge::handle_relay_bus))
         .route("/telegram/webhook", post(telegram::handle_webhook))
+        .route("/telegram/deliver", post(telegram::handle_deliver))
         .route("/telegram/link", get(telegram::handle_mint_link_code))
         .layer(cors)
         .with_state(state);

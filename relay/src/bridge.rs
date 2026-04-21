@@ -22,9 +22,10 @@ pub struct AppState {
     pub db: mongodb::Database,
     pub registry: Registry,
     pub jwt_secret: String,
-    /// Optional Telegram config. `None` when `TELEGRAM_BOT_TOKEN` /
+    /// Optional Telegram runtime state (bot config + in-process viewer
+    /// table). `None` when `TELEGRAM_BOT_TOKEN` /
     /// `TELEGRAM_WEBHOOK_SECRET` are not set in the environment.
-    pub telegram: Option<crate::telegram::TelegramConfig>,
+    pub telegram: Option<crate::telegram::TelegramState>,
 }
 
 // ─── Tunnel handler ───────────────────────────────────────────────
