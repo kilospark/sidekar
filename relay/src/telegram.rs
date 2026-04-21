@@ -97,15 +97,29 @@ impl TelegramConfig {
 pub struct BotClient {
     http: reqwest::Client,
     token: String,
+    /// API base URL. Production: `https://api.telegram.org`. Tests
+    /// point this at a local mock server to capture outbound messages
+    /// without touching the real Telegram API.
+    api_base: String,
 }
 
 impl BotClient {
     pub fn new(token: String) -> Self {
+        Self::with_api_base(token, "https://api.telegram.org".into())
+    }
+
+    /// Construct with a custom API base. Intended for tests; production
+    /// callers should use [`BotClient::new`].
+    pub fn with_api_base(token: String, api_base: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
             .expect("reqwest client");
-        Self { http, token }
+        Self {
+            http,
+            token,
+            api_base,
+        }
     }
 
     pub async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), String> {
@@ -115,7 +129,7 @@ impl BotClient {
             text: &'a str,
             disable_web_page_preview: bool,
         }
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
+        let url = format!("{}/bot{}/sendMessage", self.api_base, self.token);
         let resp = self
             .http
             .post(&url)
@@ -545,7 +559,11 @@ fn summarize_tool_input(raw: &str, max_chars: usize) -> String {
     // sidekar tools expose `command` (Bash), `path` (Read/Write/Edit),
     // `pattern` (Grep/Glob), `args` (Sidekar).
     let summary = if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-        let primary = ["command", "path", "pattern", "url"]
+        // Field priority: pattern (Grep/Glob) beats path, because for
+        // a searching tool the pattern is the action and the path is
+        // just the haystack. command (Bash) is unambiguous. url
+        // (navigate) and path (Read/Write/Edit) cover file-ish tools.
+        let primary = ["command", "pattern", "url", "path"]
             .iter()
             .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
             .map(|s| s.to_string());
@@ -2092,6 +2110,285 @@ mod tests {
     fn summarize_tool_input_empty_returns_empty() {
         assert_eq!(summarize_tool_input("", 50), "");
         assert_eq!(summarize_tool_input("   ", 50), "");
+    }
+
+    // ─── run_viewer integration ─────────────────────────────────
+    //
+    // These spin up a local mock Telegram API (axum) on a random
+    // port, point a BotClient at it, drive run_viewer with a scripted
+    // ViewerMsg sequence, and assert on the messages the mock
+    // captured. They exercise the full pipeline end-to-end —
+    // frame parsing, mode transitions, rendering, pacing, and flush —
+    // without touching the real Telegram API.
+
+    use axum::{Router, extract::State, routing::post};
+    use serde::Deserialize;
+    use tokio::net::TcpListener;
+
+    /// Captured messages the mock server received. Shared across the
+    /// test so assertions can inspect what was sent.
+    #[derive(Clone, Default)]
+    struct MockMessages(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl MockMessages {
+        fn take_all(&self) -> Vec<String> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct MockSendMessage {
+        #[allow(dead_code)]
+        chat_id: i64,
+        text: String,
+    }
+
+    /// Start a mock Telegram API on a random localhost port. Returns
+    /// `(api_base_url, captured_messages, shutdown_tx)`. Drop the
+    /// shutdown_tx to terminate the server.
+    async fn start_mock_telegram() -> (String, MockMessages, tokio::sync::oneshot::Sender<()>) {
+        let captured = MockMessages::default();
+        let state = captured.clone();
+        let app = Router::new()
+            .route(
+                "/bot{token}/sendMessage",
+                post(
+                    |State(s): State<MockMessages>,
+                     axum::Json(body): axum::Json<MockSendMessage>| async move {
+                        s.0.lock().unwrap().push(body.text);
+                        axum::Json(serde_json::json!({"ok": true}))
+                    },
+                ),
+            )
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        (format!("http://{addr}"), captured, shutdown_tx)
+    }
+
+    /// Build the harness: mock server + BotClient + viewer task.
+    /// Returns the msg sender, shutdown handle, captured messages,
+    /// and a JoinHandle for the viewer task.
+    struct ViewerHarness {
+        tx: mpsc::UnboundedSender<ViewerMsg>,
+        shutdown: tokio::sync::oneshot::Sender<()>,
+        _mock_shutdown: tokio::sync::oneshot::Sender<()>,
+        captured: MockMessages,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl ViewerHarness {
+        async fn start() -> Self {
+            let (api_base, captured, mock_shutdown) = start_mock_telegram().await;
+            let bot = BotClient::with_api_base("test-token".into(), api_base);
+            // Pacing lets all sends through immediately (deadline in the past).
+            let pacing = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
+            let (tx, rx) = mpsc::unbounded_channel();
+            let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(run_viewer(42, bot, pacing, rx, shutdown_rx));
+            Self {
+                tx,
+                shutdown,
+                _mock_shutdown: mock_shutdown,
+                captured,
+                task,
+            }
+        }
+
+        fn send(&self, msg: ViewerMsg) {
+            self.tx.send(msg).unwrap();
+        }
+
+        /// Close the sender and await viewer shutdown so the final
+        /// flush completes before we read the captured buffer.
+        async fn drain_and_collect(self) -> Vec<String> {
+            drop(self.tx);
+            // run_viewer finishes when the channel closes; let it do
+            // its final flush, then signal shutdown.
+            // Small grace window for the final flush HTTP round-trip.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = self.shutdown.send(());
+            let _ = tokio::time::timeout(Duration::from_secs(2), self.task).await;
+            self.captured.take_all()
+        }
+    }
+
+    /// Helper: build a ch:"events" content-text frame.
+    fn ev_text(s: &str) -> String {
+        serde_json::json!({
+            "ch": "events",
+            "v": 1,
+            "event": {"kind": "text", "content": s},
+        })
+        .to_string()
+    }
+
+    fn ev_tool_call(tool: &str, input: &str) -> String {
+        serde_json::json!({
+            "ch": "events",
+            "v": 1,
+            "event": {"kind": "tool_call", "tool": tool, "input": input},
+        })
+        .to_string()
+    }
+
+    fn ev_lifecycle(name: &str) -> String {
+        serde_json::json!({
+            "ch": "events",
+            "v": 1,
+            "event": name,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn integration_structured_mode_renders_text_and_tool_calls() {
+        let h = ViewerHarness::start().await;
+
+        // Simulate a full turn: tool call → assistant text → boundary.
+        h.send(ViewerMsg::Control(ev_tool_call(
+            "Bash",
+            r#"{"command":"ls -la"}"#,
+        )));
+        h.send(ViewerMsg::Control(ev_text("Here are the results.")));
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 1, "expected one flushed message, got {messages:?}");
+        let msg = &messages[0];
+        assert!(msg.contains("▸ Bash: ls -la"), "missing tool call: {msg}");
+        assert!(
+            msg.contains("Here are the results."),
+            "missing text: {msg}"
+        );
+        // No ANSI, no JSON dumps.
+        assert!(!msg.contains("{\"command\""), "leaked tool JSON: {msg}");
+        assert!(!msg.contains("\x1b["), "leaked ANSI: {msg}");
+    }
+
+    #[tokio::test]
+    async fn integration_content_event_discards_legacy_byte_buffer() {
+        // If a Data frame arrives first (legacy mode accumulates it),
+        // then a content event arrives, mode flips to Structured and
+        // the byte buffer must be discarded — not double-flushed.
+        let h = ViewerHarness::start().await;
+        h.send(ViewerMsg::Data(b"partial byte banner".to_vec()));
+        h.send(ViewerMsg::Control(ev_text("real reply")));
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 1);
+        let msg = &messages[0];
+        assert!(msg.contains("real reply"));
+        assert!(
+            !msg.contains("partial byte banner"),
+            "legacy byte buffer leaked into structured output: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_legacy_mode_flushes_bytes_without_events() {
+        // PTY sessions with no event emitter: byte stream stripped
+        // and flushed on idle.
+        let h = ViewerHarness::start().await;
+        h.send(ViewerMsg::Data(b"\x1b[31mhello\x1b[0m world\n".to_vec()));
+        // No event frame — idle flush (2s) would trigger, but that's
+        // too slow for a test. Drop the sender to force final flush.
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 1);
+        let msg = &messages[0];
+        assert_eq!(msg.trim_end(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn integration_multiple_turns_produce_separate_messages() {
+        // Each assistant_complete is a flush boundary; two turns → two
+        // Telegram messages.
+        let h = ViewerHarness::start().await;
+
+        h.send(ViewerMsg::Control(ev_text("Turn one.")));
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+        // Must exceed PER_CHAT_MIN_GAP (1.2s) so the second flush
+        // isn't paced-delayed past drain_and_collect's grace window.
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        h.send(ViewerMsg::Control(ev_text("Turn two.")));
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 2, "got {messages:?}");
+        assert!(messages[0].contains("Turn one."));
+        assert!(messages[1].contains("Turn two."));
+    }
+
+    #[tokio::test]
+    async fn integration_structured_ignores_raw_bytes_after_flip() {
+        // After mode flip, PTY byte output should never appear in
+        // Telegram messages. This is the "no ANSI chrome" guarantee.
+        let h = ViewerHarness::start().await;
+        h.send(ViewerMsg::Control(ev_text("clean reply")));
+        // These bytes would be REPL renderer output (status bars,
+        // dimmed lines). They MUST be ignored now.
+        h.send(ViewerMsg::Data(
+            b"\x1b[38;2;105;105;105m[status]\x1b[0m banner\n".to_vec(),
+        ));
+        h.send(ViewerMsg::Data(b"\xe2\x94\x8c spinner\n".to_vec())); // ┌
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 1);
+        let msg = &messages[0];
+        assert_eq!(msg.trim(), "clean reply");
+    }
+
+    #[tokio::test]
+    async fn integration_tool_call_summaries_use_preferred_fields() {
+        // Regression: each tool type shows the right field.
+        let h = ViewerHarness::start().await;
+        h.send(ViewerMsg::Control(ev_tool_call(
+            "Bash",
+            r#"{"command":"cargo test"}"#,
+        )));
+        h.send(ViewerMsg::Control(ev_tool_call(
+            "Read",
+            r#"{"path":"/tmp/x.rs","offset":5}"#,
+        )));
+        h.send(ViewerMsg::Control(ev_tool_call(
+            "Grep",
+            r#"{"pattern":"fn main","path":"src"}"#,
+        )));
+        h.send(ViewerMsg::Control(ev_text("done")));
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 1);
+        let msg = &messages[0];
+        assert!(msg.contains("▸ Bash: cargo test"));
+        assert!(msg.contains("▸ Read: /tmp/x.rs"));
+        assert!(msg.contains("▸ Grep: fn main"));
+    }
+
+    #[tokio::test]
+    async fn integration_utf8_and_emoji_survive_end_to_end() {
+        // Regression for the mojibake bug: multi-byte UTF-8 in content
+        // events must reach Telegram intact.
+        let h = ViewerHarness::start().await;
+        h.send(ViewerMsg::Control(ev_text("• bullet 🔥 fire ✓ check")));
+        h.send(ViewerMsg::Control(ev_lifecycle("assistant_complete")));
+
+        let messages = h.drain_and_collect().await;
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("• bullet 🔥 fire ✓ check"));
     }
 
     fn mk_session(id: &str, name: &str, nickname: Option<&str>) -> crate::types::SessionInfo {
