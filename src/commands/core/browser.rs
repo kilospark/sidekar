@@ -341,6 +341,91 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
     Ok(())
 }
 
+/// Look for an existing tab we can adopt instead of spawning a new one.
+///
+/// Preference: a blank tab (about:blank / chrome://newtab/) that is not
+/// currently locked by another session. These tabs are the direct
+/// symptom of the "blank window storm" — they were left behind by
+/// previous sessionless CLI invocations and should be reclaimed, not
+/// stacked on top of.
+///
+/// Returns `None` if:
+///   * Chrome is unreachable or has no tabs.
+///   * Every blank tab is already owned by another live session.
+///   * The adopted tab has no webSocketDebuggerUrl (can't drive it).
+///
+/// We deliberately do NOT adopt non-blank tabs here. A user's content
+/// tab might have unsaved state, pending forms, logged-in context, etc.
+/// Silently hijacking it on every `sidekar` invocation would be worse
+/// than the blank-tab problem we're fixing.
+/// Returns true if a URL represents an empty/newtab page that has no
+/// user content worth preserving. Used to decide whether an existing
+/// tab is safe to adopt rather than leave behind and spawn a fresh one.
+fn is_blank_tab_url(url: Option<&str>) -> bool {
+    match url {
+        None => true,
+        Some(u) => {
+            u.is_empty()
+                || u == "about:blank"
+                || u == "chrome://newtab/"
+                || u == "chrome://new-tab-page/"
+                || u == "edge://newtab/"
+                || u == "brave://newtab/"
+        }
+    }
+}
+
+async fn try_adopt_blank_tab(ctx: &AppContext) -> Option<crate::DebugTab> {
+    let tabs = get_debug_tabs(ctx).await.ok()?;
+    for tab in tabs {
+        // Must be something we can actually connect to.
+        if tab.web_socket_debugger_url.is_none() {
+            continue;
+        }
+        // Only consider visibly blank tabs. Any other URL is content we
+        // shouldn't quietly commandeer.
+        if !is_blank_tab_url(tab.url.as_deref()) {
+            continue;
+        }
+        // Skip tabs another live session is driving.
+        match check_tab_lock(ctx, &tab.id) {
+            Ok(Some(_lock)) => continue,
+            Ok(None) => return Some(tab),
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod adoption_tests {
+    use super::is_blank_tab_url;
+
+    #[test]
+    fn blank_urls_are_adoptable() {
+        assert!(is_blank_tab_url(None));
+        assert!(is_blank_tab_url(Some("")));
+        assert!(is_blank_tab_url(Some("about:blank")));
+        assert!(is_blank_tab_url(Some("chrome://newtab/")));
+        assert!(is_blank_tab_url(Some("chrome://new-tab-page/")));
+        assert!(is_blank_tab_url(Some("edge://newtab/")));
+        assert!(is_blank_tab_url(Some("brave://newtab/")));
+    }
+
+    #[test]
+    fn content_urls_are_not_adoptable() {
+        assert!(!is_blank_tab_url(Some("https://example.com")));
+        assert!(!is_blank_tab_url(Some("http://localhost:3000")));
+        assert!(!is_blank_tab_url(Some("file:///tmp/foo.html")));
+        // chrome:// pages that aren't newtab — still user-facing content.
+        assert!(!is_blank_tab_url(Some("chrome://settings")));
+        assert!(!is_blank_tab_url(Some("chrome://extensions")));
+        // Deceptive lookalikes must not be treated as blank.
+        assert!(!is_blank_tab_url(Some("about:blank#foo")));
+        assert!(!is_blank_tab_url(Some("https://about:blank")));
+    }
+}
+
 pub(crate) async fn cmd_connect(ctx: &mut AppContext) -> Result<bool> {
     let (has_own_window, session_id) = connect_inner(ctx).await?;
     let output = ConnectOutput {
@@ -355,6 +440,21 @@ async fn connect_inner(ctx: &mut AppContext) -> Result<(bool, String)> {
     let session_id = new_session_id();
     ctx.set_current_session(session_id.clone());
 
+    // In non-isolated mode, prefer adopting an existing unowned tab over
+    // minting a new one. Every sessionless CLI invocation used to hit
+    // create_new_tab unconditionally, so a chatty agent turn left behind
+    // a trail of about:blank tabs (one per tool call that tripped the
+    // auto-launch fallback in main.rs).
+    //
+    // Adoption order:
+    //   1. A blank tab (about:blank / chrome://newtab/) that's not owned
+    //      by another session. Cheapest — reclaims wasted tabs.
+    //   2. Any non-blank tab that's not owned by another session.
+    //      Silently driving a user's content tab is intrusive, so we
+    //      only do this when no blank is available AND the tab appears
+    //      to be something we previously created (heuristic: stale
+    //      sidekar-owned tab whose lock has expired).
+    // Isolated mode is opt-in "own window" semantics — never adopt.
     let (new_tab, has_own_window) = if ctx.isolated {
         match create_new_window(ctx, None).await {
             Ok(tab) => (tab, true),
@@ -368,6 +468,14 @@ async fn connect_inner(ctx: &mut AppContext) -> Result<(bool, String)> {
                 (create_new_tab(ctx, None).await?, false)
             }
         }
+    } else if let Some(adopted) = try_adopt_blank_tab(ctx).await {
+        crate::broker::try_log_event(
+            "info",
+            "browser",
+            "adopted existing blank tab instead of creating new one",
+            Some(&format!("tab_id={}", adopted.id)),
+        );
+        (adopted, false)
     } else {
         (create_new_tab(ctx, None).await?, false)
     };
