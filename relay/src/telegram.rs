@@ -240,6 +240,26 @@ impl TelegramState {
 
 // ─── Outbound viewer task ──────────────────────────────────────────
 
+/// Per-chat viewer task. Ingests `ViewerMsg`s from the session and
+/// renders Telegram messages.
+///
+/// Two modes:
+///
+/// - **Structured** (preferred): sidekar REPL and PTY event parser emit
+///   `ch:"events"` frames with `AgentEvent` content (Text, ToolCall,
+///   ToolResult, Code, Diff, Status) plus lifecycle markers
+///   (turn_start, tool_call_start, assistant_complete, turn_end).
+///   Viewer renders directly from those events and ignores the raw
+///   byte stream. No ANSI stripping, no chrome, no JSON dumps.
+///
+/// - **Legacy**: when a session has never emitted any content event
+///   (third-party CLIs inside PTY that predate the event parser), we
+///   fall back to stripping the raw byte stream and buffering until
+///   idle/shutdown.
+///
+/// Mode is sticky per viewer lifetime. The first content event
+/// observed switches to Structured and discards any pending stripped
+/// bytes (which would otherwise duplicate what the events carry).
 async fn run_viewer(
     chat_id: i64,
     bot: BotClient,
@@ -249,11 +269,9 @@ async fn run_viewer(
 ) {
     let mut buf = String::new();
     let mut flush_deadline: Option<Instant> = None;
-    // Persistent across chunks so multi-byte UTF-8 codepoints and ANSI
-    // sequences that cross a Data() boundary are handled correctly.
-    // Stateless stripping produced mojibake (bytes-as-Latin-1) and
-    // leaked `[38;2;...m` fragments when ESC landed at a chunk edge.
+    // Only used in Legacy mode; see AnsiStripper doc for why it's stateful.
     let mut stripper = AnsiStripper::new();
+    let mut mode = ViewerMode::Legacy;
 
     loop {
         tokio::select! {
@@ -269,14 +287,20 @@ async fn run_viewer(
                 match msg {
                     // idle-flush timer fired
                     Err(_) => {
-                        // Idle: force-finalize any stuck partial bytes
-                        // so we don't leave them hidden indefinitely.
-                        buf.push_str(&stripper.finish());
+                        if matches!(mode, ViewerMode::Legacy) {
+                            buf.push_str(&stripper.finish());
+                        }
                         flush_buf(&bot, chat_id, &pacing, &mut buf).await;
                         flush_deadline = None;
                     }
                     Ok(None) => break,
                     Ok(Some(ViewerMsg::Data(data))) => {
+                        // In Structured mode the raw byte stream is ignored:
+                        // the events channel is authoritative and bytes
+                        // would be a duplicate with ANSI chrome on top.
+                        if matches!(mode, ViewerMode::Structured) {
+                            continue;
+                        }
                         let text = stripper.push(&data);
                         if text.is_empty() {
                             continue;
@@ -289,15 +313,45 @@ async fn run_viewer(
                         }
                     }
                     Ok(Some(ViewerMsg::Control(text))) => {
-                        // Structured events channel: turn boundaries and
-                        // pty resize live here. Flush on turn-complete;
-                        // ignore everything else.
-                        if is_turn_boundary(&text) {
-                            // Drain any pending bytes at the boundary —
-                            // the next turn starts clean.
-                            buf.push_str(&stripper.finish());
-                            flush_buf(&bot, chat_id, &pacing, &mut buf).await;
-                            flush_deadline = None;
+                        let parsed = parse_events_frame(&text);
+                        match parsed {
+                            Some(EventsFrame::Content(ev)) => {
+                                // First content event promotes this viewer
+                                // to Structured mode. Discard any byte
+                                // buffer so we don't double-emit.
+                                if matches!(mode, ViewerMode::Legacy) {
+                                    mode = ViewerMode::Structured;
+                                    buf.clear();
+                                    stripper = AnsiStripper::new();
+                                }
+                                if let Some(rendered) = render_content_event(&ev) {
+                                    if !buf.is_empty() && !buf.ends_with('\n') {
+                                        buf.push('\n');
+                                    }
+                                    buf.push_str(&rendered);
+                                    flush_deadline = Some(Instant::now() + IDLE_FLUSH);
+                                    if buf.len() >= TELEGRAM_MSG_LIMIT {
+                                        flush_buf(&bot, chat_id, &pacing, &mut buf).await;
+                                        flush_deadline = None;
+                                    }
+                                }
+                            }
+                            Some(EventsFrame::Lifecycle(name)) => {
+                                if is_boundary_name(&name) {
+                                    if matches!(mode, ViewerMode::Legacy) {
+                                        buf.push_str(&stripper.finish());
+                                    }
+                                    flush_buf(&bot, chat_id, &pacing, &mut buf).await;
+                                    flush_deadline = None;
+                                }
+                                // turn_start / tool_call_start / tool_call_end:
+                                // no-op for Telegram. Adding "working…"
+                                // placeholders would double-message on
+                                // assistant_complete.
+                            }
+                            None => {
+                                // Non-events frame (pty resize, etc.) — ignore.
+                            }
                         }
                     }
                 }
@@ -305,29 +359,248 @@ async fn run_viewer(
         }
     }
     // Final drain on shutdown.
-    buf.push_str(&stripper.finish());
+    if matches!(mode, ViewerMode::Legacy) {
+        buf.push_str(&stripper.finish());
+    }
     flush_buf(&bot, chat_id, &pacing, &mut buf).await;
 }
 
-/// Heuristic: treat any `ch:"events"` frame whose `event` field ends
-/// with `"complete"` / `"done"` / `"turn_end"` as a flush signal.
-/// We're lenient because the REPL's exact vocabulary may evolve.
-fn is_turn_boundary(text: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
-        return false;
-    };
+#[derive(Clone, Copy)]
+enum ViewerMode {
+    /// No content events have been seen on this viewer; fall back to
+    /// stripping raw PTY bytes for human display.
+    Legacy,
+    /// Session is emitting structured events; render from those and
+    /// ignore the byte stream.
+    Structured,
+}
+
+/// A parsed frame from the viewer's `ViewerMsg::Control` stream. Only
+/// frames on `ch:"events"` are interesting; everything else (pty
+/// resize, bus routing, etc.) becomes `None`.
+#[derive(Debug, Clone)]
+enum EventsFrame {
+    /// Content event — `event` field is a tagged enum (`AgentEvent`).
+    Content(ContentEvent),
+    /// Lifecycle marker — `event` field is a bare string.
+    Lifecycle(String),
+}
+
+/// Subset of sidekar's `AgentEvent` that the Telegram renderer cares
+/// about. Kept minimal — new variants fall into `Unknown` and are
+/// dropped rather than leaking raw JSON into chat.
+#[derive(Debug, Clone)]
+enum ContentEvent {
+    Text(String),
+    ToolCall { tool: String, input: String },
+    Code { language: String, content: String },
+    Diff { content: String },
+    // Status / ToolResult / Unknown — intentionally not in enum; classifier
+    // returns None for them so the renderer drops them on the floor.
+}
+
+/// Parse a `ViewerMsg::Control` payload into an `EventsFrame`.
+///
+/// Wire shape (must stay in sync with sidekar's src/events.rs and
+/// src/repl/event_forward.rs):
+///   Content:   `{"ch":"events","v":1,"event":{"kind":"text","content":"..."}}`
+///   Lifecycle: `{"ch":"events","v":1,"event":"assistant_complete"}`
+fn parse_events_frame(text: &str) -> Option<EventsFrame> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
     if v.get("ch").and_then(|c| c.as_str()) != Some("events") {
-        return false;
+        return None;
     }
-    match v.get("event").and_then(|e| e.as_str()) {
-        Some(ev) => {
-            let ev = ev.to_ascii_lowercase();
-            ev.ends_with("complete")
-                || ev.ends_with("done")
-                || ev == "turn_end"
-                || ev == "assistant_message"
+    let ev = v.get("event")?;
+    if let Some(name) = ev.as_str() {
+        return Some(EventsFrame::Lifecycle(name.to_string()));
+    }
+    let obj = ev.as_object()?;
+    let kind = obj.get("kind").and_then(|k| k.as_str())?;
+    match kind {
+        "text" => {
+            let content = obj
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(EventsFrame::Content(ContentEvent::Text(content)))
         }
-        None => false,
+        "tool_call" => {
+            let tool = obj
+                .get("tool")
+                .and_then(|t| t.as_str())
+                .unwrap_or("tool")
+                .to_string();
+            let input = obj
+                .get("input")
+                .and_then(|i| i.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some(EventsFrame::Content(ContentEvent::ToolCall { tool, input }))
+        }
+        "code" => {
+            let language = obj
+                .get("language")
+                .and_then(|l| l.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let content = obj
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(EventsFrame::Content(ContentEvent::Code {
+                language,
+                content,
+            }))
+        }
+        "diff" => {
+            let content = obj
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(EventsFrame::Content(ContentEvent::Diff { content }))
+        }
+        // tool_result: intentionally dropped. REPL's forwarder doesn't
+        // emit them (Done.message only carries assistant content; tool
+        // *results* live on the next turn's user message). PTY's parser
+        // heuristically classifies indented output blocks as
+        // tool_result but those are usually noisy byproduct of whatever
+        // the child CLI printed. Not worth showing on mobile.
+        //
+        // status: ephemeral; showing it would clutter chat.
+        _ => None,
+    }
+}
+
+/// Whether a lifecycle marker should flush any buffered output.
+fn is_boundary_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.ends_with("complete")
+        || n.ends_with("done")
+        || n == "turn_end"
+        || n == "assistant_message"
+        || n == "error"
+}
+
+/// Render a content event as the text to append to the chat buffer.
+/// Returns `None` when the event produces no renderable output (empty
+/// content after trim, oversized-and-elided, etc.).
+fn render_content_event(ev: &ContentEvent) -> Option<String> {
+    const MAX_CODE_LINES: usize = 30;
+    const MAX_CODE_BYTES: usize = 1200;
+    const MAX_TOOL_INPUT_CHARS: usize = 140;
+
+    match ev {
+        ContentEvent::Text(content) => {
+            let trimmed = content.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            Some(trimmed.to_string())
+        }
+        ContentEvent::ToolCall { tool, input } => {
+            let summary = summarize_tool_input(input, MAX_TOOL_INPUT_CHARS);
+            if summary.is_empty() {
+                Some(format!("▸ {tool}"))
+            } else {
+                Some(format!("▸ {tool}: {summary}"))
+            }
+        }
+        ContentEvent::Code { language, content } => {
+            let body = truncate_code_block(content, MAX_CODE_LINES, MAX_CODE_BYTES);
+            let fence = if language.is_empty() {
+                "```".to_string()
+            } else {
+                format!("```{language}")
+            };
+            Some(format!("{fence}\n{body}\n```"))
+        }
+        ContentEvent::Diff { content } => {
+            let body = truncate_code_block(content, MAX_CODE_LINES, MAX_CODE_BYTES);
+            Some(format!("```diff\n{body}\n```"))
+        }
+    }
+}
+
+/// Compact a tool's argument JSON (or raw string) to a short one-liner
+/// suitable for inline chat display. Keeps leading shell commands /
+/// file paths readable; strips JSON scaffolding.
+fn summarize_tool_input(raw: &str, max_chars: usize) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    // Try to parse as JSON and pick the most informative field. Common
+    // sidekar tools expose `command` (Bash), `path` (Read/Write/Edit),
+    // `pattern` (Grep/Glob), `args` (Sidekar).
+    let summary = if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+        let primary = ["command", "path", "pattern", "url"]
+            .iter()
+            .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+            .map(|s| s.to_string());
+        if let Some(s) = primary {
+            s
+        } else if let Some(args) = v.get("args").and_then(|a| a.as_array()) {
+            args.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            // Unknown shape — fall back to the compact JSON string so
+            // at least something meaningful surfaces.
+            raw.to_string()
+        }
+    } else {
+        raw.to_string()
+    };
+    // Collapse whitespace to keep the summary single-line.
+    let collapsed: String = summary
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    truncate_chars(&collapsed, max_chars)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn truncate_code_block(s: &str, max_lines: usize, max_bytes: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let (body, elided_lines) = if lines.len() > max_lines {
+        (
+            lines[..max_lines].join("\n"),
+            lines.len() - max_lines,
+        )
+    } else {
+        (lines.join("\n"), 0)
+    };
+    let body = if body.len() > max_bytes {
+        let cut = ceil_char_boundary(&body, max_bytes);
+        format!("{}…", &body[..cut])
+    } else {
+        body
+    };
+    if elided_lines > 0 {
+        format!("{body}\n… [{elided_lines} more lines]")
+    } else {
+        body
     }
 }
 
@@ -1654,22 +1927,171 @@ mod tests {
         assert_eq!(chunks.concat(), giant);
     }
 
+    // ─── Frame parsing + lifecycle classification ─────────────────
+
     #[test]
-    fn turn_boundary_detects_complete() {
-        let frame = r#"{"ch":"events","event":"assistant_complete","v":1}"#;
-        assert!(is_turn_boundary(frame));
+    fn parse_events_frame_lifecycle_string() {
+        let frame = r#"{"ch":"events","v":1,"event":"assistant_complete"}"#;
+        match parse_events_frame(frame) {
+            Some(EventsFrame::Lifecycle(n)) => assert_eq!(n, "assistant_complete"),
+            other => panic!("expected Lifecycle, got {other:?}"),
+        }
     }
 
     #[test]
-    fn turn_boundary_ignores_other_channels() {
+    fn parse_events_frame_content_text() {
+        let frame = r#"{"ch":"events","v":1,"event":{"kind":"text","content":"hello"}}"#;
+        match parse_events_frame(frame) {
+            Some(EventsFrame::Content(ContentEvent::Text(t))) => assert_eq!(t, "hello"),
+            other => panic!("expected Text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_events_frame_content_tool_call() {
+        let frame = r#"{"ch":"events","v":1,"event":{"kind":"tool_call","tool":"Bash","input":"{\"command\":\"ls\"}"}}"#;
+        match parse_events_frame(frame) {
+            Some(EventsFrame::Content(ContentEvent::ToolCall { tool, input })) => {
+                assert_eq!(tool, "Bash");
+                assert!(input.contains("\"command\""));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_events_frame_drops_unknown_kind() {
+        // status / tool_result / anything else → None (dropped silently).
+        let frame = r#"{"ch":"events","v":1,"event":{"kind":"status","state":"working"}}"#;
+        assert!(parse_events_frame(frame).is_none());
+        let frame = r#"{"ch":"events","v":1,"event":{"kind":"tool_result","content":"..."}}"#;
+        assert!(parse_events_frame(frame).is_none());
+    }
+
+    #[test]
+    fn parse_events_frame_ignores_other_channels() {
         let frame = r#"{"ch":"pty","event":"resize","cols":80}"#;
-        assert!(!is_turn_boundary(frame));
+        assert!(parse_events_frame(frame).is_none());
     }
 
     #[test]
-    fn turn_boundary_ignores_non_terminal_events() {
-        let frame = r#"{"ch":"events","event":"tool_call_start"}"#;
-        assert!(!is_turn_boundary(frame));
+    fn parse_events_frame_drops_empty_text() {
+        // Whitespace-only text is not useful to emit.
+        let frame = r#"{"ch":"events","v":1,"event":{"kind":"text","content":"   "}}"#;
+        assert!(parse_events_frame(frame).is_none());
+    }
+
+    #[test]
+    fn boundary_classification() {
+        assert!(is_boundary_name("assistant_complete"));
+        assert!(is_boundary_name("turn_end"));
+        assert!(is_boundary_name("Stream_Done")); // case-insensitive
+        assert!(is_boundary_name("error"));
+        assert!(!is_boundary_name("turn_start"));
+        assert!(!is_boundary_name("tool_call_start"));
+        assert!(!is_boundary_name("tool_call_end")); // ends with _end not turn_end
+    }
+
+    // ─── Rendering ───────────────────────────────────────────────
+
+    #[test]
+    fn render_text_trims_whitespace() {
+        let ev = ContentEvent::Text("  hello  \n".into());
+        assert_eq!(render_content_event(&ev), Some("hello".into()));
+    }
+
+    #[test]
+    fn render_tool_call_prefers_command() {
+        let ev = ContentEvent::ToolCall {
+            tool: "Bash".into(),
+            input: r#"{"command":"ls -la"}"#.into(),
+        };
+        assert_eq!(render_content_event(&ev), Some("▸ Bash: ls -la".into()));
+    }
+
+    #[test]
+    fn render_tool_call_prefers_path() {
+        let ev = ContentEvent::ToolCall {
+            tool: "Read".into(),
+            input: r#"{"path":"/tmp/x.rs","offset":10}"#.into(),
+        };
+        assert_eq!(
+            render_content_event(&ev),
+            Some("▸ Read: /tmp/x.rs".into())
+        );
+    }
+
+    #[test]
+    fn render_tool_call_joins_args_array() {
+        let ev = ContentEvent::ToolCall {
+            tool: "Sidekar".into(),
+            input: r#"{"args":["memory","list"]}"#.into(),
+        };
+        assert_eq!(
+            render_content_event(&ev),
+            Some("▸ Sidekar: memory list".into())
+        );
+    }
+
+    #[test]
+    fn render_tool_call_truncates_long_input() {
+        let ev = ContentEvent::ToolCall {
+            tool: "Bash".into(),
+            input: format!(r#"{{"command":"{}"}}"#, "x".repeat(500)),
+        };
+        let rendered = render_content_event(&ev).unwrap();
+        assert!(rendered.starts_with("▸ Bash: "));
+        assert!(rendered.ends_with('…'));
+        // Must fit roughly within our cap (chars, not bytes).
+        assert!(rendered.chars().count() <= 160);
+    }
+
+    #[test]
+    fn render_tool_call_falls_back_for_unknown_shape() {
+        let ev = ContentEvent::ToolCall {
+            tool: "Weird".into(),
+            input: r#"{"foo":"bar"}"#.into(),
+        };
+        // Falls back to the compact JSON itself.
+        let r = render_content_event(&ev).unwrap();
+        assert!(r.starts_with("▸ Weird:"));
+        assert!(r.contains("foo"));
+    }
+
+    #[test]
+    fn render_code_fences_and_truncates() {
+        let big: String = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let ev = ContentEvent::Code {
+            language: "rust".into(),
+            content: big,
+        };
+        let r = render_content_event(&ev).unwrap();
+        assert!(r.starts_with("```rust\n"));
+        assert!(r.contains("more lines]"));
+        assert!(r.ends_with("```"));
+    }
+
+    #[test]
+    fn render_diff_always_uses_diff_language() {
+        let ev = ContentEvent::Diff {
+            content: "- old\n+ new".into(),
+        };
+        let r = render_content_event(&ev).unwrap();
+        assert!(r.starts_with("```diff\n"));
+        assert!(r.contains("- old"));
+    }
+
+    #[test]
+    fn summarize_tool_input_handles_raw_string() {
+        // Non-JSON input — echo it back (trimmed, single-lined).
+        let s = summarize_tool_input("hello   world", 50);
+        assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn summarize_tool_input_empty_returns_empty() {
+        assert_eq!(summarize_tool_input("", 50), "");
+        assert_eq!(summarize_tool_input("   ", 50), "");
     }
 
     fn mk_session(id: &str, name: &str, nickname: Option<&str>) -> crate::types::SessionInfo {

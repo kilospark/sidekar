@@ -62,34 +62,31 @@ impl EventForwarder {
                 tunnel_send_event(lifecycle_to_json("tool_call_start"));
             }
             StreamEvent::Done { message } => {
-                // Emit the assistant's final content as structured events
-                // (text, tool calls inside the turn). Tool *results* are
-                // not in this message — they come in the next user turn
-                // as ToolResult blocks; we emit those elsewhere if/when
-                // we wire them.
+                // Emit only the assistant's natural-language text here.
+                //
+                // Tool calls are intentionally NOT emitted from Done:
+                // they're already forwarded at `ToolExec` time above,
+                // which gives real-time feedback to mobile viewers and
+                // avoids double-render. Done.message.content includes
+                // the same tool-use blocks, so re-emitting would show
+                // every tool call twice in Telegram.
+                //
+                // Thinking / EncryptedReasoning / Image / ToolResult
+                // are also skipped:
+                //   - Thinking: internal model reasoning, not for user.
+                //   - EncryptedReasoning: opaque tokens.
+                //   - Image: handled out-of-band; no url to show.
+                //   - ToolResult: belongs to next turn's user message.
                 for block in &message.content {
-                    match block {
-                        ContentBlock::Text { text } if !text.is_empty() => {
+                    if let ContentBlock::Text { text } = block {
+                        if !text.is_empty() {
                             tunnel_send_event(event_to_json(&AgentEvent::Text {
                                 content: text.clone(),
                             }));
                         }
-                        ContentBlock::ToolCall {
-                            name, arguments, ..
-                        } => {
-                            tunnel_send_event(event_to_json(&AgentEvent::ToolCall {
-                                tool: name.clone(),
-                                input: arguments.to_string(),
-                            }));
-                        }
-                        // Thinking / EncryptedReasoning / Image / ToolResult:
-                        // not surfaced as events (thinking is internal; tool
-                        // results belong to the next turn; images are handled
-                        // out-of-band).
-                        _ => {}
                     }
                 }
-                // Turn-boundary marker: relay's `is_turn_boundary` uses
+                // Turn-boundary marker: relay's boundary classifier uses
                 // this to flush buffered output to Telegram.
                 tunnel_send_event(lifecycle_to_json("assistant_complete"));
                 self.started = false;
