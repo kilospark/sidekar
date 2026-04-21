@@ -1,14 +1,48 @@
+# sidekar-relay on Fly.io — single machine, under $5/mo.
+#
+# Deploy:
+#   cd relay
+#   flyctl deploy
+#
+# Secrets (set once via `flyctl secrets set`, not committed):
+#   MONGODB_URI, JWT_SECRET
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME (optional)
+#
+# Non-secret config is embedded below. RELAY_PUBLIC_ORIGIN must match
+# whatever public hostname the tunnel clients connect to (sidekar CLI
+# hits wss://relay.sidekar.dev by default).
+
 app = "sidekar-relay"
 primary_region = "sjc"
 
 [build]
+
+[env]
+  PORT = "8080"
+  RELAY_INSTANCE_ID = "fly-sjc"
+  RELAY_PUBLIC_ORIGIN = "https://relay.sidekar.dev"
 
 [http_service]
   internal_port = 8080
   force_https = true
   auto_stop_machines = "off"
   auto_start_machines = true
+  # Single-machine deployment — owner-aware viewer routing degenerates
+  # to "Local" for every request because there's only one instance.
   min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 500
+    soft_limit = 400
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "get"
+  path = "/health"
+  protocol = "http"
+  timeout = "5s"
 
 [[vm]]
   size = "shared-cpu-1x"
