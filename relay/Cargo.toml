@@ -21,3 +21,5 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 hex = "0.4"
 bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand = "0.8"

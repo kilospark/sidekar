@@ -1,6 +1,7 @@
 mod auth;
 mod bridge;
 mod registry;
+mod telegram;
 mod types;
 
 use axum::{routing::{get, post}, Router};
@@ -42,11 +43,22 @@ async fn main() {
     registry.start_heartbeat();
     registry.start_bus_dispatcher();
 
+    // Optional Telegram integration.
+    let telegram_cfg = telegram::TelegramConfig::from_env();
+    if telegram_cfg.is_some() {
+        tracing::info!("telegram integration enabled");
+    } else {
+        tracing::info!(
+            "telegram integration disabled (TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET unset)"
+        );
+    }
+
     // App state
     let state = AppState {
         db,
         registry,
         jwt_secret,
+        telegram: telegram_cfg,
     };
 
     // CORS — allow sidekar.dev
@@ -66,6 +78,8 @@ async fn main() {
         .route("/session/{id}/resolve", get(bridge::handle_resolve_session))
         .route("/sessions", get(bridge::handle_list_sessions))
         .route("/relay/bus", post(bridge::handle_relay_bus))
+        .route("/telegram/webhook", post(telegram::handle_webhook))
+        .route("/telegram/link", get(telegram::handle_mint_link_code))
         .layer(cors)
         .with_state(state);
 

@@ -452,6 +452,29 @@ impl Registry {
         }
     }
 
+    /// Push raw viewer-style keystroke bytes into the tunnel for a given
+    /// (session_id, user_id). Returns true if delivered, false if the
+    /// session is unknown locally, owned by another user, or the tunnel
+    /// channel is closed.
+    ///
+    /// Used by non-WebSocket viewer transports (e.g. Telegram) that
+    /// synthesize keystrokes on behalf of a human author.
+    pub async fn push_tunnel_input(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        data: Vec<u8>,
+    ) -> bool {
+        let live = self.live.read().await;
+        let Some(session) = live.get(session_id) else {
+            return false;
+        };
+        if session.user_id != user_id {
+            return false;
+        }
+        session.tunnel_tx.send(TunnelMsg::Data(data)).is_ok()
+    }
+
     /// Remove a viewer from a session.
     pub async fn remove_viewer(&self, session_id: &str, viewer_id: &str) {
         let live = self.live.read().await;
