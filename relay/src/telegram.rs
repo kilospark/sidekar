@@ -249,6 +249,11 @@ async fn run_viewer(
 ) {
     let mut buf = String::new();
     let mut flush_deadline: Option<Instant> = None;
+    // Persistent across chunks so multi-byte UTF-8 codepoints and ANSI
+    // sequences that cross a Data() boundary are handled correctly.
+    // Stateless stripping produced mojibake (bytes-as-Latin-1) and
+    // leaked `[38;2;...m` fragments when ESC landed at a chunk edge.
+    let mut stripper = AnsiStripper::new();
 
     loop {
         tokio::select! {
@@ -264,12 +269,15 @@ async fn run_viewer(
                 match msg {
                     // idle-flush timer fired
                     Err(_) => {
+                        // Idle: force-finalize any stuck partial bytes
+                        // so we don't leave them hidden indefinitely.
+                        buf.push_str(&stripper.finish());
                         flush_buf(&bot, chat_id, &pacing, &mut buf).await;
                         flush_deadline = None;
                     }
                     Ok(None) => break,
                     Ok(Some(ViewerMsg::Data(data))) => {
-                        let text = strip_ansi(&data);
+                        let text = stripper.push(&data);
                         if text.is_empty() {
                             continue;
                         }
@@ -285,6 +293,9 @@ async fn run_viewer(
                         // pty resize live here. Flush on turn-complete;
                         // ignore everything else.
                         if is_turn_boundary(&text) {
+                            // Drain any pending bytes at the boundary —
+                            // the next turn starts clean.
+                            buf.push_str(&stripper.finish());
                             flush_buf(&bot, chat_id, &pacing, &mut buf).await;
                             flush_deadline = None;
                         }
@@ -294,6 +305,7 @@ async fn run_viewer(
         }
     }
     // Final drain on shutdown.
+    buf.push_str(&stripper.finish());
     flush_buf(&bot, chat_id, &pacing, &mut buf).await;
 }
 
@@ -793,56 +805,261 @@ pub async fn handle_deliver(
 
 // ─── Rendering helpers ─────────────────────────────────────────────
 
-/// Strip ANSI CSI/OSC escape sequences; drop bare `\r`.
+/// One-shot ANSI stripper for callers that have the entire byte buffer
+/// in hand and need plain UTF-8 text. Convenience wrapper around
+/// [`AnsiStripper`]; not suitable for streaming because trailing partial
+/// escape sequences or partial UTF-8 tails are force-flushed as junk.
+///
+/// Previous implementation had two bugs this fixes:
+///   * `out.push(b as char)` treated raw bytes as Latin-1 codepoints, so
+///     every multi-byte UTF-8 sequence (e.g. `•` = 0xE2 0x80 0xA2) got
+///     decoded into three separate codepoints (`â€¢`) — classic mojibake.
+///   * Stateless parsing meant an ESC at a chunk boundary was emitted as
+///     a bare byte, and the following `[38;2;...m` arrived as plain text
+///     with no preceding ESC, so it was shown verbatim.
+///
+/// Retained as a convenience + test entry point even though the viewer
+/// task now uses the streaming API directly.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn strip_ansi(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len());
-    let mut i = 0;
-    while i < data.len() {
-        let b = data[i];
-        if b == 0x1b && i + 1 < data.len() {
-            match data[i + 1] {
-                b'[' => {
-                    // CSI: consume until final byte 0x40..=0x7E
-                    i += 2;
-                    while i < data.len() {
-                        let c = data[i];
-                        i += 1;
-                        if (0x40..=0x7e).contains(&c) {
-                            break;
-                        }
-                    }
-                    continue;
+    let mut s = AnsiStripper::new();
+    let mut out = s.push(data);
+    out.push_str(&s.finish());
+    out
+}
+
+/// Streaming ANSI stripper + UTF-8 decoder.
+///
+/// `push(bytes)` returns whatever plain UTF-8 text is ready. Bytes that
+/// would be ambiguous in isolation are held back:
+///   * A trailing partial escape sequence (`ESC`, `ESC [ … no-final-yet`,
+///     `ESC ] … no-terminator-yet`) is buffered until more bytes arrive
+///     so it can be consumed rather than mis-emitted.
+///   * A trailing partial UTF-8 sequence (a leading byte without its
+///     continuation bytes) is buffered so the next chunk can complete
+///     the codepoint.
+/// Call `finish()` at stream end to force-emit any stuck trailing bytes
+/// (as U+FFFD for partial UTF-8; as literal text for a lone trailing
+/// ESC, matching terminal behavior of a cancelled sequence).
+pub struct AnsiStripper {
+    /// Bytes carried over from the previous `push`. Always a prefix of
+    /// some ANSI-control metasequence OR a partial UTF-8 codepoint.
+    pending: Vec<u8>,
+    /// When true, `pending` is a partial ANSI sequence (starts with ESC).
+    /// When false, it's at most 3 bytes of a partial UTF-8 codepoint.
+    pending_is_ansi: bool,
+}
+
+impl AnsiStripper {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            pending_is_ansi: false,
+        }
+    }
+
+    /// Feed more bytes; return decoded plain text that is safe to emit.
+    pub fn push(&mut self, data: &[u8]) -> String {
+        // Prepend carryover. Simple and correct; `pending` is tiny (at
+        // most a partial escape sequence + a few UTF-8 bytes).
+        let mut buf: Vec<u8> = Vec::with_capacity(self.pending.len() + data.len());
+        buf.extend_from_slice(&self.pending);
+        buf.extend_from_slice(data);
+        self.pending.clear();
+        self.pending_is_ansi = false;
+
+        // Phase 1: strip ANSI at the byte level. Output is UTF-8 plus
+        // any passthrough bytes (which, after the fix, are still raw
+        // UTF-8 bytes from the input — we never cast byte→char).
+        let mut stripped: Vec<u8> = Vec::with_capacity(buf.len());
+        let mut i = 0;
+        while i < buf.len() {
+            let b = buf[i];
+            if b == 0x1b {
+                // ESC start. Need at least one more byte to classify.
+                if i + 1 >= buf.len() {
+                    // Defer the lone ESC to the next push.
+                    self.pending.push(0x1b);
+                    self.pending_is_ansi = true;
+                    break;
                 }
-                b']' => {
-                    // OSC: consume until BEL or ESC \
-                    i += 2;
-                    while i < data.len() {
-                        if data[i] == 0x07 {
-                            i += 1;
+                match buf[i + 1] {
+                    b'[' => {
+                        // CSI: ESC [ params... final(0x40..=0x7E).
+                        let mut j = i + 2;
+                        let mut found_final = false;
+                        while j < buf.len() {
+                            let c = buf[j];
+                            j += 1;
+                            if (0x40..=0x7e).contains(&c) {
+                                found_final = true;
+                                break;
+                            }
+                        }
+                        if !found_final {
+                            // Incomplete — carry entire partial sequence.
+                            self.pending.extend_from_slice(&buf[i..]);
+                            self.pending_is_ansi = true;
                             break;
                         }
-                        if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
-                            i += 2;
-                            break;
-                        }
-                        i += 1;
+                        i = j;
+                        continue;
                     }
-                    continue;
-                }
-                _ => {
-                    i += 2;
-                    continue;
+                    b']' => {
+                        // OSC: ESC ] ... (BEL | ESC \).
+                        let mut j = i + 2;
+                        let mut found_term = false;
+                        while j < buf.len() {
+                            if buf[j] == 0x07 {
+                                j += 1;
+                                found_term = true;
+                                break;
+                            }
+                            if buf[j] == 0x1b {
+                                if j + 1 < buf.len() {
+                                    if buf[j + 1] == b'\\' {
+                                        j += 2;
+                                        found_term = true;
+                                        break;
+                                    }
+                                    // Non-ST ESC inside OSC: bail; safer
+                                    // to let the outer loop reclassify.
+                                    break;
+                                } else {
+                                    // Dangling ESC at chunk end; hold.
+                                    break;
+                                }
+                            }
+                            j += 1;
+                        }
+                        if !found_term {
+                            self.pending.extend_from_slice(&buf[i..]);
+                            self.pending_is_ansi = true;
+                            break;
+                        }
+                        i = j;
+                        continue;
+                    }
+                    0x1b => {
+                        // ESC ESC — skip the first ESC, reprocess the second.
+                        i += 1;
+                        continue;
+                    }
+                    _ => {
+                        // Two-byte escape (e.g. ESC c, ESC E, ESC =).
+                        i += 2;
+                        continue;
+                    }
                 }
             }
-        }
-        if b == b'\r' {
+            if b == b'\r' {
+                i += 1;
+                continue;
+            }
+            stripped.push(b);
             i += 1;
+        }
+
+        // Phase 2: UTF-8 decode. Hold back a trailing partial codepoint
+        // so the next push can complete it. `utf8_tail_split` returns
+        // the index where a definitely-complete prefix ends.
+        let split = utf8_tail_split(&stripped);
+        let (ready, tail) = stripped.split_at(split);
+        if !tail.is_empty() && !self.pending_is_ansi {
+            self.pending.extend_from_slice(tail);
+        } else if !tail.is_empty() {
+            // Already holding an ANSI partial from earlier this call —
+            // impossible because we break the outer loop there, but
+            // defensive: emit tail as lossy text rather than lose bytes.
+            // Fall through: append tail below via from_utf8_lossy.
+        }
+        let emit_bytes = if !tail.is_empty() && self.pending_is_ansi {
+            // Defensive branch: include tail lossily.
+            stripped.as_slice()
+        } else {
+            ready
+        };
+        String::from_utf8_lossy(emit_bytes).into_owned()
+    }
+
+    /// Flush any leftover partial bytes at stream end.
+    pub fn finish(&mut self) -> String {
+        if self.pending.is_empty() {
+            return String::new();
+        }
+        let out = if self.pending_is_ansi {
+            // Partial escape sequence at EOF — terminal behavior is to
+            // discard it entirely. Do the same.
+            String::new()
+        } else {
+            // Partial UTF-8 at EOF — replace with U+FFFD.
+            String::from_utf8_lossy(&self.pending).into_owned()
+        };
+        self.pending.clear();
+        self.pending_is_ansi = false;
+        out
+    }
+}
+
+impl Default for AnsiStripper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Return the byte index at which `data` can be safely split into a
+/// definitely-complete UTF-8 prefix and a (possibly-partial) trailing
+/// codepoint. Returns `data.len()` when there is no partial tail.
+///
+/// A UTF-8 codepoint is 1..=4 bytes: a leading byte followed by 0..=3
+/// continuation bytes (0x80..=0xBF). We walk back from the end to find
+/// the most recent leading byte; if its expected length exceeds the
+/// number of bytes remaining, the tail is partial.
+fn utf8_tail_split(data: &[u8]) -> usize {
+    let n = data.len();
+    if n == 0 {
+        return 0;
+    }
+    // Walk back up to 3 bytes to find the leading byte.
+    let max_back = n.min(4);
+    for k in 1..=max_back {
+        let idx = n - k;
+        let b = data[idx];
+        if b < 0x80 {
+            // ASCII: itself is a full codepoint. Anything after it is
+            // either more ASCII or a new codepoint. If k == 1, tail is
+            // complete. If k > 1, there are continuation bytes after an
+            // ASCII byte — garbage; treat prefix as complete and let
+            // lossy decode replace the orphans.
+            return n;
+        }
+        if b & 0xC0 == 0x80 {
+            // Continuation byte; keep walking back.
             continue;
         }
-        out.push(b as char);
-        i += 1;
+        // Leading byte. Determine expected total length.
+        let expected = if b & 0xE0 == 0xC0 {
+            2
+        } else if b & 0xF0 == 0xE0 {
+            3
+        } else if b & 0xF8 == 0xF0 {
+            4
+        } else {
+            // Invalid leading byte — split here so the orphan is in the
+            // tail? Simpler: treat as complete, lossy will substitute.
+            return n;
+        };
+        if k >= expected {
+            // Full codepoint already present.
+            return n;
+        }
+        // Partial: split before this leading byte so the caller carries
+        // the incomplete codepoint into the next push.
+        return idx;
     }
-    out
+    // More than 3 continuation bytes with no leading byte in sight —
+    // malformed. Treat as complete; lossy decode handles it.
+    n
 }
 
 /// Paragraph-boundary chunker; falls back to char-safe hard split.
@@ -1248,6 +1465,151 @@ mod tests {
     #[test]
     fn strip_ansi_drops_bare_cr() {
         assert_eq!(strip_ansi(b"line\r\nnext"), "line\nnext");
+    }
+
+    // ─── Regression: mojibake from bytes-as-Latin-1 cast ───────────
+
+    #[test]
+    fn strip_ansi_preserves_utf8_bullet() {
+        // • is U+2022, encoded as 0xE2 0x80 0xA2.
+        // Old code emitted U+00E2 U+0080 U+00A2 ("â€¢").
+        let input = b"\xe2\x80\xa2 item";
+        assert_eq!(strip_ansi(input), "• item");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_utf8_emoji() {
+        // 🔥 is U+1F525, encoded as 4 bytes 0xF0 0x9F 0x94 0xA5.
+        let input = b"\xf0\x9f\x94\xa5 hot";
+        assert_eq!(strip_ansi(input), "🔥 hot");
+    }
+
+    #[test]
+    fn strip_ansi_utf8_after_ansi() {
+        // Common case: SGR color + UTF-8 payload.
+        let input = b"\x1b[31m\xe2\x9c\x93 ok\x1b[0m";
+        assert_eq!(strip_ansi(input), "✓ ok");
+    }
+
+    // ─── Regression: ANSI fragment leak across chunk boundary ──────
+
+    #[test]
+    fn stripper_handles_esc_split_across_chunks() {
+        // ESC lands at the end of chunk 1; [31m arrives in chunk 2.
+        // Stateless strip_ansi would have emitted the ESC as a byte
+        // and passed `[31m` through as plain text.
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"hello\x1b");
+        let b = s.push(b"[31mred\x1b[0m done");
+        let c = s.finish();
+        let full = format!("{a}{b}{c}");
+        assert_eq!(full, "hellored done");
+    }
+
+    #[test]
+    fn stripper_handles_csi_split_mid_sequence() {
+        // ESC [ 3 | 1 m  — split between `3` and `1`.
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"x\x1b[3");
+        let b = s.push(b"1mred\x1b[0m");
+        let c = s.finish();
+        assert_eq!(format!("{a}{b}{c}"), "xred");
+    }
+
+    #[test]
+    fn stripper_handles_osc_split_before_terminator() {
+        // OSC title split before BEL.
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"\x1b]0;my ti");
+        let b = s.push(b"tle\x07after");
+        let c = s.finish();
+        assert_eq!(format!("{a}{b}{c}"), "after");
+    }
+
+    #[test]
+    fn stripper_handles_utf8_split_across_chunks() {
+        // Multi-byte codepoint split between two pushes.
+        // • = 0xE2 0x80 0xA2
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"a\xe2\x80");
+        let b = s.push(b"\xa2 b");
+        let c = s.finish();
+        assert_eq!(format!("{a}{b}{c}"), "a• b");
+    }
+
+    #[test]
+    fn stripper_handles_4byte_utf8_split_1_3() {
+        // 🔥 = 0xF0 0x9F 0x94 0xA5, split after the leading byte.
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"\xf0");
+        let b = s.push(b"\x9f\x94\xa5!");
+        let c = s.finish();
+        assert_eq!(format!("{a}{b}{c}"), "🔥!");
+    }
+
+    #[test]
+    fn stripper_handles_4byte_utf8_split_2_2() {
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"\xf0\x9f");
+        let b = s.push(b"\x94\xa5");
+        let c = s.finish();
+        assert_eq!(format!("{a}{b}{c}"), "🔥");
+    }
+
+    #[test]
+    fn stripper_finish_replaces_incomplete_utf8() {
+        // Dangling UTF-8 at EOF: expect U+FFFD substitution, not panic.
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"ok\xe2\x80");
+        let b = s.finish();
+        let full = format!("{a}{b}");
+        assert!(full.starts_with("ok"));
+        assert!(full.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn stripper_finish_drops_incomplete_ansi() {
+        // Dangling ESC at EOF: terminal semantics — discard.
+        let mut s = AnsiStripper::new();
+        let a = s.push(b"hi\x1b");
+        let b = s.finish();
+        assert_eq!(format!("{a}{b}"), "hi");
+    }
+
+    #[test]
+    fn stripper_one_byte_at_a_time() {
+        // Adversarial: feed one byte at a time. All bugs would show up
+        // here. Use a mix of ANSI, UTF-8, and plain bytes.
+        let full_input: &[u8] =
+            b"\x1b[1mHello \xe2\x80\xa2 \xf0\x9f\x94\xa5 world\x1b[0m";
+        let mut s = AnsiStripper::new();
+        let mut out = String::new();
+        for &b in full_input {
+            out.push_str(&s.push(&[b]));
+        }
+        out.push_str(&s.finish());
+        assert_eq!(out, "Hello • 🔥 world");
+    }
+
+    #[test]
+    fn stripper_matches_oneshot_when_buffer_complete() {
+        // Streaming result must equal the one-shot result when all
+        // bytes arrive in a single push (no partials).
+        let cases: &[&[u8]] = &[
+            b"plain text",
+            b"\x1b[31mred\x1b[0m",
+            b"\xe2\x80\xa2 bullet",
+            b"\xf0\x9f\x94\xa5 emoji",
+            b"mix \x1b[1mbold \xe2\x9c\x93\x1b[0m end",
+            b"",
+        ];
+        for case in cases {
+            let one = strip_ansi(case);
+            let mut s = AnsiStripper::new();
+            let mut streamed = s.push(case);
+            streamed.push_str(&s.finish());
+            assert_eq!(one, streamed, "mismatch on {case:?}");
+        }
     }
 
     #[test]
