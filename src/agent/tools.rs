@@ -295,22 +295,20 @@ async fn exec_bash(
         .min(600);
 
     let mut command_proc = tokio::process::Command::new("bash");
-    command_proc.kill_on_drop(true).arg("-c").arg(command);
-    let output_future = command_proc.output();
-
-    let output = match cancel {
-        Some(cancel) => {
-            tokio::select! {
-                _ = wait_for_cancel(cancel) => return Err(super::Cancelled.into()),
-                result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output_future) => {
-                    result
-                }
-            }
-        }
-        None => tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output_future).await,
-    }
-    .context("bash: command timed out")?
-    .context("bash: failed to execute")?;
+    command_proc.arg("-c").arg(command);
+    let output = match run_subprocess_cancellable(
+        command_proc,
+        cancel,
+        std::time::Duration::from_secs(timeout_secs),
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(CancellableError::Cancelled) => return Err(super::Cancelled.into()),
+        Err(CancellableError::Timeout) => bail!("bash: command timed out after {timeout_secs}s"),
+        Err(CancellableError::Spawn(e)) => return Err(e.context("bash: failed to spawn")),
+        Err(CancellableError::Io(e)) => return Err(e.context("bash: io error")),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -602,24 +600,24 @@ async fn exec_sidekar(
     let sidekar_bin =
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sidekar"));
     let mut cmd = tokio::process::Command::new(sidekar_bin);
-    cmd.kill_on_drop(true).args(&string_args);
-    let output_future = cmd.output();
-
-    let output = match cancel {
-        Some(cancel) => {
-            tokio::select! {
-                _ = wait_for_cancel(cancel) => return Err(super::Cancelled.into()),
-                result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output_future) => {
-                    result
-                }
-            }
+    cmd.args(&string_args);
+    let output = match run_subprocess_cancellable(
+        cmd,
+        cancel,
+        std::time::Duration::from_secs(timeout_secs),
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(CancellableError::Cancelled) => return Err(super::Cancelled.into()),
+        Err(CancellableError::Timeout) => {
+            bail!("sidekar: command timed out after {timeout_secs}s")
         }
-        None => {
-            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output_future).await
+        Err(CancellableError::Spawn(e)) => {
+            return Err(e.context("sidekar: failed to spawn (is `sidekar` on PATH?)"));
         }
-    }
-    .context("sidekar: command timed out")?
-    .context("sidekar: failed to execute (is `sidekar` on PATH?)")?;
+        Err(CancellableError::Io(e)) => return Err(e.context("sidekar: io error")),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -667,6 +665,148 @@ async fn wait_for_cancel(cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>)
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+}
+
+/// Spawn a command and collect its output, with cooperative cancellation
+/// that kills the **entire process tree**, not just the immediate child.
+///
+/// Why this exists: `tokio::process::Command::kill_on_drop(true)` only
+/// SIGKILLs the direct child. `bash -c "cargo build"` spawns bash; bash
+/// forks cargo. Dropping the future kills bash; cargo is reparented to
+/// init and keeps running. From the user's perspective Esc/Ctrl+C
+/// "didn't work" — the agent moved on but their machine is still busy.
+///
+/// Fix: put the child into its own process group via pre_exec
+/// `setpgid(0, 0)`. On cancel, signal the group (`-pgid`) with SIGTERM
+/// so every descendant receives it; wait up to 500ms for graceful exit;
+/// escalate to SIGKILL if still alive. `kill_on_drop` stays on as a
+/// safety net for the direct child.
+///
+/// Unix-only. Windows path would need Job Objects; out of scope until
+/// sidekar ships a Windows build.
+#[cfg(unix)]
+async fn run_subprocess_cancellable(
+    mut cmd: tokio::process::Command,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, CancellableError> {
+    // tokio::process::Command has its own `pre_exec` (cfg(unix)) with the
+    // same signature as std's CommandExt method — no trait import needed.
+    unsafe {
+        cmd.pre_exec(|| {
+            // New process group, pgid == child pid. Ignore errors — worst
+            // case we fall back to single-process kill via kill_on_drop.
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+    cmd.kill_on_drop(true);
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| CancellableError::Spawn(anyhow::Error::new(e)))?;
+    let pid = match child.id() {
+        Some(p) => p as i32,
+        None => {
+            // Already-exited or detached — no pgid to target.
+            return child
+                .wait_with_output()
+                .await
+                .map_err(|e| CancellableError::Io(anyhow::Error::new(e)));
+        }
+    };
+
+    let wait_future = child.wait_with_output();
+    tokio::pin!(wait_future);
+
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+
+    let cancel_fut = async {
+        match cancel {
+            Some(c) => wait_for_cancel(c).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(cancel_fut);
+
+    tokio::select! {
+        biased;
+        _ = &mut cancel_fut => {
+            // SIGTERM the entire process group. Negative pid targets the
+            // group; since we called setpgid(0, 0) in pre_exec, pgid == pid.
+            unsafe { libc::kill(-pid, libc::SIGTERM); }
+            // Give it up to 500ms to clean up.
+            let graceful = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                &mut wait_future,
+            ).await;
+            if graceful.is_err() {
+                // Still alive — SIGKILL the group.
+                unsafe { libc::kill(-pid, libc::SIGKILL); }
+                // Drain so we don't leak a zombie; short timeout because
+                // SIGKILL is synchronous at the kernel level.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    &mut wait_future,
+                ).await;
+            }
+            Err(CancellableError::Cancelled)
+        }
+        _ = &mut deadline => {
+            // Timeout: same tree-kill escalation.
+            unsafe { libc::kill(-pid, libc::SIGTERM); }
+            let graceful = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                &mut wait_future,
+            ).await;
+            if graceful.is_err() {
+                unsafe { libc::kill(-pid, libc::SIGKILL); }
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    &mut wait_future,
+                ).await;
+            }
+            Err(CancellableError::Timeout)
+        }
+        result = &mut wait_future => {
+            result.map_err(|e| CancellableError::Io(anyhow::Error::new(e)))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn run_subprocess_cancellable(
+    mut cmd: tokio::process::Command,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, CancellableError> {
+    cmd.kill_on_drop(true);
+    let output_future = cmd.output();
+    let cancel_fut = async {
+        match cancel {
+            Some(c) => wait_for_cancel(c).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = cancel_fut => Err(CancellableError::Cancelled),
+        result = tokio::time::timeout(timeout, output_future) => {
+            match result {
+                Err(_) => Err(CancellableError::Timeout),
+                Ok(Err(e)) => Err(CancellableError::Io(anyhow::Error::new(e))),
+                Ok(Ok(o)) => Ok(o),
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum CancellableError {
+    Cancelled,
+    Timeout,
+    Spawn(anyhow::Error),
+    Io(anyhow::Error),
 }
 
 #[cfg(test)]

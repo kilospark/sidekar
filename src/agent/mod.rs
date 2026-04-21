@@ -216,7 +216,16 @@ pub async fn run(
             let result = tools::execute(name, arguments, cancel).await;
             let (content, is_error) = match result {
                 Ok(output) => (truncate_tool_output(&output, 50_000), false),
-                Err(e) if e.is::<Cancelled>() => return Err(e),
+                Err(e) if e.is::<Cancelled>() => {
+                    // Give the user explicit feedback that their Esc/Ctrl+C
+                    // landed and the tool tree was killed — otherwise the
+                    // turn unwinds silently and it looks like nothing
+                    // happened even though cancel did propagate.
+                    crate::tunnel::tunnel_println(&format!(
+                        "\x1b[33m[cancelled: {name}]\x1b[0m"
+                    ));
+                    return Err(e);
+                }
                 Err(e) => {
                     crate::broker::try_log_error(
                         "repl",
