@@ -11,7 +11,7 @@
 //!   * `POST /telegram/deliver`   — internal cross-relay hop for chats
 //!                                   whose target session lives elsewhere
 //!   * `GET  /telegram/link`      — website mints a one-time link code
-//!   * `/start <code>`, `/sessions`, `/here <id>`, `/stop`, `/help`
+//!   * `/start <code>`, `/sessions`, `/here <nick|id>`, `/stop`, `/help`
 //!   * per-chat outbound viewer task (ANSI strip, chunk, rate-limit,
 //!     turn-boundary flush via `ch:"events"` control frames)
 //!   * `update_id` dedup (Mongo TTL collection)
@@ -474,7 +474,7 @@ async fn handle_start(
     let _ = bot
         .send_message(
             chat_id,
-            "Linked. Send /sessions to pick a session, or /here <id> to route.",
+            "Linked. Send /sessions to pick a session, or /here <nick> to route.",
         )
         .await;
     Ok(())
@@ -498,9 +498,11 @@ async fn handle_sessions(state: &AppState, bot: &BotClient, chat_id: i64) -> Res
     let mut out = String::from("Live sessions:\n");
     for s in &sessions {
         let nick = s.nickname.as_deref().unwrap_or(&s.name);
-        out.push_str(&format!("  {}  ({})\n", s.id, nick));
+        // Short id prefix for users who prefer typing an id.
+        let short = &s.id[..s.id.len().min(8)];
+        out.push_str(&format!("  {nick}  [{short}]  {}\n", s.cwd));
     }
-    out.push_str("\nUse /here <id> to route.");
+    out.push_str("\nUse /here <nick> to route (or <id> / short id).");
     let _ = bot.send_message(chat_id, &out).await;
     Ok(())
 }
@@ -510,23 +512,41 @@ async fn handle_here(
     tg: &TelegramState,
     bot: &BotClient,
     chat_id: i64,
-    session_id: &str,
+    target: &str,
 ) -> Result<(), String> {
     let Some(user_id) = chat_user(state, chat_id).await? else {
         let _ = bot.send_message(chat_id, "Not linked. Send /start <code>.").await;
         return Ok(());
     };
-    if session_id.is_empty() {
-        let _ = bot.send_message(chat_id, "Usage: /here <session_id>").await;
-        return Ok(());
-    }
-    let sessions = state.registry.get_sessions(&user_id).await;
-    if !sessions.iter().any(|s| s.id == session_id) {
+    if target.is_empty() {
         let _ = bot
-            .send_message(chat_id, "No matching session for this account.")
+            .send_message(chat_id, "Usage: /here <nick>  (or <session_id>)")
             .await;
         return Ok(());
     }
+
+    let sessions = state.registry.get_sessions(&user_id).await;
+    let session_id = match resolve_session_target(&sessions, target) {
+        ResolveTarget::Exact(id) => id,
+        ResolveTarget::Ambiguous(matches) => {
+            let mut msg = format!("Ambiguous '{target}'. Matches:\n");
+            for m in matches.iter().take(10) {
+                let nick = m.nickname.as_deref().unwrap_or(&m.name);
+                let short = &m.id[..m.id.len().min(8)];
+                msg.push_str(&format!("  {nick}  [{short}]\n"));
+            }
+            msg.push_str("\nTry the full id or short id.");
+            let _ = bot.send_message(chat_id, &msg).await;
+            return Ok(());
+        }
+        ResolveTarget::None => {
+            let _ = bot
+                .send_message(chat_id, "No matching session for this account.")
+                .await;
+            return Ok(());
+        }
+    };
+    let session_id = session_id.as_str();
     upsert_chat(state, chat_id, &user_id, Some(session_id)).await?;
 
     // Resolve ownership: if local, attach viewer directly. If remote,
@@ -581,7 +601,7 @@ async fn handle_help(bot: &BotClient, _cfg: &TelegramConfig, chat_id: i64) -> Re
     let _ = bot
         .send_message(
             chat_id,
-            "Commands:\n  /start <code>   link this chat\n  /sessions       list live sessions\n  /here <id>      route messages to a session\n  /stop           unlink\n\nAnything else is forwarded as keystrokes to the routed session.",
+            "Commands:\n  /start <code>   link this chat\n  /sessions       list live sessions\n  /here <nick>    route messages to a session (nickname or id)\n  /stop           unlink\n\nAnything else is forwarded as keystrokes to the routed session.",
         )
         .await;
     Ok(())
@@ -602,7 +622,7 @@ async fn forward_to_session(
     };
     let Some(session_id) = binding.session_id.clone() else {
         let _ = bot
-            .send_message(chat_id, "No session routed. Use /sessions then /here <id>.")
+            .send_message(chat_id, "No session routed. Use /sessions then /here <nick>.")
             .await;
         return Ok(());
     };
@@ -863,6 +883,108 @@ fn ceil_char_boundary(s: &str, idx: usize) -> usize {
         i += 1;
     }
     i
+}
+
+// ─── Session-target resolution ─────────────────────────────────────
+
+enum ResolveTarget {
+    Exact(String),
+    Ambiguous(Vec<crate::types::SessionInfo>),
+    None,
+}
+
+/// Match a user-typed string against a list of live sessions in this
+/// priority order, returning the first tier that has a hit:
+///   1. exact id match
+///   2. exact nickname match (case-insensitive)
+///   3. exact name match (case-insensitive)
+///   4. unique id prefix match (≥4 chars)
+///   5. unique case-insensitive nickname/name prefix (≥3 chars)
+///
+/// Each tier is winner-takes-all: if tier 2 has a unique hit we return
+/// it without consulting tier 3. If any single tier has multiple hits
+/// we return `Ambiguous` so the user can disambiguate.
+fn resolve_session_target(
+    sessions: &[crate::types::SessionInfo],
+    target: &str,
+) -> ResolveTarget {
+    let t = target.trim();
+    if t.is_empty() {
+        return ResolveTarget::None;
+    }
+
+    // Tier 1: exact id.
+    if let Some(s) = sessions.iter().find(|s| s.id == t) {
+        return ResolveTarget::Exact(s.id.clone());
+    }
+
+    let t_lower = t.to_ascii_lowercase();
+
+    // Tier 2: exact nickname (case-insensitive).
+    let nick_hits: Vec<_> = sessions
+        .iter()
+        .filter(|s| {
+            s.nickname
+                .as_deref()
+                .map(|n| n.eq_ignore_ascii_case(t))
+                .unwrap_or(false)
+        })
+        .collect();
+    match nick_hits.len() {
+        1 => return ResolveTarget::Exact(nick_hits[0].id.clone()),
+        n if n > 1 => {
+            return ResolveTarget::Ambiguous(nick_hits.into_iter().cloned().collect())
+        }
+        _ => {}
+    }
+
+    // Tier 3: exact name (case-insensitive).
+    let name_hits: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.name.eq_ignore_ascii_case(t))
+        .collect();
+    match name_hits.len() {
+        1 => return ResolveTarget::Exact(name_hits[0].id.clone()),
+        n if n > 1 => {
+            return ResolveTarget::Ambiguous(name_hits.into_iter().cloned().collect())
+        }
+        _ => {}
+    }
+
+    // Tier 4: id prefix (≥4 chars, exact byte prefix).
+    if t.len() >= 4 {
+        let id_hits: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(t)).collect();
+        match id_hits.len() {
+            1 => return ResolveTarget::Exact(id_hits[0].id.clone()),
+            n if n > 1 => {
+                return ResolveTarget::Ambiguous(id_hits.into_iter().cloned().collect())
+            }
+            _ => {}
+        }
+    }
+
+    // Tier 5: nickname/name prefix (case-insensitive, ≥3 chars).
+    if t.len() >= 3 {
+        let pfx_hits: Vec<_> = sessions
+            .iter()
+            .filter(|s| {
+                s.nickname
+                    .as_deref()
+                    .map(|n| n.to_ascii_lowercase().starts_with(&t_lower))
+                    .unwrap_or(false)
+                    || s.name.to_ascii_lowercase().starts_with(&t_lower)
+            })
+            .collect();
+        match pfx_hits.len() {
+            1 => return ResolveTarget::Exact(pfx_hits[0].id.clone()),
+            n if n > 1 => {
+                return ResolveTarget::Ambiguous(pfx_hits.into_iter().cloned().collect())
+            }
+            _ => {}
+        }
+    }
+
+    ResolveTarget::None
 }
 
 // ─── MongoDB helpers ───────────────────────────────────────────────
@@ -1186,6 +1308,108 @@ mod tests {
     fn turn_boundary_ignores_non_terminal_events() {
         let frame = r#"{"ch":"events","event":"tool_call_start"}"#;
         assert!(!is_turn_boundary(frame));
+    }
+
+    fn mk_session(id: &str, name: &str, nickname: Option<&str>) -> crate::types::SessionInfo {
+        crate::types::SessionInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            agent_type: "repl".into(),
+            cwd: "/".into(),
+            hostname: "host".into(),
+            nickname: nickname.map(|s| s.to_string()),
+            owner_origin: None,
+            connected_at: chrono::Utc::now(),
+            viewers: 0,
+        }
+    }
+
+    fn assert_exact(res: ResolveTarget, id: &str) {
+        match res {
+            ResolveTarget::Exact(got) => assert_eq!(got, id),
+            ResolveTarget::Ambiguous(_) => panic!("unexpected ambiguous"),
+            ResolveTarget::None => panic!("unexpected none"),
+        }
+    }
+
+    #[test]
+    fn resolve_exact_id() {
+        let s = vec![mk_session("abc123xyz", "repl", Some("vizsla"))];
+        assert_exact(resolve_session_target(&s, "abc123xyz"), "abc123xyz");
+    }
+
+    #[test]
+    fn resolve_exact_nickname_case_insensitive() {
+        let s = vec![mk_session("abc123xyz", "repl", Some("Vizsla"))];
+        assert_exact(resolve_session_target(&s, "vizsla"), "abc123xyz");
+        assert_exact(resolve_session_target(&s, "VIZSLA"), "abc123xyz");
+    }
+
+    #[test]
+    fn resolve_exact_name_when_no_nickname() {
+        let s = vec![mk_session("abc123", "my-agent", None)];
+        assert_exact(resolve_session_target(&s, "my-agent"), "abc123");
+    }
+
+    #[test]
+    fn resolve_id_prefix() {
+        let s = vec![
+            mk_session("abc12345", "repl", Some("vizsla")),
+            mk_session("xyz98765", "repl", Some("dunlin")),
+        ];
+        assert_exact(resolve_session_target(&s, "abc1"), "abc12345");
+    }
+
+    #[test]
+    fn resolve_nickname_prefix() {
+        let s = vec![
+            mk_session("abc123", "repl", Some("vizsla")),
+            mk_session("xyz456", "repl", Some("dunlin")),
+        ];
+        assert_exact(resolve_session_target(&s, "viz"), "abc123");
+    }
+
+    #[test]
+    fn resolve_ambiguous_same_nickname() {
+        let s = vec![
+            mk_session("abc123", "repl", Some("shared")),
+            mk_session("xyz456", "repl", Some("shared")),
+        ];
+        match resolve_session_target(&s, "shared") {
+            ResolveTarget::Ambiguous(hits) => assert_eq!(hits.len(), 2),
+            _ => panic!("expected ambiguous"),
+        }
+    }
+
+    #[test]
+    fn resolve_id_beats_nickname_collision() {
+        // Session with nickname equal to another session's id: exact
+        // id match wins (tier 1 runs first).
+        let s = vec![
+            mk_session("trick", "repl", Some("vizsla")),
+            mk_session("abc123", "repl", Some("trick")),
+        ];
+        assert_exact(resolve_session_target(&s, "trick"), "trick");
+    }
+
+    #[test]
+    fn resolve_none_too_short_prefix() {
+        let s = vec![mk_session("abc123", "repl", Some("vizsla"))];
+        // "ab" is only 2 chars — below the 3-char nickname-prefix gate
+        // and 4-char id-prefix gate.
+        matches!(resolve_session_target(&s, "ab"), ResolveTarget::None);
+    }
+
+    #[test]
+    fn resolve_none_no_match() {
+        let s = vec![mk_session("abc123", "repl", Some("vizsla"))];
+        matches!(resolve_session_target(&s, "zzzzz"), ResolveTarget::None);
+    }
+
+    #[test]
+    fn resolve_strips_surrounding_whitespace() {
+        let s = vec![mk_session("abc123", "repl", Some("vizsla"))];
+        assert_exact(resolve_session_target(&s, "  vizsla  "), "abc123");
     }
 
     #[test]
