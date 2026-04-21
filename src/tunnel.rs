@@ -75,6 +75,15 @@ pub fn tunnel_send(data: Vec<u8>) {
     }
 }
 
+/// Send a structured agent event JSON frame on the `ch:"events"` channel.
+/// No-op if no tunnel registered. Used by REPL to symmetrize with
+/// PTY-wrapped CLIs whose event parser emits the same frames.
+pub fn tunnel_send_event(json: String) {
+    if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
+        tx.send_event(json);
+    }
+}
+
 fn relay_url() -> String {
     std::env::var("SIDEKAR_RELAY_URL").unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string())
 }

@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use std::io::{self, BufRead, Write};
 
 mod editor;
+mod event_forward;
 mod relay;
 mod renderer;
 mod shell_escape;
@@ -255,9 +256,16 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let renderer =
             std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
         let renderer_for_events = renderer.clone();
+        let forwarder = std::sync::Arc::new(std::sync::Mutex::new(
+            self::event_forward::EventForwarder::new(),
+        ));
+        let forwarder_for_events = forwarder.clone();
         let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
             if let Ok(mut guard) = renderer_for_events.lock() {
                 guard.render(event);
+            }
+            if let Ok(mut guard) = forwarder_for_events.lock() {
+                guard.forward(event);
             }
         });
 
@@ -466,9 +474,16 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let renderer =
             std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
         let renderer_for_events = renderer.clone();
+        let forwarder = std::sync::Arc::new(std::sync::Mutex::new(
+            self::event_forward::EventForwarder::new(),
+        ));
+        let forwarder_for_events = forwarder.clone();
         let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
             if let Ok(mut guard) = renderer_for_events.lock() {
                 guard.render(event);
+            }
+            if let Ok(mut guard) = forwarder_for_events.lock() {
+                guard.forward(event);
             }
         });
 

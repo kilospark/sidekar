@@ -425,12 +425,34 @@ fn parse_tool_header(content: &str) -> (String, String) {
 // Wire format: wraps events for tunnel transmission
 // ---------------------------------------------------------------------------
 
-/// Serialize an event for tunnel transmission as a JSON text frame.
+/// Serialize a content event for tunnel transmission as a JSON text frame.
+/// Shape: `{"ch":"events","v":1,"event":{kind:"text"|"tool_call"|...}}`.
 pub fn event_to_json(event: &AgentEvent) -> String {
     serde_json::json!({
         "ch": "events",
         "v": 1,
         "event": event,
+    })
+    .to_string()
+}
+
+/// Serialize a turn-lifecycle marker. The `event` field is a bare string so
+/// relay consumers (e.g. Telegram viewer's `is_turn_boundary`) can match on
+/// `*_complete` / `*_done` / `turn_end` / `assistant_message` suffixes
+/// without having to descend into a tagged enum.
+///
+/// Recognized names (keep in sync with relay/src/telegram.rs::is_turn_boundary):
+///   - "turn_start"          — agent began processing a user input
+///   - "tool_call_start"     — a tool is about to execute
+///   - "tool_call_end"       — a tool has finished executing
+///   - "assistant_complete"  — assistant's turn has ended (flush trigger)
+///   - "turn_end"            — synonym for assistant_complete
+///   - "error"               — assistant stream errored
+pub fn lifecycle_to_json(name: &str) -> String {
+    serde_json::json!({
+        "ch": "events",
+        "v": 1,
+        "event": name,
     })
     .to_string()
 }
