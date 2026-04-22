@@ -38,10 +38,39 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamConfig, StreamEvent,
+    ToolDef, Usage,
 };
 
+mod cache;
+mod cache_registry;
+
 /// Streaming call to Gemini's native streamGenerateContent endpoint.
+///
+/// When `config.gemini_caching` is true (default for Provider::Gemini),
+/// attempts to use `cachedContents` for token-cost savings on stable
+/// prefixes. Algorithm:
+///
+///   1. Split `messages` into a stable prefix (everything except the
+///      final user turn) and the new turn.
+///   2. Fingerprint (model, system, tools, prefix).
+///   3. Look up the fingerprint in the local registry. If hit and
+///      unexpired, build the request with `cachedContent = name` and
+///      only the new turn in `contents`. System prompt and tools are
+///      omitted (they live in the cached object).
+///   4. On miss, estimate the prefix token count. If it exceeds
+///      `gemini_cache_min_tokens`, create a cache via
+///      `cachedContents.create`, store the result in the registry,
+///      then send the request using that cache. Creation failures
+///      (4xx from too-few-tokens, network blips) fall back to the
+///      uncached path silently — caching is an optimization, never a
+///      failure mode.
+///   5. On the next turn, a "cache not found" response (the server
+///      evicted before our TTL believed it was gone) triggers a
+///      registry delete and one retry without `cachedContent`.
+///
+/// `prompt_cache_key` is ignored for Gemini (other providers use it
+/// as an Anthropic/OpenAI-shaped hint). We maintain our own registry.
 #[allow(clippy::too_many_arguments)]
 pub async fn stream(
     api_key: &str,
@@ -51,18 +80,111 @@ pub async fn stream(
     messages: &[ChatMessage],
     tools: &[ToolDef],
     _prompt_cache_key: Option<&str>,
+    config: &StreamConfig,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-    let (body, _id_map) = build_request_body(model, system_prompt, messages, tools, None);
+    // Try cached path first; fall through to uncached on any problem.
+    // The retry loop handles the "cache evicted server-side" case once.
+    let mut cache_ref: Option<String> = None;
+    let mut cache_fingerprint: Option<String> = None;
+    if config.gemini_caching {
+        if let Some(prep) = prepare_cache(
+            api_key,
+            base_url,
+            model,
+            system_prompt,
+            messages,
+            tools,
+            config,
+        )
+        .await
+        {
+            cache_ref = Some(prep.name);
+            cache_fingerprint = Some(prep.fingerprint);
+        }
+    }
+
+    // Decide which messages go in `contents`. When cached, only the
+    // incremental turn(s) past the cached prefix ship.
+    let (effective_system, effective_tools, effective_messages) = if cache_ref.is_some() {
+        let prefix_len = cacheable_prefix_len(messages);
+        (
+            "", // system lives in cache
+            &[][..], // tools live in cache
+            &messages[prefix_len..],
+        )
+    } else {
+        (system_prompt, tools, messages)
+    };
+
+    let response = send_generate_request(
+        api_key,
+        base_url,
+        model,
+        effective_system,
+        effective_messages,
+        effective_tools,
+        cache_ref.as_deref(),
+    )
+    .await;
+
+    // Fallback on "cache not found": server evicted before our TTL
+    // expected. Evict the registry entry and retry uncached.
+    let response = match response {
+        Ok(r) => r,
+        Err(err) if cache_ref.is_some() && is_cache_not_found_error(&err) => {
+            if let Some(fp) = &cache_fingerprint {
+                let _ = cache_registry::delete(fp);
+            }
+            eprintln!(
+                "gemini cache: server-side eviction detected, retrying without cachedContent"
+            );
+            send_generate_request(
+                api_key,
+                base_url,
+                model,
+                system_prompt,
+                messages,
+                tools,
+                None,
+            )
+            .await?
+        }
+        Err(e) => return Err(e),
+    };
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let model_owned = model.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = parse_sse_stream(response, &tx, &model_owned).await {
+            let _ = tx.send(StreamEvent::Error {
+                message: format!("{e:#}"),
+            });
+        }
+    });
+    Ok(rx)
+}
+
+/// Execute one POST to streamGenerateContent. Separated so the cache
+/// fallback path can reuse it.
+#[allow(clippy::too_many_arguments)]
+async fn send_generate_request(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    cached_content_name: Option<&str>,
+) -> Result<reqwest::Response> {
+    let (body, _id_map) =
+        build_request_body(model, system_prompt, messages, tools, cached_content_name);
     let url = format!(
         "{}/models/{}:streamGenerateContent?alt=sse",
         base_url.trim_end_matches('/'),
         model
     );
-
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
-    // Gemini accepts either ?key= query param or x-goog-api-key header;
-    // the header keeps the key out of URL logs and request captures.
     headers.insert("x-goog-api-key", api_key.parse()?);
 
     super::log_api_request(&url, &headers, &body);
@@ -82,17 +204,150 @@ pub async fn stream(
         super::log_api_error(status, &text);
         bail!("Gemini API error ({}): {}", status, text);
     }
+    Ok(response)
+}
 
-    let (tx, rx) = mpsc::unbounded_channel();
-    let model_owned = model.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = parse_sse_stream(response, &tx, &model_owned).await {
-            let _ = tx.send(StreamEvent::Error {
-                message: format!("{e:#}"),
-            });
+/// Detect the specific error shape Gemini returns when a referenced
+/// `cachedContent` no longer exists (TTL expired on the server, or
+/// the cache was manually deleted between requests). Triggers a
+/// registry eviction + uncached retry.
+fn is_cache_not_found_error(err: &anyhow::Error) -> bool {
+    let s = format!("{err:#}");
+    // Status code 404 is the common case. Message text mentioning
+    // "not found" + "cachedContent" catches the less-specific
+    // rendering when the server returns 400 with NOT_FOUND in body.
+    s.contains("(404") || (s.to_lowercase().contains("cached") && s.to_lowercase().contains("not found"))
+}
+
+/// Result of the cache preparation step: a ready-to-use cache name
+/// and the fingerprint that keyed it (for eviction on retry).
+struct CachePrep {
+    name: String,
+    fingerprint: String,
+}
+
+/// Look up or create a cached content for the current prefix. Returns
+/// `None` if caching is not worthwhile (prefix too small, creation
+/// failed, etc.) — caller falls back to uncached mode. Never errors.
+async fn prepare_cache(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    config: &StreamConfig,
+) -> Option<CachePrep> {
+    let prefix_len = cacheable_prefix_len(messages);
+    if prefix_len == 0 {
+        // No history to cache yet (first turn). Nothing worth caching.
+        return None;
+    }
+    let prefix = &messages[..prefix_len];
+
+    // Serialize the prefix components for fingerprinting. We use the
+    // same message shapes the adapter already knows how to build —
+    // serde_json guarantees stable field ordering on struct types
+    // with #[derive(Serialize)].
+    let tools_json = serde_json::to_string(tools).ok()?;
+    let prefix_json = serde_json::to_string(prefix).ok()?;
+    let fingerprint =
+        cache_registry::fingerprint(model, system_prompt, &tools_json, &prefix_json);
+
+    // Registry hit → reuse.
+    if let Some(entry) = cache_registry::lookup(&fingerprint) {
+        return Some(CachePrep {
+            name: entry.name,
+            fingerprint,
+        });
+    }
+
+    // Miss: decide whether creation is worth a round trip. Rough
+    // token estimate — len(json)/4 tracks the same estimator the
+    // compaction module uses. If the estimate is under the minimum,
+    // skip; we'd pay a creation round-trip that the server will
+    // reject and nothing would be gained.
+    let approx_tokens = (system_prompt.len() + tools_json.len() + prefix_json.len()) / 4;
+    if (approx_tokens as u32) < config.gemini_cache_min_tokens {
+        return None;
+    }
+
+    // Build the prefix contents exactly as streamGenerateContent
+    // would see them — same conversion so cache lookups work when
+    // the same prefix is later sent as a delta.
+    let (prefix_body, _) = build_request_body(model, system_prompt, prefix, tools, None);
+    let contents = prefix_body
+        .get("contents")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let tools_decls = prefix_body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("functionDeclarations"))
+        .and_then(|fd| fd.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let system_instruction = prefix_body.get("systemInstruction").cloned();
+
+    let display_name = format!("sidekar-{}", &fingerprint[..8]);
+    let created = cache::create_cache(
+        api_key,
+        base_url,
+        model,
+        &contents,
+        &tools_decls,
+        system_instruction.as_ref(),
+        config.gemini_cache_ttl_secs,
+        &display_name,
+    )
+    .await;
+
+    let created = match created {
+        Ok(Some(c)) => c,
+        Ok(None) => return None, // 4xx — not retryable; fall back
+        Err(e) => {
+            eprintln!("gemini cache: create failed, continuing uncached: {e:#}");
+            return None;
         }
-    });
-    Ok(rx)
+    };
+
+    let entry = cache_registry::CacheEntry {
+        name: created.name.clone(),
+        model: model.to_string(),
+        fingerprint: fingerprint.clone(),
+        token_count: created.token_count,
+        expires_at_unix: created.expires_at_unix,
+    };
+    if let Err(e) = cache_registry::store(&entry) {
+        eprintln!("gemini cache: registry store failed: {e:#}");
+        // Server has the cache; we just can't track it locally. Use
+        // it for this turn — we'll pay a creation cost again next
+        // turn, but correctness is preserved.
+    }
+
+    Some(CachePrep {
+        name: created.name,
+        fingerprint,
+    })
+}
+
+/// Return the number of leading messages that form the "stable"
+/// prefix — everything up to and including the last assistant turn.
+/// The current user turn (and any subsequent partial state) is the
+/// incremental delta sent alongside a cache reference.
+fn cacheable_prefix_len(messages: &[ChatMessage]) -> usize {
+    // Walk backward from the end; the prefix is everything up to the
+    // last Assistant message (inclusive). If there's no assistant
+    // message yet (fresh conversation, only a user turn), the
+    // prefix is empty and we don't cache.
+    for (i, msg) in messages.iter().enumerate().rev() {
+        if matches!(msg.role, Role::Assistant) {
+            return i + 1;
+        }
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------

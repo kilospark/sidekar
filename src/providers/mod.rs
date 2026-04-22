@@ -462,6 +462,24 @@ pub struct StreamConfig {
     pub reasoning: Option<ReasoningConfig>,
     /// Text generation configuration: `{ "verbosity": "verbose" }`.
     pub text_verbosity: Option<String>,
+    /// Gemini: enable implicit `cachedContents` lifecycle for stable
+    /// prefixes. When true, the Gemini adapter fingerprints
+    /// (system + tools + history-prefix) per turn and reuses or
+    /// creates a cached content object so the server bills that
+    /// prefix at the cache-read rate (~75% discount). Defaults to
+    /// true for Provider::Gemini; ignored by other providers.
+    pub gemini_caching: bool,
+    /// Gemini: cache TTL in seconds. 3600 (1h) matches our
+    /// Anthropic default. Shorter TTLs reduce storage cost for
+    /// sessions that rarely return; longer TTLs are pointless since
+    /// the fingerprint must match exactly for reuse.
+    pub gemini_cache_ttl_secs: u32,
+    /// Gemini: minimum prefix token count (estimated) before
+    /// attempting to create a cache. Gemini 2.5 Flash requires
+    /// 4096; 2.5 Pro requires 1024. Default 4096 is safe for both.
+    /// Below this, the creation round-trip costs more than the
+    /// cache-read savings for a single reuse.
+    pub gemini_cache_min_tokens: u32,
 }
 
 /// Reasoning parameters sent to the Codex Responses API.
@@ -482,6 +500,12 @@ impl Default for StreamConfig {
             temperature: None,
             reasoning: None,
             text_verbosity: None,
+            // Gemini-specific fields default to "off" for non-Gemini
+            // providers. Provider::Gemini overrides via
+            // default_stream_config.
+            gemini_caching: false,
+            gemini_cache_ttl_secs: 3600,
+            gemini_cache_min_tokens: 4096,
         }
     }
 }
@@ -1199,12 +1223,15 @@ impl Provider {
             },
             Provider::OpenRouter { .. } => StreamConfig::default(),
             Provider::OpenAiCompat { .. } => StreamConfig::default(),
-            // Gemini defaults: plain StreamConfig is fine for commit 1
-            // (no caching, no thinking-budget, no reasoning). Commit 2
-            // adds gemini_caching / gemini_cache_ttl_secs /
-            // gemini_cache_min_tokens via new StreamConfig fields;
-            // their defaults will be populated here.
-            Provider::Gemini { .. } => StreamConfig::default(),
+            // Gemini: enable cachedContents by default. Users who
+            // want to disable (debugging, short-lived sessions) can
+            // build a StreamConfig with `gemini_caching: false`
+            // explicitly. TTL and min-tokens inherit from
+            // StreamConfig::default() (3600s / 4096).
+            Provider::Gemini { .. } => StreamConfig {
+                gemini_caching: true,
+                ..StreamConfig::default()
+            },
         }
     }
 
@@ -1405,6 +1432,7 @@ impl Provider {
                     messages,
                     tools,
                     prompt_cache_key,
+                    &stream_config,
                 )
                 .await?;
                 Ok(no_ws_reclaim(rx))

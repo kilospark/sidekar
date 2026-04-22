@@ -230,6 +230,80 @@ fn empty_messages_still_produces_valid_body() {
 // Full integration coverage requires a real key and lives outside
 // the unit-test suite.
 
+// ─── cacheable_prefix_len ───────────────────────────────────────
+
+#[test]
+fn cacheable_prefix_empty_when_only_user_turn() {
+    // Fresh conversation: single user message. There's no completed
+    // exchange to cache — the prefix is empty.
+    let msgs = vec![mk_user_text("hello")];
+    assert_eq!(cacheable_prefix_len(&msgs), 0);
+}
+
+#[test]
+fn cacheable_prefix_includes_last_assistant_turn() {
+    // user → assistant → user(current). Prefix = first two messages;
+    // the current user turn is the incremental delta.
+    let msgs = vec![
+        mk_user_text("hi"),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: "hello".into() }],
+        },
+        mk_user_text("follow-up"),
+    ];
+    assert_eq!(cacheable_prefix_len(&msgs), 2);
+}
+
+#[test]
+fn cacheable_prefix_spans_tool_round_trip() {
+    // Multi-turn with a tool round-trip in the middle. Prefix must
+    // end at the last assistant message BEFORE the current user
+    // input, not at a ToolResult-bearing user message.
+    let msgs = vec![
+        mk_user_text("list"),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call_Bash_0".into(),
+                name: "Bash".into(),
+                arguments: json!({"command":"ls"}),
+            }],
+        },
+        ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_Bash_0".into(),
+                content: "a".into(),
+                is_error: false,
+            }],
+        },
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: "one file".into() }],
+        },
+        mk_user_text("thanks"),
+    ];
+    // Prefix = everything up to and including the second assistant
+    // turn (index 3), so length 4.
+    assert_eq!(cacheable_prefix_len(&msgs), 4);
+}
+
+#[test]
+fn cache_not_found_error_detection() {
+    // 404 status code in error string.
+    let e = anyhow::anyhow!("Gemini API error (404 Not Found): cachedContent \"cachedContents/abc\" was not found");
+    assert!(is_cache_not_found_error(&e));
+    // 400 with NOT_FOUND body text.
+    let e = anyhow::anyhow!("Gemini API error (400 Bad Request): CachedContent not found");
+    assert!(is_cache_not_found_error(&e));
+    // Unrelated errors don't trigger the retry.
+    let e = anyhow::anyhow!("Gemini API error (500 Internal Server Error)");
+    assert!(!is_cache_not_found_error(&e));
+    let e = anyhow::anyhow!("network timeout");
+    assert!(!is_cache_not_found_error(&e));
+}
+
 #[test]
 fn tool_id_synthesis_disambiguates_same_name_calls() {
     // Two successive functionCall parts with name "Bash" in the same
