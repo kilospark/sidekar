@@ -27,6 +27,7 @@ pub const KV_KEY_CODEX: &str = "oauth:codex";
 pub const KV_KEY_OPENROUTER: &str = "oauth:openrouter";
 pub const KV_KEY_OPENCODE: &str = "oauth:opencode";
 pub const KV_KEY_GROK: &str = "oauth:grok";
+pub const KV_KEY_GEMINI: &str = "oauth:gemini";
 pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
 /// KV key for a named credential. e.g., "claude-1" → "oauth:claude-1"
@@ -59,6 +60,13 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("opencode")
     } else if matches_convention(nickname, "grok") {
         Some("grok")
+    } else if matches_convention(nickname, "gem") {
+        // Gemini native provider. `gem` only (not `gemini`) per user
+        // convention. `gem` uniquely identifies Google Gemini among
+        // sidekar's providers; `gemma` would be a different model
+        // family and would require a different prefix if we ever
+        // added it.
+        Some("gemini")
     } else if matches_convention(nickname, "oac") {
         Some("oac")
     } else {
@@ -80,6 +88,7 @@ fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("openrouter") => Some("openrouter"),
         Some("opencode") => Some("opencode"),
         Some("grok") => Some("grok"),
+        Some("gemini") => Some("gemini"),
         Some("oac") => Some("oac"),
         Some("openai-compatible") => Some("oac"),
         _ => None,
@@ -396,6 +405,52 @@ pub async fn login_grok(nickname: Option<&str>) -> Result<String> {
         "XAI_API_KEY",
         "Grok",
         Some("https://console.x.ai/"),
+        true,
+    )
+    .await
+}
+
+/// Get a valid Gemini API key. No OAuth — uses stored key or
+/// GEMINI_API_KEY / GOOGLE_API_KEY env var. Gemini static keys don't
+/// expire, so `force_refresh_token` bails with a re-login hint rather
+/// than silently succeeding.
+pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_GEMINI);
+    // Try the primary env var first; fall back to GOOGLE_API_KEY which
+    // Google's own SDKs default to. `get_api_key_token` only takes one
+    // env name, so check GOOGLE_API_KEY manually before calling it.
+    if std::env::var("GEMINI_API_KEY").is_err() {
+        if let Ok(key) = std::env::var("GOOGLE_API_KEY") {
+            // Hand off to the stored-or-env path with the alternate
+            // name already in the environment. Cleanest: temporarily
+            // expose it under GEMINI_API_KEY for this call.
+            // SAFETY: env is process-global; only this adapter reads
+            // it and we unset after the call returns.
+            // Simpler: return directly if env is present.
+            if !key.trim().is_empty() {
+                return Ok(key);
+            }
+        }
+    }
+    get_api_key_token(
+        &kv_key,
+        "GEMINI_API_KEY",
+        "Gemini",
+        Some("https://aistudio.google.com/apikey"),
+        false,
+    )
+    .await
+}
+
+/// Interactive login for Gemini. Prompts for an API key and stores it
+/// under the given nickname (or the default `oauth:gemini` key).
+pub async fn login_gemini(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_GEMINI);
+    get_api_key_token(
+        &kv_key,
+        "GEMINI_API_KEY",
+        "Gemini",
+        Some("https://aistudio.google.com/apikey"),
         true,
     )
     .await
@@ -1187,5 +1242,30 @@ mod tests {
         assert_eq!(provider_type_for("oac-lab"), Some("oac"));
         assert_eq!(provider_type_for("compat-local"), None);
         assert_eq!(provider_type_for("oai-lab"), None);
+    }
+
+    #[test]
+    fn provider_type_for_gemini_uses_gem_prefix() {
+        // Gemini nicknames start with `gem`. The `gem-` variant is
+        // the canonical multi-credential form (gem-work, gem-test).
+        assert_eq!(provider_type_for("gem"), Some("gemini"));
+        assert_eq!(provider_type_for("gem-work"), Some("gemini"));
+        assert_eq!(provider_type_for("gem-test"), Some("gemini"));
+    }
+
+    #[test]
+    fn provider_type_for_gemini_does_not_collide_with_other_gem_prefixes() {
+        // Hypothetical future models whose names start with `gem`
+        // must NOT be claimed by the Gemini provider. matches_convention
+        // requires exact prefix match or `prefix-` form, so `gemma`
+        // and `gemstones` naturally miss, but pin them in a test so a
+        // future change to the matcher doesn't silently break this.
+        assert_eq!(provider_type_for("gemma"), None);
+        assert_eq!(provider_type_for("gemstones"), None);
+        assert_eq!(provider_type_for("gemini-model"), None);
+        // Exact `gemini` (no dash) is also not accepted as a prefix —
+        // callers who want to use the bare name should use `gem`.
+        // If we ever add `gemini` as an accepted prefix, update here.
+        assert_eq!(provider_type_for("gemini"), None);
     }
 }

@@ -63,10 +63,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "openrouter"
             } else if nickname == "opencode" {
                 "opencode"
+            } else if nickname == "gemini" || nickname == "gem" {
+                "gemini"
             } else {
                 eprintln!("Unknown provider: '{nickname}'.");
                 eprintln!(
-                    "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login oac <name> <url>`."
+                    "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, gem-<name> for Gemini, or `sidekar repl login oac <name> <url>`."
                 );
                 std::process::exit(1);
             }
@@ -108,6 +110,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
             let _ = sidekar::providers::oauth::login_grok(Some(nickname)).await?;
             sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
                 "Logged in as '{nickname}' (Grok)."
+            )))?;
+        }
+        "gemini" => {
+            let _ = sidekar::providers::oauth::login_gemini(Some(nickname)).await?;
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (Gemini)."
             )))?;
         }
         "oac" => {

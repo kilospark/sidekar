@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod codex;
+pub mod gemini;
 pub mod oauth;
 pub mod openrouter;
 
@@ -606,6 +607,9 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
             api_key, base_url, ..
         } => fetch_openai_compat_model_limits(api_key, base_url, model).await,
         Provider::Codex { .. } => None, // OpenAI /v1/models doesn't return context info
+        Provider::Gemini {
+            api_key, base_url, ..
+        } => gemini::fetch_gemini_model_limits(api_key, base_url, model).await,
     }
 }
 
@@ -763,6 +767,7 @@ pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteM
         "openrouter" => fetch_openrouter_model_list(api_key).await,
         "grok" => fetch_openai_compat_model_list(api_key, oauth::GROK_BASE_URL).await,
         "opencode" => fetch_opencode_model_list(api_key).await,
+        "gemini" => gemini::fetch_gemini_model_list(api_key).await,
         _ => Vec::new(),
     }
 }
@@ -778,6 +783,7 @@ pub async fn fetch_model_list_for_provider(provider: &Provider) -> Vec<RemoteMod
         Provider::OpenAiCompat {
             api_key, base_url, ..
         } => fetch_openai_compat_model_list(api_key, base_url).await,
+        Provider::Gemini { api_key, .. } => gemini::fetch_gemini_model_list(api_key).await,
     }
 }
 
@@ -1049,6 +1055,15 @@ pub enum Provider {
         display_name: String,
         credential: Option<String>,
     },
+    /// Google Gemini via native `generativelanguage.googleapis.com`
+    /// API. Static API key auth (header `x-goog-api-key`); no OAuth
+    /// refresh flow. Supports `cachedContents` for multi-turn token
+    /// savings (wiring in a follow-up commit).
+    Gemini {
+        api_key: String,
+        base_url: String,
+        credential: Option<String>,
+    },
 }
 
 impl Provider {
@@ -1111,12 +1126,24 @@ impl Provider {
         }
     }
 
+    /// Gemini native provider. Uses Google's generativelanguage v1beta
+    /// API directly (not the OpenAI-compat shim), giving access to
+    /// thinking tokens, cachedContents, and native usageMetadata.
+    pub fn gemini(api_key: String, credential: Option<String>) -> Self {
+        Provider::Gemini {
+            api_key,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            credential,
+        }
+    }
+
     pub fn api_key(&self) -> &str {
         match self {
             Provider::Anthropic { api_key, .. } => api_key,
             Provider::Codex { api_key, .. } => api_key,
             Provider::OpenRouter { api_key, .. } => api_key,
             Provider::OpenAiCompat { api_key, .. } => api_key,
+            Provider::Gemini { api_key, .. } => api_key,
         }
     }
 
@@ -1126,6 +1153,7 @@ impl Provider {
             Provider::Codex { credential, .. } => credential.as_deref(),
             Provider::OpenRouter { credential, .. } => credential.as_deref(),
             Provider::OpenAiCompat { credential, .. } => credential.as_deref(),
+            Provider::Gemini { credential, .. } => credential.as_deref(),
         }
     }
 
@@ -1136,6 +1164,7 @@ impl Provider {
             Provider::Codex { .. } => "codex",
             Provider::OpenRouter { .. } => "openrouter",
             Provider::OpenAiCompat { provider_type, .. } => provider_type,
+            Provider::Gemini { .. } => "gemini",
         }
     }
 
@@ -1170,6 +1199,12 @@ impl Provider {
             },
             Provider::OpenRouter { .. } => StreamConfig::default(),
             Provider::OpenAiCompat { .. } => StreamConfig::default(),
+            // Gemini defaults: plain StreamConfig is fine for commit 1
+            // (no caching, no thinking-budget, no reasoning). Commit 2
+            // adds gemini_caching / gemini_cache_ttl_secs /
+            // gemini_cache_min_tokens via new StreamConfig fields;
+            // their defaults will be populated here.
+            Provider::Gemini { .. } => StreamConfig::default(),
         }
     }
 
@@ -1347,6 +1382,22 @@ impl Provider {
                 let key = api_key_override.unwrap_or(api_key);
                 let rx = openrouter::stream_with_provider(
                     display_name,
+                    key,
+                    base_url,
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                    prompt_cache_key,
+                )
+                .await?;
+                Ok(no_ws_reclaim(rx))
+            }
+            Provider::Gemini {
+                api_key, base_url, ..
+            } => {
+                let key = api_key_override.unwrap_or(api_key);
+                let rx = gemini::stream(
                     key,
                     base_url,
                     model,
