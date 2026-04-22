@@ -92,7 +92,10 @@ pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json:
     for (name, value) in headers.iter() {
         let val = value.to_str().unwrap_or("<binary>");
         let display = match name.as_str() {
-            "authorization" | "x-api-key" => {
+            // Sensitive auth headers. Keep a tiny prefix+suffix so
+            // request logs remain distinguishable across retries
+            // without ever printing the full secret.
+            "authorization" | "x-api-key" | "x-goog-api-key" | "api-key" => {
                 if val.len() > 12 {
                     format!("{}...{}", &val[..8], &val[val.len() - 4..])
                 } else {

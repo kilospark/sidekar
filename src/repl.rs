@@ -150,8 +150,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         && providers::oauth::provider_type_for(name).is_none()
     {
         anyhow::bail!(
-            "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', 'or', or 'oc'.\n\
-                 Examples: claude, claude-1, codex, codex-work, or, or-personal, oc, oc-work\n\
+            "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', 'or', 'oc', 'grok', 'gem', or 'oac'.\n\
+                 Examples: claude, claude-1, codex, codex-work, or, or-personal, oc, oc-work, grok-work, gem-work, oac-lab\n\
                  Login with: sidekar repl login {name}"
         );
     }
