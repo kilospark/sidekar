@@ -10,6 +10,7 @@ mod shell_escape;
 mod skills;
 mod slash;
 mod spinner;
+mod stats;
 mod system_prompt;
 mod user_turn;
 
@@ -388,6 +389,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 session_id: &session_id,
                 cred_name: cred_name.as_deref().unwrap_or("(none)"),
                 loaded_skills: &loaded_skills,
+                history: &history,
+                editor_input_history_len: line_editor.input_history_len(),
             };
             if let Some(result) = handle_slash_command(&slash_ctx) {
                 match apply_slash_result(

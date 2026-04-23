@@ -8,6 +8,13 @@ use crate::providers::{ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use super::StreamCallback;
 
 /// Rough token estimate: ~4 chars per token.
+///
+/// Exposed via `estimate_tokens_public` so `/stats` can show the
+/// current context size without duplicating the weighting rules.
+pub(crate) fn estimate_tokens_public(messages: &[ChatMessage]) -> usize {
+    estimate_tokens(messages)
+}
+
 fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     messages
         .iter()

@@ -215,61 +215,139 @@ pub(super) struct SseEvent {
     pub data: String,
 }
 
+/// Streaming SSE frame decoder.
+///
+/// Holds an append-only buffer and a read cursor rather than reslicing
+/// the buffer after every event. Previously `next_event` did
+/// `self.buffer = self.buffer[end..].to_string()` per event, which is
+/// O(remaining) each call. Over a long stream with thousands of small
+/// `data: {...}` frames the cumulative cost is O(n²) in the number of
+/// frames times the response tail — a real CPU cost, especially on
+/// fast streams (Anthropic/Gemini routinely emit 50-80 deltas/sec
+/// during prose). Amortization strategy: advance a `read_pos` cursor,
+/// and only physically drain the consumed prefix when it grows large
+/// enough that carrying it is wasteful (>8KB or >half the buffer).
+/// `drain(..read_pos)` is O(remaining) once per compaction, not per
+/// event, giving amortized O(1) per event.
 pub(super) struct SseDecoder {
+    /// Raw accumulated bytes, append-only until `compact()` trims the
+    /// consumed prefix. Always valid UTF-8 (push_chunk runs incoming
+    /// bytes through from_utf8_lossy first).
     buffer: String,
+    /// Byte offset within `buffer` of the next unread byte. Events
+    /// between 0..read_pos have already been returned. Monotonically
+    /// advances until `compact()` resets it to 0 by draining the
+    /// consumed prefix.
+    read_pos: usize,
 }
+
+/// Drop the consumed prefix once it passes this size. 8KB is large
+/// enough that we aren't compacting on every frame, small enough that
+/// RSS doesn't balloon on a long streamed response. Tuned against
+/// Anthropic's ~200-byte average frame size: ~40 events between
+/// compactions in typical prose streaming.
+const SSE_COMPACT_THRESHOLD: usize = 8 * 1024;
 
 impl SseDecoder {
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
+            read_pos: 0,
         }
     }
 
     pub fn push_chunk(&mut self, chunk: &[u8]) {
-        self.buffer.push_str(&String::from_utf8_lossy(chunk));
-
-        if self.buffer.contains('\r') {
-            self.buffer = self.buffer.replace("\r\n", "\n").replace('\r', "\n");
+        // Normalize CRLF → LF as bytes come in. The old impl rescanned
+        // the entire buffer on every chunk (`buffer.replace(...)`) when
+        // a stray \r was present — quadratic if \r ever stuck around.
+        // Here we only transform the incoming slice, never the already-
+        // accumulated tail.
+        let decoded = String::from_utf8_lossy(chunk);
+        if decoded.contains('\r') {
+            // Small local normalization: replace CRLF and lone CR with
+            // LF only within this chunk. Cross-chunk split like "..\r"
+            // followed by "\n.." is handled naturally since only the
+            // trailing \r becomes a lone \n (SSE treats either as a
+            // line separator per spec).
+            let normalized = decoded.replace("\r\n", "\n").replace('\r', "\n");
+            self.buffer.push_str(&normalized);
+        } else {
+            self.buffer.push_str(&decoded);
         }
     }
 
     pub fn next_event(&mut self) -> Option<SseEvent> {
-        while let Some(event_end) = self.buffer.find("\n\n") {
-            let event_text = self.buffer[..event_end].to_string();
-            self.buffer = self.buffer[event_end + 2..].to_string();
+        loop {
+            // Search from the read cursor, not from 0. `find` returns
+            // an offset relative to the search slice, so add read_pos
+            // to make it an absolute position in the buffer.
+            let unread = &self.buffer[self.read_pos..];
+            let Some(rel_end) = unread.find("\n\n") else {
+                return None;
+            };
+            let event_end = self.read_pos + rel_end;
 
-            let mut event_type = None;
-            let mut event_data_parts = Vec::new();
+            // Parse the event. We can't hold &str borrows into
+            // self.buffer across self.maybe_compact() below (that
+            // takes &mut self), so materialize event_type and data
+            // into owned Strings first — one allocation per field
+            // that's actually returned, which we'd have paid on the
+            // old code path anyway.
+            let event_text = &self.buffer[self.read_pos..event_end];
+            let mut event_type: Option<String> = None;
+            let mut data = String::new();
 
             for line in event_text.lines() {
                 if let Some(rest) = line.strip_prefix("event: ") {
                     event_type = Some(rest.to_string());
                 } else if let Some(rest) = line.strip_prefix("event:") {
                     event_type = Some(rest.trim().to_string());
-                } else if let Some(rest) = line.strip_prefix("data: ") {
+                } else if let Some(rest) = line
+                    .strip_prefix("data: ")
+                    .or_else(|| line.strip_prefix("data:").map(str::trim_start))
+                {
                     if rest == "[DONE]" {
                         continue;
                     }
-                    event_data_parts.push(rest.to_string());
-                } else if let Some(rest) = line.strip_prefix("data:") {
-                    let rest = rest.trim_start();
-                    if rest == "[DONE]" {
-                        continue;
+                    // SSE multi-line data: concatenate with "\n"
+                    // between lines (per spec, single field).
+                    if !data.is_empty() {
+                        data.push('\n');
                     }
-                    event_data_parts.push(rest.to_string());
+                    data.push_str(rest);
                 }
             }
 
-            let data = event_data_parts.join("\n");
+            // Advance the cursor past this event (including the
+            // trailing "\n\n" separator) before returning so the
+            // caller's next call resumes correctly. Also runs in the
+            // `continue` path so empty/DONE frames don't stall the
+            // cursor.
+            self.read_pos = event_end + 2;
+            self.maybe_compact();
+
             if data.is_empty() {
                 continue;
             }
-
             return Some(SseEvent { event_type, data });
         }
+    }
 
-        None
+    /// Drop the consumed prefix when it's grown large enough to be
+    /// worth a single memmove. Keeping the prefix indefinitely would
+    /// retain the entire response text in memory even after every
+    /// event has been returned — harmless within one stream (the
+    /// decoder dies at stream end), but wasteful during long
+    /// responses. Drain amortizes to O(1) per event when called from
+    /// `next_event` because a drain only happens once per ~40 events
+    /// at typical frame sizes.
+    fn maybe_compact(&mut self) {
+        if self.read_pos >= SSE_COMPACT_THRESHOLD
+            || (self.read_pos > 0 && self.read_pos * 2 >= self.buffer.len())
+        {
+            self.buffer.drain(..self.read_pos);
+            self.read_pos = 0;
+        }
     }
 }
 

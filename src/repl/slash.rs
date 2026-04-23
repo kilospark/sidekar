@@ -31,6 +31,14 @@ pub(super) struct SlashContext<'a> {
     pub session_id: &'a str,
     pub cred_name: &'a str,
     pub loaded_skills: &'a [String],
+    /// Current conversation history. Used by /stats for live token
+    /// accounting. Borrowed — never mutated by slash handling.
+    pub history: &'a [providers::ChatMessage],
+    /// Count of entries in the editor's input-line history (the
+    /// up/down arrow buffer). Used by /stats to surface input-history
+    /// growth; passed as a length rather than a slice to avoid moving
+    /// the editor's state across the slash boundary.
+    pub editor_input_history_len: usize,
 }
 
 pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
@@ -311,6 +319,22 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 Some(name) => SlashResult::LoadSkill(name.to_string()),
             }
         }
+        "/stats" => {
+            // /stats is a read-only snapshot: no provider call, no
+            // history mutation. Safe to run at any time, including
+            // during or right after a turn.
+            let snap = super::stats::ResourceSnapshot::capture();
+            let text = super::stats::format_stats(
+                &snap,
+                ctx.history,
+                ctx.editor_input_history_len,
+                model,
+                cred_name,
+                current_session,
+            );
+            tunnel_println(&text);
+            SlashResult::Continue
+        }
         "/help" => {
             tunnel_println("Slash commands:");
             tunnel_println("  /credential  — Show/set/list & select stored credentials");
@@ -319,6 +343,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /session     — List and switch sessions");
             tunnel_println("  /skill       — Load a skill into the session system prompt");
             tunnel_println("  /compact     — Compact older session context now");
+            tunnel_println("  /stats       — Show session / context / process resource usage");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
             tunnel_println(
                 "  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)",
@@ -508,6 +533,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/credential"
             | "/model"
             | "/compact"
+            | "/stats"
             | "/relay"
             | "/verbose"
             | "/skill"

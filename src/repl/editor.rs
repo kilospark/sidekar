@@ -1952,6 +1952,12 @@ impl LineEditor {
         }
     }
 
+    /// Number of input-line history entries currently stored (for
+    /// /stats). Bounded by HISTORY_MAX in push_history.
+    pub(super) fn input_history_len(&self) -> usize {
+        self.history.len()
+    }
+
     pub(super) fn push_history(&mut self, line: &str) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1961,6 +1967,21 @@ impl LineEditor {
             return;
         }
         self.history.push(line.to_string());
+        // Cap input-line history so a multi-day REPL session with
+        // thousands of submissions doesn't grow the editor's backing
+        // Vec unboundedly. 1000 entries matches the default zsh
+        // HISTSIZE and is far more than anyone actually up-arrows
+        // through; at ~120 bytes/line that's ~120KB worst case.
+        // drain(0..n) is O(n) but runs at most once per submit, so
+        // the amortized cost is a single memmove per inserted line.
+        const HISTORY_MAX: usize = 1000;
+        if self.history.len() > HISTORY_MAX {
+            let excess = self.history.len() - HISTORY_MAX;
+            self.history.drain(0..excess);
+            // history_index can't be made stale here: this runs on
+            // push (editor not in up-arrow mode), and arrow-key
+            // navigation clears history_index on submit.
+        }
     }
 
     fn history_prev(&mut self) {
