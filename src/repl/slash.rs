@@ -62,71 +62,115 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 SlashResult::Continue
             }
         },
-        "/session" => match session::list_sessions(cwd, 10) {
-            Ok(mut sessions) => {
+        "/session" => {
+            // Fetch 20 rows annotated with message counts. We ask for
+            // "only non-empty" so a directory with many abandoned
+            // `/new` sessions doesn't push real sessions out of the
+            // LIMIT. We still special-case the *current* session
+            // below: it shows even when empty because the user may
+            // have just created it and run /session to check state.
+            // Log any DB failure so silent "No sessions found" doesn't
+            // mask a real problem. Display-side still degrades
+            // gracefully via the empty fallback.
+            let non_empty = match session::list_sessions_with_counts(cwd, 20, true) {
+                Ok(v) => v,
+                Err(e) => {
+                    broker::try_log_error(
+                        "session",
+                        &format!("failed to list: {e}"),
+                        None,
+                    );
+                    Vec::new()
+                }
+            };
+            // If the current session is empty it won't be in
+            // `non_empty`; fetch it separately so we can still show
+            // the "Current: …" header line.
+            let current_info = if non_empty.iter().any(|s| s.session.id == *current_session) {
+                None
+            } else {
+                session::list_sessions_with_counts(cwd, 20, false)
+                    .ok()
+                    .and_then(|all| {
+                        all.into_iter().find(|s| s.session.id == *current_session)
+                    })
+            };
+            let mut sessions = non_empty;
+            // Truncate display to 10 rows after we know the current
+            // session is accounted for — the extra headroom was for
+            // the filter, not the display.
+            sessions.truncate(10);
+
+            if sessions.is_empty() && current_info.is_none() {
+                tunnel_println("No sessions found.");
+                SlashResult::Continue
+            } else {
+                // Print current session header. Either it's in the
+                // filtered list (extract+remove so it doesn't show
+                // twice), or it's the separately-fetched current_info
+                // (empty session).
+                let current_row = if let Some(idx) = sessions
+                    .iter()
+                    .position(|s| s.session.id == *current_session)
+                {
+                    Some(sessions.swap_remove(idx))
+                } else {
+                    current_info
+                };
+                if let Some(c) = current_row {
+                    tunnel_println(&format!(
+                        "Current: {} ({} msgs, {})",
+                        &c.session.id[..8],
+                        c.messages,
+                        c.session.model
+                    ));
+                }
                 if sessions.is_empty() {
-                    tunnel_println("No sessions found.");
+                    tunnel_println("No other sessions.");
                     SlashResult::Continue
                 } else {
-                    if let Some(current_idx) =
-                        sessions.iter().position(|s| s.id == *current_session)
-                    {
-                        let current = sessions.swap_remove(current_idx);
-                        tunnel_println(&format!(
-                            "Current: {} ({} msgs, {})",
-                            &current.id[..8],
-                            session::message_count(&current.id).unwrap_or(0),
-                            current.model
-                        ));
-                    }
-                    if sessions.is_empty() {
-                        tunnel_println("No other sessions.");
-                        SlashResult::Continue
-                    } else {
-                        tunnel_println("Pick session to switch:");
-                        for (i, s) in sessions.iter().enumerate() {
-                            let msgs = session::message_count(&s.id).unwrap_or(0);
-                            let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
-                            let cred = if s.provider.is_empty() {
+                    tunnel_println("Pick session to switch:");
+                    for (i, sc) in sessions.iter().enumerate() {
+                        let s = &sc.session;
+                        let name = s
+                            .name
+                            .as_deref()
+                            .unwrap_or(&s.id[..s.id.len().min(8)]);
+                        let cred = if s.provider.is_empty() {
                             "?"
                         } else {
                             s.provider.as_str()
                         };
                         tunnel_println(&format!(
-                            "  [{i}] {name} — {msgs} msgs, {cred}/{}",
-                            s.model
+                            "  [{i}] {name} — {} msgs, {cred}/{}",
+                            sc.messages, s.model
                         ));
-                        }
-                        print!("Enter number or Enter: ");
-                        let _ = io::stdout().flush();
-                        let mut line = String::new();
-                        if io::stdin().lock().read_line(&mut line).is_ok() {
-                            let choice = line.trim();
-                            if choice.is_empty() {
-                                tunnel_println("\x1b[2mStaying current.\x1b[0m");
-                                SlashResult::Continue
-                            } else if let Ok(idx) = choice.parse::<usize>() {
-                                if let Some(s) = sessions.get(idx) {
-                                    SlashResult::SwitchSession(s.id.clone())
-                                } else {
-                                    tunnel_println("Invalid.");
-                                    SlashResult::Continue
-                                }
+                    }
+                    print!("Enter number or Enter: ");
+                    let _ = io::stdout().flush();
+                    let mut line = String::new();
+                    if io::stdin().lock().read_line(&mut line).is_ok() {
+                        let choice = line.trim();
+                        if choice.is_empty() {
+                            tunnel_println("\x1b[2mStaying current.\x1b[0m");
+                            SlashResult::Continue
+                        } else if let Ok(idx) = choice.parse::<usize>() {
+                            if let Some(sc) = sessions.get(idx) {
+                                SlashResult::SwitchSession(sc.session.id.clone())
                             } else {
                                 tunnel_println("Invalid.");
                                 SlashResult::Continue
                             }
                         } else {
+                            tunnel_println("Invalid.");
                             SlashResult::Continue
                         }
+                    } else {
+                        SlashResult::Continue
                     }
                 }
             }
-            Err(e) => {
-                broker::try_log_error("session", &format!("failed to list: {e}"), None);
-                SlashResult::Continue
-            }
-        },
+        }
         "/model" => {
             let parts: Vec<_> = input.split_whitespace().collect();
             let arg = parts.get(1).copied();

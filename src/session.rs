@@ -94,6 +94,89 @@ pub fn list_sessions(cwd: &str, limit: usize) -> Result<Vec<Session>> {
     Ok(sessions)
 }
 
+/// Session paired with its message count.
+///
+/// Returned by [`list_sessions_with_counts`] so callers that want to
+/// display or filter by "has the user actually said anything in this
+/// session" don't need a follow-up `message_count` per row — the
+/// count is computed in the same SQL round-trip via a correlated
+/// subquery.
+#[derive(Debug, Clone)]
+pub struct SessionWithCount {
+    pub session: Session,
+    pub messages: usize,
+}
+
+/// List sessions for the current working directory, most recent
+/// first, each annotated with its message count.
+///
+/// If `only_nonempty` is true, SQL filters out 0-message sessions at
+/// the query layer — so `limit` is applied against the populated
+/// rows, not wasted on empty ones. That's important when a user has
+/// many `/new` sessions from accidental resets: filtering client-
+/// side would return ≤limit total rows (some empty, some not), then
+/// drop the empties, leaving fewer real results than the caller
+/// asked for.
+///
+/// The correlated subquery counts rows in `repl_entries` of type
+/// "message". Cheap because `repl_entries.session_id` is indexed
+/// (see `broker::init_schema`). For limit=10 this runs ~10 sub-
+/// queries, each an indexed scan bounded by that session's entry
+/// count; total cost is well under the fork+exec of a single
+/// external process call.
+pub fn list_sessions_with_counts(
+    cwd: &str,
+    limit: usize,
+    only_nonempty: bool,
+) -> Result<Vec<SessionWithCount>> {
+    let conn = crate::broker::open()?;
+    // SQLite doesn't let the WHERE clause reference a SELECT-list
+    // alias, so the correlated subquery is repeated in the WHERE
+    // when filtering. The query planner folds the two subqueries
+    // into one evaluation per row, so the cost is the same as
+    // computing msg_count once.
+    //
+    // `only_nonempty` is passed as 0/1 rather than branching between
+    // two prepared statements, to keep this function a single cache
+    // slot in rusqlite's prepared-statement cache.
+    let sql = "SELECT
+            s.id, s.cwd, s.model, s.provider, s.name,
+            s.created_at, s.updated_at,
+            (SELECT COUNT(*) FROM repl_entries
+               WHERE session_id = s.id AND entry_type = 'message') AS msg_count
+          FROM repl_sessions s
+          WHERE s.cwd = ?1
+            AND (?2 = 0 OR (SELECT COUNT(*) FROM repl_entries
+                              WHERE session_id = s.id
+                                AND entry_type = 'message') > 0)
+          ORDER BY s.updated_at DESC
+          LIMIT ?3";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params![cwd, only_nonempty as i64, limit],
+        |row| {
+            let msg_count: i64 = row.get(7)?;
+            Ok(SessionWithCount {
+                session: Session {
+                    id: row.get(0)?,
+                    cwd: row.get(1)?,
+                    model: row.get(2)?,
+                    provider: row.get(3)?,
+                    name: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                },
+                messages: msg_count.max(0) as usize,
+            })
+        },
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 /// List sessions across all directories.
 pub fn list_all_sessions(limit: usize) -> Result<Vec<Session>> {
     let conn = crate::broker::open()?;
