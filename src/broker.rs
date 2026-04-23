@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 mod agent_registry;
 mod agent_sessions;
@@ -547,6 +547,77 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_repl_input_history_scope
             ON repl_input_history(scope_root, id);
+
+        /*
+         * session_journals
+         * ----------------
+         * One structured summary per journaling pass during a REPL
+         * session. Populated by the background journaler (see
+         * src/repl/journal.rs) after N idle seconds post-Done; read
+         * on session resume (system prompt injection), in /session
+         * listings (teaser), and by `sidekar journal` CLI.
+         *
+         * Design notes:
+         *   - `from_entry_id` / `to_entry_id` are TEXT because
+         *     repl_entries.id is a UUID string, not an autoincrement
+         *     integer. Next pass resumes from the entry strictly
+         *     after to_entry_id.
+         *   - `structured_json` is the full 12-section hermes-style
+         *     summary; `headline` is a one-liner extracted for fast
+         *     render without re-parsing the JSON.
+         *   - `previous_id` gives an iterative-update chain: the
+         *     second journal for a session references the first so
+         *     we can walk backwards or re-compose.
+         *   - `project` denormalizes repl_sessions.cwd so queries
+         *     like last-journal-across-all-sessions-in-this-project
+         *     don't need a join.
+         *   - Audit columns (model_used, cred_used, tokens_in/out)
+         *     are mandatory — cost tracking for the journaler is a
+         *     hard requirement, not a nice-to-have.
+         */
+        CREATE TABLE IF NOT EXISTS session_journals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES repl_sessions(id),
+            project TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            from_entry_id TEXT NOT NULL,
+            to_entry_id TEXT NOT NULL,
+            structured_json TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            previous_id INTEGER REFERENCES session_journals(id),
+            model_used TEXT NOT NULL,
+            cred_used TEXT NOT NULL,
+            tokens_in INTEGER NOT NULL DEFAULT 0,
+            tokens_out INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_journals_session_time
+            ON session_journals(session_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_session_journals_project_time
+            ON session_journals(project, created_at DESC);
+
+        /*
+         * memory_journal_support
+         * ----------------------
+         * Links auto-promoted entries in `memory_events` back to the
+         * journals that supported their promotion. Lets the promoter
+         * answer has-this-memory-been-reinforced-lately and the
+         * age-out sweep answer should-this-memory-decay with
+         * deterministic queries instead of text heuristics.
+         *
+         * Composite PK prevents double-linking the same journal to
+         * the same memory if the promoter runs twice on the same
+         * content (e.g. idempotent retries after a crash).
+         */
+        CREATE TABLE IF NOT EXISTS memory_journal_support (
+            memory_id INTEGER NOT NULL REFERENCES memory_events(id),
+            journal_id INTEGER NOT NULL REFERENCES session_journals(id),
+            created_at REAL NOT NULL,
+            PRIMARY KEY (memory_id, journal_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_journal_support_memory
+            ON memory_journal_support(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_memory_journal_support_journal
+            ON memory_journal_support(journal_id);
         ",
     )?;
 

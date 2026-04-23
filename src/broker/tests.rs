@@ -222,3 +222,123 @@ fn agent_session_display_name_and_notes_are_persisted() -> Result<()> {
         Ok(())
     })
 }
+
+/// Schema smoke tests for the journaling tables. These protect
+/// against future refactors silently dropping the migration or
+/// changing a column's type — both are mistakes that would only
+/// surface the first time a user enabled journaling, long after
+/// the PR landed.
+///
+/// We deliberately don't call the store layer here (it doesn't
+/// exist yet at this commit); we poke the tables with raw SQL so
+/// the test stays valid even if later commits rearrange helpers.
+#[test]
+fn schema_migration_creates_session_journals() -> Result<()> {
+    with_test_db(|| {
+        init_db()?;
+        let conn = open()?;
+
+        // PRAGMA user_version should be current.
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        assert_eq!(v, SCHEMA_VERSION, "schema version not applied");
+
+        // Seed a parent repl_sessions row so the FK is satisfiable.
+        let sess_id = "test-session-001";
+        conn.execute(
+            "INSERT INTO repl_sessions (id, cwd, created_at, updated_at)
+             VALUES (?1, '/tmp/t', 0.0, 0.0)",
+            [sess_id],
+        )?;
+
+        // Full-column insert exercises every NOT NULL and default.
+        conn.execute(
+            "INSERT INTO session_journals (
+                 session_id, project, created_at, from_entry_id,
+                 to_entry_id, structured_json, headline, model_used,
+                 cred_used
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                sess_id,
+                "/tmp/t",
+                1_700_000_000.0_f64,
+                "e-1",
+                "e-2",
+                r#"{"summary":"x"}"#,
+                "smoke headline",
+                "test-model",
+                "test-cred",
+            ],
+        )?;
+
+        // Defaults: tokens_in/out=0, previous_id=NULL.
+        let (tin, tout, prev): (i64, i64, Option<i64>) = conn.query_row(
+            "SELECT tokens_in, tokens_out, previous_id
+               FROM session_journals WHERE session_id = ?1",
+            [sess_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(tin, 0);
+        assert_eq!(tout, 0);
+        assert!(prev.is_none());
+
+        Ok(())
+    })
+}
+
+#[test]
+fn schema_migration_creates_memory_journal_support() -> Result<()> {
+    with_test_db(|| {
+        init_db()?;
+        let conn = open()?;
+
+        // Seed a parent row in each referenced table so the composite
+        // FK is satisfiable.
+        conn.execute(
+            "INSERT INTO repl_sessions (id, cwd, created_at, updated_at)
+             VALUES ('s-1', '/tmp/t', 0.0, 0.0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO session_journals (
+                 session_id, project, created_at, from_entry_id,
+                 to_entry_id, structured_json, headline, model_used,
+                 cred_used
+             ) VALUES ('s-1', '/tmp/t', 0.0, 'a', 'b', '{}', 'h', 'm', 'c')",
+            [],
+        )?;
+        let journal_id: i64 = conn.query_row(
+            "SELECT id FROM session_journals WHERE session_id = 's-1'",
+            [],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO memory_events (
+                 project, event_type, scope, summary, summary_norm,
+                 confidence, created_at, updated_at
+             ) VALUES ('/tmp/t', 'constraint', 'project',
+                       'test', 'test', 0.4, 0, 0)",
+            [],
+        )?;
+        let memory_id: i64 = conn.query_row(
+            "SELECT id FROM memory_events WHERE summary = 'test'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        conn.execute(
+            "INSERT INTO memory_journal_support (memory_id, journal_id, created_at)
+             VALUES (?1, ?2, 0.0)",
+            rusqlite::params![memory_id, journal_id],
+        )?;
+
+        // Composite PK prevents duplicate links.
+        let dup = conn.execute(
+            "INSERT INTO memory_journal_support (memory_id, journal_id, created_at)
+             VALUES (?1, ?2, 0.0)",
+            rusqlite::params![memory_id, journal_id],
+        );
+        assert!(dup.is_err(), "composite PK should reject duplicate link");
+
+        Ok(())
+    })
+}
