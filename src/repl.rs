@@ -26,7 +26,7 @@ use self::renderer::EventRenderer;
 use self::slash::{
     SlashAction, SlashContext, apply_slash_result, build_provider, handle_slash_command,
 };
-use self::system_prompt::build_system_prompt;
+use self::system_prompt::build_system_prompt_with_project;
 use crate::broker;
 use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
@@ -176,13 +176,19 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     };
 
     let prompt = opts.prompt;
-    let mut system_prompt = build_system_prompt();
-    let mut loaded_skills: Vec<String> = Vec::new();
-    let tool_defs = crate::agent::tools::definitions();
 
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string());
+
+    // Compute project name up front so `build_system_prompt_with_project`
+    // can inject any prior-session journals for this project. Same
+    // identifier the journaling task uses when inserting rows, so
+    // the lookup hits the right bucket.
+    let scope_project = crate::scope::resolve_project_name(Some(&cwd));
+    let mut system_prompt = build_system_prompt_with_project(Some(&scope_project));
+    let mut loaded_skills: Vec<String> = Vec::new();
+    let tool_defs = crate::agent::tools::definitions();
 
     // Register on the bus (same pattern as PTY/bus do_register)
     let project = crate::bus::detect_project_name();
@@ -328,7 +334,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     print_banner(model.as_deref(), cred_name.as_deref());
 
     let scope_root = crate::scope::resolve_project_root(Some(&cwd));
-    let scope_name = crate::scope::resolve_project_name(Some(&cwd));
+    // Reuse the project name already resolved above for system-
+    // prompt injection — calling `resolve_project_name` twice
+    // would return the same value but wastes a scope walk.
+    let scope_name = scope_project.clone();
     let mut line_editor = LineEditor::with_history(
         session::load_input_history(&scope_root, REPL_INPUT_HISTORY_LIMIT).unwrap_or_default(),
     );
