@@ -29,6 +29,12 @@
 #[allow(dead_code)]
 pub(super) mod store;
 
+#[allow(dead_code)]
+pub(super) mod prompt;
+
+#[allow(dead_code)]
+pub(super) mod parse;
+
 #[allow(unused_imports)]
 pub(super) use store::{
     JournalInsert, JournalRow, insert_journal, latest_to_entry_id, link_memory_to_journal,

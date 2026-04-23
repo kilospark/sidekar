@@ -1,0 +1,44 @@
+### Required output schema
+
+Emit exactly one JSON object with these 12 fields. Fields you cannot
+populate from the conversation must still be present, with [] for
+array fields and "" for string fields.
+
+{
+  "active_task":        "",   // SINGLE most important field.
+                              // The user's most recent unfulfilled
+                              // request, in their own words where
+                              // possible. This is what a resumed
+                              // session will look at first.
+  "goal":               "",   // Broader objective spanning the
+                              // session. Higher-level than active_task.
+  "constraints":        [],   // Preferences, style rules, explicit
+                              // 'always X' / 'never Y' instructions.
+                              // Each entry short imperative phrase.
+  "completed":          [],   // Numbered list of actions taken.
+                              // Format: "N. VERB target — outcome"
+                              // e.g. "1. read src/auth.rs — found
+                              // session-based login logic"
+  "active_state":       "",   // Short paragraph describing current
+                              // state: cwd, git branch, modified
+                              // files, test status, running procs,
+                              // anything a future turn needs to know.
+  "in_progress":        [],   // Work started but not yet complete.
+  "blocked":            [],   // Blockers, errors with exact messages.
+  "decisions":          [],   // Technical decisions + brief 'because'.
+                              // "use cargo test --lib, not cargo test,
+                              //  because integration tests are broken"
+  "resolved_questions": [],   // Questions already answered. These
+                              // prevent re-answering on resume.
+  "pending_user_asks":  [],   // Questions NOT yet answered.
+  "relevant_files":     [],   // Paths touched or referenced, with a
+                              // one-line purpose each. e.g.
+                              // "src/auth.rs: login flow under edit"
+  "critical_context":   ""    // Anything else a future session must
+                              // know. Specific values, error texts,
+                              // configs. NOT a place for API keys —
+                              // write [REDACTED].
+}
+
+Reminder: output ONLY the JSON object. No markdown fences, no
+preamble, no explanation.
