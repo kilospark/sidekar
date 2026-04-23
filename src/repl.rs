@@ -366,6 +366,20 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let idle_tracker =
         std::sync::Arc::new(self::journal::IdleTracker::new());
 
+    // Handle for the background journaling polling task. Lazily
+    // spawned on the first turn — at that point we know provider
+    // and model are populated, which the journaler needs. We
+    // capture them at spawn time; a later `/model` or `/credential`
+    // switch does NOT re-spawn. Rationale:
+    //   - The original provider/credential is still valid after a
+    //     switch; journaling with "the old pair" is fine.
+    //   - Re-spawning on every switch is a lot of plumbing for a
+    //     minor fidelity win; `/new` creates a fresh REPL loop
+    //     (via SwitchSession) which spawns a fresh task with the
+    //     then-current values.
+    // On REPL exit the handle is aborted to stop the poll loop.
+    let mut journal_task: Option<tokio::task::JoinHandle<()>> = None;
+
     loop {
         // Disarm before we block on stdin — an about-to-type user
         // is "active," even before the first keystroke. This also
@@ -512,6 +526,32 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let prov = provider.as_ref().expect("guarded above");
         let mdl = model.as_ref().expect("guarded above");
 
+        // Lazy one-time spawn of the journaling polling task. Now
+        // that `prov`/`mdl`/`cred_name` are all definitely Some,
+        // we can build a self::journal::task::Context and start
+        // the poll loop. Subsequent turns take the already-Some
+        // branch as a no-op.
+        //
+        // Cloning the Provider Arc (via provider.clone() -> cheap,
+        // Provider is Arc-friendly internally but the outer type
+        // isn't Arc yet — wrap). Rather than touch that structure
+        // here, we `Arc::new(prov.clone())` which pays a one-shot
+        // clone cost at spawn. Given this runs once per session,
+        // it's well worth the code simplicity.
+        if journal_task.is_none() {
+            let ctx = self::journal::task::Context {
+                provider: std::sync::Arc::new(prov.clone()),
+                session_id: session_id.clone(),
+                project: scope_name.clone(),
+                model: mdl.clone(),
+                cred_name: cred_name.clone().unwrap_or_default(),
+            };
+            journal_task = Some(self::journal::task::spawn_polling_loop(
+                ctx,
+                idle_tracker.clone(),
+            ));
+        }
+
         // Add user message (if any) — persisted only after a successful agent turn (see below).
         let mut had_staged_user = false;
         if let Some(content) = staged_user_content {
@@ -654,6 +694,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     }
     resume_cmd.push_str(&format!(" -r {session_id}"));
     tunnel_println(&format!("\n\x1b[2mResume: {resume_cmd}\x1b[0m"));
+
+    // Stop the journaling polling task, if it was spawned. Abort
+    // is immediate; any in-flight LLM call is dropped. Not calling
+    // `record_fired()` here because the task is going away — no
+    // future poll will run against this tracker.
+    if let Some(handle) = journal_task.take() {
+        handle.abort();
+    }
 
     stop_relay(tunnel_tx);
     crate::poller::shutdown_poller();

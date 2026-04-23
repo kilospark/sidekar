@@ -26,29 +26,21 @@
 // subsequent commits. The re-exports exist so higher layers can
 // refer to `journal::insert_journal` etc. without reaching through
 // the submodule path — once they do, this attribute can come off.
-#[allow(dead_code)]
 pub(super) mod store;
 
-#[allow(dead_code)]
 pub(super) mod prompt;
 
-#[allow(dead_code)]
 pub(super) mod parse;
 
-#[allow(dead_code)]
 pub(super) mod redact;
 
-#[allow(dead_code)]
 pub(super) mod scan;
 
-#[allow(dead_code)]
 pub(super) mod prefilter;
 
-// `arm/disarm` are live consumers as of this commit; `should_fire*`,
-// `record_fired*`, `since_armed` get wired by step 7's background
-// task. Allow dead-code on the module to avoid churn until then.
-#[allow(dead_code)]
 pub(super) mod idle;
+
+pub(super) mod task;
 
 pub(crate) use idle::IdleTracker;
 

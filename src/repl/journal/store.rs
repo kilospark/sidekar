@@ -217,6 +217,77 @@ pub fn project_tokens_in_window(project: &str, since_unix_secs: f64) -> Result<i
     Ok(total.unwrap_or(0))
 }
 
+/// Load messages for a session as (entry_id, ChatMessage) pairs,
+/// optionally bounded to only entries created strictly after the
+/// given entry id. Used by the background journaling task: it
+/// calls `latest_to_entry_id` to learn the upper bound of the
+/// previous pass, then passes that here to grab only the new
+/// turns since then.
+///
+/// Returned pairs are ordered by `created_at ASC` (oldest first),
+/// matching the shape `prompt::format_prompt` expects. Entry id
+/// is stable — the same value the `repl_entries.id` column holds —
+/// so callers can persist `to_entry_id = last returned id` and
+/// resume strictly after it on the next pass.
+///
+/// Why not piggyback on `session::load_history`: that function
+/// drops entry ids (returns `Vec<ChatMessage>`), and it loads
+/// *all* history. For the journaling pass we need:
+///   (a) ids so we can record the bound,
+///   (b) only the slice after the last journal,
+///   (c) a cheap skip path when there's nothing new (empty Vec).
+/// Adding a second loader here rather than widening load_history
+/// keeps the hot-path signature unchanged.
+pub fn load_slice_after(
+    session_id: &str,
+    after_entry_id: Option<&str>,
+) -> Result<Vec<(String, crate::providers::ChatMessage)>> {
+    let conn = broker::open()?;
+
+    // When no previous-journal bound is known, return the full
+    // session. The query is parametrized differently in that case:
+    // a single SELECT with a guard clause keeps the flow simple
+    // and avoids needing two prepare() sites.
+    //
+    // The `after_entry_id` bound compares `created_at` rather
+    // than id-string ordering, because entry ids are UUIDs and
+    // UUID lex order has no time correlation. Subquery lookup
+    // of the reference row's created_at is a single indexed hit.
+    let mut stmt = conn.prepare(
+        "SELECT id, role, content FROM repl_entries
+          WHERE session_id = ?1 AND entry_type = 'message'
+            AND (
+                ?2 IS NULL
+                OR created_at > (
+                    SELECT created_at FROM repl_entries
+                     WHERE id = ?2
+                     LIMIT 1
+                )
+            )
+          ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, after_entry_id], |row| {
+        let id: String = row.get(0)?;
+        let role_str: String = row.get(1)?;
+        let content_json: String = row.get(2)?;
+        Ok((id, role_str, content_json))
+    })?;
+
+    use crate::providers::{ChatMessage, ContentBlock, Role};
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, role_str, content_json) = r?;
+        let role = match role_str.as_str() {
+            "assistant" => Role::Assistant,
+            _ => Role::User,
+        };
+        let content: Vec<ContentBlock> =
+            serde_json::from_str(&content_json).unwrap_or_default();
+        out.push((id, ChatMessage { role, content }));
+    }
+    Ok(out)
+}
+
 /// Link a memory_events row to a session_journals row. Idempotent:
 /// the composite PK enforces uniqueness, so calling this twice
 /// with the same pair is safe — the second INSERT silently
@@ -431,6 +502,88 @@ mod tests {
             assert_eq!(project_tokens_in_window("/tmp/p", 9_999.0)?, 0);
             // Unknown project → 0.
             assert_eq!(project_tokens_in_window("/nope", 0.0)?, 0);
+            Ok(())
+        })
+    }
+
+    /// Seed a message row directly. Returns the assigned entry id.
+    fn seed_message(
+        session_id: &str,
+        role: &str,
+        text: &str,
+        created_at: f64,
+    ) -> Result<String> {
+        let conn = broker::open()?;
+        let id = format!("e-{}-{:x}", role, (created_at * 1_000.0) as u64);
+        let content_json = serde_json::to_string(&serde_json::json!([
+            {"type": "text", "text": text}
+        ]))?;
+        conn.execute(
+            "INSERT INTO repl_entries (id, session_id, entry_type, role, content, created_at)
+             VALUES (?1, ?2, 'message', ?3, ?4, ?5)",
+            params![id, session_id, role, content_json, created_at],
+        )?;
+        Ok(id)
+    }
+
+    #[test]
+    fn load_slice_after_returns_full_history_when_unbounded() -> Result<()> {
+        with_test_db(|| {
+            seed_session("s-slice", "/tmp/p")?;
+            let _id1 = seed_message("s-slice", "user", "first", 1_000.0)?;
+            let _id2 = seed_message("s-slice", "assistant", "second", 2_000.0)?;
+            let _id3 = seed_message("s-slice", "user", "third", 3_000.0)?;
+
+            let out = load_slice_after("s-slice", None)?;
+            assert_eq!(out.len(), 3);
+            // Oldest-first ordering (format_prompt expects this).
+            use crate::providers::ContentBlock;
+            if let ContentBlock::Text { text } = &out[0].1.content[0] {
+                assert_eq!(text, "first");
+            }
+            if let ContentBlock::Text { text } = &out[2].1.content[0] {
+                assert_eq!(text, "third");
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn load_slice_after_bounds_strictly_after_reference() -> Result<()> {
+        with_test_db(|| {
+            seed_session("s-slice-2", "/tmp/p")?;
+            let id1 = seed_message("s-slice-2", "user", "first", 1_000.0)?;
+            let _id2 = seed_message("s-slice-2", "assistant", "second", 2_000.0)?;
+            let _id3 = seed_message("s-slice-2", "user", "third", 3_000.0)?;
+
+            // After id1: expect second + third only.
+            let out = load_slice_after("s-slice-2", Some(&id1))?;
+            assert_eq!(out.len(), 2);
+            use crate::providers::ContentBlock;
+            if let ContentBlock::Text { text } = &out[0].1.content[0] {
+                assert_eq!(text, "second");
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn load_slice_after_empty_when_nothing_new() -> Result<()> {
+        with_test_db(|| {
+            seed_session("s-slice-3", "/tmp/p")?;
+            let id1 = seed_message("s-slice-3", "user", "only one", 1_000.0)?;
+
+            let out = load_slice_after("s-slice-3", Some(&id1))?;
+            assert!(out.is_empty());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn load_slice_after_unknown_session_is_empty() -> Result<()> {
+        with_test_db(|| {
+            let out = load_slice_after("no-such-session", None)?;
+            assert!(out.is_empty());
             Ok(())
         })
     }

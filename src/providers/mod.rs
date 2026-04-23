@@ -1155,6 +1155,13 @@ async fn fetch_opencode_model_list(_api_key: &str) -> Vec<RemoteModel> {
 // Provider — enum dispatch (no trait, 3 variants)
 // ---------------------------------------------------------------------------
 
+// Clone is cheap — every variant's fields are either String
+// (owned, clone = alloc+memcpy) or Option<String>. No handles,
+// no live connections. Needed so the journaling background task
+// can own an Arc<Provider> independent of the REPL's per-turn
+// state. If a variant ever gains a non-Clone field (e.g. a live
+// websocket), revisit: might need an Arc<Inner> layer instead.
+#[derive(Clone)]
 pub enum Provider {
     Anthropic {
         api_key: String,
