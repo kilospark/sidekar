@@ -17,6 +17,8 @@
 //! from raw bytes is unreliable. Content-event shape is identical across
 //! both paths.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::events::{AgentEvent, event_to_json, lifecycle_to_json};
 use crate::providers::{ContentBlock, StreamEvent};
 use crate::tunnel::tunnel_send_event;
@@ -24,10 +26,20 @@ use crate::tunnel::tunnel_send_event;
 /// State accumulated across a single assistant turn so we can emit
 /// coherent content events at well-defined boundaries rather than one
 /// per token delta.
+///
+/// No interior mutex: `started` is atomic. Callsite holds
+/// `Arc<EventForwarder>` and calls `forward(&self, …)` from the
+/// per-event callback without taking a lock. Reason: the callback
+/// fires on every `StreamEvent::TextDelta` (~50-80/sec during a
+/// streaming response), and a `Mutex::lock()` there adds to the
+/// same global editor-lock contention that makes typing sluggish
+/// during long turns. Cheap atomics keep the delta path essentially
+/// free — even faster than the early `_ => {}` match arm suggests.
 #[derive(Default)]
 pub(super) struct EventForwarder {
     /// True once we've emitted `turn_start` for the current turn.
-    started: bool,
+    /// Reset at `Done` / `Error` for the next turn.
+    started: AtomicBool,
 }
 
 impl EventForwarder {
@@ -38,14 +50,27 @@ impl EventForwarder {
     /// Forward a single `StreamEvent` to the tunnel as zero or more
     /// `ch:"events"` frames. Safe to call when no tunnel is registered
     /// (underlying helper is a no-op in that case).
-    pub(super) fn forward(&mut self, event: &StreamEvent) {
+    ///
+    /// Hot-path note: for `TextDelta` and other high-frequency events
+    /// this falls through to the `_ =>` arm without touching the
+    /// atomic at all.
+    pub(super) fn forward(&self, event: &StreamEvent) {
         match event {
             StreamEvent::Connecting | StreamEvent::Waiting => {
                 // Emit turn_start on the first "we're doing work" signal
                 // of the turn. Subsequent Waiting/Connecting events are
                 // the same turn (tool loop iterations).
-                if !self.started {
-                    self.started = true;
+                //
+                // compare_exchange gives "emit once" semantics without
+                // risking a double-send if two events race (in practice
+                // they don't — on_event runs serially on one task —
+                // but cheap insurance, and clearer intent than a
+                // load+store pair).
+                if self
+                    .started
+                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
                     tunnel_send_event(lifecycle_to_json("turn_start"));
                 }
             }
@@ -89,7 +114,7 @@ impl EventForwarder {
                 // Turn-boundary marker: relay's boundary classifier uses
                 // this to flush buffered output to Telegram.
                 tunnel_send_event(lifecycle_to_json("assistant_complete"));
-                self.started = false;
+                self.started.store(false, Ordering::Relaxed);
             }
             StreamEvent::Error { message } => {
                 tunnel_send_event(event_to_json(&AgentEvent::Status {
@@ -97,7 +122,7 @@ impl EventForwarder {
                 }));
                 // Still emit a boundary so any buffered prose flushes.
                 tunnel_send_event(lifecycle_to_json("assistant_complete"));
-                self.started = false;
+                self.started.store(false, Ordering::Relaxed);
             }
             // Deltas, thinking, ToolCallStart/Delta/End, Compacting, Idle,
             // ResolvingContext: intentionally not forwarded. They'd be
@@ -166,7 +191,7 @@ mod tests {
             model: "test".into(),
             response_id: String::new(),
         };
-        let mut fwd = EventForwarder::new();
+        let fwd = EventForwarder::new();
         fwd.forward(&StreamEvent::Done {
             message: response.clone(),
         });

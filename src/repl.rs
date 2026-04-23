@@ -256,17 +256,19 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let renderer =
             std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
         let renderer_for_events = renderer.clone();
-        let forwarder = std::sync::Arc::new(std::sync::Mutex::new(
-            self::event_forward::EventForwarder::new(),
-        ));
+        // Forwarder is lock-free (atomic state), shared by Arc so the
+        // per-event callback doesn't acquire a second mutex. Hot-path
+        // reason: `TextDelta` fires ~50-80/s during a streaming
+        // response and the callback runs synchronously on the main
+        // task; every extra `Mutex::lock()` here competes with the
+        // STDIN worker thread's editor lock and adds to typing lag.
+        let forwarder = std::sync::Arc::new(self::event_forward::EventForwarder::new());
         let forwarder_for_events = forwarder.clone();
         let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
             if let Ok(mut guard) = renderer_for_events.lock() {
                 guard.render(event);
             }
-            if let Ok(mut guard) = forwarder_for_events.lock() {
-                guard.forward(event);
-            }
+            forwarder_for_events.forward(event);
         });
 
         let pre_len = history.len();
@@ -474,17 +476,19 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let renderer =
             std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
         let renderer_for_events = renderer.clone();
-        let forwarder = std::sync::Arc::new(std::sync::Mutex::new(
-            self::event_forward::EventForwarder::new(),
-        ));
+        // Forwarder is lock-free (atomic state), shared by Arc so the
+        // per-event callback doesn't acquire a second mutex. Hot-path
+        // reason: `TextDelta` fires ~50-80/s during a streaming
+        // response and the callback runs synchronously on the main
+        // task; every extra `Mutex::lock()` here competes with the
+        // STDIN worker thread's editor lock and adds to typing lag.
+        let forwarder = std::sync::Arc::new(self::event_forward::EventForwarder::new());
         let forwarder_for_events = forwarder.clone();
         let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
             if let Ok(mut guard) = renderer_for_events.lock() {
                 guard.render(event);
             }
-            if let Ok(mut guard) = forwarder_for_events.lock() {
-                guard.forward(event);
-            }
+            forwarder_for_events.forward(event);
         });
 
         let pre_len = history.len();

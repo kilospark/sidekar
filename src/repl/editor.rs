@@ -157,6 +157,32 @@ fn clear_active_prompt() {
 fn with_active_prompt<R>(f: impl FnOnce(&mut LineEditor) -> R) -> Option<R> {
     let weak = active_prompt_slot().lock().ok()?.clone()?;
     let editor = weak.upgrade()?;
+    // Optional hold-time instrumentation: when SIDEKAR_EDITOR_LOCK_LOG is
+    // set, emit a stderr warning for any lock hold > SIDEKAR_EDITOR_LOCK_MS
+    // (default 20ms). Used to diagnose typing-latency regressions — the
+    // STDIN worker contends for this same lock, so long holds here cause
+    // visible keystroke lag during streamed responses. Guarded by an env
+    // check so the fast path pays nothing when instrumentation is off.
+    if std::env::var_os("SIDEKAR_EDITOR_LOCK_LOG").is_some() {
+        let threshold_ms: u128 = std::env::var("SIDEKAR_EDITOR_LOCK_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
+        let acquired = std::time::Instant::now();
+        let mut guard = editor.lock().ok()?;
+        let wait_ms = acquired.elapsed().as_millis();
+        let held_start = std::time::Instant::now();
+        let result = f(&mut guard);
+        let held_ms = held_start.elapsed().as_millis();
+        drop(guard);
+        if wait_ms >= threshold_ms || held_ms >= threshold_ms {
+            eprintln!(
+                "[sidekar editor-lock] wait={wait_ms}ms hold={held_ms}ms from {}",
+                std::thread::current().name().unwrap_or("?")
+            );
+        }
+        return Some(result);
+    }
     let mut guard = editor.lock().ok()?;
     Some(f(&mut guard))
 }
