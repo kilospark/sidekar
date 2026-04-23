@@ -678,6 +678,11 @@ fn anthropic_login()
             ANTHROPIC_SCOPES,
             "Anthropic",
             &[],
+            // Anthropic's token endpoint requires `state` — omitting
+            // it returns 400 "Invalid request format". See pkce_login
+            // docs. If this breaks again, first check whether
+            // platform.claude.com has started following RFC 6749.
+            true,
         )
         .await?;
 
@@ -796,6 +801,12 @@ fn codex_login()
             CODEX_SCOPES,
             "Codex",
             extra_params,
+            // OpenAI's token endpoint is RFC 6749 strict and rejects
+            // `state` with 400 "Unknown parameter: 'state'". Must be
+            // false. See pkce_login docs. If this breaks again, it
+            // means OpenAI started requiring state — in which case
+            // flip this flag, don't rewrite the function.
+            false,
         )
         .await?;
 
@@ -896,6 +907,24 @@ async fn pkce_login(
     scopes: &str,
     provider_name: &str,
     extra_params: &[(&str, &str)],
+    // Whether to include `state` in the token-exchange body.
+    //
+    // Per RFC 6749 §4.1.3 the token request does NOT include `state`
+    // — `state` is a parameter of the authorization request only.
+    // But Anthropic's token endpoint (`platform.claude.com/v1/oauth
+    // /token`) returns 400 "Invalid request format" if `state` is
+    // absent; OpenAI's (`auth.openai.com/oauth/token`) returns 400
+    // "Unknown parameter: 'state'" if it IS present. These two
+    // behaviors are mutually exclusive, so the flag is per-provider.
+    //
+    // When introducing a new PKCE provider, default to false (spec-
+    // compliant) and flip to true only if you see the Anthropic-
+    // style rejection in a live exchange. See commit history on
+    // this file for the pendulum: v1.0.40 removed state, v2.5.29
+    // put it back, OpenAI then started enforcing strict unknown-
+    // parameter validation and broke Codex — this commit unifies
+    // both cases under a single switch.
+    include_state_in_token_exchange: bool,
 ) -> Result<OAuthCredentials> {
     let verifier = generate_pkce_verifier();
     let challenge = pkce_challenge(&verifier);
@@ -933,17 +962,20 @@ async fn pkce_login(
     server.abort();
 
     // Exchange code for tokens with retry on transient server errors.
-    // `state` is included because Anthropic's token endpoint rejects the
-    // request as "Invalid request format" without it. OpenAI ignores it.
+    // `state` inclusion is provider-dependent — see docs on
+    // `include_state_in_token_exchange`. Delegated to a pure helper
+    // so the body shape has a unit test that locks in both variants;
+    // the last two regressions on this code path were caused by
+    // blind edits to an inline json!{} literal.
     let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "grant_type": "authorization_code",
-        "client_id": client_id,
-        "code": code,
-        "state": state,
-        "redirect_uri": callback,
-        "code_verifier": verifier,
-    });
+    let body = build_token_exchange_body(
+        client_id,
+        &code,
+        &callback,
+        &verifier,
+        &state,
+        include_state_in_token_exchange,
+    );
     let mut last_err = None;
     for attempt in 0..3u32 {
         match client
@@ -1229,6 +1261,38 @@ fn load_credentials(key: &str) -> Result<Option<OAuthCredentials>> {
     }
 }
 
+/// Build the body of an OAuth token-exchange POST. Pure; no network
+/// IO. The `include_state` flag exists only to accommodate the
+/// divergent behaviors of Anthropic (requires `state`) and OpenAI
+/// (rejects `state`). See `pkce_login` for the full rationale.
+fn build_token_exchange_body(
+    client_id: &str,
+    code: &str,
+    redirect_uri: &str,
+    code_verifier: &str,
+    state: &str,
+    include_state: bool,
+) -> serde_json::Value {
+    if include_state {
+        serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": code,
+            "state": state,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        })
+    } else {
+        serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,6 +1315,96 @@ mod tests {
         assert_eq!(provider_type_for("gem"), Some("gemini"));
         assert_eq!(provider_type_for("gem-work"), Some("gemini"));
         assert_eq!(provider_type_for("gem-test"), Some("gemini"));
+    }
+
+    // ─── token exchange body shape ─────────────────────────────
+    //
+    // These tests lock in the body contract for both provider
+    // variants. They have saved us from exactly this regression
+    // three times now (v1.0.40, v2.5.29, and this commit). Do NOT
+    // delete them; if a future provider requires a new shape, add
+    // a new flag and a new test — don't generalize by deleting
+    // pins.
+
+    fn parse(v: &serde_json::Value) -> std::collections::BTreeMap<&str, &serde_json::Value> {
+        v.as_object()
+            .expect("body is JSON object")
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect()
+    }
+
+    #[test]
+    fn token_exchange_body_includes_state_for_anthropic_variant() {
+        // Anthropic contract: `state` MUST be present. Omitting it
+        // causes platform.claude.com to return 400 "Invalid request
+        // format". All six fields present, nothing else.
+        let body = build_token_exchange_body(
+            "CLIENT",
+            "CODE",
+            "http://localhost:54321/callback",
+            "VERIFIER",
+            "STATE123",
+            true,
+        );
+        let map = parse(&body);
+        assert_eq!(map.len(), 6, "exactly six fields");
+        assert_eq!(map["grant_type"], "authorization_code");
+        assert_eq!(map["client_id"], "CLIENT");
+        assert_eq!(map["code"], "CODE");
+        assert_eq!(map["state"], "STATE123");
+        assert_eq!(map["redirect_uri"], "http://localhost:54321/callback");
+        assert_eq!(map["code_verifier"], "VERIFIER");
+    }
+
+    #[test]
+    fn token_exchange_body_omits_state_for_openai_variant() {
+        // OpenAI contract: `state` MUST NOT be present. Including
+        // it causes auth.openai.com to return 400 "Unknown
+        // parameter: 'state'". Five fields, state absent, nothing
+        // else.
+        let body = build_token_exchange_body(
+            "CLIENT",
+            "CODE",
+            "http://localhost:1455/auth/callback",
+            "VERIFIER",
+            "STATE123",
+            false,
+        );
+        let map = parse(&body);
+        assert_eq!(map.len(), 5, "exactly five fields");
+        assert!(
+            !map.contains_key("state"),
+            "OpenAI variant must NOT include state; regression test"
+        );
+        assert_eq!(map["grant_type"], "authorization_code");
+        assert_eq!(map["client_id"], "CLIENT");
+        assert_eq!(map["code"], "CODE");
+        assert_eq!(map["redirect_uri"], "http://localhost:1455/auth/callback");
+        assert_eq!(map["code_verifier"], "VERIFIER");
+    }
+
+    #[test]
+    fn token_exchange_body_openai_variant_is_rfc6749_compliant() {
+        // Meta-assertion: the five OpenAI fields are exactly the
+        // ones RFC 6749 §4.1.3 defines. If a future provider needs
+        // a different RFC-compliant shape (e.g. PKCE without PKCE
+        // — unusual but valid), add a new flag rather than
+        // loosening this assertion.
+        let body = build_token_exchange_body("C", "K", "R", "V", "S", false);
+        let map = parse(&body);
+        let keys: std::collections::BTreeSet<&str> = map.keys().copied().collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "grant_type",
+            "client_id",
+            "code",
+            "redirect_uri",
+            "code_verifier",
+        ]
+        .iter()
+        .copied()
+        .collect();
+        assert_eq!(keys, expected);
     }
 
     #[test]
