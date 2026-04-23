@@ -39,6 +39,12 @@ pub(super) struct SlashContext<'a> {
     /// growth; passed as a length rather than a slice to avoid moving
     /// the editor's state across the slash boundary.
     pub editor_input_history_len: usize,
+    /// Per-session cumulative usage, touched on every Done event by
+    /// the main on_event callback. Borrowed here (as an Arc+Mutex
+    /// handle) so `/status` can produce a StatusView without copying.
+    /// The mutex is intentionally separate from the renderer's mutex
+    /// — see src/repl/turn_stats.rs for why.
+    pub turn_stats: &'a std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
 }
 
 pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
@@ -400,6 +406,62 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println(&text);
             SlashResult::Continue
         }
+        "/status" => {
+            // /status is user-facing: session age, cumulative
+            // provider-reported token usage, context-window fill,
+            // last response_id. All data is read-only; we briefly
+            // acquire the turn_stats mutex for a snapshot and drop
+            // it before rendering.
+            //
+            // Context-window size comes from the cached lookup — if
+            // no turn has run on this model yet the window is shown
+            // as "unknown" and the fill bar is suppressed. We don't
+            // block on fetch_context_window because the REPL input
+            // path must stay synchronous; users can run /status
+            // again after the first turn completes.
+            let snap_cum;
+            let snap_last;
+            let snap_turns;
+            let snap_stop;
+            let snap_rid;
+            let snap_age;
+            let snap_since;
+            {
+                let ts = ctx
+                    .turn_stats
+                    .lock()
+                    .expect("turn_stats mutex poisoned");
+                snap_cum = ts.cumulative.clone();
+                snap_last = ts.last.clone();
+                snap_turns = ts.turn_count;
+                snap_stop = ts.last_stop_reason.clone();
+                snap_rid = ts.last_response_id.clone();
+                snap_age = ts.session_started_at.elapsed();
+                snap_since = ts.last_turn_at.map(|t| t.elapsed());
+            }
+            let cw = providers::cached_context_window(model);
+            let tokens_estimate =
+                crate::agent::compaction::estimate_tokens_public(ctx.history);
+            let view = super::status::StatusView {
+                session_id: current_session,
+                cwd,
+                model,
+                cred_name,
+                context_window: cw,
+                history_tokens_estimate: tokens_estimate,
+                history_messages: ctx.history.len(),
+                cumulative: &snap_cum,
+                turn_count: snap_turns,
+                last: snap_last.as_ref(),
+                last_stop_reason: snap_stop.as_ref(),
+                last_response_id: &snap_rid,
+                session_age: snap_age,
+                since_last_turn: snap_since,
+            };
+            let text = super::status::format_status(&view);
+            tunnel_println(&text);
+            SlashResult::Continue
+        }
         "/help" => {
             tunnel_println("Slash commands:");
             tunnel_println("  /credential  — Show/set/list & select stored credentials");
@@ -408,7 +470,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /session     — List and switch sessions");
             tunnel_println("  /skill       — Load a skill into the session system prompt");
             tunnel_println("  /compact     — Compact older session context now");
-            tunnel_println("  /stats       — Show session / context / process resource usage");
+            tunnel_println("  /status      — Show session / model / token usage / context fill");
+            tunnel_println("  /stats       — Show process diagnostics (RSS, CPU, threads)");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
             tunnel_println(
                 "  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)",
@@ -455,6 +518,7 @@ pub(super) async fn apply_slash_result(
     cached_ws: &mut Option<crate::providers::codex::CachedWs>,
     system_prompt: &mut String,
     loaded_skills: &mut Vec<String>,
+    turn_stats: &std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
 ) -> Result<SlashAction> {
     match result {
         SlashResult::Continue => {}
@@ -470,6 +534,13 @@ pub(super) async fn apply_slash_result(
                 tunnel_println("New session started.");
             }
             *session_id = new_id;
+            // Reset cumulative token tracking — the new session has
+            // no turns associated with it. Without this /status would
+            // carry over totals from the previous session, which
+            // would be misleading and under-report the new one.
+            if let Ok(mut ts) = turn_stats.lock() {
+                *ts = super::turn_stats::TurnStats::new();
+            }
         }
         SlashResult::NeedProvider(action) => {
             let Some(prov) = provider.as_ref() else {
@@ -599,6 +670,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/model"
             | "/compact"
             | "/stats"
+            | "/status"
             | "/relay"
             | "/verbose"
             | "/skill"

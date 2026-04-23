@@ -11,7 +11,9 @@ mod skills;
 mod slash;
 mod spinner;
 mod stats;
+mod status;
 mod system_prompt;
+mod turn_stats;
 mod user_turn;
 
 use self::editor::{
@@ -331,6 +333,18 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // the server can correlate requests and cache prompt prefixes.
     let mut cached_ws: Option<providers::codex::CachedWs> = None;
 
+    // Cumulative token-usage accumulator, surfaced via `/status`. Lives
+    // for the full REPL session so cumulative counts reflect every
+    // turn (not just the most recent). Wrapped in Arc<Mutex<..>> so
+    // the per-turn on_event callback can update it without moving
+    // ownership out of the REPL loop.
+    //
+    // On session switch (`/new`, `/session`) we reset this — the
+    // switch handlers below replace it via `TurnStats::new()`.
+    let turn_stats = std::sync::Arc::new(std::sync::Mutex::new(
+        self::turn_stats::TurnStats::new(),
+    ));
+
     loop {
         let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
             InputEvent::User(s) => Some(s),
@@ -391,6 +405,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 loaded_skills: &loaded_skills,
                 history: &history,
                 editor_input_history_len: line_editor.input_history_len(),
+                turn_stats: &turn_stats,
             };
             if let Some(result) = handle_slash_command(&slash_ctx) {
                 match apply_slash_result(
@@ -408,6 +423,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                     &mut cached_ws,
                     &mut system_prompt,
                     &mut loaded_skills,
+                    &turn_stats,
                 )
                 .await?
                 {
@@ -487,9 +503,19 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         // STDIN worker thread's editor lock and adds to typing lag.
         let forwarder = std::sync::Arc::new(self::event_forward::EventForwarder::new());
         let forwarder_for_events = forwarder.clone();
+        // Clone the Arc once per turn so the closure can accumulate
+        // Usage from each Done event. The TurnStats mutex is held
+        // briefly (a few field writes) and is *not* the renderer's
+        // mutex — cumulative recording never blocks token rendering.
+        let ts_for_events = turn_stats.clone();
         let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
             if let Ok(mut guard) = renderer_for_events.lock() {
                 guard.render(event);
+            }
+            if let StreamEvent::Done { message } = event
+                && let Ok(mut ts) = ts_for_events.lock()
+            {
+                ts.record(message);
             }
             forwarder_for_events.forward(event);
         });

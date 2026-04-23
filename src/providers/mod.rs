@@ -656,6 +656,27 @@ static MODEL_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, (u32, u32)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Non-blocking, cache-only context window lookup for display
+/// surfaces like `/status`.
+///
+/// Returns `Some(context_window)` iff the model has already been
+/// queried via `fetch_context_window` during this process (i.e. the
+/// agent has already run at least one turn on this model). Returns
+/// `None` otherwise — callers must then decide whether to block on
+/// `fetch_context_window` or display an "unknown" placeholder.
+///
+/// Exists separately from `fetch_context_window` because the REPL's
+/// slash-command dispatcher is synchronous and must not block on a
+/// network round-trip to render `/status`. By the time the user can
+/// run `/status` on a model, the first turn has almost always
+/// populated the cache anyway.
+pub fn cached_context_window(model: &str) -> Option<u32> {
+    MODEL_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(model).map(|(ctx, _)| *ctx))
+}
+
 /// Fetch context window for a model from the provider API.
 /// Tries the provider's models endpoint first, falls back to static registry.
 pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
