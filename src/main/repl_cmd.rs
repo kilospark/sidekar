@@ -32,10 +32,11 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  or         OpenRouter — API key");
             eprintln!("  oc         OpenCode — API key");
             eprintln!("  grok       Grok (xAI) — API key");
+            eprintln!("  gem        Gemini (Google) — API key");
             eprintln!("  oac <name> <url> [api_key]");
             eprintln!();
             eprintln!(
-                "Named credentials: claude-work, codex-2, or-personal, oc-work, grok-work, etc."
+                "Named credentials: claude-work, codex-2, or-personal, oc-work, grok-work, gem-personal, etc."
             );
             std::process::exit(1);
         }
@@ -136,7 +137,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
         _ => {
             eprintln!("Unknown provider type for nickname '{nickname}'.");
             eprintln!(
-                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, or `sidekar repl login oac <name> <url>`."
+                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, gem-<name> for Gemini, or `sidekar repl login oac <name> <url>`."
             );
             std::process::exit(1);
         }
