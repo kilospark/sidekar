@@ -8,6 +8,7 @@ mod relay;
 mod renderer;
 mod shell_escape;
 mod skills;
+mod journal;
 mod slash;
 mod spinner;
 mod stats;
