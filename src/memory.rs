@@ -156,5 +156,49 @@ use hygiene::*;
 use store::*;
 use util::*;
 
+/// Public entry for programmatic callers that need to write a
+/// memory event. Wraps `store::write_memory_event` so external
+/// modules (e.g. the journal promoter) don't have to reach
+/// across submodule visibility.
+///
+/// Argument contract matches `store::write_memory_event` verbatim:
+///   - `project`: scope project name, or GLOBAL_SCOPE constant.
+///   - `event_type`: one of MEMORY_TYPES (decision/convention/
+///     constraint/preference/open-thread/artifact-pointer).
+///   - `scope`: "project" or "global".
+///   - `summary`: free-form text, user-visible.
+///   - `confidence`: 0.0..=1.0. Direct-authored entries default
+///     to ~0.75 elsewhere in the codebase; promotions use lower.
+///   - `user_tags`: additional tag strings; auto-tags are merged
+///     in by the store layer.
+///   - `trigger_kind` / `source_kind`: provenance hints. Active
+///     writes from user commands pass "active"/"user";
+///     background promotions pass "passive"/"journal".
+///
+/// Returns the same human-readable message the store produces
+/// ("Stored memory [N]." / "Deduplicated existing memory [N].").
+#[allow(clippy::too_many_arguments)]
+pub fn write_memory_event(
+    project: &str,
+    event_type: &str,
+    scope: &str,
+    summary: &str,
+    confidence: f64,
+    user_tags: &[String],
+    trigger_kind: &str,
+    source_kind: &str,
+) -> anyhow::Result<String> {
+    store::write_memory_event(
+        project,
+        event_type,
+        scope,
+        summary,
+        confidence,
+        user_tags,
+        trigger_kind,
+        source_kind,
+    )
+}
+
 #[cfg(test)]
 mod tests;

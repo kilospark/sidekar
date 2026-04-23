@@ -46,6 +46,8 @@ pub(super) mod inject;
 
 pub(crate) use inject::build_injection_block;
 
+pub(super) mod promote;
+
 pub(crate) use idle::IdleTracker;
 
 #[allow(unused_imports)]

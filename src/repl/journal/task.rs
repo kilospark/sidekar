@@ -56,6 +56,7 @@ use crate::runtime;
 use super::idle::IdleTracker;
 use super::parse::{self, StructuredJournal};
 use super::prefilter::{self, Verdict};
+use super::promote;
 use super::prompt;
 use super::redact;
 use super::scan;
@@ -270,6 +271,38 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
         Ok(id) => id,
         Err(e) => return Outcome::Failed(e),
     };
+
+    // Run the memory promoter. Promotion is idempotent — repeat
+    // calls reinforce existing memories via the dedup path rather
+    // than duplicating rows. Failures here are non-fatal: the
+    // journal row is already persisted, so at worst we miss an
+    // opportunity to promote this pass and pick it up next time.
+    match promote::run_for_project(&ctx.project) {
+        Ok(outcome) if outcome.constraints_promoted + outcome.decisions_promoted > 0 => {
+            broker::try_log_event(
+                "info",
+                "journal",
+                "promoted",
+                Some(&format!(
+                    "project={} constraints={} decisions={} memory_ids={:?}",
+                    ctx.project,
+                    outcome.constraints_promoted,
+                    outcome.decisions_promoted,
+                    outcome.new_memory_ids,
+                )),
+            );
+        }
+        Ok(_) => {
+            // Scan ran, nothing reached the threshold. Normal.
+        }
+        Err(e) => {
+            broker::try_log_error(
+                "journal",
+                &format!("promote failed: {e:#}"),
+                None,
+            );
+        }
+    }
 
     if degraded {
         // Not an error-level event — parser degradation is expected
