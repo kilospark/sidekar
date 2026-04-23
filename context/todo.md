@@ -3,6 +3,7 @@
 ## High Priority
 
 - [ ] Token usage tracking: side-by-side comparison of Claude, Codex, Sidekar consumption
+- [ ] **Session journaling** — background idle-triggered LLM summarization, structured JSON entries in `session_journals` table, consumed on resume (system-prompt injection) and in `/session` listings. Full plan in `context/todo-journaling.md`. REPL-side (not daemon), opt-in via `SIDEKAR_JOURNAL=1`, reuses `~/.sidekar/broker.db`. ~6 commits.
 - [x] Evaluate adding sidekar as a native tool (avoid skills/SKILL.md ceremony) — REPL ships a native `Sidekar` tool with embedded catalog + operating rules (`src/agent/tools.rs:242`)
 - [x] Evaluate adding edit-file and other precision tools (read, grep, glob) — REPL has Read/Write/Edit/Glob/Grep native (`src/agent/tools.rs`)
 - [x] Evaluate mempalace integration (https://github.com/milla-jovovich/mempalace) — no major benefits; sidekar already covers dedup, FTS, confidence, supersession
