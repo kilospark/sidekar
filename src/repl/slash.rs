@@ -117,11 +117,19 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 } else {
                     current_info
                 };
+                // `now` is captured once and shared across every
+                // relative-age format call, so entries printed in
+                // the same listing get a consistent reference frame.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
                 if let Some(c) = current_row {
                     tunnel_println(&format!(
-                        "Current: {} ({} msgs, {})",
+                        "Current: {} ({} msgs, {} ago, {})",
                         &c.session.id[..8],
                         c.messages,
+                        session::format_relative_age(c.session.updated_at, now),
                         c.session.model
                     ));
                 }
@@ -141,10 +149,23 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         } else {
                             s.provider.as_str()
                         };
+                        let age =
+                            session::format_relative_age(s.updated_at, now);
                         tunnel_println(&format!(
-                            "  [{i}] {name} — {} msgs, {cred}/{}",
+                            "  [{i}] {name} — {} msgs, {age} ago, {cred}/{}",
                             sc.messages, s.model
                         ));
+                        // Second indented line: first 30 chars of
+                        // the most recent user prompt. Rendered as
+                        // dim-italic so the eye scans the metadata
+                        // first. Skipped when no snippet exists (a
+                        // tool-result-only session or, for the
+                        // current-empty case, nothing has been sent).
+                        if let Some(snip) = sc.last_prompt_snippet(30) {
+                            tunnel_println(&format!(
+                                "      \x1b[2m\"{snip}\"\x1b[0m"
+                            ));
+                        }
                     }
                     print!("Enter number or Enter: ");
                     let _ = io::stdout().flush();

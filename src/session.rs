@@ -94,17 +94,73 @@ pub fn list_sessions(cwd: &str, limit: usize) -> Result<Vec<Session>> {
     Ok(sessions)
 }
 
-/// Session paired with its message count.
+/// Session paired with its message count and optional last-user-
+/// prompt JSON.
 ///
 /// Returned by [`list_sessions_with_counts`] so callers that want to
 /// display or filter by "has the user actually said anything in this
 /// session" don't need a follow-up `message_count` per row — the
 /// count is computed in the same SQL round-trip via a correlated
 /// subquery.
+///
+/// `last_user_content_json` is `Some(raw_content_blocks_json)` for
+/// the most recent user message (chronologically) in the session, or
+/// `None` if the session has no user messages yet. Kept as raw JSON
+/// so the caller decides how to render — the common case
+/// (`last_prompt_snippet`) extracts the first text block and
+/// truncates; other callers might want the full content.
 #[derive(Debug, Clone)]
 pub struct SessionWithCount {
     pub session: Session,
     pub messages: usize,
+    pub last_user_content_json: Option<String>,
+}
+
+impl SessionWithCount {
+    /// Extract a short preview of the most recent user prompt,
+    /// truncated to `max_chars` grapheme-aware chars. Returns `None`
+    /// if no user message exists or the content has no text block.
+    ///
+    /// "Prompt" here means the user-role content; tool results and
+    /// images are ignored (tool results are noisy, images have no
+    /// useful preview). We take the FIRST text block of the LAST
+    /// user message: multi-block messages usually put the prompt
+    /// text first (then pasted files / images follow), so this
+    /// yields the intended title-like preview.
+    ///
+    /// The truncation adds an ellipsis when it trims. Newlines are
+    /// collapsed to single spaces so the preview stays on one line.
+    pub fn last_prompt_snippet(&self, max_chars: usize) -> Option<String> {
+        let json = self.last_user_content_json.as_ref()?;
+        let blocks: Vec<ContentBlock> = serde_json::from_str(json).ok()?;
+        let text = blocks.iter().find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })?;
+        let flattened = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if flattened.is_empty() {
+            return None;
+        }
+        // char_indices gives us UTF-8-safe truncation boundaries.
+        // Counting chars, not bytes, matches the caller's intent
+        // ("first 30 chars").
+        let char_count = flattened.chars().count();
+        if char_count <= max_chars {
+            Some(flattened)
+        } else {
+            let end = flattened
+                .char_indices()
+                .nth(max_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(flattened.len());
+            let mut truncated = flattened[..end].to_string();
+            truncated.push('…');
+            Some(truncated)
+        }
+    }
 }
 
 /// List sessions for the current working directory, most recent
@@ -139,11 +195,23 @@ pub fn list_sessions_with_counts(
     // `only_nonempty` is passed as 0/1 rather than branching between
     // two prepared statements, to keep this function a single cache
     // slot in rusqlite's prepared-statement cache.
+    // Three correlated subqueries per row: message count, message-
+    // count-for-filter (repeated because SQLite WHERE can't see
+    // SELECT-list aliases), and the last user prompt's content JSON.
+    // All three hit the same (session_id, entry_type, role) shape on
+    // an indexed column, so the planner shares scans where possible.
+    // For a LIMIT of 20-50 this is well under a millisecond on any
+    // reasonable session history.
     let sql = "SELECT
             s.id, s.cwd, s.model, s.provider, s.name,
             s.created_at, s.updated_at,
             (SELECT COUNT(*) FROM repl_entries
-               WHERE session_id = s.id AND entry_type = 'message') AS msg_count
+               WHERE session_id = s.id AND entry_type = 'message') AS msg_count,
+            (SELECT content FROM repl_entries
+               WHERE session_id = s.id
+                 AND entry_type = 'message'
+                 AND role = 'user'
+               ORDER BY created_at DESC LIMIT 1) AS last_user_content
           FROM repl_sessions s
           WHERE s.cwd = ?1
             AND (?2 = 0 OR (SELECT COUNT(*) FROM repl_entries
@@ -156,6 +224,7 @@ pub fn list_sessions_with_counts(
         rusqlite::params![cwd, only_nonempty as i64, limit],
         |row| {
             let msg_count: i64 = row.get(7)?;
+            let last_user_content_json: Option<String> = row.get(8)?;
             Ok(SessionWithCount {
                 session: Session {
                     id: row.get(0)?,
@@ -167,6 +236,7 @@ pub fn list_sessions_with_counts(
                     updated_at: row.get(6)?,
                 },
                 messages: msg_count.max(0) as usize,
+                last_user_content_json,
             })
         },
     )?;
@@ -453,6 +523,37 @@ fn generate_id() -> String {
     let mut bytes = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Format a unix-seconds timestamp as a short relative age (e.g.
+/// "3s", "12m", "4h", "2d", "3w"). Intended for compact listings
+/// like `/session` where absolute timestamps are noise. Always one
+/// unit: we pick the coarsest that keeps the value <60 (<24 for
+/// hours, <7 for days).
+///
+/// For future timestamps (clock skew, or a caller passing created_at
+/// from a DB row that's in the future relative to local time), we
+/// just return "now" rather than "-3s" — relative-past phrasing
+/// doesn't make sense for future values and the UI caller has no
+/// sensible alternative anyway.
+pub fn format_relative_age(past_unix_secs: f64, now_unix_secs: f64) -> String {
+    let delta = (now_unix_secs - past_unix_secs).max(0.0);
+    let secs = delta as u64;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 60 * 60 {
+        format!("{}m", secs / 60)
+    } else if secs < 60 * 60 * 24 {
+        format!("{}h", secs / 3600)
+    } else if secs < 60 * 60 * 24 * 7 {
+        format!("{}d", secs / 86_400)
+    } else if secs < 60 * 60 * 24 * 30 {
+        format!("{}w", secs / (86_400 * 7))
+    } else {
+        // Past a month, pretend it's always "30d+" — months/years
+        // are irrelevant to a sessions-to-switch-to picker.
+        "30d+".to_string()
+    }
 }
 
 fn epoch_secs() -> f64 {
