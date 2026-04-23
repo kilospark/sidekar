@@ -44,6 +44,14 @@ pub(super) mod scan;
 #[allow(dead_code)]
 pub(super) mod prefilter;
 
+// `arm/disarm` are live consumers as of this commit; `should_fire*`,
+// `record_fired*`, `since_armed` get wired by step 7's background
+// task. Allow dead-code on the module to avoid churn until then.
+#[allow(dead_code)]
+pub(super) mod idle;
+
+pub(crate) use idle::IdleTracker;
+
 #[allow(unused_imports)]
 pub(super) use store::{
     JournalInsert, JournalRow, insert_journal, latest_to_entry_id, link_memory_to_journal,

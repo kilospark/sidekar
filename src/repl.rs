@@ -352,12 +352,43 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         self::turn_stats::TurnStats::new(),
     ));
 
+    // Idle tracker for the background journaling subsystem.
+    // - Armed at StreamEvent::Done in the event callback below.
+    // - Disarmed right before we block on input reading, and again
+    //   after the read returns (any input, bus message, or EOF).
+    // - Polled by the background journaling task (step 7) which
+    //   fires an LLM summarization when the gap exceeds threshold.
+    //
+    // Always instantiated even when runtime::journal() is off — it's
+    // cheap (two Options + a mutex), and keeping it present means
+    // `/journal on` mid-session starts journaling on the very next
+    // idle window without re-threading anything.
+    let idle_tracker =
+        std::sync::Arc::new(self::journal::IdleTracker::new());
+
     loop {
+        // Disarm before we block on stdin — an about-to-type user
+        // is "active," even before the first keystroke. This also
+        // closes the window between a Done and a follow-up command:
+        // the main loop re-enters read_input_or_bus right after the
+        // agent returns, so the journaling task only fires if the
+        // user genuinely went idle, not merely "between turns."
+        idle_tracker.disarm();
+
         let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
             InputEvent::User(s) => Some(s),
             InputEvent::Bus => None, // no user text — bus messages trigger the agent
             InputEvent::Eof => break,
         };
+
+        // Defensive second disarm: if the background task fired
+        // between the block above and whatever branch below does
+        // the actual agent.run call, that's fine — record_fired()
+        // already suppresses retries. But a user could also type
+        // *during* a journaling pass (tokio task runs concurrently
+        // with the input reader on separate threads); disarming
+        // here makes the intent explicit.
+        idle_tracker.disarm();
 
         let mut staged_user_content: Option<Vec<ContentBlock>> = None;
 
@@ -515,14 +546,32 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         // briefly (a few field writes) and is *not* the renderer's
         // mutex — cumulative recording never blocks token rendering.
         let ts_for_events = turn_stats.clone();
+        // Clone for the event callback; the journaling background
+        // task (step 7) will hold another clone and poll
+        // `should_fire()`.
+        let idle_for_events = idle_tracker.clone();
         let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
             if let Ok(mut guard) = renderer_for_events.lock() {
                 guard.render(event);
             }
-            if let StreamEvent::Done { message } = event
-                && let Ok(mut ts) = ts_for_events.lock()
-            {
-                ts.record(message);
+            if let StreamEvent::Done { message } = event {
+                if let Ok(mut ts) = ts_for_events.lock() {
+                    ts.record(message);
+                }
+                // Arm the idle tracker — the agent just finished an
+                // assistant turn. If the user doesn't type for
+                // SIDEKAR_JOURNAL_IDLE_SECS after this, step 7's
+                // background task will fire a journal pass.
+                //
+                // `arm()` is a no-op if we're already armed (tool
+                // loops can Done→Waiting→Done without real idleness
+                // in between; we want "since the last thing we
+                // actually said," not "since the loop last yielded").
+                //
+                // Also armed regardless of runtime::journal() state:
+                // a mid-session flip to `/journal on` should start
+                // working immediately without needing a fresh Done.
+                idle_for_events.arm();
             }
             forwarder_for_events.forward(event);
         });
