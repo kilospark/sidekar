@@ -246,7 +246,20 @@ async fn check_for_update() {
             }
         }
         Ok(None) => {}
-        Err(_) => {}
+        Err(e) => {
+            // Log the check failure so a broken /v1/version endpoint
+            // (e.g. Vercel serving stale data, auth expired, TLS
+            // issue) surfaces through `sidekar monitor` instead of
+            // quietly skipping every background update attempt.
+            // Rate-limited upstream by should_check_for_update()'s
+            // UPDATE_CHECK_INTERVAL_SECS throttle, so this won't
+            // fill the log with transient network errors.
+            crate::broker::try_log_error(
+                "updater",
+                "background update check failed",
+                Some(&format!("{e:#}")),
+            );
+        }
     }
 }
 

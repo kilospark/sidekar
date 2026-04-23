@@ -19,6 +19,29 @@ if [ -z "$TAG" ] || [ "$TAG" = "v" ]; then
   exit 1
 fi
 
+# ---- Version consistency preflight --------------------------------
+# Same rationale as local-release.sh: refuse to deploy a tag whose
+# version doesn't match the three source-of-truth files. Prevents a
+# Vercel push that would serve mismatched binaries or advertise a
+# version the client/extension don't know about.
+EXPECTED="${TAG#v}"
+WWW_VERSION=$(cat "$DIR/www/version.txt" 2>/dev/null | tr -d '[:space:]')
+CARGO_VERSION=$(grep '^version = ' "$DIR/Cargo.toml" | head -1 | sed 's/^version = "\(.*\)"/\1/')
+MANIFEST_VERSION=$(grep -E '^\s*"version"' "$DIR/extension/manifest.json" | head -1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+if [ "$WWW_VERSION" != "$EXPECTED" ] \
+   || [ "$CARGO_VERSION" != "$EXPECTED" ] \
+   || [ "$MANIFEST_VERSION" != "$EXPECTED" ]; then
+  echo "Error: version mismatch across release surfaces for tag ${TAG}"
+  echo "  tag (requested)         = $EXPECTED"
+  echo "  www/version.txt         = $WWW_VERSION"
+  echo "  Cargo.toml              = $CARGO_VERSION"
+  echo "  extension/manifest.json = $MANIFEST_VERSION"
+  echo
+  echo "Run ./bump-version.sh [patch|minor|major] to sync, commit,"
+  echo "tag, push, then rerun. See context/release-cycle.md."
+  exit 1
+fi
+
 DEST="$DIR/www/public/binaries/${TAG}"
 
 echo "=== Waiting for GitHub Actions build for ${TAG} ==="

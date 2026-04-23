@@ -87,6 +87,16 @@ struct ExtConnectionOut {
     browser: String,
     profile: String,
     owner: Option<String>,
+    /// Extension manifest.json version as reported at
+    /// bridge_register. None for pre-version-reporting extensions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ext_version: Option<String>,
+    /// True when ext_version == CARGO_PKG_VERSION. None when the
+    /// extension didn't report a version (old extension binary).
+    /// When false, text renderer shows a "version drift" warning so
+    /// users know Chrome needs restarting after a daemon update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_matches_daemon: Option<bool>,
 }
 
 #[derive(serde::Serialize)]
@@ -117,6 +127,21 @@ impl crate::output::CommandOutput for ExtStatusOutput {
             write!(w, "  [{}] {} ({})", c.id, c.browser, short_profile)?;
             if let Some(o) = &c.owner {
                 write!(w, " (owner: {o})")?;
+            }
+            if let Some(v) = &c.ext_version {
+                write!(w, " ext v{v}")?;
+                // Flag drift so the user doesn't have to look at
+                // logs to find out the extension and daemon aren't
+                // the same version. Chrome auto-updates extensions;
+                // the daemon is updated by `sidekar update`; drift
+                // is normal between them until Chrome is restarted.
+                if matches!(c.version_matches_daemon, Some(false)) {
+                    write!(
+                        w,
+                        " \x1b[33m(drift — daemon v{})\x1b[0m",
+                        env!("CARGO_PKG_VERSION")
+                    )?;
+                }
             }
             writeln!(w)?;
         }
@@ -158,6 +183,13 @@ fn show_status() -> Result<()> {
                 .get("owner")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            ext_version: c
+                .get("ext_version")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            version_matches_daemon: c
+                .get("version_matches_daemon")
+                .and_then(|v| v.as_bool()),
         })
         .collect();
     let out = ExtStatusOutput {

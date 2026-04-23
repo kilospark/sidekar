@@ -23,6 +23,26 @@ if [ ! -f "$KEY" ]; then
   exit 1
 fi
 
+# ---- Version consistency preflight --------------------------------
+# All three version strings must agree. History: several recent
+# releases were shipped by hand-editing Cargo.toml + the extension
+# manifest, forgetting www/version.txt, which silently stranded
+# sidekar.dev at the previous version and made `sidekar update` tell
+# every client "you're up to date" for three releases. This check
+# fails the release before any binary is built if the trio drifts.
+CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/^version = "\(.*\)"/\1/')
+MANIFEST_VERSION=$(grep -E '^\s*"version"' extension/manifest.json | head -1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+if [ "$CARGO_VERSION" != "$VERSION" ] || [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+  echo "Error: version mismatch across release surfaces"
+  echo "  www/version.txt         = $VERSION"
+  echo "  Cargo.toml              = $CARGO_VERSION"
+  echo "  extension/manifest.json = $MANIFEST_VERSION"
+  echo
+  echo "Run ./bump-version.sh [patch|minor|major] to sync all three,"
+  echo "or fix by hand — but never edit one without the others."
+  exit 1
+fi
+
 echo "=== Building v${VERSION} (release) ==="
 cargo build --release
 

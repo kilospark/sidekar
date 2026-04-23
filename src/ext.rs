@@ -48,6 +48,14 @@ pub struct ExtConnection {
     /// browser tag in that case.
     pub profile: String,
     pub browser: String,
+    /// Chrome extension's manifest.json version as reported at
+    /// `bridge_register`. None for pre-version-reporting extensions.
+    /// Used by diagnostics to surface extension/daemon version drift
+    /// — Chrome auto-updates the extension independently of the
+    /// binary, so mismatches happen and can change the wire protocol
+    /// semantics silently. `ext status` surfaces this field so
+    /// drift is visible.
+    pub ext_version: Option<String>,
 }
 
 /// A registered DOM watcher. Watch events are delivered via broker to `deliver_to`.
@@ -297,6 +305,7 @@ pub async fn register_bridge_ws(
     agent_id: Option<String>,
     browser: String,
     install_id: String,
+    ext_version: Option<String>,
 ) -> (u64, mpsc::UnboundedReceiver<String>, String) {
     let now = epoch_secs();
     let (bridge_tx, bridge_rx) = mpsc::unbounded_channel::<String>();
@@ -322,6 +331,7 @@ pub async fn register_bridge_ws(
             owner_agent_id: agent_id,
             profile: profile.clone(),
             browser,
+            ext_version,
         },
     );
     (cid, bridge_rx, profile)
@@ -515,6 +525,15 @@ pub async fn get_status(state: &SharedExtState) -> Value {
                 "browser": c.browser,
                 "user_id": c.verified_user_id,
                 "owner": c.owner_agent_id,
+                // Surface the extension's reported manifest version
+                // and whether it drifts from the daemon binary, so
+                // `sidekar ext status` immediately shows a mismatch
+                // without anyone having to grep logs.
+                "ext_version": c.ext_version,
+                "version_matches_daemon": c
+                    .ext_version
+                    .as_deref()
+                    .map(|v| v == env!("CARGO_PKG_VERSION")),
             })
         })
         .collect();

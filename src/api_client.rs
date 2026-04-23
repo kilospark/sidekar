@@ -116,25 +116,49 @@ fn touch_last_check() {
     let _ = std::fs::write(&path, "");
 }
 
-/// Check for updates and return Some(latest_version) if an update is available.
-/// Always records the check timestamp to prevent re-checking on every call.
+/// Check for updates and return Some(latest_version) if an update is
+/// available.
+///
+/// Compares `env!("CARGO_PKG_VERSION")` against the `latest` field of
+/// the server response directly rather than trusting the server's
+/// convenience `current_is_latest` boolean. History: that boolean used
+/// to be read with `.unwrap_or(true)`, so a malformed response or
+/// missing field silently reported "you're on the latest version".
+/// When sidekar.dev was stuck at 2.5.34 for three releases, every
+/// client saw "up to date" and no one noticed until users got
+/// confused about why `sidekar update` did nothing.
+///
+/// New policy: a missing/unparsable `latest` field is a hard error.
+/// Callers already treat check failures as "silently skip the
+/// update prompt" (see main dispatch), so surfacing a real error is
+/// strictly better than the old false-positive.
+///
+/// Always records the check timestamp to prevent re-checking on
+/// every call, even on error, so a flaky network doesn't hammer the
+/// version endpoint.
 pub async fn check_for_update() -> Result<Option<String>> {
     touch_last_check(); // always throttle, even if update is available
     let current = env!("CARGO_PKG_VERSION");
     let info = check_version(current).await?;
-    let is_latest = info
-        .get("current_is_latest")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    if is_latest {
+    let latest = info
+        .get("latest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "version endpoint response missing `latest` field: {}",
+                info
+            )
+        })?;
+    if latest == current {
         Ok(None)
     } else {
-        let latest = info
-            .get("latest")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        Ok(Some(latest))
+        // Semver comparison would be strictly better, but every
+        // sidekar tag is a strict successor; string-inequality is
+        // sufficient and avoids pulling in a semver dep just for
+        // this path. If versions ever diverge (e.g. someone downgrades
+        // to a hotfix), the UI still just says "update available to
+        // latest=X" — which is the correct action.
+        Ok(Some(latest.to_string()))
     }
 }
 

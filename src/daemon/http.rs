@@ -105,7 +105,7 @@ async fn handle_ext_websocket(
         return;
     }
 
-    let (ext_token, agent_id, browser_name, install_id) = loop {
+    let (ext_token, agent_id, browser_name, install_id, ext_version) = loop {
         match ws_rx.next().await {
             Some(Ok(Message::Text(text))) => {
                 if let Ok(val) = serde_json::from_str::<Value>(&text)
@@ -130,7 +130,36 @@ async fn handle_ext_websocket(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    break (token, aid, browser, install_id);
+                    // Extension reports its manifest.json version in
+                    // bridge_register. We store it on the connection
+                    // for diagnostics, and log a warning here if it
+                    // differs from the daemon's own CARGO_PKG_VERSION.
+                    // Chrome auto-updates the extension independently
+                    // of the binary, so these can drift; drift is not
+                    // fatal (the wire protocol is backward-compatible
+                    // within a minor series) but worth surfacing
+                    // because a severe mismatch could change the
+                    // shape of a new event type that only one side
+                    // knows about.
+                    let ev = val
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    if let Some(ref v) = ev
+                        && v != env!("CARGO_PKG_VERSION")
+                    {
+                        crate::broker::try_log_event(
+                            "warn",
+                            "ext",
+                            &format!(
+                                "extension version {v} differs from daemon {}; \
+                                 restart Chrome after `sidekar update` to re-sync",
+                                env!("CARGO_PKG_VERSION")
+                            ),
+                            None,
+                        );
+                    }
+                    break (token, aid, browser, install_id, ev);
                 }
             }
             _ => return,
@@ -192,6 +221,7 @@ async fn handle_ext_websocket(
         agent_id,
         browser_name.clone(),
         install_id.clone(),
+        ext_version,
     )
     .await;
 

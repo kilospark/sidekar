@@ -26,7 +26,23 @@ Limitation: only darwin-arm64 ships. The other three targets (darwin-x64, linux-
 
 ## Invariants
 
+- **Never hand-edit version strings.** Run `./bump-version.sh [patch|minor|major]` — it syncs Cargo.toml, extension/manifest.json, and www/version.txt atomically. Editing only some of these breaks the release:
+  - Missing `www/version.txt` bump → sidekar.dev/v1/version advertises the old version → every `sidekar update` says "up to date" incorrectly (this actually happened; v2.5.35, 2.5.36, 2.5.37 were invisible to updaters until v2.5.38's postmortem).
+  - Missing `extension/manifest.json` bump → Chrome auto-updates on a stale manifest → extension/daemon version drift → visible in `sidekar ext status` as yellow "drift" marker.
+  - Missing `Cargo.toml` bump → the release tarball advertises the wrong `sidekar --version` → post-update confusion.
+
+  The release scripts now preflight this: `local-release.sh` and `pull-release.sh` both refuse to run if the three files disagree.
 - Always bump version before `cargo build --release`.
 - Always tag and push the tag in the same step as the version-bump push.
 - After tagging, either `pull-release.sh` (CI path) or `local-release.sh` (billing-down path) must run. A tag without one of those is a half-release — the binaries aren't on sidekar.dev.
 - After a release, wipe `target/` — release builds (with the embedded extension zip rebuild) inflate it to ~20GB and the binary we care about is already installed at `~/.local/bin/sidekar`. `local-release.sh` does this automatically via `cargo clean`; for `pull-release.sh` runs (or any standalone `cargo build --release`), run `cargo clean` manually after the install step.
+
+## Extension version drift
+
+Chrome auto-updates the extension from the WebStore independently of `sidekar update`. After a release, users see both versions drift until Chrome restarts and picks up the new extension. The daemon now:
+
+- Captures the extension's `manifest.json` version at `bridge_register` (WebSocket handshake, `src/daemon/http.rs`).
+- Warns in `sidekar monitor` logs when the extension version ≠ daemon `CARGO_PKG_VERSION`.
+- Surfaces drift in `sidekar ext status` output with a yellow `(drift — daemon v<x>)` marker next to each connection.
+
+This isn't fatal — the wire protocol is backward-compatible within a minor series — but surfacing it explicitly saves debugging time when new features only appear on one side.
