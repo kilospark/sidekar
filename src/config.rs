@@ -80,6 +80,21 @@ pub static CONFIG_KEYS: &[ConfigKey] = &[
         default: "10",
         description: "Maximum cron jobs",
     },
+    ConfigKey {
+        // Persistent default for the background journaling subsystem.
+        // CLI --journal/--no-journal, SIDEKAR_JOURNAL env var, and the
+        // /journal slash command all override this at process / session
+        // scope. Use `sidekar config set journal false` to persist an
+        // opt-out across REPL launches.
+        //
+        // Default `"true"` to match the `auto_update` convention;
+        // runtime::parse_bool_arg also accepts on/off/1/0/yes/no when
+        // users type the slash command.
+        key: "journal",
+        kind: ConfigKind::Bool,
+        default: "true",
+        description: "Background session journaling (true/false)",
+    },
 ];
 
 pub fn find_key(key: &str) -> Option<&'static ConfigKey> {

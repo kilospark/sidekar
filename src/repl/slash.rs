@@ -355,6 +355,40 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             }
             SlashResult::Continue
         }
+        "/journal" => {
+            // Session-level toggle for background journaling. Same
+            // shape as /verbose — `on`/`off`/`true`/`false`/`1`/`0`/
+            // `yes`/`no` (case-insensitive), empty shows current state.
+            //
+            // Scope: affects only this process until it exits. To
+            // persist across REPL launches, run `sidekar config set
+            // journal false` (or `true`). To override for a single
+            // launch, use `--journal` / `--no-journal`.
+            //
+            // The journaling subsystem itself isn't implemented yet;
+            // this toggle only flips the runtime flag that future
+            // journaling code will check. Users can safely use it
+            // today — it's a no-op with observable state — so the
+            // semantics are stable when the feature lands.
+            let arg = input.split_whitespace().nth(1).unwrap_or("");
+            if arg.is_empty() {
+                let state = if crate::runtime::journal() { "on" } else { "off" };
+                tunnel_println(&format!("Journal: {state}"));
+                tunnel_println(
+                    "\x1b[2mUse /journal on|off to toggle. \
+                     `sidekar config set journal true|false` to persist.\x1b[0m",
+                );
+            } else if let Some(parsed) = crate::runtime::parse_bool_arg(arg) {
+                crate::runtime::set_journal(parsed);
+                tunnel_println(&format!(
+                    "Journal: {}",
+                    if parsed { "on" } else { "off" }
+                ));
+            } else {
+                tunnel_println("Usage: /journal [on|off]");
+            }
+            SlashResult::Continue
+        }
         "/skill" => {
             let parts: Vec<_> = input.split_whitespace().collect();
             match parts.get(1).copied() {
@@ -457,6 +491,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 last_response_id: &snap_rid,
                 session_age: snap_age,
                 since_last_turn: snap_since,
+                journal_on: crate::runtime::journal(),
             };
             let text = super::status::format_status(&view);
             tunnel_println(&text);
@@ -473,6 +508,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /status      — Show session / model / token usage / context fill");
             tunnel_println("  /stats       — Show process diagnostics (RSS, CPU, threads)");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
+            tunnel_println("  /journal     — Toggle background session journaling (on/off)");
             tunnel_println(
                 "  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)",
             );
@@ -671,6 +707,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/compact"
             | "/stats"
             | "/status"
+            | "/journal"
             | "/relay"
             | "/verbose"
             | "/skill"

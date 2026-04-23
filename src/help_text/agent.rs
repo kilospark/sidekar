@@ -238,17 +238,22 @@ sidekar loop <interval> <prompt> [--once]
         }
         "repl" => {
             "\
-sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--verbose]
+sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
+             [--verbose] [--journal|--no-journal]
 
   Interactive LLM agent with streaming, tool calling, and session persistence.
   Credential and model may be supplied up front or selected interactively.
 
   Options:
-    -c <credential>  Named credential (claude, codex, or-personal, grok, etc.)
+    -c <credential>  Named credential (claude, codex, or-personal, grok, gem, etc.)
     -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
     -p <prompt>      Initial prompt (skip interactive input for first turn)
     -r [session_id]  Resume a session (picker if no ID; prefix match)
     --verbose        API request/response logging and `[turn complete]` after each agent run
+    --journal        Force-enable background session journaling for this REPL (overrides config).
+    --no-journal     Disable background journaling for this REPL only.
+                     (Default is on; change persistently with `sidekar config set journal false`,
+                     or per-process via `SIDEKAR_JOURNAL=off`. Flip at runtime with `/journal off`.)
 
   Providers:
     claude     Claude (Anthropic) — OAuth device flow
@@ -256,6 +261,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
     or         OpenRouter — API key
     oc         OpenCode — API key
     grok       Grok (xAI) — API key
+    gem        Gemini (Google) — API key
     oac        Generic OpenAI-compat API
 
   Named credentials use prefix to determine provider:

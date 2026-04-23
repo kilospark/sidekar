@@ -92,11 +92,17 @@ pub struct ReplOptions {
     pub resume: Option<Option<String>>,
     pub relay_override: Option<bool>,
     pub proxy_override: Option<bool>,
+    /// Tri-state CLI override for background session journaling.
+    /// `Some(true)` = `--journal`, `Some(false)` = `--no-journal`,
+    /// `None` = fall through to env / config / built-in default.
+    /// Parsed in `main/repl_cmd.rs::handle_run` alongside the
+    /// verbose/relay/proxy flags.
+    pub journal_override: Option<bool>,
 }
 
 /// Entry point for the REPL.
 pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
-    crate::runtime::init(opts.verbose);
+    crate::runtime::init_with_journal(opts.verbose, opts.journal_override);
 
     // Eagerly initialize the broker schema so the first hot-path call (the
     // bus poller in `read_input_or_bus`) doesn't pay for it. Then kick off

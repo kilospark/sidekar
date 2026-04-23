@@ -56,6 +56,12 @@ pub(super) struct StatusView<'a> {
     /// Time since last turn completed, if any turn has. None before
     /// first turn.
     pub since_last_turn: Option<std::time::Duration>,
+    /// Whether background journaling is currently enabled. Plumbed
+    /// through the view (rather than read directly from
+    /// `crate::runtime::journal()` inside the formatter) so this
+    /// function stays pure and unit-testable without touching any
+    /// global state.
+    pub journal_on: bool,
 }
 
 /// Same 90% rule as `agent::compaction::maybe_compact`. Mirrored here
@@ -159,6 +165,14 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
         Some(cw) => out.push_str(&format!("  context   {} tokens\n", commas(cw))),
         None => out.push_str("  context   unknown (no turn yet)\n"),
     }
+    // Session-scoped runtime toggles so users can see at a glance
+    // what background features are live without running `/journal` /
+    // `/relay` one at a time. Sourced from the view, not from
+    // runtime globals, so the formatter stays pure.
+    out.push_str(&format!(
+        "  journal   {}\n",
+        if v.journal_on { "on" } else { "off" }
+    ));
 
     // ----- Usage (cumulative) --------------------------------------
     out.push_str("\n\x1b[1mUsage (this session)\x1b[0m\n");
@@ -304,6 +318,7 @@ mod tests {
             last_response_id: "",
             session_age: std::time::Duration::from_secs(125),
             since_last_turn: last.map(|_| std::time::Duration::from_secs(5)),
+            journal_on: true,
         }
     }
 
@@ -413,6 +428,7 @@ mod tests {
             last_response_id: "resp_abc123",
             session_age: std::time::Duration::from_secs(2 * 3600 + 14 * 60),
             since_last_turn: Some(std::time::Duration::from_secs(12)),
+            journal_on: true,
         };
         let s = format_status(&v);
         // Eye-visible only when --nocapture is set.

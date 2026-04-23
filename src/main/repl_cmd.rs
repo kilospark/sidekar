@@ -516,6 +516,12 @@ async fn handle_run(
     let mut credential: Option<String> = None;
     let mut verbose = false;
     let mut resume: Option<Option<String>> = None;
+    // Tri-state matches relay_override / proxy_override convention:
+    // None = leave runtime default untouched, Some(true) = --journal,
+    // Some(false) = --no-journal. The paired-flag style beats a
+    // single `--journal=VALUE` because it mirrors --proxy/--no-proxy
+    // that already exist upstream and keeps tab-completion obvious.
+    let mut journal_override: Option<bool> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -533,6 +539,14 @@ async fn handle_run(
             }
             "--verbose" | "-v" => {
                 verbose = true;
+                i += 1;
+            }
+            "--journal" => {
+                journal_override = Some(true);
+                i += 1;
+            }
+            "--no-journal" => {
+                journal_override = Some(false);
                 i += 1;
             }
             "--resume" => {
@@ -560,6 +574,7 @@ async fn handle_run(
         resume,
         relay_override,
         proxy_override,
+        journal_override,
     })
     .await
 }
