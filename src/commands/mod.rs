@@ -10,6 +10,7 @@ mod debug;
 mod desktop;
 mod doc;
 mod interaction;
+mod journal;
 pub mod kv;
 pub mod monitor;
 mod session;

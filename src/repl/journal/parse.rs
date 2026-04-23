@@ -28,7 +28,7 @@ use serde_json::Value;
 /// `session_journals.structured_json` verbatim — downstream code
 /// re-parses that JSON on injection, so the round-trip is covered.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct StructuredJournal {
+pub struct StructuredJournal {
     pub active_task: String,
     pub goal: String,
     pub constraints: Vec<String>,
@@ -47,7 +47,7 @@ pub(super) struct StructuredJournal {
 /// Never fails — on malformed input, produces a degraded but still-
 /// insertable row. The `was_degraded` flag lets callers log/notice
 /// parser failures without having to re-validate.
-pub(super) struct ParseOutcome {
+pub struct ParseOutcome {
     pub journal: StructuredJournal,
     pub was_degraded: bool,
     /// When degraded, a short human-readable reason suitable for a
@@ -56,7 +56,7 @@ pub(super) struct ParseOutcome {
 }
 
 /// Public entry point: try hard to parse, fall back gracefully.
-pub(super) fn parse_response(raw: &str) -> ParseOutcome {
+pub fn parse_response(raw: &str) -> ParseOutcome {
     // Stage 1: find a JSON object anywhere in the response. Strip
     // common wrappers (code fences, "Here's..." preambles).
     let candidate = match extract_json_object(raw) {

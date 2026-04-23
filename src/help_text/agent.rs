@@ -119,6 +119,33 @@ sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|r
     sidekar memory rate 12 helpful
     sidekar memory detail 12"
         }
+        "journal" => {
+            "\
+sidekar journal <list|show> [args]
+
+  Inspect REPL session journals. Journals are automatic, structured,
+  per-session summaries written in the background by an active REPL
+  (see /journal in the slash commands). They are a recall aid, not a
+  replacement for durable `memory` entries.
+
+  Subcommands:
+    list [N] [--project=P]     Recent journals (default N=10, max 200).
+                               --project overrides the cwd scope.
+    show <id>                  Full 12-section view of one journal.
+
+  Write path:
+    Journals are written from INSIDE a REPL session (no CLI write
+    command). The background polling task triggers every
+    SIDEKAR_JOURNAL_IDLE_SECS seconds of idleness (default 90).
+    Toggle with /journal on|off, --journal / --no-journal on
+    `sidekar repl`, or `sidekar config set journal true|false`.
+
+  Examples:
+    sidekar journal list
+    sidekar journal list 30
+    sidekar journal list --project=sidekar
+    sidekar journal show 42"
+        }
         "tasks" => {
             "\
 sidekar tasks <add|list|done|reopen|delete|show|depend|undepend|deps> ...

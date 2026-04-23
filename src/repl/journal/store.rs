@@ -156,6 +156,24 @@ pub fn recent_for_session(session_id: &str, limit: usize) -> Result<Vec<JournalR
     Ok(out)
 }
 
+/// Fetch a single journal by id. None if no row exists with that
+/// id. Used by `/journal show` and by external callers that
+/// already know the id (e.g. from `/journal list`).
+pub fn get_by_id(id: i64) -> Result<Option<JournalRow>> {
+    let conn = broker::open()?;
+    Ok(conn
+        .query_row(
+            "SELECT id, session_id, project, created_at, from_entry_id,
+                    to_entry_id, structured_json, headline, previous_id,
+                    model_used, cred_used, tokens_in, tokens_out
+               FROM session_journals
+              WHERE id = ?1",
+            [id],
+            row_to_journal,
+        )
+        .optional()?)
+}
+
 /// Return up to `limit` most recent journals across all sessions in
 /// a project (cwd), newest first. Used by the cross-session memory
 /// promoter and the "last seen in this project" startup brief.

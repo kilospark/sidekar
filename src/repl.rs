@@ -8,7 +8,11 @@ mod relay;
 mod renderer;
 mod shell_escape;
 mod skills;
-mod journal;
+// pub(crate) so external modules (e.g. `commands/journal.rs` which
+// powers the `sidekar journal` CLI) can reach the store and parse
+// layers. Visibility of individual items is still controlled per-
+// module; the outer walls are the access gate.
+pub(crate) mod journal;
 mod slash;
 mod spinner;
 mod stats;

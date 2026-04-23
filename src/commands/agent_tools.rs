@@ -5,6 +5,7 @@ use crate::tasks::cmd_tasks;
 use crate::*;
 
 use super::agent_sessions::cmd_agent_sessions;
+use super::journal::cmd_journal;
 use super::cron;
 use super::doc::cmd_doc;
 use super::kv::cmd_kv;
@@ -20,6 +21,7 @@ pub(super) async fn dispatch_agent_command(
     let result = match command {
         "monitor" => cmd_monitor(ctx, args).await,
         "memory" => cmd_memory(ctx, args),
+        "journal" => cmd_journal(ctx, args),
         "tasks" => cmd_tasks(ctx, args),
         "agent-sessions" => cmd_agent_sessions(ctx, args),
         "repo" => cmd_repo(ctx, args),

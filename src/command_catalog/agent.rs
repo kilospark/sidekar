@@ -38,6 +38,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
+        "journal",
+        "<list|show> [args]",
+        "Inspect REPL session journals (read-only)",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
         "tasks",
         "<add|list|done|reopen|delete|show|depend|undepend|deps> ...",
         "Local task list with SQLite-backed dependencies",

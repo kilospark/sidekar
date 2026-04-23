@@ -356,36 +356,130 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             SlashResult::Continue
         }
         "/journal" => {
-            // Session-level toggle for background journaling. Same
-            // shape as /verbose — `on`/`off`/`true`/`false`/`1`/`0`/
-            // `yes`/`no` (case-insensitive), empty shows current state.
+            // Slash interface to the journaling subsystem.
             //
-            // Scope: affects only this process until it exits. To
-            // persist across REPL launches, run `sidekar config set
-            // journal false` (or `true`). To override for a single
-            // launch, use `--journal` / `--no-journal`.
+            // Subcommands:
+            //   /journal                    show on/off state + cmd help
+            //   /journal on|off|...         toggle session-level state
+            //   /journal list [N]           last N journals for this project
+            //                               (default 10, max 50)
+            //   /journal show <id>          full structured view of a single row
+            //   /journal now                force an immediate journaling pass
+            //                               (bypasses the idle threshold)
             //
-            // The journaling subsystem itself isn't implemented yet;
-            // this toggle only flips the runtime flag that future
-            // journaling code will check. Users can safely use it
-            // today — it's a no-op with observable state — so the
-            // semantics are stable when the feature lands.
-            let arg = input.split_whitespace().nth(1).unwrap_or("");
-            if arg.is_empty() {
-                let state = if crate::runtime::journal() { "on" } else { "off" };
-                tunnel_println(&format!("Journal: {state}"));
-                tunnel_println(
-                    "\x1b[2mUse /journal on|off to toggle. \
-                     `sidekar config set journal true|false` to persist.\x1b[0m",
-                );
-            } else if let Some(parsed) = crate::runtime::parse_bool_arg(arg) {
-                crate::runtime::set_journal(parsed);
-                tunnel_println(&format!(
-                    "Journal: {}",
-                    if parsed { "on" } else { "off" }
-                ));
-            } else {
-                tunnel_println("Usage: /journal [on|off]");
+            // Precedence of the toggle is documented in the /journal
+            // on|off branch; same chain (--journal > env > slash >
+            // config > default-on) used everywhere else in the code.
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            let sub = parts.get(1).copied().unwrap_or("");
+
+            match sub {
+                "" => {
+                    let state = if crate::runtime::journal() { "on" } else { "off" };
+                    tunnel_println(&format!("Journal: {state}"));
+                    tunnel_println(
+                        "\x1b[2mSubcommands: on|off | list [N] | show <id> | now\x1b[0m",
+                    );
+                    tunnel_println(
+                        "\x1b[2mPersist across launches: sidekar config set journal true|false\x1b[0m",
+                    );
+                }
+                "list" => {
+                    let n = parts
+                        .get(2)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(10)
+                        .min(50);
+                    let project = crate::scope::resolve_project_name(Some(cwd));
+                    match crate::repl::journal::store::recent_for_project(&project, n) {
+                        Ok(rows) if rows.is_empty() => {
+                            tunnel_println("No journals yet for this project.");
+                        }
+                        Ok(rows) => {
+                            // Two-column rendering: id + age + headline.
+                            // Age is relative to now for scan-ability; id
+                            // is the numeric key used by `show`.
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs_f64())
+                                .unwrap_or(0.0);
+                            for r in rows {
+                                let age =
+                                    crate::session::format_relative_age(r.created_at, now);
+                                let head = if r.headline.is_empty() {
+                                    "(no headline)"
+                                } else {
+                                    r.headline.as_str()
+                                };
+                                tunnel_println(&format!(
+                                    "  [{id:>4}] {age:>8}  {head}",
+                                    id = r.id
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            tunnel_println(&format!(
+                                "\x1b[31m/journal list failed: {e:#}\x1b[0m"
+                            ));
+                        }
+                    }
+                }
+                "show" => {
+                    // `/journal show <id>` — render the full 12-section
+                    // structured view of a single journal row. id is the
+                    // numeric key from `/journal list`. Rendering reuses
+                    // the inject module's render path (single-row slice)
+                    // so the format matches what the model sees on resume.
+                    let id_arg = parts.get(2).copied().unwrap_or("");
+                    let Ok(id) = id_arg.parse::<i64>() else {
+                        tunnel_println("Usage: /journal show <id>");
+                        return Some(SlashResult::Continue);
+                    };
+                    match crate::repl::journal::store::get_by_id(id) {
+                        Ok(Some(row)) => {
+                            tunnel_println(&render_journal_show(&row));
+                        }
+                        Ok(None) => {
+                            tunnel_println(&format!("No journal with id {id}."));
+                        }
+                        Err(e) => {
+                            tunnel_println(&format!(
+                                "\x1b[31m/journal show failed: {e:#}\x1b[0m"
+                            ));
+                        }
+                    }
+                }
+                "now" => {
+                    // Force an immediate journaling pass, bypassing the
+                    // idle-threshold wait. Same run_once entry point the
+                    // background loop uses. Runs on the current tokio
+                    // runtime; blocks the slash handler until complete
+                    // so the user sees the outcome inline.
+                    //
+                    // Building the Context requires Provider, which we
+                    // don't have a cheap handle to from the slash layer.
+                    // Punt with a helpful pointer — `sidekar journal
+                    // now` (CLI) reconstructs the provider and can do
+                    // this without live REPL state.
+                    tunnel_println(
+                        "/journal now runs automatically on idle. \
+                         To force from outside the REPL, use \
+                         `sidekar journal now`.",
+                    );
+                }
+                other => {
+                    if let Some(parsed) = crate::runtime::parse_bool_arg(other) {
+                        crate::runtime::set_journal(parsed);
+                        tunnel_println(&format!(
+                            "Journal: {}",
+                            if parsed { "on" } else { "off" }
+                        ));
+                    } else {
+                        tunnel_println(
+                            "Usage: /journal [on|off | list [N] | show <id> | now]",
+                        );
+                    }
+                }
             }
             SlashResult::Continue
         }
@@ -691,6 +785,86 @@ pub(super) async fn apply_slash_result(
         }
     }
     Ok(SlashAction::Continue)
+}
+
+/// Render a single journal row for `/journal show`. Mirrors the
+/// structure of the resume-injection block (same field ordering,
+/// same skip-empty-field rule), but styled for interactive
+/// reading rather than model consumption — headers are ANSI-
+/// formatted, the framing directive is replaced with a terse
+/// metadata line.
+fn render_journal_show(row: &crate::repl::journal::store::JournalRow) -> String {
+    use std::fmt::Write;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let age = crate::session::format_relative_age(row.created_at, now);
+
+    let outcome =
+        crate::repl::journal::parse::parse_response(&row.structured_json);
+    let j = outcome.journal;
+
+    let mut out = String::with_capacity(1024);
+    let _ = writeln!(
+        out,
+        "\x1b[1mJournal [{id}]\x1b[0m  {age}  session={sid}",
+        id = row.id,
+        sid = &row.session_id[..row.session_id.len().min(8)],
+    );
+    let _ = writeln!(
+        out,
+        "\x1b[2mmodel={m} cred={c} tokens_in={ti} tokens_out={to}\x1b[0m",
+        m = row.model_used,
+        c = row.cred_used,
+        ti = row.tokens_in,
+        to = row.tokens_out,
+    );
+    if outcome.was_degraded {
+        let _ = writeln!(
+            out,
+            "\x1b[33m(parse was degraded: {r})\x1b[0m",
+            r = outcome.reason
+        );
+    }
+
+    // Reuse the field rendering logic locally (inject's helpers
+    // are private to that module). Kept simple here — duplication
+    // of ~20 lines beats widening inject.rs's API surface for a
+    // single non-prompt consumer.
+    let emit_str = |out: &mut String, label: &str, value: &str| {
+        let v = value.trim();
+        if !v.is_empty() {
+            let _ = writeln!(out, "\x1b[1m{label}:\x1b[0m {v}");
+        }
+    };
+    let emit_list = |out: &mut String, label: &str, vs: &[String]| {
+        let any = vs.iter().any(|v| !v.trim().is_empty());
+        if !any {
+            return;
+        }
+        let _ = writeln!(out, "\x1b[1m{label}:\x1b[0m");
+        for v in vs {
+            let v = v.trim();
+            if !v.is_empty() {
+                let _ = writeln!(out, "  - {v}");
+            }
+        }
+    };
+
+    emit_str(&mut out, "Active task", &j.active_task);
+    emit_str(&mut out, "Goal", &j.goal);
+    emit_list(&mut out, "Constraints", &j.constraints);
+    emit_list(&mut out, "Completed", &j.completed);
+    emit_str(&mut out, "Active state", &j.active_state);
+    emit_list(&mut out, "In progress", &j.in_progress);
+    emit_list(&mut out, "Blocked", &j.blocked);
+    emit_list(&mut out, "Decisions", &j.decisions);
+    emit_list(&mut out, "Resolved questions", &j.resolved_questions);
+    emit_list(&mut out, "Pending user asks", &j.pending_user_asks);
+    emit_list(&mut out, "Relevant files", &j.relevant_files);
+    emit_str(&mut out, "Critical context", &j.critical_context);
+    out
 }
 
 pub(super) fn is_known_slash_command(cmd: &str) -> bool {

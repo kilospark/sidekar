@@ -26,11 +26,14 @@
 // subsequent commits. The re-exports exist so higher layers can
 // refer to `journal::insert_journal` etc. without reaching through
 // the submodule path — once they do, this attribute can come off.
-pub(super) mod store;
+// `store` and `parse` are reached from src/commands/journal.rs
+// (the `sidekar journal` CLI), so they need pub(crate). The other
+// submodules are internal orchestration and stay pub(super).
+pub(crate) mod store;
 
 pub(super) mod prompt;
 
-pub(super) mod parse;
+pub(crate) mod parse;
 
 pub(super) mod redact;
 
