@@ -41,6 +41,9 @@ pub(super) mod redact;
 #[allow(dead_code)]
 pub(super) mod scan;
 
+#[allow(dead_code)]
+pub(super) mod prefilter;
+
 #[allow(unused_imports)]
 pub(super) use store::{
     JournalInsert, JournalRow, insert_journal, latest_to_entry_id, link_memory_to_journal,
