@@ -1,4 +1,6 @@
-use super::{Provider, SseDecoder, openai_chat_completions_url, openai_models_url};
+use super::{
+    Provider, SseDecoder, is_retryable_error, openai_chat_completions_url, openai_models_url,
+};
 
 #[test]
 fn sse_decoder_parses_named_events_with_crlf_chunks() {
@@ -100,4 +102,60 @@ fn openai_compat_provider_type_is_preserved() {
 
     assert_eq!(grok.provider_type(), "grok");
     assert_eq!(compat.provider_type(), "oac");
+}
+
+// ---- is_retryable_error classifier ------------------------------
+//
+// The message shapes below are verbatim from production failures.
+// Do NOT lowercase the fixtures — the classifier must handle the
+// real OS/reqwest capitalization. Regression for mid-stream retries
+// not firing on `Connection reset by peer (os error 54)`.
+
+fn err(msg: &str) -> anyhow::Error {
+    anyhow::anyhow!(msg.to_string())
+}
+
+fn chained(outer: &str, inner: &str) -> anyhow::Error {
+    err(inner).context(outer.to_string())
+}
+
+#[test]
+fn retryable_connection_reset_capitalized() {
+    // The exact string emitted by reqwest when the peer RSTs a live
+    // SSE stream on macOS. Capital C — must match case-insensitively.
+    let e = chained(
+        "error reading SSE chunk",
+        "error decoding response body: request or response body error: \
+         error reading a body from connection: Connection reset by peer \
+         (os error 54)",
+    );
+    assert!(is_retryable_error(&e), "got non-retryable: {e:#}");
+}
+
+#[test]
+fn retryable_5xx_and_429() {
+    assert!(is_retryable_error(&err("api error (500): foo")));
+    assert!(is_retryable_error(&err("api error (502): foo")));
+    assert!(is_retryable_error(&err("api error (503): foo")));
+    assert!(is_retryable_error(&err("api error (504): foo")));
+    assert!(is_retryable_error(&err("api error (529): overloaded")));
+    assert!(is_retryable_error(&err("api error (429): rate limited")));
+}
+
+#[test]
+fn retryable_transport_shapes() {
+    assert!(is_retryable_error(&err("failed to connect to host")));
+    assert!(is_retryable_error(&err("operation timed out")));
+    assert!(is_retryable_error(&err("Broken pipe (os error 32)")));
+    assert!(is_retryable_error(&err("connection closed before message completed")));
+    assert!(is_retryable_error(&err("connection error: incomplete message")));
+    assert!(is_retryable_error(&err("unexpected EOF during chunk size line")));
+}
+
+#[test]
+fn not_retryable_4xx_client_errors() {
+    assert!(!is_retryable_error(&err("api error (400): bad request")));
+    assert!(!is_retryable_error(&err("api error (401): unauthorized")));
+    assert!(!is_retryable_error(&err("api error (403): forbidden")));
+    assert!(!is_retryable_error(&err("api error (404): not found")));
 }

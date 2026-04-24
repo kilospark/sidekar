@@ -1582,23 +1582,37 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
 /// is now `pub(crate)` rather than module-private.
 pub(crate) fn is_retryable_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}");
+    let lower = msg.to_ascii_lowercase();
     // 5xx server errors
-    if msg.contains("(500)")
-        || msg.contains("(502)")
-        || msg.contains("(503)")
-        || msg.contains("(504)")
-        || msg.contains("(529)")
+    if lower.contains("(500)")
+        || lower.contains("(502)")
+        || lower.contains("(503)")
+        || lower.contains("(504)")
+        || lower.contains("(529)")
     {
         return true;
     }
     // 429 rate limit
-    if msg.contains("(429)") {
+    if lower.contains("(429)") {
         return true;
     }
-    // Connection failures
-    if msg.contains("failed to connect")
-        || msg.contains("connection reset")
-        || msg.contains("timed out")
+    // Connection / transport failures. OS-level reset messages are
+    // capitalized ("Connection reset by peer (os error 54)") so we
+    // match case-insensitively. `error decoding response body` and
+    // `error reading a body from connection` are the hyper/reqwest
+    // shapes seen when the stream drops mid-flight.
+    if lower.contains("failed to connect")
+        || lower.contains("connection reset")
+        || lower.contains("connection closed")
+        || lower.contains("connection aborted")
+        || lower.contains("broken pipe")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("error decoding response body")
+        || lower.contains("error reading a body")
+        || lower.contains("error reading sse chunk")
+        || lower.contains("incomplete message")
+        || lower.contains("unexpected eof")
     {
         return true;
     }
