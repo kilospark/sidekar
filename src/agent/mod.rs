@@ -28,6 +28,33 @@ pub type StreamCallback = Box<dyn Fn(&StreamEvent) + Send>;
 #[derive(Debug)]
 pub struct Cancelled;
 
+/// Mid-stream error before any content was emitted to the caller.
+/// Signals that the stream opened successfully, got no TextDelta /
+/// ToolCallStart / Thinking, then failed with a retryable error.
+/// Safe to retry the whole turn because nothing has been rendered
+/// to the user and no partial history entry exists.
+///
+/// The inner `String` is the underlying error message — the caller
+/// (`run`) passes it through `is_retryable_error` to decide whether
+/// to actually retry.
+///
+/// Not retryable in this sense:
+///   - Errors AFTER content started flowing. The user has already
+///     seen partial output; re-streaming would double-render.
+///   - Auth errors (401/403). Handled by the existing auth-refresh
+///     branch in `Provider::stream`.
+///   - Non-retryable classes (4xx except 429, malformed response).
+///     Bubble up unchanged.
+#[derive(Debug)]
+pub struct MidStreamNoContent(pub String);
+
+impl std::fmt::Display for MidStreamNoContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mid-stream failure before any content: {}", self.0)
+    }
+}
+impl std::error::Error for MidStreamNoContent {}
+
 /// Run the agent loop: stream LLM response, execute tool calls, repeat.
 /// Returns `Ok(true)` if history was compacted during the loop.
 ///
@@ -113,52 +140,124 @@ pub async fn run(
         if !in_tool_loop {
             on_event(&StreamEvent::Connecting);
         }
-        // Stream LLM response — select against cancel so Esc works during connection.
-        let ws = cached_ws.take();
-        let stream_result = match cancel {
-            Some(c) => {
-                tokio::select! {
-                    _ = wait_for_cancel(c) => return Err(Cancelled.into()),
-                    result = provider.stream(model, system_prompt, &view, tool_defs, prompt_cache_key, prev_id_ref, ws) => result,
+
+        // Mid-stream retry loop. The provider layer (stream_once)
+        // already retries transient failures at the HTTP-open
+        // boundary — those fire before any StreamEvent::TextDelta /
+        // ThinkingDelta / ToolCallStart has crossed the channel.
+        //
+        // This loop catches the other half of the problem:
+        // connection-reset / incomplete-SSE failures that happen
+        // AFTER the stream opened but BEFORE any content flowed.
+        // `consume_stream` surfaces those as MidStreamNoContent;
+        // we retry the whole turn (open + consume) up to
+        // STREAM_CONTENT_RETRIES times before giving up.
+        //
+        // Retry budget mirrors the open-side retry (3 attempts).
+        // Backoff is exponential starting at 500ms. Uses the same
+        // is_retryable_error classifier as stream_once so the
+        // two layers agree on what "retryable" means.
+        //
+        // If content has already rendered to the user, the stream
+        // error propagates unchanged — re-streaming would double-
+        // render tokens and corrupt the session transcript.
+        const STREAM_CONTENT_RETRIES: u32 = 3;
+        let mut stream_attempt = 0u32;
+        let response = loop {
+            let ws = cached_ws.take();
+            let stream_result = match cancel {
+                Some(c) => {
+                    tokio::select! {
+                        _ = wait_for_cancel(c) => return Err(Cancelled.into()),
+                        result = provider.stream(model, system_prompt, &view, tool_defs, prompt_cache_key, prev_id_ref, ws) => result,
+                    }
+                }
+                None => {
+                    provider
+                        .stream(
+                            model,
+                            system_prompt,
+                            &view,
+                            tool_defs,
+                            prompt_cache_key,
+                            prev_id_ref,
+                            ws,
+                        )
+                        .await
+                }
+            };
+            let (mut rx, reclaim_rx_local) = match stream_result {
+                Ok(pair) => pair,
+                Err(e) => {
+                    on_event(&StreamEvent::Error {
+                        message: format!("{e:#}"),
+                    });
+                    set_error_displayed(true);
+                    return Err(e);
+                }
+            };
+
+            // Stream opened — transition from "connecting" to
+            // "waiting for response" until the first delta arrives.
+            on_event(&StreamEvent::Waiting);
+
+            match consume_stream(&mut rx, &on_event, cancel).await {
+                Ok(r) => {
+                    // Bind the outer reclaim_rx for the hop below.
+                    // The compiler's borrow checker forbids us
+                    // binding reclaim_rx to a Let outside the
+                    // loop because each iteration produces a fresh
+                    // one; we instead consume it right here and
+                    // stash the result into the outer cached_ws.
+                    *cached_ws = reclaim_rx_local.await.unwrap_or(None);
+                    break r;
+                }
+                Err(e) if e.is::<Cancelled>() => return Err(e),
+                Err(e) => {
+                    // If the error fired before any content
+                    // rendered AND is_retryable_error agrees, loop.
+                    // Otherwise propagate.
+                    let is_empty_midstream = e.is::<MidStreamNoContent>();
+                    let should_retry = is_empty_midstream
+                        && stream_attempt < STREAM_CONTENT_RETRIES
+                        && crate::providers::is_retryable_error(&e);
+                    if should_retry {
+                        stream_attempt += 1;
+                        let delay = std::time::Duration::from_millis(
+                            500 * 2u64.pow(stream_attempt - 1),
+                        );
+                        eprintln!(
+                            "\x1b[33m[mid-stream error before any content; \
+                             retrying {stream_attempt}/{STREAM_CONTENT_RETRIES} \
+                             in {:.1}s: {e:#}]\x1b[0m",
+                            delay.as_secs_f32()
+                        );
+                        crate::broker::try_log_error(
+                            "repl",
+                            &format!(
+                                "mid-stream retry ({stream_attempt}/{STREAM_CONTENT_RETRIES})"
+                            ),
+                            Some(&format!("{e:#}")),
+                        );
+                        // Discard the failed reclaim handle —
+                        // there's no live WS to reclaim, and
+                        // stream_once will open a fresh
+                        // connection next iteration. Dropping
+                        // here is explicit and intentional.
+                        drop(reclaim_rx_local);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(e);
                 }
             }
-            None => {
-                provider
-                    .stream(
-                        model,
-                        system_prompt,
-                        &view,
-                        tool_defs,
-                        prompt_cache_key,
-                        prev_id_ref,
-                        ws,
-                    )
-                    .await
-            }
-        };
-        let (mut rx, reclaim_rx) = match stream_result {
-            Ok(pair) => pair,
-            Err(e) => {
-                on_event(&StreamEvent::Error {
-                    message: format!("{e:#}"),
-                });
-                set_error_displayed(true);
-                return Err(e);
-            }
         };
 
-        // Stream opened — transition from "connecting" to "waiting for
-        // response" until the first delta arrives.
-        on_event(&StreamEvent::Waiting);
-
-        let response = match consume_stream(&mut rx, &on_event, cancel).await {
-            Ok(r) => r,
-            Err(e) if e.is::<Cancelled>() => return Err(e),
-            Err(e) => return Err(e),
-        };
-
-        // Reclaim WS connection for reuse on the next turn
-        *cached_ws = reclaim_rx.await.unwrap_or(None);
+        // WS reclaim already happened inside the mid-stream retry
+        // loop above on the success path (the `Ok(r) => {}` arm
+        // writes into *cached_ws before break'ing out). Keeping
+        // the log line here for the success case so the "[ws]
+        // reclaim result" trace is preserved.
         if crate::providers::is_verbose() {
             crate::tunnel::tunnel_println(&format!(
                 "\x1b[2m[ws] reclaim result: {}\x1b[0m",
@@ -269,6 +368,12 @@ async fn consume_stream(
 ) -> Result<AssistantResponse> {
     let mut final_response: Option<AssistantResponse> = None;
     let mut last_error: Option<String> = None;
+    // Track whether the model has emitted any user-visible content
+    // yet. A retry after content has flowed would double-render,
+    // so mid-stream failures past this point cannot be transparently
+    // retried. Events that count as content: TextDelta, Thinking,
+    // ToolCallStart. Connecting / Waiting / status events do not.
+    let mut emitted_content = false;
 
     loop {
         // Check cancel flag between events
@@ -302,6 +407,17 @@ async fn consume_stream(
                 last_error = Some(message.clone());
                 set_error_displayed(true);
             }
+            // Content events — after one of these we can't safely
+            // retry without re-emitting what the user already saw.
+            // Matches TextDelta (user-visible tokens), ThinkingDelta
+            // (extended thinking tokens, also rendered), and
+            // ToolCallStart (the first name/args bytes of a tool).
+            StreamEvent::TextDelta { .. }
+            | StreamEvent::ThinkingDelta { .. }
+            | StreamEvent::ToolCallStart { .. } => {
+                emitted_content = true;
+                on_event(&event);
+            }
             _ => {
                 on_event(&event);
             }
@@ -312,9 +428,25 @@ async fn consume_stream(
         Ok(response)
     } else if let Some(err) = last_error {
         crate::broker::try_log_error("repl", "LLM stream error", Some(&err));
+        // Before any content has been emitted, surface a typed
+        // error so the caller can retry the turn transparently.
+        // Past the first content event, retrying would double-
+        // render — propagate unchanged.
+        if !emitted_content {
+            return Err(MidStreamNoContent(err).into());
+        }
         bail!("LLM stream error: {}", err)
     } else {
         crate::broker::try_log_error("repl", "LLM stream ended without a response", None);
+        // Zero events arrived and no explicit error. Treat as a
+        // retryable mid-stream failure (empty stream is almost
+        // always a proxy or connection-reset edge case).
+        if !emitted_content {
+            return Err(MidStreamNoContent(
+                "stream ended without a response".to_string(),
+            )
+            .into());
+        }
         bail!("LLM stream ended without a response")
     }
 }
@@ -345,4 +477,199 @@ fn truncate_tool_output(output: &str, max_bytes: usize) -> String {
         output.len() - max_bytes,
         tail
     )
+}
+
+#[cfg(test)]
+mod consume_stream_tests {
+    //! Unit tests for the mid-stream retry boundary.
+    //!
+    //! `consume_stream` is the split point that decides whether a
+    //! turn can be safely retried: returning `MidStreamNoContent`
+    //! on an error that preceded any user-visible event; a plain
+    //! `anyhow::Error` otherwise (once tokens have rendered,
+    //! re-streaming would double-render).
+    //!
+    //! The retry wrapper itself lives inside `run`, which is hard
+    //! to unit-test (Provider + agent loop). These tests cover the
+    //! classifier that drives it, leaving the loop's control flow
+    //! to integration runs. Classifier correctness is the hard
+    //! part — a regression that emits MidStreamNoContent after
+    //! content has rendered would cause double-rendering in the
+    //! live REPL.
+
+    use super::*;
+    use crate::providers::AssistantResponse;
+    use tokio::sync::mpsc;
+
+    fn noop_callback() -> StreamCallback {
+        Box::new(|_: &StreamEvent| {})
+    }
+
+    async fn consume(events: Vec<StreamEvent>) -> Result<AssistantResponse> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        drop(tx);
+        let cb = noop_callback();
+        consume_stream(&mut rx, &cb, None).await
+    }
+
+    fn empty_response() -> AssistantResponse {
+        AssistantResponse {
+            content: vec![],
+            stop_reason: StopReason::Stop,
+            response_id: String::new(),
+            model: String::new(),
+            usage: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn error_before_content_returns_midstream_no_content() {
+        // Simulated flow: stream opened, no TextDelta arrived, the
+        // provider emitted an Error event (the SSE chunk read
+        // failure path). Must surface MidStreamNoContent so the
+        // retry wrapper can act.
+        let err = consume(vec![
+            StreamEvent::Waiting,
+            StreamEvent::Error {
+                message: "connection reset by peer".to_string(),
+            },
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            err.is::<MidStreamNoContent>(),
+            "expected MidStreamNoContent, got: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_after_text_delta_does_not_return_midstream_no_content() {
+        // Classifier invariant: once any TextDelta has crossed,
+        // the error path must NOT yield MidStreamNoContent —
+        // double-rendering protection.
+        let err = consume(vec![
+            StreamEvent::TextDelta {
+                delta: "partial ".to_string(),
+            },
+            StreamEvent::Error {
+                message: "connection reset by peer".to_string(),
+            },
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            !err.is::<MidStreamNoContent>(),
+            "expected plain error after content, got MidStreamNoContent"
+        );
+        // Original message still visible in the error chain.
+        let s = format!("{err:#}");
+        assert!(s.contains("connection reset by peer"), "got: {s}");
+    }
+
+    #[tokio::test]
+    async fn error_after_thinking_delta_does_not_retry() {
+        // Thinking tokens are user-visible on models with
+        // extended thinking — they render to the terminal. Same
+        // double-render rule applies.
+        let err = consume(vec![
+            StreamEvent::ThinkingDelta {
+                delta: "hm, let me ".to_string(),
+            },
+            StreamEvent::Error {
+                message: "eof".to_string(),
+            },
+        ])
+        .await
+        .unwrap_err();
+        assert!(!err.is::<MidStreamNoContent>(), "got: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn error_after_tool_call_start_does_not_retry() {
+        // ToolCallStart is the first moment a tool panel appears
+        // on screen. Retrying would re-show the panel and the
+        // model might re-issue different args.
+        let err = consume(vec![
+            StreamEvent::ToolCallStart {
+                index: 0,
+                id: "t-1".to_string(),
+                name: "Bash".to_string(),
+            },
+            StreamEvent::Error {
+                message: "eof".to_string(),
+            },
+        ])
+        .await
+        .unwrap_err();
+        assert!(!err.is::<MidStreamNoContent>(), "got: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn connecting_and_waiting_alone_do_not_count_as_content() {
+        // Spec: Connecting and Waiting are status events. A stream
+        // that only emits those before failing is still a zero-
+        // content failure and must be retryable.
+        let err = consume(vec![
+            StreamEvent::Connecting,
+            StreamEvent::Waiting,
+            StreamEvent::Error {
+                message: "timed out".to_string(),
+            },
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            err.is::<MidStreamNoContent>(),
+            "status-only prefix should not block retry: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_closed_without_events_is_midstream_no_content() {
+        // Provider task dropped the sender without ever firing
+        // Error or Done. This manifests as rx returning None on
+        // the first recv(). Should be retryable — it's almost
+        // always a transient connection drop at the transport
+        // layer that never made it to the SSE parser.
+        let err = consume(vec![]).await.unwrap_err();
+        assert!(err.is::<MidStreamNoContent>(), "got: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn done_event_returns_ok_regardless_of_prior_content() {
+        // Sanity: the success path is unchanged. Done yields the
+        // message, never an error.
+        let resp = consume(vec![
+            StreamEvent::TextDelta {
+                delta: "hello".to_string(),
+            },
+            StreamEvent::Done {
+                message: empty_response(),
+            },
+        ])
+        .await
+        .expect("done should produce Ok");
+        assert!(matches!(resp.stop_reason, StopReason::Stop));
+    }
+
+    #[tokio::test]
+    async fn midstream_no_content_message_survives_round_trip() {
+        // The inner String of MidStreamNoContent must carry the
+        // original provider error so is_retryable_error can
+        // classify it. If this round-trip ever breaks, the retry
+        // loop would silently become a blanket retry regardless
+        // of error class.
+        let err = consume(vec![StreamEvent::Error {
+            message: "(502) bad gateway".to_string(),
+        }])
+        .await
+        .unwrap_err();
+        let inner = err
+            .downcast_ref::<MidStreamNoContent>()
+            .expect("must be MidStreamNoContent");
+        assert_eq!(inner.0, "(502) bad gateway");
+    }
 }

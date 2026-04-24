@@ -1572,7 +1572,15 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
 }
 
 /// Check if an error is retryable (5xx, 429 rate limit, or connection failure).
-fn is_retryable_error(err: &anyhow::Error) -> bool {
+///
+/// Used by two retry layers:
+///   1. `stream_once` → `Provider::stream` — retries at the HTTP
+///      open boundary, before any SSE bytes flow.
+///   2. `agent::run` → mid-stream retry — retries when the stream
+///      opens but fails before any content renders to the user.
+/// Both layers must agree on what "retryable" means, hence this
+/// is now `pub(crate)` rather than module-private.
+pub(crate) fn is_retryable_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}");
     // 5xx server errors
     if msg.contains("(500)")
