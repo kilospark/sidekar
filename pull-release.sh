@@ -76,7 +76,7 @@ ls -lh "$DEST/"
 echo ""
 echo "=== Deploying to Vercel ==="
 cd "$DIR/www"
-vercel --prod
+npx vercel --prod
 
 echo ""
 echo "=== Done ==="
