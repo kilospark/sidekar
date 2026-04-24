@@ -446,20 +446,34 @@ Leaving rtk off is the right call for v1. Can revisit if users complain.
    distinction cleanly; we may need to reach into the raw pid with
    `nix::sys::signal::kill` for SIGTERM-then-SIGKILL).
 
-## Open questions
+## Resolved design decisions
 
-1. **Default `tty: true`?** Codex defaults to false. I argue true here:
-   the main use case is interactive REPLs and dev servers that behave
-   differently under a TTY (color, line-buffering). Models can opt out.
-2. **PTY size.** Codex uses 24x200. I'll start there. Could make it
-   configurable if a model complains about wrapped output.
-3. **Newline normalization.** PTY output arrives with `\r\n`. Some
-   sources say normalize to `\n` before returning to the model.
-   Codex does NOT normalize. Start without normalization; add if
-   output looks weird.
-4. **Persist sessions across `/new`.** Probably no — `/new` is a
-   conversation reset; keeping rogue `npm run dev`s running feels
-   wrong. `/new` should kill all sessions.
+1. **Default `tty: true`.** Codex defaults false; we default true.
+   Rationale: the main use case is interactive REPLs, dev servers,
+   and log-tailing — all of which break or appear hung under pipes
+   because of block-buffering. With a PTY, each `\n` flushes,
+   `tail -f` streams in real time, `python -i` accepts stdin,
+   progress bars work, and ctrl-C via `write_stdin` actually sends
+   SIGINT. Models can set `tty: false` when they want clean
+   pipe-only output for deterministic parsing (e.g. running a test
+   suite where ANSI codes would pollute the log).
+
+2. **`/new` kills all sessions.** `/new` is a conversation reset;
+   keeping orphaned dev servers running across a reset would be
+   surprising and port-conflicting. Wire into the existing `/new`
+   slash handler: call `ProcessManager::terminate_all()` before
+   clearing history.
+
+3. **No feature gate.** Ships on by default from first commit. Same
+   visibility as any other tool.
+
+## Still-open minor choices
+
+1. **PTY size.** 24x200 (matches codex). Could make it configurable
+   if a model complains about wrapped output. Leaving fixed for v1.
+2. **Newline normalization.** PTY output arrives with `\r\n`. Codex
+   does NOT normalize. Start without normalization; add if output
+   looks weird in practice.
 
 ## Testing plan
 
@@ -494,13 +508,10 @@ Integration tests (manual, in a test REPL session):
 ## Rollout
 
 1. Branch `unified-exec` (this doc, then impl).
-2. Feature-gate behind env `SIDEKAR_UNIFIED_EXEC=1` initially so the
-   tool definitions are absent by default. Allows incremental dogfood
-   without risk.
-3. Land on main as OFF-by-default. One week of dogfooding.
-4. Flip to ON-by-default. Bump to v3.1.0 (new tool surface is
-   minor-bump worthy).
-5. Remove the env flag after 2 versions.
+2. Land on main with the tool on by default. No env gate. Bump to
+   v3.1.0 (new tool surface is minor-bump worthy).
+3. Monitor in real use. If malfunctioning, fix forward on patch
+   releases.
 
 ## Estimated scope
 
