@@ -27,6 +27,6 @@ pub(crate) mod process;
 
 #[cfg(test)]
 pub(crate) use buffer::HeadTailBuffer;
-pub(crate) use manager::{ExecOutput, ProcessManager, SessionInfo, clamp_yield_ms};
+pub(crate) use manager::{ExecOutput, ProcessManager, SessionInfo};
 pub(crate) use manager::{DEFAULT_POLL_YIELD_MS, DEFAULT_SPAWN_YIELD_MS, DEFAULT_WRITE_YIELD_MS};
 pub(crate) use process::{SpawnOptions, UnifiedExecProcess, YieldResult};

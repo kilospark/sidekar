@@ -185,3 +185,213 @@ async fn bash_tool_stdin_is_null_not_inherited() {
         "expected empty output from cat </dev/null, got {s:?}"
     );
 }
+
+// -----------------------------------------------------------------
+// ExecSession dispatcher tests (M4)
+//
+// These validate the argument-shape parsing and action routing in
+// `exec_exec_session`. They use real subprocesses (cheap on unix)
+// but focus on the handler's behavior rather than re-testing
+// ProcessManager's internals (covered by manager.rs's suite).
+//
+// Notes:
+//   - The dispatcher uses a process-wide OnceLock-backed
+//     ProcessManager. Tests can interact with state from earlier
+//     tests, so each test spawns its own session and cleans up
+//     (via /kill) at the end.
+//   - gated on cfg(unix) just like the handler itself.
+// -----------------------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_session_spawn_fast_exit_returns_no_session_id() {
+    let raw = execute(
+        "ExecSession",
+        &json!({ "cmd": "echo hello; exit 0" }),
+        None,
+    )
+    .await
+    .expect("spawn ok");
+    // Result is JSON-encoded.
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).expect("valid json");
+    assert!(v.get("session_id").is_none(), "fast-exit should not return session_id");
+    assert_eq!(v["exit_code"], 0);
+    let output = v["output"].as_str().unwrap();
+    assert!(output.contains("hello"), "output must include echo; got: {output}");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_session_spawn_then_kill_round_trip() {
+    // Spawn a long-running session, verify session_id, then kill.
+    let raw = execute(
+        "ExecSession",
+        &json!({ "cmd": "sleep 60", "yield_time_ms": 300 }),
+        None,
+    )
+    .await
+    .expect("spawn ok");
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let sid = v["session_id"].as_i64().expect("session_id present");
+
+    // Kill via action.
+    let raw2 = execute(
+        "ExecSession",
+        &json!({ "session_id": sid, "action": "kill" }),
+        None,
+    )
+    .await
+    .expect("kill ok");
+    let v2: serde_json::Value = serde_json::from_str(&raw2).unwrap();
+    assert!(v2.get("session_id").is_none(), "kill must clear session_id");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_session_write_sends_stdin_and_polls() {
+    // Spawn `cat`, write a line, expect echo in response.
+    let raw = execute(
+        "ExecSession",
+        &json!({ "cmd": "cat", "yield_time_ms": 300 }),
+        None,
+    )
+    .await
+    .expect("spawn ok");
+    let sid = serde_json::from_str::<serde_json::Value>(&raw)
+        .unwrap()["session_id"]
+        .as_i64()
+        .expect("session_id present");
+
+    let raw2 = execute(
+        "ExecSession",
+        &json!({
+            "session_id": sid,
+            "action": "write",
+            "stdin": "echo_me\n",
+            "yield_time_ms": 500,
+        }),
+        None,
+    )
+    .await
+    .expect("write ok");
+    let v2: serde_json::Value = serde_json::from_str(&raw2).unwrap();
+    let out = v2["output"].as_str().unwrap();
+    assert!(out.contains("echo_me"), "cat should echo; got: {out}");
+
+    // EOF → cat exits.
+    let _ = execute(
+        "ExecSession",
+        &json!({
+            "session_id": sid,
+            "action": "write",
+            "stdin": "\u{0004}",
+            "yield_time_ms": 2000,
+        }),
+        None,
+    )
+    .await
+    .expect("eof ok");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_session_list_includes_live_session() {
+    // Spawn, list, find it, kill.
+    let raw = execute(
+        "ExecSession",
+        &json!({ "cmd": "sleep 60", "yield_time_ms": 300 }),
+        None,
+    )
+    .await
+    .unwrap();
+    let sid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+        ["session_id"]
+        .as_i64()
+        .unwrap();
+
+    let listed = execute("ExecSession", &json!({ "action": "list" }), None)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let arr = v["sessions"].as_array().expect("array");
+    let found = arr.iter().any(|s| s["session_id"].as_i64() == Some(sid));
+    assert!(found, "list must include our session");
+
+    let _ = execute(
+        "ExecSession",
+        &json!({ "session_id": sid, "action": "kill" }),
+        None,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_session_rejects_mutually_exclusive_cmd_and_session_id() {
+    let err = execute(
+        "ExecSession",
+        &json!({ "cmd": "echo hi", "session_id": 1 }),
+        None,
+    )
+    .await
+    .expect_err("conflict should error");
+    let s = format!("{err:#}");
+    assert!(
+        s.contains("mutually exclusive"),
+        "error should call out the conflict; got: {s}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_session_rejects_write_without_stdin() {
+    let err = execute(
+        "ExecSession",
+        &json!({ "session_id": 99999, "action": "write" }),
+        None,
+    )
+    .await
+    .expect_err("missing stdin should error");
+    assert!(format!("{err:#}").contains("stdin"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_session_rejects_unknown_action() {
+    let err = execute(
+        "ExecSession",
+        &json!({ "session_id": 1, "action": "bogus" }),
+        None,
+    )
+    .await
+    .expect_err("bad action should error");
+    let s = format!("{err:#}");
+    assert!(
+        s.contains("unknown action"),
+        "error should name the unknown action; got: {s}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_session_requires_cmd_or_session_id() {
+    let err = execute("ExecSession", &json!({}), None)
+        .await
+        .expect_err("empty args should error");
+    let s = format!("{err:#}");
+    assert!(s.contains("cmd") && s.contains("session_id"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_session_rejects_action_on_spawn() {
+    let err = execute(
+        "ExecSession",
+        &json!({ "cmd": "echo hi", "action": "poll" }),
+        None,
+    )
+    .await
+    .expect_err("action with cmd should error");
+    assert!(format!("{err:#}").contains("'action'"));
+}

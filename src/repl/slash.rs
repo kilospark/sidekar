@@ -61,13 +61,32 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
 
     let result = match cmd {
         "/quit" | "/exit" | "/q" => SlashResult::Quit,
-        "/new" | "/reset" => match session::create_session(cwd, model, cred_name) {
-            Ok(id) => SlashResult::SwitchSession(id),
-            Err(e) => {
-                broker::try_log_error("session", &format!("failed to create: {e}"), None);
-                SlashResult::Continue
+        "/new" | "/reset" => {
+            // Terminate any live ExecSession processes before
+            // switching conversations. The design doc
+            // (context/unified-exec.md §Resolved design decisions)
+            // spells this out: /new is a conversation reset, and
+            // keeping a rogue `npm run dev` or similar alive
+            // across resets would port-conflict and be surprising.
+            //
+            // Best-effort: terminate_all signals every session and
+            // clears the registry; we don't wait for reapers to
+            // finish (the reader threads wind down on their own).
+            #[cfg(unix)]
+            {
+                let mgr = crate::agent::tools::exec_session_manager().clone();
+                tokio::spawn(async move {
+                    mgr.terminate_all().await;
+                });
             }
-        },
+            match session::create_session(cwd, model, cred_name) {
+                Ok(id) => SlashResult::SwitchSession(id),
+                Err(e) => {
+                    broker::try_log_error("session", &format!("failed to create: {e}"), None);
+                    SlashResult::Continue
+                }
+            }
+        }
         "/session" => {
             // Fetch 20 rows annotated with message counts. We ask for
             // "only non-empty" so a directory with many abandoned

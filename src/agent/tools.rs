@@ -257,6 +257,64 @@ default — refine the pattern or narrow the scope if you need more."
                 "required": ["args"]
             }),
         },
+        #[cfg(unix)]
+        ToolDef {
+            name: "ExecSession".into(),
+            // One tool, four actions. Single entry keeps the
+            // per-turn token tax small; the action discriminator
+            // is spelled out in the `action` enum so the model
+            // can see every mode. See context/unified-exec.md.
+            description: "Long-running PTY-backed shell session for commands that \
+outlive a single tool call: dev servers (npm run dev, cargo watch), interactive \
+REPLs (python -i, psql), log tailing (tail -f), and anything TTY-needing. \
+Four usage shapes:\n\
+- Spawn: pass `cmd`. Returns `session_id` if still running after `yield_time_ms`.\n\
+- Poll: pass `session_id` (action defaults to \"poll\"). Reads any new output since the last call.\n\
+- Write: pass `session_id`, `action:\"write\"`, and `stdin` bytes. Sends input then polls.\n\
+- Kill: pass `session_id` and `action:\"kill\"`.\n\
+- List: pass `action:\"list\"` to enumerate all live sessions.\n\
+Prefer Bash for simple commands that complete quickly; reach for ExecSession \
+only when you need to keep a process alive across turns."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cmd": {
+                        "type": "string",
+                        "description": "Shell command to spawn. Starts a new session. Mutually exclusive with session_id."
+                    },
+                    "session_id": {
+                        "type": "integer",
+                        "description": "Existing session id from a prior spawn. Mutually exclusive with cmd."
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["poll", "write", "kill", "list"],
+                        "description": "Action on an existing session. 'poll' (default) reads new output. 'write' sends stdin (requires 'stdin'). 'kill' terminates. 'list' ignores session_id and returns all live sessions."
+                    },
+                    "stdin": {
+                        "type": "string",
+                        "description": "Bytes to send to an existing session's stdin. Used only with action='write'. Include '\\n' for a full line; send '\\u0003' for ctrl-C, '\\u0004' for EOF."
+                    },
+                    "workdir": {
+                        "type": "string",
+                        "description": "Working directory for a new session. Defaults to REPL cwd."
+                    },
+                    "shell": {
+                        "type": "string",
+                        "description": "Shell binary for a new session. Defaults to $SHELL then /bin/bash."
+                    },
+                    "tty": {
+                        "type": "boolean",
+                        "description": "Allocate a PTY (default true). Set false for pipe-only output with TERM=dumb; disables stdin."
+                    },
+                    "yield_time_ms": {
+                        "type": "integer",
+                        "description": "How long to wait for output before returning. Defaults: 10000 spawn, 250 write, 5000 poll. Clamped to 250-30000."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -276,8 +334,34 @@ pub async fn execute(
         "Glob" | "glob" => exec_glob(arguments),
         "Grep" | "grep" => exec_grep(arguments),
         "Sidekar" | "sidekar" => exec_sidekar(arguments, cancel).await,
+        #[cfg(unix)]
+        "ExecSession" | "exec_session" => exec_exec_session(arguments, cancel).await,
         _ => bail!("Unknown tool: {name}"),
     }
+}
+
+/// Get (or lazily initialize) the process-wide `ProcessManager`.
+///
+/// Using a `OnceLock`-backed global is the same pattern the rest of
+/// this file uses (`DESCRIPTION`, `RULES`), and matches how sidekar
+/// scopes other singleton-per-REPL state. Means:
+///
+///   - `tools::execute` keeps its existing signature. No ripple
+///     through `agent::run` and the REPL call site.
+///   - One manager is shared across all sessions in one process,
+///     which is what we want — sidekar REPLs are single-user and
+///     single-process.
+///   - `/new` and Drop can reach the manager via the same accessor
+///     (see repl.rs integration below).
+///
+/// Not `#[cfg(unix)]` on the function itself because the only caller
+/// is already gated; the `unified_exec` module is unix-only.
+#[cfg(unix)]
+pub fn exec_session_manager() -> &'static crate::agent::unified_exec::ProcessManager {
+    use crate::agent::unified_exec::ProcessManager;
+    use std::sync::OnceLock;
+    static MANAGER: OnceLock<ProcessManager> = OnceLock::new();
+    MANAGER.get_or_init(ProcessManager::new)
 }
 
 async fn exec_bash(
@@ -827,6 +911,205 @@ enum CancellableError {
     Timeout,
     Spawn(anyhow::Error),
     Io(anyhow::Error),
+}
+
+// -----------------------------------------------------------------
+// ExecSession dispatcher
+// -----------------------------------------------------------------
+//
+// The single `ExecSession` tool multiplexes five use cases behind an
+// action discriminator. This handler:
+//
+//   1. Parses and validates the argument shape (see §Input schema in
+//      context/unified-exec.md for the matrix).
+//   2. Dispatches to the appropriate ProcessManager method.
+//   3. Formats the result as a JSON string the model can consume.
+//
+// Validation rules enforced here (NOT at the JSON-schema level
+// because JSON schema's conditional requirements are awkward):
+//
+//   - `cmd` + `session_id` is an error (mutually exclusive).
+//   - `cmd` present → action must be absent.
+//   - `action: "list"` → session_id + cmd + stdin ignored.
+//   - `action: "write"` → session_id required, stdin required.
+//   - `action: "kill"` → session_id required.
+//   - `action: "poll"` (or omitted) on existing session →
+//     session_id required.
+//
+// Error messages quote the invalid shape and point at what the model
+// should have sent, so wasted turns are minimized.
+
+#[cfg(unix)]
+async fn exec_exec_session(
+    args: &Value,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<String> {
+    use crate::agent::unified_exec::{
+        DEFAULT_POLL_YIELD_MS, DEFAULT_SPAWN_YIELD_MS, DEFAULT_WRITE_YIELD_MS, SpawnOptions,
+    };
+
+    let cmd = args.get("cmd").and_then(|v| v.as_str());
+    let session_id = args.get("session_id").and_then(|v| v.as_i64()).map(|n| n as i32);
+    let action = args.get("action").and_then(|v| v.as_str());
+    let stdin = args.get("stdin").and_then(|v| v.as_str());
+    let workdir = args
+        .get("workdir")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+    let shell = args.get("shell").and_then(|v| v.as_str()).map(String::from);
+    let tty = args.get("tty").and_then(|v| v.as_bool()).unwrap_or(true);
+    let yield_ms = args.get("yield_time_ms").and_then(|v| v.as_u64());
+
+    let mgr = exec_session_manager();
+
+    // ---------- Validation + dispatch -----------------------------
+
+    // `action: "list"` is parameter-less. Check first so other
+    // validation doesn't spuriously fire on e.g. a list with an
+    // extra session_id.
+    if action == Some("list") {
+        let sessions = mgr.list().await;
+        return Ok(render_list(&sessions));
+    }
+
+    if let Some(c) = cmd {
+        // Spawn path.
+        if session_id.is_some() {
+            bail!(
+                "ExecSession: 'cmd' and 'session_id' are mutually exclusive. Pass 'cmd' to spawn, OR 'session_id' to interact with an existing session."
+            );
+        }
+        if action.is_some() {
+            bail!(
+                "ExecSession: 'action' should not be set when spawning via 'cmd'. It is for existing sessions only."
+            );
+        }
+        if stdin.is_some() {
+            bail!(
+                "ExecSession: 'stdin' is ignored on spawn. Spawn returns a session_id; then call again with action='write' and 'stdin' to send input."
+            );
+        }
+        let opts = SpawnOptions {
+            cmd: c.to_string(),
+            shell,
+            workdir,
+            tty,
+        };
+        let y = yield_ms.unwrap_or(DEFAULT_SPAWN_YIELD_MS);
+        let out = mgr
+            .spawn(opts, y, cancel)
+            .await
+            .map_err(|e| propagate_cancel(e))?;
+        return Ok(render_exec_output(&out));
+    }
+
+    // Existing-session path. session_id is required from here down.
+    let sid = session_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "ExecSession: either 'cmd' (to spawn) or 'session_id' (to interact) is required."
+        )
+    })?;
+
+    let act = action.unwrap_or("poll");
+    match act {
+        "poll" => {
+            if stdin.is_some() {
+                bail!(
+                    "ExecSession: 'stdin' requires action='write'. For action='poll' send no stdin."
+                );
+            }
+            let y = yield_ms.unwrap_or(DEFAULT_POLL_YIELD_MS);
+            let out = mgr
+                .write_stdin(sid, b"", y, cancel)
+                .await
+                .map_err(|e| propagate_cancel(e))?;
+            Ok(render_exec_output(&out))
+        }
+        "write" => {
+            let input = stdin.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ExecSession: action='write' requires 'stdin' to be set (the bytes to send)."
+                )
+            })?;
+            let y = yield_ms.unwrap_or(DEFAULT_WRITE_YIELD_MS);
+            let out = mgr
+                .write_stdin(sid, input.as_bytes(), y, cancel)
+                .await
+                .map_err(|e| propagate_cancel(e))?;
+            Ok(render_exec_output(&out))
+        }
+        "kill" => {
+            if stdin.is_some() {
+                bail!("ExecSession: 'stdin' has no effect with action='kill'.");
+            }
+            let out = mgr.kill(sid).await?;
+            Ok(render_exec_output(&out))
+        }
+        other => bail!(
+            "ExecSession: unknown action '{other}'. Valid: poll, write, kill, list."
+        ),
+    }
+}
+
+/// Map cancelled errors from the ProcessManager to the agent's
+/// canonical Cancelled error so the REPL renders a cancellation
+/// message rather than a generic failure.
+#[cfg(unix)]
+fn propagate_cancel(e: anyhow::Error) -> anyhow::Error {
+    if format!("{e:#}").contains("cancelled") {
+        super::Cancelled.into()
+    } else {
+        e
+    }
+}
+
+/// Format an [`ExecOutput`] as the JSON shape the schema documents.
+/// Produced as a string (not a serde_json::Value) because tool
+/// results travel back to the model as strings already.
+#[cfg(unix)]
+fn render_exec_output(out: &crate::agent::unified_exec::ExecOutput) -> String {
+    let mut obj = serde_json::Map::new();
+    // UTF-8 lossy: the model consumes output as text. Binary output
+    // from exec sessions is rare enough that lossy decoding is the
+    // right default.
+    let text = String::from_utf8_lossy(&out.output).into_owned();
+    obj.insert("output".into(), Value::String(text));
+    obj.insert(
+        "wall_time_seconds".into(),
+        Value::Number(
+            serde_json::Number::from_f64(out.wall_time_ms as f64 / 1000.0)
+                .unwrap_or_else(|| serde_json::Number::from(0)),
+        ),
+    );
+    if let Some(sid) = out.session_id {
+        obj.insert("session_id".into(), Value::Number(sid.into()));
+    }
+    if let Some(code) = out.exit_code {
+        obj.insert("exit_code".into(), Value::Number(code.into()));
+    }
+    if let Some(sig) = &out.signal {
+        obj.insert("signal".into(), Value::String(sig.clone()));
+    }
+    Value::Object(obj).to_string()
+}
+
+/// Format a list-sessions result.
+#[cfg(unix)]
+fn render_list(sessions: &[crate::agent::unified_exec::SessionInfo]) -> String {
+    let arr: Vec<Value> = sessions
+        .iter()
+        .map(|s| {
+            json!({
+                "session_id": s.session_id,
+                "command": s.command,
+                "started_at_unix": s.started_at_unix,
+                "age_seconds": s.age_seconds,
+                "buffer_bytes": s.buffer_bytes,
+                "alive": s.alive,
+            })
+        })
+        .collect();
+    json!({ "sessions": arr }).to_string()
 }
 
 #[cfg(test)]
