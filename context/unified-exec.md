@@ -58,13 +58,22 @@ substrate.
 
 ## Model-facing interface
 
-Two new tools. Both live alongside `Bash` — the model picks based on
-whether it needs a persistent session.
+**One** new tool, `ExecSession`. Tool defs are re-serialized into every
+request; four tools × ~80 tokens/schema = ~320 tokens of fixed overhead
+per turn. A single union-shaped tool is ~130 tokens. For a feature that
+will be used in a minority of sessions, the per-turn tax has to be small
+enough that non-users don't notice.
 
-### Tool 1: `ExecSession`
+Prior draft had four separate tools (`ExecSession`, `WriteStdin`,
+`KillSession`, `ListSessions`). Collapsed to one with an action
+discriminator. Dispatch is internal to the handler.
 
-Spawn a command in a PTY and return after `yield_time_ms` whether or not
-the command finished.
+### Tool: `ExecSession`
+
+Long-running PTY-backed shell session. Either spawns a new session
+(when `cmd` is present) or operates on an existing one (when
+`session_id` is present). Actions on an existing session are selected
+via `action`.
 
 **Input schema:**
 ```json
@@ -73,34 +82,60 @@ the command finished.
   "properties": {
     "cmd": {
       "type": "string",
-      "description": "Shell command to execute."
+      "description": "Shell command to spawn in a new PTY session. Mutually exclusive with session_id."
+    },
+    "session_id": {
+      "type": "integer",
+      "description": "Existing session id returned by a prior ExecSession call. Mutually exclusive with cmd."
+    },
+    "action": {
+      "type": "string",
+      "enum": ["poll", "write", "kill", "list"],
+      "description": "Action on an existing session. 'poll' (default) reads new output. 'write' sends stdin (requires 'stdin'). 'kill' terminates. 'list' ignores session_id and returns all live sessions."
+    },
+    "stdin": {
+      "type": "string",
+      "description": "Bytes to send to an existing session's stdin. Used only when action='write'."
     },
     "workdir": {
       "type": "string",
-      "description": "Working directory. Defaults to the REPL's cwd."
+      "description": "Working directory for a new session. Ignored on existing sessions."
     },
     "shell": {
       "type": "string",
-      "description": "Shell binary. Defaults to $SHELL, else /bin/bash."
+      "description": "Shell binary for a new session. Defaults to $SHELL, else /bin/bash."
     },
     "tty": {
       "type": "boolean",
-      "description": "Allocate a PTY. Default true. Set false for pipe-only output."
+      "description": "Allocate a PTY. Default true. Set false for pipe-only output (no terminal colors, line-buffered)."
     },
     "yield_time_ms": {
       "type": "integer",
-      "description": "How long to wait for output before yielding control back. Default 10000. Range 250-30000."
+      "description": "How long to wait for output before returning control. Defaults: 10000 when spawning, 250 for write, 5000 for poll. Range 250-30000."
     },
     "max_output_tokens": {
       "type": "integer",
       "description": "Cap on returned output in tokens. Default 10000. Excess is head-tail truncated."
     }
-  },
-  "required": ["cmd"]
+  }
 }
 ```
 
-**Output shape** (returned as a JSON-encoded string in the tool result):
+No `required` fields at schema level. Validation happens in the handler:
+
+1. If `action == "list"` → everything else ignored.
+2. Else if `cmd` present → spawn. `session_id`, `stdin`, `action` must
+   not be set (error if they are).
+3. Else `session_id` must be present. Branch on `action`:
+   - `"poll"` or omitted → read-only poll.
+   - `"write"` → `stdin` must be present; write then yield.
+   - `"kill"` → terminate. `stdin` ignored.
+4. Any other combination → clear error message pointing to the
+   expected shapes.
+
+**Output shape** (JSON-encoded string in the tool result):
+
+For spawn / poll / write:
 ```json
 {
   "output": "<bytes captured during this call>",
@@ -110,73 +145,15 @@ the command finished.
   "original_token_count": 3421
 }
 ```
+- `session_id` present iff the process is still alive.
+- `exit_code` present iff the process finished during this call.
 
-- `session_id` is present iff the process is still alive. The model must
-  include it in subsequent `WriteStdin` calls.
-- `exit_code` is present iff the process finished during this call (the
-  mutually-exclusive case).
-- If the command completes before `yield_time_ms`, it returns immediately
-  with no `session_id`.
-
-### Tool 2: `WriteStdin`
-
-Send input to a live session and/or poll for more output.
-
-**Input schema:**
+For `action: "kill"`:
 ```json
-{
-  "type": "object",
-  "properties": {
-    "session_id": {
-      "type": "integer",
-      "description": "Session id returned by ExecSession."
-    },
-    "chars": {
-      "type": "string",
-      "description": "Bytes to send to stdin. Empty string means just poll."
-    },
-    "yield_time_ms": {
-      "type": "integer",
-      "description": "How long to wait for output before yielding. Default 250 for non-empty input, 5000 for empty (poll). Range 250-30000."
-    },
-    "max_output_tokens": {
-      "type": "integer",
-      "description": "Cap on returned output. Default 10000."
-    }
-  },
-  "required": ["session_id"]
-}
+{ "killed": true, "exit_code": -15 }
 ```
 
-**Output shape:** same as `ExecSession`, minus the need to return
-`session_id` when the process just exited (caller already has it).
-
-### Tool 3: `KillSession`
-
-Kill a session cleanly (SIGTERM then SIGKILL after 500ms).
-
-**Input schema:**
-```json
-{
-  "type": "object",
-  "properties": {
-    "session_id": { "type": "integer" }
-  },
-  "required": ["session_id"]
-}
-```
-
-**Output:** `{ "killed": true, "exit_code": -15 }` or an error if the
-session id is unknown (already reaped).
-
-### Tool 4: `ListSessions`
-
-Enumerate live sessions so the model can recover after a forgotten id.
-Cheap, always safe.
-
-**Input schema:** `{}`
-
-**Output:**
+For `action: "list"`:
 ```json
 {
   "sessions": [
@@ -192,14 +169,27 @@ Cheap, always safe.
 }
 ```
 
-## Why four tools, not one
+### Usage telemetry
 
-Codex bundles kill into session teardown via the PTY dropping naturally
-and ids expiring. Claude Code keeps them separate. Separate is clearer
-for the model — it can see exactly what actions exist. Cost is trivial
-(four schemas instead of one). `ListSessions` is an insurance policy
-against the model losing a session id mid-turn; without it, a live
-process would be unreachable.
+Handler increments `ProcessManager::usage_count` on every call. Logged
+on REPL exit: "ExecSession used N times across M sessions." If after
+one week of dogfooding we see <5% of REPL sessions use it at all, we
+rip it out rather than carry the token tax for every user.
+
+### Why not fold into `Bash`
+
+Considered: add `session_id`, `stdin`, `action` optional fields to
+`Bash`. Rejected:
+
+1. `Bash`'s description is currently ~80 tokens and appears in every
+   single turn. Adding session semantics inflates it to ~200 tokens
+   whether or not sessions are used. That's a permanent tax on the
+   95%+ of turns that use plain sync Bash.
+2. Risk of model confusion — it might use session mode when sync
+   mode would be faster and cleaner, because the schema invites it.
+3. Separation of concerns: `Bash` is "run and wait"; `ExecSession`
+   is "spawn and coexist." Different mental models deserve
+   different tools.
 
 ## Internal architecture
 
@@ -383,26 +373,24 @@ grace, then SIGKILL). Reader tasks see `shutdown=true` and exit.
 
 ### `src/agent/tools.rs`
 
-Add three entries to `definitions()` after `Bash`:
-1. `ExecSession` — description explains: "Use this for long-running
-   commands (dev servers, REPLs, interactive tools) you want to come
-   back to. Returns a session_id if the command is still running after
-   yield_time_ms. Use WriteStdin to send input or poll, KillSession to
-   terminate."
-2. `WriteStdin`
-3. `KillSession`
-4. `ListSessions`
+Add a single entry to `definitions()` after `Bash`:
+`ExecSession` — description explains: "Spawn a long-running command
+in a PTY session (dev servers, REPLs, interactive tools). Returns a
+session_id if the command is still running after yield_time_ms. Call
+with session_id + action='poll' to read new output, action='write'
++ stdin to send input, action='kill' to terminate, or action='list'
+to enumerate live sessions."
 
-Add matches to `execute()`:
+Add one match to `execute()`:
 ```rust
-"ExecSession" | "exec_session" => exec_exec_session(arguments, ctx).await,
-"WriteStdin" | "write_stdin" => exec_write_stdin(arguments, ctx).await,
-"KillSession" | "kill_session" => exec_kill_session(arguments, ctx).await,
-"ListSessions" | "list_sessions" => exec_list_sessions(ctx).await,
+"ExecSession" | "exec_session" => exec_exec_session(arguments, ctx, cancel).await,
 ```
 
+The handler dispatches internally based on which fields are present.
+See the action matrix in the "Input schema" section.
+
 **Plumbing note:** the current `execute()` takes `(name, arguments,
-cancel)`. The new tools need access to the `ProcessManager`. Option A:
+cancel)`. The new tool needs access to the `ProcessManager`. Option A:
 add a `ctx: &AppContext` parameter to `execute` (ripples through the
 call site in `src/agent/mod.rs`). Option B: put `ProcessManager` in a
 process-global `OnceLock`.
@@ -412,18 +400,19 @@ process-global `OnceLock`.
 ### Cancellation (`Cancelled` / Esc)
 
 When the user presses Esc mid-turn, the existing `cancel` AtomicBool
-fires. For `ExecSession` / `WriteStdin` that are currently yielding:
+fires. For `ExecSession` calls currently yielding (spawn, poll, or
+write):
 
 - The yield loop checks `cancel` on every wake. If set, returns
   `Cancelled` **without killing the process**. The session remains
   alive with its id intact. The model sees the tool call cancelled but
-  the process is still listed in `ListSessions`.
+  the process is still listed via `action: "list"`.
 
 Why not kill on Esc? Esc cancels the **turn**, not the process. If the
 user asked the agent to start `npm run dev` and then pressed Esc
 because they wanted to ask a different question, killing the dev server
 would be surprising. The model can kill it explicitly with
-`KillSession`.
+`action: "kill"`.
 
 ### Output capture and rtk compaction
 
@@ -496,10 +485,10 @@ Unit tests (in `src/agent/unified_exec/tests.rs`):
 
 Integration tests (manual, in a test REPL session):
 - `ExecSession { cmd: "python -i" }` → session_id.
-- `WriteStdin { session_id, chars: "print(2+2)\n" }` → sees "4".
+- `ExecSession { session_id, action: "write", stdin: "print(2+2)\n" }` → sees "4".
 - `ExecSession { cmd: "npm run dev", workdir: "/some/node/proj" }` →
-  session_id, agent polls with empty chars + 5s yield to see requests.
-- `ListSessions` during active development → all live processes.
+  session_id, agent polls with `action: "poll"` + 5s yield to see requests.
+- `ExecSession { action: "list" }` during active development → all live processes.
 - `/new` → all sessions killed.
 
 ## Rollout
@@ -517,7 +506,7 @@ Integration tests (manual, in a test REPL session):
 
 - `src/agent/unified_exec/` module: ~1400 LOC implementation + ~600
   LOC tests.
-- `src/agent/tools.rs` changes: +250 LOC (schemas, dispatchers,
+- `src/agent/tools.rs` changes: +180 LOC (schema, dispatcher,
   JSON-shape marshaling).
 - `AppContext` plumbing + `/new` integration: ~50 LOC.
 - `Cargo.toml`: +1 dep (`portable-pty`).
@@ -531,7 +520,7 @@ Two focused days of work. Realistically three with polish + doc.
    Validates PTY plumbing. (½ day)
 2. **M2** — Yield semantics + Notify wiring. (½ day)
 3. **M3** — ProcessManager + store + id allocation + kill + list. (½ day)
-4. **M4** — Tool schemas + dispatcher + AppContext plumbing. (½ day)
+4. **M4** — Tool schema + dispatcher + AppContext plumbing. (½ day)
 5. **M5** — Tests + dogfood + docs. (1 day)
 
 Each milestone is a commit. No big-bang.
