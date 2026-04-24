@@ -621,6 +621,32 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // Memory import log — tracks files seen by `sidekar memory import` so
+    // subsequent runs can skip unchanged files. Identity is
+    // (source_kind, file_path). `content_hash` is a sha256 of the file
+    // bytes (or normalized content for SQLite sources); if it matches
+    // the last-seen value, the importer short-circuits. `batch_id`
+    // groups a single invocation so the user can later audit or undo.
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS memory_import_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_kind TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            batch_id TEXT NOT NULL,
+            events_created INTEGER NOT NULL DEFAULT 0,
+            events_deduped INTEGER NOT NULL DEFAULT 0,
+            imported_at INTEGER NOT NULL,
+            UNIQUE(source_kind, file_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_import_log_batch
+            ON memory_import_log(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_memory_import_log_imported
+            ON memory_import_log(imported_at);
+        ",
+    )?;
+
     // Proxy payload log
     conn.execute_batch(
         "

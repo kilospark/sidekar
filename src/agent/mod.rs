@@ -2,6 +2,8 @@ pub mod compaction;
 pub mod context;
 pub mod images;
 pub mod tools;
+#[cfg(unix)]
+pub mod unified_exec;
 
 use anyhow::{Result, bail};
 use tokio::sync::mpsc;

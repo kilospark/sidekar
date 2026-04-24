@@ -1,0 +1,537 @@
+# Unified Exec: Long-Running Shell Sessions for the Agent
+
+Status: draft spec, pre-implementation. Branch: `unified-exec`.
+
+Owner: sidekar REPL agent.
+
+---
+
+## Problem
+
+Today the `Bash` tool is strictly synchronous: spawn, wait with a timeout
+(120s default, 600s max), return combined stdout+stderr. This forces every
+shell interaction to complete within a single tool call. Anything longer is
+either impossible or requires ugly workarounds:
+
+1. **Dev servers** (`npm run dev`, `cargo watch`, `flask run`, `vite`) —
+   the agent cannot start one and leave it running for subsequent turns.
+2. **Interactive REPLs** (`python -i`, `node`, `psql`, `irb`) — the agent
+   cannot spawn one, send a statement, read the result, send another.
+3. **Long-running builds/tests** beyond 10 minutes — killed by timeout
+   even if they would succeed.
+4. **Log tailing** (`tail -f`, `kubectl logs -f`) — cannot poll then
+   terminate.
+5. **SSH sessions, tmux attach, vim, less** — need a real TTY; `Bash`
+   pipes stdio.
+
+The agent cannot escape with `cmd &` because the subprocess holds
+stdout/stderr pipes open until it exits, and `wait_with_output` blocks on
+pipe close. Users can coax the model into `cmd >/dev/null 2>&1 &` which
+does detach, but then output is lost and there is no way to poll, kill, or
+check on the process. That is not a first-class feature; it is a hack that
+also bypasses the agent's existing process-group cleanup.
+
+## Non-goals
+
+- Replacing the existing `Bash` tool. It stays. It is the right abstraction
+  for short, self-contained commands (the 90% case).
+- Sandboxing / approval gates. Codex's `unified_exec` has them; sidekar
+  does not have that layer today and adding it is out of scope.
+- Cross-session process persistence. If the REPL exits, all sessions
+  die. No "reattach to the process from yesterday."
+- Windows. Initial implementation is unix-only (`portable-pty` supports
+  Windows, but PTY semantics on Windows diverge enough that it warrants
+  a follow-up).
+
+## Design inspiration
+
+Codex's `unified_exec` tool pair (`~/src/oss/codex/codex-rs/core/src/unified_exec/`
+plus `core/src/tools/handlers/unified_exec.rs`, `tools/src/local_tool.rs`).
+~3.2k LOC of production code we are studying, not copying verbatim.
+
+**Not** Claude Code's model. Claude Code exposes `run_in_background: true`
+on the regular Bash tool plus `BashOutput` and `KillBash` companions. That
+is simpler (~200 LOC) but uses pipes not PTY, so interactive REPLs,
+curses UIs, and anything TTY-needing do not work. For a coding agent that
+wants to run `python -i` or `vim` or a dev server, PTY is the right
+substrate.
+
+## Model-facing interface
+
+**One** new tool, `ExecSession`. Tool defs are re-serialized into every
+request; four tools × ~80 tokens/schema = ~320 tokens of fixed overhead
+per turn. A single union-shaped tool is ~130 tokens. For a feature that
+will be used in a minority of sessions, the per-turn tax has to be small
+enough that non-users don't notice.
+
+Prior draft had four separate tools (`ExecSession`, `WriteStdin`,
+`KillSession`, `ListSessions`). Collapsed to one with an action
+discriminator. Dispatch is internal to the handler.
+
+### Tool: `ExecSession`
+
+Long-running PTY-backed shell session. Either spawns a new session
+(when `cmd` is present) or operates on an existing one (when
+`session_id` is present). Actions on an existing session are selected
+via `action`.
+
+**Input schema:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "cmd": {
+      "type": "string",
+      "description": "Shell command to spawn in a new PTY session. Mutually exclusive with session_id."
+    },
+    "session_id": {
+      "type": "integer",
+      "description": "Existing session id returned by a prior ExecSession call. Mutually exclusive with cmd."
+    },
+    "action": {
+      "type": "string",
+      "enum": ["poll", "write", "kill", "list"],
+      "description": "Action on an existing session. 'poll' (default) reads new output. 'write' sends stdin (requires 'stdin'). 'kill' terminates. 'list' ignores session_id and returns all live sessions."
+    },
+    "stdin": {
+      "type": "string",
+      "description": "Bytes to send to an existing session's stdin. Used only when action='write'."
+    },
+    "workdir": {
+      "type": "string",
+      "description": "Working directory for a new session. Ignored on existing sessions."
+    },
+    "shell": {
+      "type": "string",
+      "description": "Shell binary for a new session. Defaults to $SHELL, else /bin/bash."
+    },
+    "tty": {
+      "type": "boolean",
+      "description": "Allocate a PTY. Default true. Set false for pipe-only output (no terminal colors, line-buffered)."
+    },
+    "yield_time_ms": {
+      "type": "integer",
+      "description": "How long to wait for output before returning control. Defaults: 10000 when spawning, 250 for write, 5000 for poll. Range 250-30000."
+    },
+    "max_output_tokens": {
+      "type": "integer",
+      "description": "Cap on returned output in tokens. Default 10000. Excess is head-tail truncated."
+    }
+  }
+}
+```
+
+No `required` fields at schema level. Validation happens in the handler:
+
+1. If `action == "list"` → everything else ignored.
+2. Else if `cmd` present → spawn. `session_id`, `stdin`, `action` must
+   not be set (error if they are).
+3. Else `session_id` must be present. Branch on `action`:
+   - `"poll"` or omitted → read-only poll.
+   - `"write"` → `stdin` must be present; write then yield.
+   - `"kill"` → terminate. `stdin` ignored.
+4. Any other combination → clear error message pointing to the
+   expected shapes.
+
+**Output shape** (JSON-encoded string in the tool result):
+
+For spawn / poll / write:
+```json
+{
+  "output": "<bytes captured during this call>",
+  "wall_time_seconds": 10.0,
+  "session_id": 42,
+  "exit_code": null,
+  "original_token_count": 3421
+}
+```
+- `session_id` present iff the process is still alive.
+- `exit_code` present iff the process finished during this call.
+
+For `action: "kill"`:
+```json
+{ "killed": true, "exit_code": -15 }
+```
+
+For `action: "list"`:
+```json
+{
+  "sessions": [
+    {
+      "session_id": 42,
+      "command": "npm run dev",
+      "started_at_unix": 1745500000,
+      "age_seconds": 127.5,
+      "buffer_bytes": 18234,
+      "alive": true
+    }
+  ]
+}
+```
+
+### Usage telemetry
+
+Handler increments `ProcessManager::usage_count` on every call. Logged
+on REPL exit: "ExecSession used N times across M sessions." If after
+one week of dogfooding we see <5% of REPL sessions use it at all, we
+rip it out rather than carry the token tax for every user.
+
+### Why not fold into `Bash`
+
+Considered: add `session_id`, `stdin`, `action` optional fields to
+`Bash`. Rejected:
+
+1. `Bash`'s description is currently ~80 tokens and appears in every
+   single turn. Adding session semantics inflates it to ~200 tokens
+   whether or not sessions are used. That's a permanent tax on the
+   95%+ of turns that use plain sync Bash.
+2. Risk of model confusion — it might use session mode when sync
+   mode would be faster and cleaner, because the schema invites it.
+3. Separation of concerns: `Bash` is "run and wait"; `ExecSession`
+   is "spawn and coexist." Different mental models deserve
+   different tools.
+
+## Internal architecture
+
+New module: `src/agent/unified_exec/`.
+
+```
+src/agent/unified_exec/
+  mod.rs              # Public surface: ProcessManager, new(), spawn(), write_stdin(), kill(), list()
+  process.rs          # UnifiedExecProcess: wraps portable-pty child + reader tasks
+  buffer.rs           # HeadTailBuffer: bounded output capture
+  manager.rs          # ProcessStore + ProcessManager: id allocation, store, cleanup
+  errors.rs           # UnifiedExecError
+  tests.rs            # Unit tests (buffer, manager, process)
+```
+
+### `portable-pty` dependency
+
+Add `portable-pty = "0.9"` to `Cargo.toml`. This is the de-facto Rust PTY
+crate (WezTerm's own, used by Codex, Warp, Zellij). Pure Rust on unix,
+wraps ConPTY on Windows. ~800 LOC including deps, no C bindings.
+
+### HeadTailBuffer
+
+Bounded ring-like buffer that preserves the first N bytes and last M
+bytes of output and drops the middle. Same strategy as Codex's
+`head_tail_buffer.rs`.
+
+```rust
+pub struct HeadTailBuffer {
+    head: Vec<u8>,           // first HEAD_CAP bytes
+    tail: VecDeque<u8>,      // last TAIL_CAP bytes
+    total_bytes_written: u64,
+    dropped: bool,
+}
+```
+
+Constants (mirror Codex):
+- `HEAD_CAP: usize = 64 * 1024;`  (64 KiB)
+- `TAIL_CAP: usize = 960 * 1024;`  (960 KiB) — so total cap is ~1 MiB
+- `UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = 10_000;`
+
+When writing exceeds the caps, the middle is lost and a one-time flag
+set. On `drain_since(position)`:
+
+1. Read from the tail at the given logical position to current end.
+2. If the caller's position is below the head cap, also include head.
+3. If `dropped`, insert a marker `\n[... N bytes truncated ...]\n`.
+
+This lets the model see the command's startup banner (head) AND the most
+recent output (tail) even for a 5-minute-running dev server.
+
+### UnifiedExecProcess
+
+```rust
+pub struct UnifiedExecProcess {
+    pid: u32,
+    session_id: i32,
+    command: Vec<String>,
+    started_at: Instant,
+
+    // PTY
+    pty_master: Box<dyn portable_pty::MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+
+    // Shared output state — the reader task writes, tool handlers drain.
+    state: Arc<Mutex<ProcessState>>,
+
+    // Signals the reader task to stop; set by Drop/kill.
+    shutdown: Arc<AtomicBool>,
+    reader_handle: Option<JoinHandle<()>>,
+}
+
+pub struct ProcessState {
+    buffer: HeadTailBuffer,
+    exit_code: Option<i32>,
+    // Broadcast used by yield_until to wake on new output or exit.
+    notify: Arc<Notify>,
+}
+```
+
+**Spawn sequence** (in `process::spawn`):
+
+1. Build `CommandBuilder` from `cmd`, `shell`, `workdir`.
+2. `pty_system.openpty(PtySize { rows: 24, cols: 200, ... })`.
+3. `slave.spawn_command(cmd_builder)` → child.
+4. `master.try_clone_reader()` → reader stream.
+5. Spawn a tokio task:
+   ```
+   loop {
+       match reader.read(&mut buf).await {
+           Ok(0) => break,               // EOF = child exited
+           Ok(n) => {
+               let mut state = state.lock().await;
+               state.buffer.write(&buf[..n]);
+               state.notify.notify_waiters();
+           }
+           Err(_) => break,
+       }
+       if shutdown.load(Relaxed) { break; }
+   }
+   // Reap exit code.
+   let status = child.wait().await;
+   let mut state = state.lock().await;
+   state.exit_code = Some(status.exit_code() as i32);
+   state.notify.notify_waiters();
+   ```
+6. Drop slave pty in parent (child keeps it).
+7. Return `Arc<UnifiedExecProcess>`.
+
+**Yield semantics** (`yield_until`):
+
+```rust
+async fn yield_until(&self, deadline: Instant, since: u64) -> YieldResult {
+    loop {
+        let (new_output, exit_code) = {
+            let state = self.state.lock().await;
+            let out = state.buffer.drain_since(since);
+            (out, state.exit_code)
+        };
+        if exit_code.is_some() { return YieldResult::Exited { ... }; }
+        if !new_output.is_empty() { return YieldResult::Output { new_output }; }
+        if Instant::now() >= deadline { return YieldResult::Yielded; }
+        tokio::select! {
+            _ = self.state.lock().await.notify.notified() => {}
+            _ = tokio::time::sleep_until(deadline) => {}
+        }
+    }
+}
+```
+
+The `notify` trick means the yield returns **immediately** on the first
+byte of output OR the child's exit, OR when the deadline hits. No busy
+polling.
+
+### ProcessManager
+
+```rust
+pub struct ProcessManager {
+    store: Mutex<ProcessStore>,
+    next_id: AtomicI32,
+}
+
+struct ProcessStore {
+    processes: HashMap<i32, Arc<UnifiedExecProcess>>,
+}
+```
+
+- `spawn(...) -> Result<(session_id, initial_yield_result)>`
+- `write_stdin(session_id, bytes, yield_time) -> Result<YieldResult>`
+- `kill(session_id) -> Result<i32>`
+- `list() -> Vec<SessionInfo>`
+- `reap_exited()` — called opportunistically before each spawn: iterates
+  store, removes entries whose `exit_code` is set. Keeps `MAX_SESSIONS`
+  from filling with zombies.
+
+**Capacity cap**: `MAX_SESSIONS = 32`. (Codex uses 64; sidekar's REPL is
+a single user, 32 is plenty.) When full, `spawn` returns an error
+telling the model to kill or wait for one to finish.
+
+**ID allocation**: monotonic `AtomicI32` starting at 1. No recycling —
+we never hand out the same id twice per process lifetime. Wrapping at
+i32::MAX is hypothetically possible; in practice the REPL will restart
+first.
+
+### Lifecycle ownership
+
+`ProcessManager` lives in `AppContext` alongside existing state:
+
+```rust
+pub struct AppContext {
+    // ... existing fields
+    pub exec_sessions: Arc<ProcessManager>,
+}
+```
+
+Created once on REPL startup. On REPL exit, `Drop` on `ProcessManager`
+iterates the store and kills every live process (SIGTERM with 500ms
+grace, then SIGKILL). Reader tasks see `shutdown=true` and exit.
+
+## Integration with existing agent plumbing
+
+### `src/agent/tools.rs`
+
+Add a single entry to `definitions()` after `Bash`:
+`ExecSession` — description explains: "Spawn a long-running command
+in a PTY session (dev servers, REPLs, interactive tools). Returns a
+session_id if the command is still running after yield_time_ms. Call
+with session_id + action='poll' to read new output, action='write'
++ stdin to send input, action='kill' to terminate, or action='list'
+to enumerate live sessions."
+
+Add one match to `execute()`:
+```rust
+"ExecSession" | "exec_session" => exec_exec_session(arguments, ctx, cancel).await,
+```
+
+The handler dispatches internally based on which fields are present.
+See the action matrix in the "Input schema" section.
+
+**Plumbing note:** the current `execute()` takes `(name, arguments,
+cancel)`. The new tool needs access to the `ProcessManager`. Option A:
+add a `ctx: &AppContext` parameter to `execute` (ripples through the
+call site in `src/agent/mod.rs`). Option B: put `ProcessManager` in a
+process-global `OnceLock`.
+
+**Pick A.** Cleaner, testable, no globals. The ripple is one call site.
+
+### Cancellation (`Cancelled` / Esc)
+
+When the user presses Esc mid-turn, the existing `cancel` AtomicBool
+fires. For `ExecSession` calls currently yielding (spawn, poll, or
+write):
+
+- The yield loop checks `cancel` on every wake. If set, returns
+  `Cancelled` **without killing the process**. The session remains
+  alive with its id intact. The model sees the tool call cancelled but
+  the process is still listed via `action: "list"`.
+
+Why not kill on Esc? Esc cancels the **turn**, not the process. If the
+user asked the agent to start `npm run dev` and then pressed Esc
+because they wanted to ask a different question, killing the dev server
+would be surprising. The model can kill it explicitly with
+`action: "kill"`.
+
+### Output capture and rtk compaction
+
+The existing `Bash` tool pipes output through `rtk::compact_output` to
+reduce tokens. For `ExecSession`, rtk compaction does **not** apply:
+
+1. Sessions are often not single-command output — they are interactive
+   streams where rtk's heuristics (detect `cargo`/`git`/`npm`) could
+   mangle context.
+2. Token limiting is already done via `max_output_tokens` + head-tail
+   truncation.
+
+Leaving rtk off is the right call for v1. Can revisit if users complain.
+
+## Security / safety considerations
+
+1. **Process escape.** PTY sessions run with the REPL's full privileges
+   (no sandbox). Same as `Bash` today. No regression.
+2. **Resource exhaustion.** `MAX_SESSIONS = 32` + 1 MiB buffer cap per
+   session = 32 MiB worst case. Fine.
+3. **Zombie accumulation.** `reap_exited()` runs before each spawn.
+   Additionally, the drop handler on `ProcessManager` (REPL exit) kills
+   everything.
+4. **PTY hijack.** The master fd is held only by us. We never expose it
+   to the model or to network.
+5. **Signal propagation.** Unlike `run_subprocess_cancellable`, we do
+   NOT use `setpgid(0, 0)` — the child inherits our pgid so
+   ctrl-c-from-the-terminal handling stays normal. We kill via
+   `Child::kill()` (SIGTERM) then `Child::kill()` again after a delay
+   (not ideal — portable-pty doesn't expose graceful SIGTERM vs SIGKILL
+   distinction cleanly; we may need to reach into the raw pid with
+   `nix::sys::signal::kill` for SIGTERM-then-SIGKILL).
+
+## Resolved design decisions
+
+1. **Default `tty: true`.** Codex defaults false; we default true.
+   Rationale: the main use case is interactive REPLs, dev servers,
+   and log-tailing — all of which break or appear hung under pipes
+   because of block-buffering. With a PTY, each `\n` flushes,
+   `tail -f` streams in real time, `python -i` accepts stdin,
+   progress bars work, and ctrl-C via `write_stdin` actually sends
+   SIGINT. Models can set `tty: false` when they want clean
+   pipe-only output for deterministic parsing (e.g. running a test
+   suite where ANSI codes would pollute the log).
+
+2. **`/new` kills all sessions.** `/new` is a conversation reset;
+   keeping orphaned dev servers running across a reset would be
+   surprising and port-conflicting. Wire into the existing `/new`
+   slash handler: call `ProcessManager::terminate_all()` before
+   clearing history.
+
+3. **No feature gate.** Ships on by default from first commit. Same
+   visibility as any other tool.
+
+## Still-open minor choices
+
+1. **PTY size.** 24x200 (matches codex). Could make it configurable
+   if a model complains about wrapped output. Leaving fixed for v1.
+2. **Newline normalization.** PTY output arrives with `\r\n`. Codex
+   does NOT normalize. Start without normalization; add if output
+   looks weird in practice.
+
+## Testing plan
+
+Unit tests (in `src/agent/unified_exec/tests.rs`):
+
+1. `HeadTailBuffer`: write under head cap → no drop; exceed head cap +
+   tail fits → head preserved, tail tracks; overflow both → dropped flag
+   set; `drain_since(0)` returns head + marker + tail.
+2. `ProcessManager::spawn` fast-exit command (`echo hi`) → returns
+   exit_code in first yield, no session_id.
+3. `ProcessManager::spawn` long-running (`sleep 10`) with
+   `yield_time_ms: 200` → returns session_id, no exit_code.
+4. `write_stdin` to `cat` → echoes back.
+5. `write_stdin` with empty chars + yield → polls, returns new output.
+6. `kill` a running `sleep 60` → exit_code present, session removed
+   from `list`.
+7. `list` with 0 / 1 / 3 sessions → correct count and metadata.
+8. `MAX_SESSIONS` cap — spawn 33rd → error.
+9. Drop `ProcessManager` with 2 live sessions → both processes
+   receive signal and exit within 1s (use `pgrep` to verify).
+10. Cancellation during yield → session stays alive after the tool
+    call returns Cancelled.
+
+Integration tests (manual, in a test REPL session):
+- `ExecSession { cmd: "python -i" }` → session_id.
+- `ExecSession { session_id, action: "write", stdin: "print(2+2)\n" }` → sees "4".
+- `ExecSession { cmd: "npm run dev", workdir: "/some/node/proj" }` →
+  session_id, agent polls with `action: "poll"` + 5s yield to see requests.
+- `ExecSession { action: "list" }` during active development → all live processes.
+- `/new` → all sessions killed.
+
+## Rollout
+
+1. Branch `unified-exec` (this doc, then impl).
+2. Land on main with the tool on by default. No env gate. Bump to
+   v3.1.0 (new tool surface is minor-bump worthy).
+3. Monitor in real use. If malfunctioning, fix forward on patch
+   releases.
+
+## Estimated scope
+
+- `src/agent/unified_exec/` module: ~1400 LOC implementation + ~600
+  LOC tests.
+- `src/agent/tools.rs` changes: +180 LOC (schema, dispatcher,
+  JSON-shape marshaling).
+- `AppContext` plumbing + `/new` integration: ~50 LOC.
+- `Cargo.toml`: +1 dep (`portable-pty`).
+- Total: ~2000 LOC diff.
+
+Two focused days of work. Realistically three with polish + doc.
+
+## Milestone breakdown
+
+1. **M1** — Buffer + Process + single-shot spawn. No yield, no stdin.
+   Validates PTY plumbing. (½ day)
+2. **M2** — Yield semantics + Notify wiring. (½ day)
+3. **M3** — ProcessManager + store + id allocation + kill + list. (½ day)
+4. **M4** — Tool schema + dispatcher + AppContext plumbing. (½ day)
+5. **M5** — Tests + dogfood + docs. (1 day)
+
+Each milestone is a commit. No big-bang.

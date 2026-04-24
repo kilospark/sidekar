@@ -1,6 +1,6 @@
 use super::*;
 
-pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+pub async fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     match sub {
         "write" => cmd_memory_write(ctx, &args[1..]),
@@ -13,6 +13,7 @@ pub fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
         "detail" => cmd_memory_detail(ctx, &args[1..]),
+        "import" => super::import::cmd_memory_import(ctx, &args[1..]).await,
         "" => cmd_memory_list(ctx, args),
         other => bail!("Unknown memory subcommand: {other}"),
     }

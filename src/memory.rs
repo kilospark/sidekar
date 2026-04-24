@@ -147,6 +147,7 @@ struct SearchResultRow {
 
 mod commands;
 mod hygiene;
+mod import;
 mod store;
 mod util;
 

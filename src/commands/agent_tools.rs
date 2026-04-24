@@ -20,7 +20,7 @@ pub(super) async fn dispatch_agent_command(
 ) -> Option<Result<()>> {
     let result = match command {
         "monitor" => cmd_monitor(ctx, args).await,
-        "memory" => cmd_memory(ctx, args),
+        "memory" => cmd_memory(ctx, args).await,
         "journal" => cmd_journal(ctx, args),
         "tasks" => cmd_tasks(ctx, args),
         "agent-sessions" => cmd_agent_sessions(ctx, args),
@@ -33,6 +33,7 @@ pub(super) async fn dispatch_agent_command(
         "bus-show" => cmd_bus_show(ctx, args),
         "bus-send" => cmd_bus_send(ctx, args),
         "bus-done" => cmd_bus_done(ctx, args),
+        "bus-cancel" => cmd_bus_cancel(ctx, args),
         "cron" => dispatch_cron_root(ctx, args).await,
         "cron-create" => cmd_cron_create(ctx, args).await,
         "cron-list" => cmd_cron_list(ctx, args).await,
@@ -58,7 +59,10 @@ async fn dispatch_bus_root(ctx: &mut AppContext, args: &[String]) -> Result<()> 
         "show" => "bus-show",
         "send" => "bus-send",
         "done" => "bus-done",
-        _ => bail!("Usage: sidekar bus <who|requests|replies|show|send|done> [args...]"),
+        "cancel" => "bus-cancel",
+        _ => bail!(
+            "Usage: sidekar bus <who|requests|replies|show|send|done|cancel> [args...]"
+        ),
     };
     Box::pin(super::dispatch(ctx, subcommand, &args[1..])).await
 }
@@ -189,6 +193,31 @@ fn cmd_bus_done(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         &request_body,
         reply_to,
     )?;
+    Ok(())
+}
+
+fn cmd_bus_cancel(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    // `cancel` must be scoped to an existing agent identity — running it
+    // outside a wrapper would auto-register a throwaway name that owns
+    // zero rows, silently "succeeding" while the user's real outbound
+    // requests remain untouched. Refuse hard here instead.
+    if ctx.agent_name.is_none() {
+        bail!(
+            "sidekar bus cancel must run inside a sidekar wrapper so it can scope to your agent identity. \
+             Relaunch your agent with: sidekar <agent-cli>"
+        );
+    }
+    let all = args.iter().any(|a| a == "--all" || a == "-a");
+    let msg_ids: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with("--") && a.as_str() != "-a")
+        .map(String::as_str)
+        .collect();
+    if !all && msg_ids.is_empty() {
+        bail!("Usage: sidekar bus cancel <msg_id>... | --all");
+    }
+    let bus_state = recovered_bus_state(ctx);
+    crate::bus::cmd_cancel_request(&bus_state, ctx, &msg_ids, all)?;
     Ok(())
 }
 

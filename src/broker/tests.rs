@@ -342,3 +342,125 @@ fn schema_migration_creates_memory_journal_support() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn cancel_outbound_request_flips_open_to_cancelled_and_clears_pending() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId {
+            name: "sender".into(),
+            nick: Some("borzoi".into()),
+            session: Some("sess".into()),
+            pane: Some("0:0.1".into()),
+            agent_type: Some("sidekar".into()),
+        };
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "hello");
+        set_pending(&envelope)?;
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            sender.session.as_deref(),
+            Some("/tmp/project"),
+        )?;
+
+        let updated = cancel_outbound_request(&envelope.id, envelope.created_at + 30)?;
+        assert_eq!(updated, 1, "open request should be cancelled exactly once");
+
+        // Row remains in history, but status flipped and pending cleared.
+        assert!(
+            outbound_for_sender("sender")?.is_empty(),
+            "cancelled requests should not appear as open"
+        );
+        let stored = outbound_request(&envelope.id)?.context("missing outbound")?;
+        assert_eq!(stored.status, OUTBOUND_STATUS_CANCELLED);
+        assert_eq!(stored.closed_at, Some(envelope.created_at + 30));
+
+        assert!(
+            pending_for_agent("receiver")?.is_empty(),
+            "pending row must be removed so nudger stops"
+        );
+
+        // Re-cancelling is a no-op (not open anymore).
+        let again = cancel_outbound_request(&envelope.id, envelope.created_at + 60)?;
+        assert_eq!(again, 0);
+        Ok(())
+    })
+}
+
+#[test]
+fn cancel_all_outbound_for_sender_only_touches_open_rows() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId {
+            name: "sender".into(),
+            nick: Some("borzoi".into()),
+            session: Some("sess".into()),
+            pane: Some("0:0.1".into()),
+            agent_type: Some("sidekar".into()),
+        };
+        let other = AgentId {
+            name: "other".into(),
+            nick: None,
+            session: Some("sess".into()),
+            pane: Some("0:0.2".into()),
+            agent_type: Some("sidekar".into()),
+        };
+
+        // Two open requests from `sender`, one answered, one from another agent.
+        let r1 = Envelope::new_request(sender.clone(), "r1", "hi 1");
+        let r2 = Envelope::new_request(sender.clone(), "r2", "hi 2");
+        let r3 = Envelope::new_request(sender.clone(), "r3", "hi 3");
+        let r4 = Envelope::new_request(other.clone(), "r4", "from other");
+        for (env, owner) in [
+            (&r1, &sender),
+            (&r2, &sender),
+            (&r3, &sender),
+            (&r4, &other),
+        ] {
+            set_pending(env)?;
+            set_outbound_request(
+                env,
+                &owner.display_name(),
+                "broker",
+                &env.to,
+                owner.session.as_deref(),
+                Some("/tmp/project"),
+            )?;
+        }
+
+        // Answer r2 so it's no longer open.
+        let reply = Envelope::new_response(
+            AgentId::new("r2"),
+            "sender",
+            "ok",
+            r2.id.clone(),
+        );
+        record_reply(&r2.id, &reply)?;
+
+        let cancelled = cancel_all_outbound_for_sender("sender", r1.created_at + 5)?;
+        let mut got: Vec<String> = cancelled.clone();
+        got.sort();
+        let mut want = vec![r1.id.clone(), r3.id.clone()];
+        want.sort();
+        assert_eq!(got, want, "only open rows owned by sender should flip");
+
+        // Answered row untouched.
+        let r2_stored = outbound_request(&r2.id)?.context("r2")?;
+        assert_eq!(r2_stored.status, OUTBOUND_STATUS_ANSWERED);
+
+        // Other agent's row untouched.
+        let r4_stored = outbound_request(&r4.id)?.context("r4")?;
+        assert_eq!(r4_stored.status, OUTBOUND_STATUS_OPEN);
+        assert!(!pending_for_agent("r4")?.is_empty());
+
+        // Pending rows for cancelled requests removed.
+        assert!(pending_for_agent("r1")?.is_empty());
+        assert!(pending_for_agent("r3")?.is_empty());
+
+        // Second call with nothing open returns empty.
+        let again = cancel_all_outbound_for_sender("sender", r1.created_at + 10)?;
+        assert!(again.is_empty());
+
+        Ok(())
+    })
+}

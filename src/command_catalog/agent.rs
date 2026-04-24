@@ -21,7 +21,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "bus",
-        "<who|requests|replies|show|send|done> [args]",
+        "<who|requests|replies|show|send|done|cancel> [args]",
         "Agent bus subcommands",
         CommandGroup::Agent,
         false,
@@ -30,7 +30,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "memory",
-        "<write|search|context|observe|sessions|compact|patterns|rate|detail|history> ...",
+        "<write|search|context|observe|sessions|compact|patterns|rate|detail|history|import> ...",
         "Local agent memory on SQLite",
         CommandGroup::Agent,
         false,
