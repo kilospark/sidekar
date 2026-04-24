@@ -995,7 +995,7 @@ pub(super) async fn run_compact(
     let _ = io::stdout().flush();
 }
 
-pub(super) async fn build_provider(cred_name: &str) -> Result<Provider> {
+pub async fn build_provider(cred_name: &str) -> Result<Provider> {
     let provider_type = providers::oauth::provider_type_for(cred_name)
         .ok_or_else(|| {
             anyhow::anyhow!(

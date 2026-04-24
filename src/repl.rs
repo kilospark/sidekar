@@ -13,7 +13,7 @@ mod skills;
 // layers. Visibility of individual items is still controlled per-
 // module; the outer walls are the access gate.
 pub(crate) mod journal;
-mod slash;
+pub(crate) mod slash;
 mod spinner;
 mod stats;
 mod status;

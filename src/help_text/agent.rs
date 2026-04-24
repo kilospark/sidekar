@@ -97,7 +97,7 @@ sidekar monitor <start|stop|status> [tab_id|all]
         }
         "memory" => {
             "\
-sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|rate|detail|history> ...
+sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|rate|detail|history|import> ...
 
   Local SQLite-backed memory for Sidekar agent sessions.
   Replaces hosted memory/hook flows with in-binary storage and retrieval.
@@ -114,6 +114,7 @@ sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|r
     rate <id> <helpful|wrong|outdated>         Adjust confidence on a memory
     detail <id>                                Show the full memory record
     history <id>                               Show the memory change history
+    import [--source=<list>] [--dry-run]       Import memories from ~/.claude, ~/.codex, etc.
 
   Examples:
     sidekar memory write convention \"Use Readability.js before scraping article text\"
@@ -124,7 +125,10 @@ sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|r
     sidekar memory compact
     sidekar memory hygiene
     sidekar memory rate 12 helpful
-    sidekar memory detail 12"
+    sidekar memory detail 12
+    sidekar memory import --dry-run
+    sidekar memory import --source=manifests --yes
+    sidekar memory import --source=codex --since=14d --max-sessions=10"
         }
         "journal" => {
             "\
