@@ -4,7 +4,8 @@
 
 use super::extract_llm;
 use super::extract_structured;
-use super::parse_transcripts;
+use super::parse_sqlite;
+use super::parse_transcripts::{self, SessionTranscript};
 use super::sources::{self, DetectedFile};
 use super::{ImportOptions, ScopeFilter, SourceReport, WriteStats, format_report_table};
 use crate::providers::Provider;
@@ -55,7 +56,7 @@ pub async fn cmd_memory_import(ctx: &mut AppContext, args: &[String]) -> Result<
             "codex" => scan_codex(&opts, provider.as_ref(), &model).await,
             "cursor" => scan_cursor(&opts, &cwd, provider.as_ref(), &model).await,
             "gemini" => scan_gemini(&opts, provider.as_ref(), &model).await,
-            "opencode" => scan_opencode(&opts),
+            "opencode" => scan_opencode(&opts, provider.as_ref(), &model).await,
             "copilot" => scan_copilot(&opts, &cwd, provider.as_ref(), &model).await,
             "windsurf" => scan_windsurf(&opts, &cwd, provider.as_ref(), &model).await,
             _ => continue,
@@ -184,7 +185,7 @@ async fn resolve_provider(opts: &ImportOptions) -> Result<(Arc<Provider>, String
 /// `opencode` once its SQLite parser lands), we can skip the
 /// credential check entirely.
 fn source_needs_llm(source_id: &str) -> bool {
-    !matches!(source_id, "manifests" | "opencode")
+    !matches!(source_id, "manifests")
 }
 
 fn default_model_for_provider(provider_type: &str) -> String {
@@ -439,13 +440,29 @@ async fn scan_cursor(
         .await;
     }
 
-    // store.db files are binary-ish — defer until we have a parser.
-    let sessions = sources::detect_cursor_sessions();
-    if !sessions.is_empty() {
-        report.errors.push(format!(
-            "{} Cursor chat DB(s) detected; store.db parser not yet wired.",
-            sessions.len()
-        ));
+    // store.db sessions — real parser now. Each DB is one chat.
+    let sessions = sources::prune_recent(sources::detect_cursor_sessions(), opts);
+    for f in sessions {
+        report.files_seen += 1;
+        let transcript = match parse_sqlite::parse_cursor_store_db(&f.path) {
+            Ok(t) => t,
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("{}: {e:#}", f.path.display()));
+                continue;
+            }
+        };
+        run_transcript_from(
+            &mut report,
+            &f.path,
+            transcript,
+            "import:cursor:session",
+            opts,
+            provider,
+            model,
+        )
+        .await;
     }
     report
 }
@@ -486,14 +503,47 @@ async fn scan_gemini(
     report
 }
 
-fn scan_opencode(_opts: &ImportOptions) -> SourceReport {
+async fn scan_opencode(
+    opts: &ImportOptions,
+    provider: Option<&(Arc<Provider>, String)>,
+    model: &str,
+) -> SourceReport {
     let mut report = SourceReport::new("opencode");
-    if let Some(db) = sources::detect_opencode_db() {
-        report.files_seen = 1;
-        report.errors.push(format!(
-            "{}: opencode.db SQLite parser not yet wired.",
-            db.path.display()
-        ));
+    let Some(db) = sources::detect_opencode_db() else {
+        return report;
+    };
+    report.files_seen = 1;
+    let transcripts = match parse_sqlite::parse_opencode_db(&db.path) {
+        Ok(t) => t,
+        Err(e) => {
+            report.errors.push(format!("{}: {e:#}", db.path.display()));
+            return report;
+        }
+    };
+
+    // Respect --max-sessions as the number of sessions to import
+    // (not the number of DB files — Opencode has one DB for all).
+    let mut transcripts = transcripts;
+    // Most-recent-first: sort by last turn count as a cheap proxy
+    // since we don't carry session mtime. This still honors the
+    // cap deterministically.
+    transcripts.sort_by_key(|t| std::cmp::Reverse(t.turns.len()));
+    if opts.max_sessions > 0 {
+        transcripts.truncate(opts.max_sessions);
+    }
+
+    for transcript in transcripts {
+        let source_path = transcript.source_path.clone();
+        run_transcript_from(
+            &mut report,
+            &source_path,
+            transcript,
+            "import:opencode:session",
+            opts,
+            provider,
+            model,
+        )
+        .await;
     }
     report
 }
@@ -601,16 +651,6 @@ async fn run_transcript_llm(
     model: &str,
     kind: TranscriptKind,
 ) {
-    let (prov, _) = match provider {
-        Some(p) => p,
-        None => {
-            report.errors.push(format!(
-                "{}: skipped (--no-llm).",
-                f.path.display()
-            ));
-            return;
-        }
-    };
     let transcript = match kind {
         TranscriptKind::Claude => parse_transcripts::parse_claude_jsonl(&f.path),
         TranscriptKind::Codex => parse_transcripts::parse_codex_jsonl(&f.path),
@@ -625,6 +665,30 @@ async fn run_transcript_llm(
             return;
         }
     };
+    run_transcript_from(report, &f.path, transcript, source_kind, opts, provider, model).await;
+}
+
+/// Shared tail of every transcript-based scanner. Once a
+/// `SessionTranscript` is in hand (from JSONL, JSON, or SQLite),
+/// resolving project + running the LLM is identical.
+async fn run_transcript_from(
+    report: &mut SourceReport,
+    source_path: &Path,
+    transcript: SessionTranscript,
+    source_kind: &str,
+    opts: &ImportOptions,
+    provider: Option<&(Arc<Provider>, String)>,
+    model: &str,
+) {
+    let (prov, _) = match provider {
+        Some(p) => p,
+        None => {
+            report
+                .errors
+                .push(format!("{}: skipped (--no-llm).", source_path.display()));
+            return;
+        }
+    };
     if transcript.turns.is_empty() {
         return;
     }
@@ -636,11 +700,9 @@ async fn run_transcript_llm(
     } else if let Some(over) = opts.project_override.as_deref() {
         over.to_string()
     } else {
-        // Unknown cwd — skip. We can't silently promote to global
-        // because the content is clearly project-specific.
         report.errors.push(format!(
             "{}: no cwd recorded in transcript; pass --project=<name> to import anyway.",
-            f.path.display()
+            source_path.display()
         ));
         return;
     };
@@ -650,7 +712,7 @@ async fn run_transcript_llm(
         prov,
         model,
         source_kind,
-        &f.path,
+        source_path,
         &project,
         crate::scope::PROJECT_SCOPE,
         &content,
@@ -660,7 +722,7 @@ async fn run_transcript_llm(
         Ok(cands) => report.candidates.extend(cands),
         Err(e) => report
             .errors
-            .push(format!("{}: LLM: {e:#}", f.path.display())),
+            .push(format!("{}: LLM: {e:#}", source_path.display())),
     }
 }
 

@@ -29,6 +29,7 @@
 mod commands;
 mod extract_llm;
 mod extract_structured;
+mod parse_sqlite;
 mod parse_transcripts;
 mod sources;
 
