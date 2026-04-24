@@ -239,9 +239,20 @@ impl ProcessManager {
                     Instant::now() + Duration::from_millis(100);
                 let mut exited = None;
                 while Instant::now() < grace_deadline {
-                    if let Some(code) = proc.state.lock().await.exit_code {
+                    // Critical: read exit_code AND signal under the
+                    // same guard, then drop it BEFORE sleeping or
+                    // any later work. An earlier version of this
+                    // loop used two separate `proc.state.lock()`
+                    // calls back-to-back inside an `if let`, which
+                    // rust keeps alive as an `if let`-scoped
+                    // temporary — the second lock then self-
+                    // deadlocked. Hence the explicit scope here.
+                    let snapshot = {
                         let st = proc.state.lock().await;
-                        exited = Some((code, st.signal.clone()));
+                        st.exit_code.map(|c| (c, st.signal.clone()))
+                    };
+                    if let Some(pair) = snapshot {
+                        exited = Some(pair);
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
