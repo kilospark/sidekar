@@ -96,3 +96,92 @@ async fn bash_cancel_kills_grandchild_process() {
         "grandchild pid {pid} survived cancel — setpgid/SIGTERM-group tree-kill didn't propagate"
     );
 }
+
+/// Regression: the Bash tool must actually capture stdout and
+/// return it to the caller. The tree-kill refactor switched from
+/// `Command::output()` to `Command::spawn()` + `wait_with_output`,
+/// which requires explicit `Stdio::piped()` on stdout/stderr —
+/// without it, the child inherits the parent's stdio, output
+/// flushes to wherever the REPL runs, and `wait_with_output`
+/// returns empty Vec<u8>s. Symptom: every bash tool call returned
+/// the literal string "(no output)" regardless of what the
+/// command printed.
+///
+/// The fix lives in `run_subprocess_cancellable` (unix arm): set
+/// `.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio
+/// ::null())` on the Command before spawning.
+#[tokio::test]
+async fn bash_tool_captures_stdout() {
+    let result = execute(
+        "bash",
+        &json!({ "command": "echo hello-sidekar", "timeout": 5 }),
+        None,
+    )
+    .await
+    .expect("bash tool call should succeed");
+    assert!(
+        result.contains("hello-sidekar"),
+        "expected stdout to contain the echoed token, got {result:?}"
+    );
+    assert!(
+        !result.contains("(no output)"),
+        "stdio-capture regression — bash returned the empty-output sentinel"
+    );
+}
+
+/// Regression companion to `bash_tool_captures_stdout`: stderr
+/// must be captured too. Same root cause if it regresses.
+#[tokio::test]
+async fn bash_tool_captures_stderr() {
+    let result = execute(
+        "bash",
+        &json!({
+            "command": "echo only-stderr 1>&2; exit 0",
+            "timeout": 5
+        }),
+        None,
+    )
+    .await
+    .expect("bash tool call should succeed");
+    assert!(
+        result.contains("only-stderr"),
+        "expected stderr to be captured, got {result:?}"
+    );
+}
+
+/// Regression: stdin must be /dev/null (Stdio::null), not
+/// inherited. If inherited, commands that read from stdin when it
+/// sees a tty — git (pager), cat (no args), less, more — hang
+/// waiting for user input that never arrives. The pattern that
+/// broke REPL usage was `git log` silently launching `less` and
+/// timing out the tool after 120s.
+///
+/// We test with `cat` (no args) at a tight timeout: with
+/// Stdio::null stdin, cat sees immediate EOF and exits 0; with
+/// inherited stdin, cat blocks until the test harness's tokio
+/// runtime tears down or the tool's own timeout fires.
+#[tokio::test]
+async fn bash_tool_stdin_is_null_not_inherited() {
+    let started = Instant::now();
+    let result = execute(
+        "bash",
+        &json!({ "command": "cat", "timeout": 3 }),
+        None,
+    )
+    .await;
+    // Must complete within the test's patience window —
+    // comfortably under the 3s tool timeout.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cat hung — stdin is not wired to /dev/null"
+    );
+    // cat with null stdin reads EOF immediately and exits 0. The
+    // tool's own empty-output branch kicks in and returns "(no
+    // output)" — that's the correct outcome here (not a
+    // regression, cat really did produce no stdout).
+    let s = result.expect("cat should exit cleanly with null stdin");
+    assert!(
+        s.contains("(no output)") || s.is_empty(),
+        "expected empty output from cat </dev/null, got {s:?}"
+    );
+}

@@ -701,6 +701,26 @@ async fn run_subprocess_cancellable(
         });
     }
     cmd.kill_on_drop(true);
+    // Capture stdout/stderr. Without this, `spawn()` leaves them
+    // inherited from the parent — subprocess output flushes to the
+    // REPL's terminal instead of being collected, and
+    // `wait_with_output()` returns empty Vec<u8> for both streams
+    // because there are no pipes to read. (`tokio::process::Command
+    // ::output()` sets these implicitly; `spawn()` does not.)
+    //
+    // Interactive tools (git, less, more) additionally hang because
+    // they see an inherited tty on stdout and wait for user input on
+    // stdin. Piping closes that door.
+    //
+    // stdin stays as default (null); no tool in this module feeds
+    // input to the child process.
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    // stdin: null. Nothing in this module feeds input to the child,
+    // and leaving stdin inherited lets commands like `cat` (no args)
+    // or `git log` (in tty mode) read from the REPL's terminal and
+    // hang waiting for EOF.
+    cmd.stdin(std::process::Stdio::null());
 
     let child = cmd
         .spawn()
