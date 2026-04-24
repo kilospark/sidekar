@@ -316,6 +316,81 @@ pub fn mark_outbound_timed_out(msg_id: &str, timed_out_at: u64) -> Result<()> {
     Ok(())
 }
 
+/// Mark a single outbound request as cancelled (only if currently open)
+/// and remove its pending_requests row so the nudger stops. Returns the
+/// number of outbound rows updated (0 or 1).
+pub fn cancel_outbound_request(msg_id: &str, cancelled_at: u64) -> Result<usize> {
+    let mut conn = open()?;
+    let tx = conn.transaction()?;
+    let updated = tx.execute(
+        "UPDATE outbound_requests
+         SET status = ?2,
+             closed_at = COALESCE(closed_at, ?3)
+         WHERE msg_id = ?1 AND status = ?4",
+        params![
+            msg_id,
+            OUTBOUND_STATUS_CANCELLED,
+            cancelled_at as i64,
+            OUTBOUND_STATUS_OPEN,
+        ],
+    )?;
+    tx.execute(
+        "DELETE FROM pending_requests WHERE id = ?1",
+        params![msg_id],
+    )?;
+    tx.commit()?;
+    Ok(updated)
+}
+
+/// Cancel all open outbound requests owned by `sender_name`. Returns the
+/// list of msg_ids that were actually cancelled (were open → cancelled).
+/// Pending rows for those msg_ids are also removed.
+pub fn cancel_all_outbound_for_sender(
+    sender_name: &str,
+    cancelled_at: u64,
+) -> Result<Vec<String>> {
+    let mut conn = open()?;
+    let tx = conn.transaction()?;
+
+    let ids: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT msg_id
+             FROM outbound_requests
+             WHERE sender_name = ?1 AND status = ?2",
+        )?;
+        let rows = stmt.query_map(params![sender_name, OUTBOUND_STATUS_OPEN], |r| {
+            r.get::<_, String>(0)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    if ids.is_empty() {
+        tx.commit()?;
+        return Ok(ids);
+    }
+
+    tx.execute(
+        "UPDATE outbound_requests
+         SET status = ?2,
+             closed_at = COALESCE(closed_at, ?3)
+         WHERE sender_name = ?1 AND status = ?4",
+        params![
+            sender_name,
+            OUTBOUND_STATUS_CANCELLED,
+            cancelled_at as i64,
+            OUTBOUND_STATUS_OPEN,
+        ],
+    )?;
+    for id in &ids {
+        tx.execute(
+            "DELETE FROM pending_requests WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(ids)
+}
+
 pub fn list_outbound_requests_for_sender(
     sender_name: &str,
     status: Option<&str>,

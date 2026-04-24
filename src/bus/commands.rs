@@ -568,6 +568,105 @@ pub fn cmd_show_request(state: &SidekarBusState, ctx: &mut AppContext, msg_id: &
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct CancelOutput {
+    cancelled: Vec<String>,
+    not_found: Vec<String>,
+    already_closed: Vec<String>,
+}
+
+impl crate::output::CommandOutput for CancelOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.cancelled.is_empty()
+            && self.not_found.is_empty()
+            && self.already_closed.is_empty()
+        {
+            writeln!(w, "No open requests to cancel.")?;
+            return Ok(());
+        }
+        if !self.cancelled.is_empty() {
+            writeln!(w, "cancelled ({}):", self.cancelled.len())?;
+            for id in &self.cancelled {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        if !self.already_closed.is_empty() {
+            writeln!(w, "already closed ({}):", self.already_closed.len())?;
+            for id in &self.already_closed {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        if !self.not_found.is_empty() {
+            writeln!(w, "not found ({}):", self.not_found.len())?;
+            for id in &self.not_found {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Cancel one or more outbound requests. If `all` is true, cancels every
+/// open request owned by the current agent and ignores `msg_ids`. Otherwise
+/// cancels each listed msg_id individually. Requires bus registration so
+/// we can scope cancellation to the caller's own requests.
+pub fn cmd_cancel_request(
+    state: &SidekarBusState,
+    ctx: &mut AppContext,
+    msg_ids: &[&str],
+    all: bool,
+) -> Result<()> {
+    let self_name = state.name().ok_or_else(|| {
+        anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
+    })?;
+    let now = crate::message::epoch_secs();
+
+    let output = if all {
+        let ids = broker::cancel_all_outbound_for_sender(self_name, now)?;
+        CancelOutput {
+            cancelled: ids,
+            not_found: Vec::new(),
+            already_closed: Vec::new(),
+        }
+    } else {
+        if msg_ids.is_empty() {
+            bail!("Usage: sidekar bus cancel <msg_id>... | --all");
+        }
+        let mut cancelled = Vec::new();
+        let mut not_found = Vec::new();
+        let mut already_closed = Vec::new();
+        for id in msg_ids {
+            let record = broker::outbound_request(id)?;
+            match record {
+                None => not_found.push((*id).to_string()),
+                Some(r) if r.sender_name != self_name => {
+                    bail!("Request {id} does not belong to the current agent.");
+                }
+                Some(r) if r.status != broker::OUTBOUND_STATUS_OPEN => {
+                    already_closed.push(r.msg_id);
+                }
+                Some(r) => {
+                    let updated = broker::cancel_outbound_request(&r.msg_id, now)?;
+                    if updated > 0 {
+                        cancelled.push(r.msg_id);
+                    } else {
+                        // Raced with another writer; treat as already closed.
+                        already_closed.push(r.msg_id);
+                    }
+                }
+            }
+        }
+        CancelOutput {
+            cancelled,
+            not_found,
+            already_closed,
+        }
+    };
+
+    out!(ctx, "{}", crate::output::to_string(&output)?);
+    Ok(())
+}
+
 pub fn cmd_send_message(
     state: &mut SidekarBusState,
     ctx: &mut AppContext,

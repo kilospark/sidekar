@@ -36,7 +36,7 @@ sidekar proxy <log|show|clear> [options]
         }
         "bus" => {
             "\
-sidekar bus <who|requests|replies|show|send|done> [args...]
+sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
 
   Agent bus subcommands:
     who [--all]
@@ -45,9 +45,14 @@ sidekar bus <who|requests|replies|show|send|done> [args...]
     show <msg_id>
     send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]
     done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]
+    cancel <msg_id>... | --all
 
   Use --file to avoid shell quoting issues — write the message to a temp file
   and pass the path instead.
+
+  `cancel` stops any pending nudges for one or more of your own outbound
+  requests. Pass explicit msg_ids or --all to close every open request
+  owned by the current agent in one shot. The recipient is not notified.
 
   Examples:
     sidekar bus who
@@ -57,7 +62,9 @@ sidekar bus <who|requests|replies|show|send|done> [args...]
     sidekar bus show msg_123
     sidekar bus send claude-2 \"Please review the PR\"
     sidekar bus send claude-2 --file=/tmp/sidekar-msg.txt
-    sidekar bus done claude-2 \"Done\" --file=/tmp/sidekar-handoff.txt"
+    sidekar bus done claude-2 \"Done\" --file=/tmp/sidekar-handoff.txt
+    sidekar bus cancel msg_123 msg_456
+    sidekar bus cancel --all"
         }
         "compact" => {
             "\
