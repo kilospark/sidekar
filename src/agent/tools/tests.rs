@@ -395,3 +395,30 @@ async fn exec_session_rejects_action_on_spawn() {
     .expect_err("action with cmd should error");
     assert!(format!("{err:#}").contains("'action'"));
 }
+
+/// Regression guard: ExecSession must appear in the tool list on
+/// unix. A stray cfg(unix) gate mismatch would silently drop the
+/// tool from model-facing definitions() without failing any other
+/// test. Verify presence explicitly.
+#[cfg(unix)]
+#[test]
+fn exec_session_is_registered_in_definitions() {
+    let defs = super::definitions();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+    assert!(
+        names.contains(&"ExecSession"),
+        "ExecSession must be in the tool list on unix; got: {names:?}"
+    );
+    // Also sanity-check the schema doesn't have `required` — we
+    // validate inside the handler, not at schema level. A stray
+    // required list would reject legitimate argument shapes.
+    let es = defs
+        .iter()
+        .find(|d| d.name == "ExecSession")
+        .expect("present");
+    let schema = &es.input_schema;
+    assert!(
+        schema.get("required").is_none(),
+        "ExecSession schema must not pin required fields; handler validates: {schema}"
+    );
+}
