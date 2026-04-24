@@ -27,7 +27,9 @@
 //!   A fresh `batch_id` groups every run for later audit/undo.
 
 mod commands;
+mod extract_llm;
 mod extract_structured;
+mod parse_transcripts;
 mod sources;
 
 use std::collections::BTreeMap;

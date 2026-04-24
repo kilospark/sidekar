@@ -20,7 +20,7 @@ pub(super) async fn dispatch_agent_command(
 ) -> Option<Result<()>> {
     let result = match command {
         "monitor" => cmd_monitor(ctx, args).await,
-        "memory" => cmd_memory(ctx, args),
+        "memory" => cmd_memory(ctx, args).await,
         "journal" => cmd_journal(ctx, args),
         "tasks" => cmd_tasks(ctx, args),
         "agent-sessions" => cmd_agent_sessions(ctx, args),
