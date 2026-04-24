@@ -275,7 +275,27 @@ async fn phase2_summarize(
         }],
     }];
 
-    on_event(&StreamEvent::Connecting);
+    // We deliberately do NOT forward the summarizer's content
+    // events (TextDelta, ThinkingDelta, or the Done message's
+    // content) to `on_event`. The summary is a PROMPT ARTIFACT —
+    // it replaces a chunk of history behind a `[CONTEXT
+    // COMPACTION]` marker and is consumed by the model on the
+    // next turn. Showing it to the user makes the terminal
+    // spit out a multi-kilobyte structured recap every time
+    // compaction fires (both /compact and the silent
+    // auto-compaction path), which is exactly the opposite of
+    // what compaction is supposed to feel like.
+    //
+    // Still forward status/lifecycle events so the renderer's
+    // "[Compacting]" indicator works: the outer compact_history
+    // fn already fires Compacting / Idle. Error events pass
+    // through so failures are visible; the inner content stays
+    // silent.
+    //
+    // We also don't fire Connecting here for the same reason —
+    // the user already saw "[Compaction phase 2: summarizing
+    // old context...]" from compact_history. A second
+    // Connecting indicator would race with the first.
     let (mut rx, _reclaim) = provider
         .stream(
             model,
@@ -293,18 +313,24 @@ async fn phase2_summarize(
     while let Some(event) = rx.recv().await {
         match &event {
             StreamEvent::TextDelta { delta } => {
-                on_event(&event);
+                // Accumulate silently; do NOT render.
                 summary_text.push_str(delta);
             }
             StreamEvent::ThinkingDelta { .. } => {
-                on_event(&event);
+                // Silent.
             }
             StreamEvent::Error { message } => {
+                // Errors are the only summarizer event we want
+                // user-visible — compaction failure should not
+                // be silent, it's a real signal (auth, rate
+                // limit, transport).
                 on_event(&event);
                 last_error = Some(message.clone());
             }
             StreamEvent::Done { .. } => {
-                on_event(&event);
+                // Silent. The outer compact_history fn prints
+                // "[Compacted to ~Nk tokens]" which is the
+                // user-visible completion marker.
             }
             _ => {}
         }
