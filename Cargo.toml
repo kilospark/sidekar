@@ -23,6 +23,12 @@ panic = "abort"
 [dependencies]
 anyhow = "1.0"
 dirs = "6"
+# PTY-backed long-running sessions for the agent's `ExecSession`
+# tool. portable-pty is wezterm's production PTY crate; pure Rust
+# on unix, wraps ConPTY on Windows. Used for interactive REPLs,
+# dev servers, and TTY-needing programs the sync Bash tool can't
+# host. See context/unified-exec.md for the full design.
+portable-pty = "0.9"
 base64 = "0.22"
 zip = "2.1"
 futures-util = "0.3"
