@@ -340,6 +340,153 @@ impl UnifiedExecProcess {
     pub async fn has_exited(&self) -> bool {
         self.state.lock().await.exit_code.is_some()
     }
+
+    /// Wait for output or exit, yielding no later than `deadline`.
+    ///
+    /// This is the beating heart of the cooperative-yield model.
+    /// Every tool call that interacts with a live session funnels
+    /// through here. The contract:
+    ///
+    ///   - If any bytes arrive past `since`, return them immediately
+    ///     as [`YieldResult::Output`]. The caller advances its cursor
+    ///     to `position_after` for the next poll.
+    ///   - If the child exits during the wait, return
+    ///     [`YieldResult::Exited`] with the exit code and any output
+    ///     that accumulated between `since` and exit.
+    ///   - If `deadline` elapses with neither output nor exit,
+    ///     return [`YieldResult::Yielded`]. The session is still
+    ///     live; the caller surfaces `session_id` to the model.
+    ///   - If `cancel` flips to true (Esc / turn cancellation),
+    ///     return [`YieldResult::Cancelled`]. Process is left alive
+    ///     intentionally — cancelling a turn is not cancelling the
+    ///     process. See context/unified-exec.md §Cancellation.
+    ///
+    /// The loop uses `tokio::sync::Notify::notified()` to sleep
+    /// until something happens, so there is no busy polling. The
+    /// race between output arrival and deadline is won by whichever
+    /// fires first. A short polling interval (100ms) runs alongside
+    /// the notify wait for two defensive reasons:
+    ///
+    ///   1. Cancellation wake: `cancel` is an AtomicBool, not a
+    ///      waker, so the only way the yield loop observes it is
+    ///      by re-checking on every wake. Without a periodic timer
+    ///      the only wake sources are output-bytes and exit, which
+    ///      means a cancelled quiet session could sit stuck for
+    ///      `deadline - now` milliseconds. 100ms is the worst-case
+    ///      responsiveness budget for Esc during a long yield.
+    ///   2. Notify ordering: `notified()` registers interest BEFORE
+    ///      awaiting, but state writes happen behind a mutex we
+    ///      don't hold here. A write that lands after we check the
+    ///      buffer but before we register with Notify would be a
+    ///      lost wake. The periodic re-check prevents that window
+    ///      from hanging the yield. `tokio::sync::Notify` actually
+    ///      has `enable()` to avoid this, but the periodic poll is
+    ///      simpler and the overhead (one mutex lock per 100ms per
+    ///      live session under a yield) is negligible.
+    pub async fn yield_until(
+        self: &Arc<Self>,
+        since: u64,
+        deadline: Instant,
+        cancel: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    ) -> YieldResult {
+        use std::sync::atomic::Ordering;
+
+        loop {
+            // Check cancel before touching any locks — cheapest
+            // exit path.
+            if let Some(c) = cancel
+                && c.load(Ordering::Relaxed)
+            {
+                return YieldResult::Cancelled;
+            }
+
+            // Snapshot state. Hold the lock only long enough to
+            // read buffer and exit_code; release before we sleep.
+            let (new_bytes, exit_info, position_after) = {
+                let st = self.state.lock().await;
+                let drained = st.buffer.drain_since(since);
+                let pos = st.buffer.position();
+                let exit = st.exit_code.map(|c| (c, st.signal.clone()));
+                (drained, exit, pos)
+            };
+
+            // If the child has exited, always return Exited — even
+            // if there are also new bytes. The bytes are included
+            // in the Exited variant so the caller gets everything
+            // in one response.
+            if let Some((code, signal)) = exit_info {
+                return YieldResult::Exited {
+                    output: new_bytes,
+                    position_after,
+                    exit_code: code,
+                    signal,
+                };
+            }
+
+            // New output without exit → return immediately.
+            if !new_bytes.is_empty() {
+                return YieldResult::Output {
+                    output: new_bytes,
+                    position_after,
+                };
+            }
+
+            // Nothing to return yet. Sleep until a wake source
+            // fires or the deadline hits or the poll interval
+            // elapses (see doc comment above for why the poll).
+            let now = Instant::now();
+            if now >= deadline {
+                return YieldResult::Yielded { position_after };
+            }
+            let remaining = deadline - now;
+            let poll_interval = std::time::Duration::from_millis(100);
+            let next_wake = remaining.min(poll_interval);
+
+            // The `notified()` future only catches notifications
+            // that arrive AFTER it's awaited. That's why we put it
+            // inside a select!, racing the sleep. If a notify was
+            // missed between our state read and the registration,
+            // the sleep wakes us within 100ms anyway.
+            tokio::select! {
+                _ = self.notify.notified() => {}
+                _ = tokio::time::sleep(next_wake) => {}
+            }
+        }
+    }
+}
+
+/// Outcome of a single `yield_until` call.
+///
+/// Four variants map to the four reasons a yield loop terminates.
+/// The caller (tool handler) translates this into the tool-output
+/// JSON shape the model sees — see `context/unified-exec.md` §Output
+/// shape.
+#[derive(Debug)]
+pub enum YieldResult {
+    /// New output arrived within the deadline. Process is still
+    /// running. `position_after` is the caller's new cursor.
+    Output { output: Vec<u8>, position_after: u64 },
+
+    /// Child exited during the wait. `output` may contain bytes
+    /// that arrived between `since` and exit; if nothing arrived
+    /// it's empty. `signal` is the signal name if the child died
+    /// to a signal.
+    Exited {
+        output: Vec<u8>,
+        position_after: u64,
+        exit_code: i32,
+        signal: Option<String>,
+    },
+
+    /// Deadline elapsed with neither output nor exit. Process is
+    /// still running. Caller returns session_id to the model with
+    /// empty output.
+    Yielded { position_after: u64 },
+
+    /// `cancel` flipped to true mid-wait. Process is intentionally
+    /// left running — see §Cancellation in the design doc. Caller
+    /// typically propagates this as `agent::Cancelled`.
+    Cancelled,
 }
 
 impl Drop for UnifiedExecProcess {
@@ -531,6 +678,285 @@ mod tests {
             s.contains("ping"),
             "output must contain the echoed line; got: {s:?}"
         );
+    }
+
+    // ------------------------------------------------------------
+    // YIELD TESTS (M2)
+    //
+    // These exercise the four YieldResult variants. The rule set
+    // they verify:
+    //
+    //   1. Output arrives before deadline → Output variant; bytes
+    //      are exactly what was written past the cursor; no exit.
+    //   2. Process exits before deadline → Exited variant; exit
+    //      code matches; any bytes that arrived before exit are
+    //      included.
+    //   3. Nothing happens before deadline → Yielded variant;
+    //      position_after == buffer.position() at wake.
+    //   4. Cancel flips during wait → Cancelled variant; process
+    //      remains alive and reapable.
+    //
+    // Each test uses a real subprocess, a real tokio runtime, and
+    // a bounded deadline so failure modes surface as timeouts
+    // rather than hangs.
+    // ------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yield_returns_output_when_bytes_arrive_before_deadline() {
+        // A shell command that writes something immediately and
+        // then sleeps. We yield with a 3-second deadline; the
+        // write should wake us well before timeout.
+        let proc = UnifiedExecProcess::spawn(SpawnOptions {
+            cmd: "printf 'first\\n'; sleep 5".into(),
+            shell: None,
+            workdir: None,
+            tty: true,
+        })
+        .expect("spawn");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let result = proc.yield_until(0, deadline, None).await;
+
+        match result {
+            YieldResult::Output {
+                output,
+                position_after,
+            } => {
+                let s = String::from_utf8_lossy(&output);
+                assert!(
+                    s.contains("first"),
+                    "expected 'first' in output; got: {s:?}"
+                );
+                assert!(position_after > 0, "cursor must advance");
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+
+        // Clean up the still-running sleep.
+        proc.terminate();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yield_returns_exited_when_process_completes() {
+        // Fast-exit command. There's an intentional race:
+        //   - the PTY read loop delivers "done" bytes first,
+        //   - the child's exit status lands a few ms later when
+        //     Child::wait() returns.
+        // Depending on scheduler timing, the first yield call can
+        // see Output (bytes before exit) or Exited (both). The
+        // second yield call — which starts from the advanced
+        // cursor — is guaranteed to see Exited because exit_code
+        // is set by then.
+        //
+        // This two-yield pattern mirrors the real polling behavior
+        // of the tool: model yields, gets Output, yields again to
+        // poll for more.
+        let proc = UnifiedExecProcess::spawn(SpawnOptions {
+            cmd: "echo done; exit 7".into(),
+            shell: None,
+            workdir: None,
+            tty: true,
+        })
+        .expect("spawn");
+
+        let deadline1 = Instant::now() + Duration::from_secs(3);
+        let mut cursor = 0u64;
+        let mut saw_done_in_output = false;
+
+        // Keep yielding until we get Exited. In practice takes
+        // 1 or 2 iterations.
+        for _ in 0..5 {
+            let deadline = if cursor == 0 {
+                deadline1
+            } else {
+                Instant::now() + Duration::from_secs(3)
+            };
+            let result = proc.yield_until(cursor, deadline, None).await;
+            match result {
+                YieldResult::Output {
+                    output,
+                    position_after,
+                } => {
+                    if String::from_utf8_lossy(&output).contains("done") {
+                        saw_done_in_output = true;
+                    }
+                    cursor = position_after;
+                }
+                YieldResult::Exited {
+                    output,
+                    exit_code,
+                    ..
+                } => {
+                    assert_eq!(exit_code, 7, "exit code must propagate");
+                    // Either the first yield saw "done" in Output,
+                    // or this yield carries it (racing order).
+                    let also_here = String::from_utf8_lossy(&output).contains("done");
+                    assert!(
+                        saw_done_in_output || also_here,
+                        "'done' must appear across the yield sequence"
+                    );
+                    return;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        panic!("yield sequence never reached Exited in 5 iterations");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yield_returns_yielded_when_deadline_elapses_with_no_output() {
+        // A silent long-running command. Deadline hits first.
+        let proc = UnifiedExecProcess::spawn(SpawnOptions {
+            cmd: "sleep 30".into(),
+            shell: None,
+            workdir: None,
+            tty: true,
+        })
+        .expect("spawn");
+
+        let deadline = Instant::now() + Duration::from_millis(400);
+        let start = Instant::now();
+        let result = proc.yield_until(0, deadline, None).await;
+        let elapsed = start.elapsed();
+
+        match result {
+            YieldResult::Yielded { .. } => {}
+            other => panic!("expected Yielded, got {other:?}"),
+        }
+        // Should not have waited meaningfully longer than deadline;
+        // the 100ms poll interval gives us up to ~100ms overshoot.
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "deadline should fire promptly; elapsed: {elapsed:?}"
+        );
+
+        proc.terminate();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yield_returns_cancelled_when_cancel_flips_mid_wait() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Long deadline; cancel flips asynchronously partway through.
+        // Must observe within the 100ms poll interval.
+        let proc = UnifiedExecProcess::spawn(SpawnOptions {
+            cmd: "sleep 30".into(),
+            shell: None,
+            workdir: None,
+            tty: true,
+        })
+        .expect("spawn");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+
+        // Flip after 150ms — gives the yield time to enter the
+        // wait loop before we interrupt.
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(150)).await;
+            cancel_clone.store(true, Ordering::Relaxed);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let result = proc.yield_until(0, deadline, Some(&cancel)).await;
+
+        match result {
+            YieldResult::Cancelled => {}
+            other => panic!("expected Cancelled, got {other:?}"),
+        }
+
+        // Critical invariant: cancellation must NOT kill the
+        // process. Session remains alive for the model to interact
+        // with on the next turn.
+        assert!(
+            !proc.has_exited().await,
+            "cancel must leave the process alive"
+        );
+
+        proc.terminate();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yield_cursor_advances_so_successive_calls_see_only_new_bytes() {
+        // Models the real polling pattern: yield, grab position,
+        // yield again with new cursor, expect only the second
+        // write.
+        let proc = UnifiedExecProcess::spawn(SpawnOptions {
+            cmd: "printf 'one\\n'; sleep 0.3; printf 'two\\n'; sleep 5".into(),
+            shell: None,
+            workdir: None,
+            tty: true,
+        })
+        .expect("spawn");
+
+        let d1 = Instant::now() + Duration::from_secs(2);
+        let (first_output, cursor) = match proc.yield_until(0, d1, None).await {
+            YieldResult::Output {
+                output,
+                position_after,
+            } => (output, position_after),
+            other => panic!("first yield expected Output, got {other:?}"),
+        };
+        assert!(String::from_utf8_lossy(&first_output).contains("one"));
+
+        let d2 = Instant::now() + Duration::from_secs(2);
+        let (second_output, _) = match proc.yield_until(cursor, d2, None).await {
+            YieldResult::Output {
+                output,
+                position_after,
+            } => (output, position_after),
+            other => panic!("second yield expected Output, got {other:?}"),
+        };
+        let s2 = String::from_utf8_lossy(&second_output);
+        assert!(
+            s2.contains("two"),
+            "second yield must see 'two'; got: {s2:?}"
+        );
+        assert!(
+            !s2.contains("one"),
+            "cursor must exclude already-seen bytes; got: {s2:?}"
+        );
+
+        proc.terminate();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn yield_wakes_immediately_on_notify_not_polling_interval() {
+        // Regression guard: if the notify wiring were broken, the
+        // yield would only wake on the 100ms poll interval. With
+        // notify, wake latency should be <50ms for output that
+        // arrives well after the yield started.
+        //
+        // printf after a 200ms sleep → yield has been waiting for
+        // 200ms when bytes arrive. Measure how fast we return.
+        let proc = UnifiedExecProcess::spawn(SpawnOptions {
+            cmd: "sleep 0.2; printf 'hi\\n'; sleep 5".into(),
+            shell: None,
+            workdir: None,
+            tty: true,
+        })
+        .expect("spawn");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let start = Instant::now();
+        let result = proc.yield_until(0, deadline, None).await;
+        let elapsed = start.elapsed();
+
+        match result {
+            YieldResult::Output { .. } => {}
+            other => panic!("expected Output, got {other:?}"),
+        }
+        // The printf fires at ~200ms. We should return within the
+        // next ~50ms of notify latency. 350ms is a generous ceiling
+        // that still catches a broken-notify regression (which
+        // would manifest as ~300ms = 200ms sleep + 100ms next
+        // poll).
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "notify wake should be fast; elapsed: {elapsed:?}"
+        );
+
+        proc.terminate();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

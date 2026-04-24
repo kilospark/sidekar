@@ -26,4 +26,4 @@ pub(crate) mod process;
 
 #[cfg(test)]
 pub(crate) use buffer::HeadTailBuffer;
-pub(crate) use process::{SpawnOptions, UnifiedExecProcess};
+pub(crate) use process::{SpawnOptions, UnifiedExecProcess, YieldResult};
