@@ -13,7 +13,7 @@
 //!                                  whose target session lives elsewhere
 //!   * `GET  /slack/link`        — website mints a one-time link code
 //!   * `/sidekar start <code>`, `/sidekar sessions`, `/sidekar here <nick|id>`,
-//!     `/sidekar stop`, `/sidekar help`
+//!     `/sidekar unlink`, `/sidekar stop`, `/sidekar help`
 //!   * per-channel outbound viewer task (ANSI strip, chunk, rate-limit,
 //!     turn-boundary flush via `ch:"events"` control frames)
 //!   * `event_id` dedup (Mongo TTL collection)
@@ -615,6 +615,9 @@ async fn process_event(
     }) {
         return handle_here(state, slack, &client, &channel, rest.trim()).await;
     }
+    if text == "unlink" {
+        return handle_unlink(state, slack, &client, &channel).await;
+    }
     if text == "stop" {
         return handle_stop(state, slack, &client, &channel).await;
     }
@@ -701,6 +704,7 @@ pub async fn handle_slash_command(
             _ if text == "here" => {
                 handle_here(&state2, &slack2, &client, &channel2, "").await
             }
+            _ if text == "unlink" => handle_unlink(&state2, &slack2, &client, &channel2).await,
             _ if text == "stop" => handle_stop(&state2, &slack2, &client, &channel2).await,
             _ => {
                 let _ = client
@@ -875,6 +879,20 @@ async fn handle_here(
     Ok(())
 }
 
+async fn handle_unlink(
+    state: &AppState,
+    slack: &SlackState,
+    client: &SlackClient,
+    channel: &str,
+) -> Result<(), String> {
+    slack.stop_viewer(channel).await;
+    clear_channel_session(state, channel).await?;
+    let _ = client
+        .send_message(channel, "Disconnected from session. Use `here <nick>` to route again.")
+        .await;
+    Ok(())
+}
+
 async fn handle_stop(
     state: &AppState,
     slack: &SlackState,
@@ -883,7 +901,9 @@ async fn handle_stop(
 ) -> Result<(), String> {
     slack.stop_viewer(channel).await;
     delete_channel(state, channel).await?;
-    let _ = client.send_message(channel, "Unlinked.").await;
+    let _ = client
+        .send_message(channel, "Fully unlinked. Use `start <code>` to re-link.")
+        .await;
     Ok(())
 }
 
@@ -891,7 +911,7 @@ async fn handle_help(client: &SlackClient, channel: &str) -> Result<(), String> 
     let _ = client
         .send_message(
             channel,
-            "Commands:\n  `start <code>`   — link this channel\n  `sessions`       — list live sessions\n  `here <nick>`    — route messages to a session (nickname or id)\n  `stop`           — unlink\n\nAnything else is forwarded as keystrokes to the routed session.\n\nUse `/sidekar <command>` or mention the bot with a command.",
+            "Commands:\n  `start <code>`   — link this channel to your account\n  `sessions`       — list live sessions\n  `here <nick>`    — route to a session (nickname or id)\n  `unlink`         — disconnect from session (stay linked)\n  `stop`           — fully unlink channel\n\nAnything else is forwarded as keystrokes to the routed session.\n\nUse `/sidekar <command>` or mention the bot with a command.",
         )
         .await;
     Ok(())
@@ -1272,6 +1292,19 @@ async fn upsert_channel(
             },
         )
         .upsert(true)
+        .await
+        .map_err(|e| format!("mongo: {e}"))?;
+    Ok(())
+}
+
+async fn clear_channel_session(state: &AppState, channel: &str) -> Result<(), String> {
+    state
+        .db
+        .collection::<mongodb::bson::Document>(CHANNELS_COLLECTION)
+        .update_one(
+            mongodb::bson::doc! { "channel": channel },
+            mongodb::bson::doc! { "$unset": { "session_id": "" } },
+        )
         .await
         .map_err(|e| format!("mongo: {e}"))?;
     Ok(())
