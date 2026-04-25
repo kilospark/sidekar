@@ -419,7 +419,7 @@ main.container { padding: 32px 24px; }
     function loadSlack() {
       var section = document.getElementById("slack-section");
       if (!section) return;
-      fetch("/api/slack/status")
+      fetch("/api/slack")
         .then(function(r) {
           if (r.status === 404) return { __unavailable: true };
           if (!r.ok) throw new Error("status failed");
@@ -475,7 +475,7 @@ main.container { padding: 32px 24px; }
         linkBtn.addEventListener("click", function() {
           linkBtn.disabled = true;
           linkBtn.textContent = "Generating…";
-          fetch("/api/slack/link", { method: "POST" })
+          fetch("/api/slack", { method: "POST" })
             .then(function(r) {
               if (!r.ok) throw new Error("mint failed");
               return r.json();
@@ -505,7 +505,7 @@ main.container { padding: 32px 24px; }
       if (unlinkBtn) {
         unlinkBtn.addEventListener("click", function() {
           if (!window.confirm("Unlink all Slack channels?")) return;
-          fetch("/api/slack/status?unlink=1", { method: "POST" })
+          fetch("/api/slack?unlink=1", { method: "POST" })
             .then(function(r) {
               if (!r.ok) throw new Error();
               showToast("Slack unlinked");
