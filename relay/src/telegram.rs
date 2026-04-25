@@ -380,7 +380,7 @@ async fn run_viewer(
 }
 
 #[derive(Clone, Copy)]
-enum ViewerMode {
+pub(crate) enum ViewerMode {
     /// No content events have been seen on this viewer; fall back to
     /// stripping raw PTY bytes for human display.
     Legacy,
@@ -393,7 +393,7 @@ enum ViewerMode {
 /// frames on `ch:"events"` are interesting; everything else (pty
 /// resize, bus routing, etc.) becomes `None`.
 #[derive(Debug, Clone)]
-enum EventsFrame {
+pub(crate) enum EventsFrame {
     /// Content event — `event` field is a tagged enum (`AgentEvent`).
     Content(ContentEvent),
     /// Lifecycle marker — `event` field is a bare string.
@@ -404,7 +404,7 @@ enum EventsFrame {
 /// about. Kept minimal — new variants fall into `Unknown` and are
 /// dropped rather than leaking raw JSON into chat.
 #[derive(Debug, Clone)]
-enum ContentEvent {
+pub(crate) enum ContentEvent {
     Text(String),
     ToolCall { tool: String, input: String },
     Code { language: String, content: String },
@@ -419,7 +419,7 @@ enum ContentEvent {
 /// src/repl/event_forward.rs):
 ///   Content:   `{"ch":"events","v":1,"event":{"kind":"text","content":"..."}}`
 ///   Lifecycle: `{"ch":"events","v":1,"event":"assistant_complete"}`
-fn parse_events_frame(text: &str) -> Option<EventsFrame> {
+pub(crate) fn parse_events_frame(text: &str) -> Option<EventsFrame> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     if v.get("ch").and_then(|c| c.as_str()) != Some("events") {
         return None;
@@ -498,7 +498,7 @@ fn parse_events_frame(text: &str) -> Option<EventsFrame> {
 }
 
 /// Whether a lifecycle marker should flush any buffered output.
-fn is_boundary_name(name: &str) -> bool {
+pub(crate) fn is_boundary_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.ends_with("complete")
         || n.ends_with("done")
@@ -510,7 +510,7 @@ fn is_boundary_name(name: &str) -> bool {
 /// Render a content event as the text to append to the chat buffer.
 /// Returns `None` when the event produces no renderable output (empty
 /// content after trim, oversized-and-elided, etc.).
-fn render_content_event(ev: &ContentEvent) -> Option<String> {
+pub(crate) fn render_content_event(ev: &ContentEvent) -> Option<String> {
     const MAX_CODE_LINES: usize = 30;
     const MAX_CODE_BYTES: usize = 1200;
     const MAX_TOOL_INPUT_CHARS: usize = 140;

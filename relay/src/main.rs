@@ -1,6 +1,7 @@
 mod auth;
 mod bridge;
 mod registry;
+mod slack;
 mod telegram;
 mod types;
 
@@ -76,12 +77,34 @@ async fn main() {
         }
     };
 
+    // Optional Slack integration.
+    let slack = match slack::SlackConfig::from_env() {
+        Some(cfg) => {
+            tracing::info!("slack integration enabled");
+            if let Err(e) = slack::ensure_indexes(&db).await {
+                tracing::warn!("slack index setup failed (dedup may be soft): {e}");
+            }
+            let state = slack::SlackState::new(cfg);
+            // Resolve bot user ID in background so self-message filtering
+            // works from the first event.
+            state.resolve_bot_user_id().await;
+            Some(state)
+        }
+        None => {
+            tracing::info!(
+                "slack integration disabled (SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET unset)"
+            );
+            None
+        }
+    };
+
     // App state
     let state = AppState {
         db,
         registry,
         jwt_secret,
         telegram,
+        slack,
     };
 
     // CORS — allow sidekar.dev
@@ -104,6 +127,10 @@ async fn main() {
         .route("/telegram/webhook", post(telegram::handle_webhook))
         .route("/telegram/deliver", post(telegram::handle_deliver))
         .route("/telegram/link", get(telegram::handle_mint_link_code))
+        .route("/slack/events", post(slack::handle_events))
+        .route("/slack/commands", post(slack::handle_slash_command))
+        .route("/slack/deliver", post(slack::handle_deliver))
+        .route("/slack/link", get(slack::handle_mint_link_code))
         .layer(cors)
         .with_state(state);
 

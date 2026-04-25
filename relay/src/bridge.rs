@@ -26,6 +26,9 @@ pub struct AppState {
     /// table). `None` when `TELEGRAM_BOT_TOKEN` /
     /// `TELEGRAM_WEBHOOK_SECRET` are not set in the environment.
     pub telegram: Option<crate::telegram::TelegramState>,
+    /// Optional Slack runtime state. `None` when `SLACK_BOT_TOKEN` /
+    /// `SLACK_SIGNING_SECRET` are not set in the environment.
+    pub slack: Option<crate::slack::SlackState>,
 }
 
 // ─── Tunnel handler ───────────────────────────────────────────────
