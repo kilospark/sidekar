@@ -381,6 +381,11 @@ pub enum ContentBlock {
         id: String,
         name: String,
         arguments: serde_json::Value,
+        /// Gemini thought-signature for this function-call part.
+        /// Must be replayed verbatim on the next request so the API
+        /// can validate the call was model-generated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {

@@ -464,14 +464,19 @@ pub(crate) fn build_request_body(
                         ContentBlock::Text { text } if !text.is_empty() => {
                             parts.push(json!({ "text": text }));
                         }
-                        ContentBlock::Thinking { thinking, .. }
-                            if !thinking.is_empty() =>
-                        {
-                            // Replay as a thought part. Always use the
-                            // skip sentinel — we may be replaying history
-                            // from a different provider whose signatures
-                            // are incompatible.
-                            let sig = SKIP_SIG;
+                        ContentBlock::Thinking {
+                            thinking,
+                            signature,
+                        } if !thinking.is_empty() => {
+                            // Replay as a thought part. Use the real
+                            // signature if we captured one from Gemini;
+                            // fall back to skip sentinel for cross-
+                            // provider history.
+                            let sig = if signature.is_empty() {
+                                SKIP_SIG
+                            } else {
+                                signature.as_str()
+                            };
                             parts.push(json!({
                                 "text": thinking,
                                 "thought": true,
@@ -482,6 +487,7 @@ pub(crate) fn build_request_body(
                             id,
                             name,
                             arguments,
+                            thought_signature,
                         } => {
                             // Record id→name so the next user turn's
                             // ToolResult can resolve back to a
@@ -494,9 +500,13 @@ pub(crate) fn build_request_body(
                                 }
                             });
                             // Gemini requires thoughtSignature on
-                            // functionCall parts when thinking was present
-                            // in the same turn.
-                            if has_thinking {
+                            // functionCall parts when thinking was
+                            // present in the same turn.  Use the real
+                            // captured signature when available, fall
+                            // back to skip sentinel for cross-provider.
+                            if let Some(sig) = thought_signature {
+                                part["thoughtSignature"] = json!(sig);
+                            } else if has_thinking {
                                 part["thoughtSignature"] = json!(SKIP_SIG);
                             }
                             parts.push(part);
@@ -627,15 +637,18 @@ async fn parse_sse_stream(
                             .get("thought")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
-                        // Capture thoughtSignature from either thought-text
-                        // or functionCall parts. The signature appears on
-                        // the last thought chunk and on functionCall parts.
-                        if let Some(sig) = part
-                            .get("thoughtSignature")
-                            .and_then(|v| v.as_str())
-                        {
-                            if !sig.is_empty() {
-                                thinking_sig = sig.to_string();
+                        // Capture thoughtSignature from thought-text parts
+                        // only (not functionCall parts — those get their
+                        // own sig stored on ContentBlock::ToolCall).
+                        let is_fc_part = part.get("functionCall").is_some();
+                        if !is_fc_part {
+                            if let Some(sig) = part
+                                .get("thoughtSignature")
+                                .and_then(|v| v.as_str())
+                            {
+                                if !sig.is_empty() {
+                                    thinking_sig = sig.to_string();
+                                }
                             }
                         }
                         if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
@@ -665,6 +678,13 @@ async fn parse_sse_stream(
                                 .get("args")
                                 .cloned()
                                 .unwrap_or_else(|| json!({}));
+                            // Capture the functionCall part's own
+                            // thoughtSignature for replay.
+                            let fc_sig = part
+                                .get("thoughtSignature")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string());
                             // Flush any accumulated text as its own
                             // block so ordering matches the stream
                             // (text → tool_use, or interleaved).
@@ -704,6 +724,7 @@ async fn parse_sse_stream(
                                 id,
                                 name,
                                 arguments: args,
+                                thought_signature: fc_sig,
                             });
                             continue;
                         }

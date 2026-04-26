@@ -33,6 +33,7 @@ fn tool_call_msg(id: &str, name: &str, args: serde_json::Value) -> ChatMessage {
             id: id.to_string(),
             name: name.to_string(),
             arguments: args,
+            thought_signature: None,
         }],
     }
 }
@@ -462,6 +463,7 @@ fn age_old_tool_cycles_mixed_content_assistant_msg() {
                     id: id.clone(),
                     name: "Read".to_string(),
                     arguments: big_args.clone(),
+                    thought_signature: None,
                 },
             ],
         });

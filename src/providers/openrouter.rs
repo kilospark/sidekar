@@ -184,6 +184,7 @@ fn build_request_body(
                             id,
                             name,
                             arguments,
+                            ..
                         } => Some(json!({
                             "id": super::sanitize_id_openai(id),
                             "type": "function",
@@ -412,6 +413,7 @@ async fn parse_sse_stream(
             id: tc.id.clone(),
             name: tc.name.clone(),
             arguments,
+            thought_signature: None,
         });
     }
 

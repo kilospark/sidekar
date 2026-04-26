@@ -217,6 +217,7 @@ fn build_request_body(
                         id,
                         name,
                         arguments,
+                        ..
                     } = block
                     {
                         let (call_id, item_id) = split_tool_call_ids(id);
@@ -482,6 +483,7 @@ async fn parse_sse_stream(
                             id: stored_id,
                             name,
                             arguments,
+                            thought_signature: None,
                         });
                     } else if item_type == "reasoning" {
                         // Capture encrypted reasoning blob for round-tripping.
@@ -1178,6 +1180,7 @@ where
                         id: stored_id,
                         name,
                         arguments,
+                        thought_signature: None,
                     });
                 } else if item_type == "reasoning" {
                     // Capture encrypted reasoning blob for round-tripping.

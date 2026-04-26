@@ -291,6 +291,7 @@ pub async fn run(
                     id,
                     name,
                     arguments,
+                    ..
                 } => Some((id.clone(), name.clone(), arguments.clone())),
                 _ => None,
             })

@@ -289,6 +289,7 @@ mod tests {
                     id: "t-1".into(),
                     name: "Read".into(),
                     arguments: serde_json::json!({"path": "src/auth.rs"}),
+                    thought_signature: None,
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "t-1".into(),

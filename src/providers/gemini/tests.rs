@@ -78,6 +78,7 @@ fn tool_round_trip_resolves_id_to_function_name() {
                 id: "call_Bash_0".into(),
                 name: "Bash".into(),
                 arguments: json!({"command": "ls"}),
+                thought_signature: None,
             }],
         },
         ChatMessage {
@@ -116,6 +117,7 @@ fn tool_result_error_wraps_in_error_field() {
                 id: "call_Grep_0".into(),
                 name: "Grep".into(),
                 arguments: json!({"pattern": "x"}),
+                thought_signature: None,
             }],
         },
         ChatMessage {
@@ -133,6 +135,91 @@ fn tool_result_error_wraps_in_error_field() {
     // Error goes into response.error, not response.content.
     assert_eq!(fr["response"]["error"], "oops");
     assert!(fr["response"].get("content").is_none());
+}
+
+#[test]
+fn thought_signature_replayed_on_function_call_parts() {
+    // When Gemini returns a thoughtSignature on a functionCall part,
+    // it must be replayed verbatim on the functionCall part in subsequent
+    // requests (not just on the thinking text part).
+    let history = vec![
+        mk_user_text("do something"),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "let me think...".into(),
+                    signature: "think_sig_abc".into(),
+                },
+                ContentBlock::ToolCall {
+                    id: "call_Bash_0".into(),
+                    name: "Bash".into(),
+                    arguments: json!({"command": "echo hi"}),
+                    thought_signature: Some("fc_sig_xyz".into()),
+                },
+            ],
+        },
+        ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_Bash_0".into(),
+                content: "hi".into(),
+                is_error: false,
+            }],
+        },
+    ];
+    let (body, _) = build_request_body("gemini-2.5-pro", "", &history, &[], None);
+    let assistant_parts = body["contents"][1]["parts"].as_array().unwrap();
+
+    // Thinking part carries its own signature.
+    assert_eq!(assistant_parts[0]["thoughtSignature"], "think_sig_abc");
+
+    // FunctionCall part carries its own (different) signature.
+    assert_eq!(assistant_parts[1]["thoughtSignature"], "fc_sig_xyz");
+}
+
+#[test]
+fn thought_signature_none_uses_skip_sentinel() {
+    // Cross-provider history: ToolCall has no Gemini signature.
+    // Should use SKIP_SIG sentinel when thinking is present.
+    let history = vec![
+        mk_user_text("do something"),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "hmm".into(),
+                    signature: String::new(),
+                },
+                ContentBlock::ToolCall {
+                    id: "call_Bash_0".into(),
+                    name: "Bash".into(),
+                    arguments: json!({"command": "ls"}),
+                    thought_signature: None,
+                },
+            ],
+        },
+        ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_Bash_0".into(),
+                content: "files".into(),
+                is_error: false,
+            }],
+        },
+    ];
+    let (body, _) = build_request_body("gemini-2.5-pro", "", &history, &[], None);
+    let assistant_parts = body["contents"][1]["parts"].as_array().unwrap();
+
+    // Both should use SKIP_SIG since no real sigs are available.
+    assert_eq!(
+        assistant_parts[0]["thoughtSignature"],
+        "skip_thought_signature_validator"
+    );
+    assert_eq!(
+        assistant_parts[1]["thoughtSignature"],
+        "skip_thought_signature_validator"
+    );
 }
 
 #[test]
@@ -268,6 +355,7 @@ fn cacheable_prefix_spans_tool_round_trip() {
                 id: "call_Bash_0".into(),
                 name: "Bash".into(),
                 arguments: json!({"command":"ls"}),
+                thought_signature: None,
             }],
         },
         ChatMessage {
@@ -320,11 +408,13 @@ fn tool_id_synthesis_disambiguates_same_name_calls() {
                 id: "call_Bash_0".into(),
                 name: "Bash".into(),
                 arguments: json!({"command": "ls"}),
+                thought_signature: None,
             },
             ContentBlock::ToolCall {
                 id: "call_Bash_1".into(),
                 name: "Bash".into(),
                 arguments: json!({"command": "pwd"}),
+                thought_signature: None,
             },
         ],
     };

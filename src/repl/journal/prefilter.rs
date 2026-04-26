@@ -330,6 +330,7 @@ mod tests {
                     id: "t-1".into(),
                     name: "Read".into(),
                     arguments: serde_json::json!({"path": "x"}),
+                    thought_signature: None,
                 },
             ],
         }];
@@ -382,6 +383,7 @@ mod tests {
                     id: "t-2".into(),
                     name: "Bash".into(),
                     arguments: serde_json::json!({"command": "ls"}),
+                    thought_signature: None,
                 },
             ],
         }];

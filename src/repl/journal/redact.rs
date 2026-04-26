@@ -390,6 +390,7 @@ mod tests {
                 arguments: serde_json::json!({
                     "command": "echo ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
                 }),
+                thought_signature: None,
             }],
         }];
         redact_history_in_place(&mut history);

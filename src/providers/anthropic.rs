@@ -375,6 +375,7 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
                 id,
                 name,
                 arguments,
+                ..
             } => Some(json!({
                 "type": "tool_use",
                 "id": super::sanitize_id_anthropic(id),
@@ -640,6 +641,7 @@ async fn parse_sse_stream(
                                 id: std::mem::take(&mut tool_id),
                                 name: std::mem::take(&mut tool_name),
                                 arguments,
+                                thought_signature: None,
                             });
                             let _ = tx.send(StreamEvent::ToolCallEnd { index });
                         }
