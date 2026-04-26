@@ -89,6 +89,17 @@ pub struct AXEnablement {
     non_assertable: Mutex<HashSet<i32>>,
 }
 
+use std::sync::OnceLock;
+
+static AX_ENABLEMENT: OnceLock<AXEnablement> = OnceLock::new();
+
+/// Get the process-global AX enablement cache. PID positive/negative
+/// caches persist for the lifetime of the process so we don't
+/// re-probe native apps or lose Chromium assertions across calls.
+pub fn ax_enablement() -> &'static AXEnablement {
+    AX_ENABLEMENT.get_or_init(AXEnablement::new)
+}
+
 impl AXEnablement {
     pub fn new() -> Self {
         Self {
@@ -392,7 +403,7 @@ fn msgsend_ptr() -> *mut c_void {
 /// guard.end(ctx);
 /// ```
 pub struct FocusGuard {
-    enablement: AXEnablement,
+    _private: (),
 }
 
 /// Context returned by `FocusGuard::begin`, passed to `end` for cleanup.
@@ -404,9 +415,7 @@ pub struct GuardContext {
 
 impl FocusGuard {
     pub fn new() -> Self {
-        Self {
-            enablement: AXEnablement::new(),
-        }
+        Self { _private: () }
     }
 
     /// Call before an AX action on a backgrounded `pid`.
@@ -416,8 +425,8 @@ impl FocusGuard {
         window: AXUIElementRef,
         element: AXUIElementRef,
     ) -> GuardContext {
-        // Layer 1: AX enablement
-        self.enablement.assert_for_pid(pid);
+        // Layer 1: AX enablement (uses process-global singleton)
+        ax_enablement().assert_for_pid(pid);
 
         // Layer 2: synthetic focus
         let focus_snap = enforce_focus(pid, window, element);
