@@ -3,19 +3,40 @@
 //! Builds a right-sized view of history for each API call without mutating
 //! canonical history in ways that break the prompt cache prefix.
 //!
-//! Two optimizations applied in order:
+//! Three optimizations applied in order:
 //! 1. Thinking block eviction — strip from all but the last assistant message.
-//! 2. Budget trimming — drop oldest messages if still over token budget.
+//! 2. Tool cycle aging — stub old tool results/arguments beyond the last K
+//!    complete tool cycles. The boundary advances only when a new tool cycle
+//!    is created (during an agent turn), NOT on every user message, so the
+//!    prompt cache prefix stays stable between user turns.
+//! 3. Budget trimming — drop oldest messages if still over token budget.
 //!
-//! Note: tool-result aging was removed. Distance-based aging mutated a message
-//! once it crossed the threshold, destroying the prompt cache key at that
-//! position. Context overflow is handled by `compaction::maybe_compact` which
-//! fires at ~90% of the context window — a rare event that rebuilds the cache
-//! once instead of every few turns.
+//! Compaction (`compaction::maybe_compact`) fires at ~65% of the context
+//! window as a heavier pass that mutates canonical history.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::providers::{ChatMessage, ContentBlock, Role};
+
+/// Number of recent tool cycles to keep intact in `prepare_context`.
+/// A "tool cycle" = one assistant message containing ToolCall(s) + the
+/// following user message containing matching ToolResult(s).
+///
+/// Override with `SIDEKAR_KEEP_TOOL_CYCLES` env var.
+fn keep_tool_cycles() -> usize {
+    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("SIDEKAR_KEEP_TOOL_CYCLES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5)
+    })
+}
+
+/// Minimum byte length for a tool result or tool call arguments to be
+/// eligible for aging. Smaller values are kept intact — they're cheap
+/// and often useful context (e.g. "File written successfully", `{"command":"ls"}`).
+const AGING_MIN_BYTES: usize = 200;
 
 /// Drop `ToolResult` blocks whose `tool_use_id` has no preceding assistant
 /// `ToolCall` with the same id. Compaction and budget trimming can leave such
@@ -69,8 +90,85 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         / 4
 }
 
-/// Build an ephemeral view of history with thinking eviction and optional
-/// budget trimming. Canonical history is not mutated.
+/// Age old tool cycles in the ephemeral view by stubbing large ToolResult
+/// content and ToolCall arguments. Keeps the last `keep` complete tool
+/// cycles intact.
+///
+/// A "tool cycle" is identified by scanning assistant messages for ToolCall
+/// blocks. We count cycles from the tail; once we've seen `keep` cycles,
+/// everything older gets aged.
+fn age_old_tool_cycles(view: &mut [ChatMessage], keep: usize) {
+    // Pass 1: Find the aging boundary.
+    //
+    // Walk backward through messages counting assistant messages that
+    // contain at least one ToolCall. The `keep`-th such message (from
+    // the tail) marks the start of the protected window. Everything
+    // *before* that index is eligible for aging.
+    let mut cycles_seen = 0usize;
+    let mut protect_start: Option<usize> = None;
+
+    for (i, msg) in view.iter().enumerate().rev() {
+        if msg.role == Role::Assistant
+            && msg
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+        {
+            cycles_seen += 1;
+            if cycles_seen >= keep {
+                protect_start = Some(i);
+                break;
+            }
+        }
+    }
+
+    let boundary = match protect_start {
+        Some(0) | None => return, // fewer than `keep` cycles, or nothing before the protected window
+        Some(b) => b, // age view[..b]
+    };
+
+    // Pass 2: Build a tool_use_id → tool_name map for aged messages so
+    // stubs can include the tool name for context.
+    let mut id_to_name: HashMap<String, String> = HashMap::new();
+    for msg in &view[..boundary] {
+        if msg.role == Role::Assistant {
+            for block in &msg.content {
+                if let ContentBlock::ToolCall { id, name, .. } = block {
+                    id_to_name.insert(id.clone(), name.clone());
+                }
+            }
+        }
+    }
+
+    // Pass 3: Stub large blocks in messages before the boundary.
+    for msg in view[..boundary].iter_mut() {
+        for block in msg.content.iter_mut() {
+            match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if content.len() > AGING_MIN_BYTES => {
+                    let tool_name = id_to_name
+                        .get(tool_use_id.as_str())
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    *content =
+                        format!("[tool output cleared — {} chars, tool: {tool_name}]", content.len());
+                }
+                ContentBlock::ToolCall { arguments, .. }
+                    if arguments.to_string().len() > AGING_MIN_BYTES =>
+                {
+                    *arguments = serde_json::Value::Object(serde_json::Map::new());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Build an ephemeral view of history with thinking eviction, tool cycle
+/// aging, and optional budget trimming. Canonical history is not mutated.
 pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<ChatMessage> {
     // --- Step 0: Drop orphan tool results (compaction/trimming can leave them) ---
     let mut view: Vec<ChatMessage> = history.to_vec();
@@ -92,7 +190,10 @@ pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<Chat
     // Drop messages that became empty after stripping.
     view.retain(|m| !m.content.is_empty());
 
-    // --- Step 2: Budget trimming (ephemeral, view-only) ---
+    // --- Step 2: Tool cycle aging (ephemeral, view-only) ---
+    age_old_tool_cycles(&mut view, keep_tool_cycles());
+
+    // --- Step 3: Budget trimming (ephemeral, view-only) ---
     let est = estimate_tokens(&view);
     if est > token_budget && view.len() > 2 {
         // Protect the first message (may contain session context) and the last 5.

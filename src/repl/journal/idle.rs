@@ -161,6 +161,7 @@ impl IdleTracker {
     /// currently armed. Exposed for observability (status line,
     /// debug logging) — the firing decision lives in
     /// `should_fire()`.
+    #[allow(dead_code)]
     pub(crate) fn since_armed(&self) -> Option<Duration> {
         let guard = match self.inner.lock() {
             Ok(g) => g,

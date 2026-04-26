@@ -25,7 +25,9 @@ type CGEventRef = *mut c_void;
 type CGEventSourceRef = *mut c_void;
 
 // CGEventType
+#[allow(dead_code)]
 const kCGEventKeyDown: u32 = 10;
+#[allow(dead_code)]
 const kCGEventKeyUp: u32 = 11;
 const kCGEventLeftMouseDown: u32 = 1;
 const kCGEventLeftMouseUp: u32 = 2;

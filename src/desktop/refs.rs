@@ -35,6 +35,7 @@ pub const INTERACTIVE_ROLES: &[&str] = &[
     "AXOutlineRow",
 ];
 
+#[allow(dead_code)]
 fn is_interactive_role(role: &str) -> bool {
     INTERACTIVE_ROLES.contains(&role)
 }

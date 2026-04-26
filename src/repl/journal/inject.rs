@@ -24,7 +24,6 @@
 
 use std::fmt::Write;
 
-use crate::repl::journal::parse::StructuredJournal;
 use crate::repl::journal::store::{self, JournalRow};
 
 /// Maximum journals pulled for injection. Overridable per-process
@@ -183,6 +182,7 @@ fn now_unix_secs() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repl::journal::parse::StructuredJournal;
 
     fn row_with(
         id: i64,

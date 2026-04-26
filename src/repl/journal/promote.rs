@@ -40,7 +40,7 @@ use anyhow::Result;
 
 use crate::memory;
 use crate::repl::journal::parse::{self, StructuredJournal};
-use crate::repl::journal::store::{self, JournalRow};
+use crate::repl::journal::store;
 
 /// How many distinct journals must reference the same normalized
 /// constraint before it's promoted to `memory_events`. Tuned

@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(super) struct DetectedFile {
     pub path: PathBuf,
     pub mtime_secs: u64,
+    #[allow(dead_code)]
     pub size: u64,
 }
 

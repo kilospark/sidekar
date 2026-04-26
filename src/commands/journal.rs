@@ -19,7 +19,6 @@
 use anyhow::{Result, bail};
 
 use crate::AppContext;
-use crate::out;
 use crate::repl::journal::store::{self, JournalRow};
 
 pub fn cmd_journal(ctx: &mut AppContext, args: &[String]) -> Result<()> {

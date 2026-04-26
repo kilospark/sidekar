@@ -42,6 +42,7 @@ fn frontmost_window_id_for_pid(pid: i32) -> Option<u32> {
     use core_foundation::string::CFString;
     use std::ffi::c_void;
 
+    #[allow(clashing_extern_declarations)]
     unsafe extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *const c_void;
     }

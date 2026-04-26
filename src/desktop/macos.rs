@@ -69,6 +69,7 @@ const kAXChildrenAttribute: &str = "AXChildren";
 const kAXIdentifierAttribute: &str = "AXIdentifier";
 const kAXPressAction: &str = "AXPress";
 
+#[allow(clashing_extern_declarations)]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXIsProcessTrustedWithOptions(

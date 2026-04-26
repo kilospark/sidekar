@@ -50,6 +50,7 @@ pub(super) struct ScanOutcome {
 }
 
 impl ScanOutcome {
+    #[allow(dead_code)]
     pub fn was_clean(&self) -> bool {
         self.matched.is_empty()
     }

@@ -126,6 +126,7 @@ impl HeadTailBuffer {
     }
 
     /// Whether any middle bytes have been dropped. Sticky.
+    #[allow(dead_code)]
     pub fn truncated(&self) -> bool {
         self.truncated
     }

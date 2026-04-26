@@ -54,7 +54,7 @@ use crate::providers::{ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::runtime;
 
 use super::idle::IdleTracker;
-use super::parse::{self, StructuredJournal};
+use super::parse;
 use super::prefilter::{self, Verdict};
 use super::promote;
 use super::prompt;
@@ -102,6 +102,7 @@ pub(crate) struct Context {
 /// from "over budget" from "LLM failed." Inserted ids and token
 /// counts ride along on `Persisted`.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum Outcome {
     Persisted {
         id: i64,

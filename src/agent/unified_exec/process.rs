@@ -337,6 +337,7 @@ impl UnifiedExecProcess {
     }
 
     /// True iff the child has exited and been reaped.
+    #[allow(dead_code)]
     pub async fn has_exited(&self) -> bool {
         self.state.lock().await.exit_code.is_some()
     }

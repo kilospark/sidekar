@@ -49,7 +49,7 @@ pub async fn maybe_compact(
     context_window: u32,
     on_event: &StreamCallback,
 ) -> bool {
-    let threshold = (context_window as usize) * 9 / 10;
+    let threshold = (context_window as usize) * 65 / 100;
     let current = estimate_tokens(history);
 
     if current < threshold {
@@ -123,8 +123,8 @@ async fn compact_history(
     }
 }
 
-/// Phase 1: Replace old tool result markers and thinking blocks with "[Cleared]".
-/// Keeps the last `keep_recent` messages intact.
+/// Phase 1: Replace old tool results, tool call arguments, and thinking
+/// blocks with "[Cleared]". Keeps the last `keep_recent` messages intact.
 fn phase1_clear_old_results(history: &mut [ChatMessage]) -> usize {
     let keep_recent = 6;
     let cutoff = history.len().saturating_sub(keep_recent);
@@ -135,6 +135,12 @@ fn phase1_clear_old_results(history: &mut [ChatMessage]) -> usize {
             match block {
                 ContentBlock::ToolResult { content, .. } if content.len() > 200 => {
                     *content = "[Cleared]".to_string();
+                    cleared += 1;
+                }
+                ContentBlock::ToolCall { arguments, .. }
+                    if arguments.to_string().len() > 200 =>
+                {
+                    *arguments = serde_json::Value::Object(serde_json::Map::new());
                     cleared += 1;
                 }
                 ContentBlock::Thinking { thinking, .. } if thinking.len() > 200 => {
