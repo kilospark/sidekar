@@ -67,7 +67,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["async"] }
-enigo = "0.6"
+# enigo removed — all input now goes through bg_input.rs (CGEvent + SkyLight SPI)
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 objc2 = "0.6"

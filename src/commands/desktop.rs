@@ -505,26 +505,16 @@ pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> 
         if spec.is_empty() {
             bail!("Usage: sidekar desktop press [--app <name>|--pid <pid>] <key|combo>");
         }
-        if let Some(pid) = pid {
-            // Background-safe per-pid delivery
-            let keys: Vec<&str> = spec.split('+').map(|s| s.trim()).collect();
-            crate::desktop::bg_input::hotkey(&keys, Some(pid))?;
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new(format!(
-                    "Pressed {} → pid {}", spec, pid
-                )))?
-            );
-        } else {
-            // Legacy foreground path
-            crate::desktop::input::press_chord(&spec)?;
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new(format!("Pressed {}", spec)))?
-            );
-        }
+        let keys: Vec<&str> = spec.split('+').map(|s| s.trim()).collect();
+        crate::desktop::bg_input::hotkey(&keys, pid)?;
+        let target = pid.map(|p| format!(" → pid {p}")).unwrap_or_default();
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!(
+                "Pressed {}{}", spec, target
+            )))?
+        );
         Ok(())
     }
 }
@@ -540,30 +530,17 @@ pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> R
         if text.is_empty() {
             bail!("Usage: sidekar desktop type [--app <name>|--pid <pid>] <text>");
         }
-        if let Some(pid) = pid {
-            // Background-safe per-pid delivery via CGEvent + SkyLight
-            crate::desktop::bg_input::type_characters(&text, 5, Some(pid))?;
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new(format!(
-                    "Typed {} chars → pid {}",
-                    text.chars().count(),
-                    pid
-                )))?
-            );
-        } else {
-            // Legacy foreground path via enigo
-            crate::desktop::input::type_text(&text)?;
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new(format!(
-                    "Typed {} chars",
-                    text.chars().count()
-                )))?
-            );
-        }
+        crate::desktop::bg_input::type_characters(&text, 5, pid)?;
+        let target = pid.map(|p| format!(" → pid {p}")).unwrap_or_default();
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!(
+                "Typed {} chars{}",
+                text.chars().count(),
+                target
+            )))?
+        );
         Ok(())
     }
 }
@@ -625,17 +602,21 @@ pub(super) async fn cmd_desktop_paste(ctx: &mut AppContext, args: &[String]) -> 
 
     #[cfg(target_os = "macos")]
     {
-        let text = args.join(" ");
+        let (pid, remaining) = parse_desktop_pid_and_rest_optional(args);
+        let text = remaining.join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar desktop paste <text>");
+            bail!("Usage: sidekar desktop paste [--app <name>|--pid <pid>] <text>");
         }
-        crate::desktop::input::paste_text(&text)?;
+        crate::desktop::input::set_clipboard_text(&text)?;
+        crate::desktop::bg_input::hotkey(&["cmd", "v"], pid)?;
+        let target = pid.map(|p| format!(" → pid {p}")).unwrap_or_default();
         out!(
             ctx,
             "{}",
             crate::output::to_string(&PlainOutput::new(format!(
-                "Pasted {} chars",
-                text.chars().count()
+                "Pasted {} chars{}",
+                text.chars().count(),
+                target
             )))?
         );
         Ok(())

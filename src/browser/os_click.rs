@@ -9,8 +9,8 @@
 //! CDP attach left a banner up.
 //!
 //! The translation lives here in the browser crate because it needs a live
-//! CDP client to eval in the page; the raw CGEvent post stays in
-//! `desktop::input::click_at`.
+//! CDP client to eval in the page; the raw CGEvent post goes through
+//! `desktop::bg_input::click_at_pid` (frontmost HID tap path when no pid).
 
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -114,15 +114,15 @@ pub fn to_screen(css_x: f64, css_y: f64, m: &WindowMetrics) -> (f64, f64) {
 
 /// Click at a page CSS viewport coordinate via OS-level CGEvent input.
 ///
-/// Goes through `desktop::input::click_at` → enigo → CGEvent at kCGHIDEventTap,
-/// which produces an `event.isTrusted === true` click indistinguishable from
-/// the user's own mouse.
+/// Goes through `desktop::bg_input::click_at_pid` → CGEvent at kCGHIDEventTap
+/// (frontmost path), which produces an `event.isTrusted === true` click
+/// indistinguishable from the user's own mouse.
 ///
-/// Empirical note (macOS + enigo 0.6.1 + Chrome): `click_at(x, y)` on this
-/// combination lands at CSS viewport (x, y) of the focused window, not at
-/// raw screen (x, y). We pass CSS viewport coords directly. The `measure_*`
-/// helpers stay available for Linux/Windows where coord systems differ and
-/// for diagnostic reporting.
+/// Empirical note (macOS + Chrome): `click_at(x, y)` on this combination
+/// lands at CSS viewport (x, y) of the focused window, not at raw screen
+/// (x, y). We pass CSS viewport coords directly. The `measure_*` helpers
+/// stay available for Linux/Windows where coord systems differ and for
+/// diagnostic reporting.
 pub async fn os_click_css(
     ctx: &AppContext,
     cdp: &mut CdpClient,
@@ -133,7 +133,11 @@ pub async fn os_click_css(
     let metrics = measure_window(cdp).await?;
     #[cfg(target_os = "macos")]
     {
-        crate::desktop::input::click_at(zx, zy)?;
+        crate::desktop::bg_input::click_frontmost(
+            zx, zy,
+            crate::desktop::bg_input::MouseButton::Left,
+            1,
+        )?;
     }
     #[cfg(not(target_os = "macos"))]
     {

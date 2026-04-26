@@ -385,6 +385,17 @@ impl MouseButton {
     }
 }
 
+/// Click at `(x, y)` in the frontmost window via HID tap.
+/// Convenience wrapper for browser OS-click and other foreground scenarios.
+pub fn click_frontmost(
+    x: f64,
+    y: f64,
+    button: MouseButton,
+    count: u32,
+) -> Result<()> {
+    click_frontmost_via_hid_tap(x, y, button, count)
+}
+
 /// Click at `(x, y)` screen-point targeting `pid`.
 ///
 /// For backgrounded targets: uses the auth-signed SkyLight recipe

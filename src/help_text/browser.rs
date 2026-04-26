@@ -366,7 +366,7 @@ sidekar desktop <subcommand> [args...]
     click     --app <name>|--pid <pid> <query>
     press     [--app <name>|--pid <pid>] <key|combo>
     type      [--app <name>|--pid <pid>] <text>
-    paste     <text>
+    paste     [--app <name>|--pid <pid>] <text>
     scroll    [--app <name>|--pid <pid>] <up|down|left|right> [amount] [page|line]
     launch    <app>
     activate  --app <name>|--pid <pid>
