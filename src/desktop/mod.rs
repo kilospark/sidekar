@@ -11,6 +11,8 @@ pub use macos as native;
 #[cfg(target_os = "macos")]
 pub mod monitor;
 #[cfg(target_os = "macos")]
+pub mod refs;
+#[cfg(target_os = "macos")]
 pub mod screen;
 #[cfg(target_os = "macos")]
 pub mod skylight;

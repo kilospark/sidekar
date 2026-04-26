@@ -677,6 +677,30 @@ pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> 
     walk_tree(app_element, pid, &[], 0, 0, 12, &lower_query, &mut matches);
     unsafe { CFRelease(app_element as *const c_void) };
 
+    // Assign refs to interactive matches
+    {
+        let mut refmap = super::refs::ref_map().lock().unwrap();
+        refmap.clear_pid(pid);
+        for m in &matches {
+            if super::refs::INTERACTIVE_ROLES.contains(&m.role.as_str()) || !m.actions.is_empty() {
+                let fh = m.frame.as_ref().map(|f| {
+                    super::refs::frame_hash(f.x, f.y, f.width, f.height)
+                });
+                let ref_id = refmap.allocate(super::refs::RefEntry {
+                    pid,
+                    role: m.role.clone(),
+                    title: m.title.clone(),
+                    value: m.value.clone(),
+                    actions: m.actions.clone(),
+                    path: m.path.clone(),
+                    frame_hash: fh,
+                });
+                // Store ref_id on the match (via ref_id field)
+                let _ = ref_id; // refs are stored in the global map
+            }
+        }
+    }
+
     Ok(matches)
 }
 
@@ -776,6 +800,22 @@ fn walk_tree(
 // ---------------------------------------------------------------------------
 
 pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
+    // Check if query is a ref like @e3
+    if let Some(ref_id) = super::refs::parse_ref(query) {
+        let refmap = super::refs::ref_map().lock().unwrap();
+        if let Some(entry) = refmap.get(ref_id) {
+            let resolved_pid = entry.pid;
+            let path = entry.path.clone();
+            let role = entry.role.clone();
+            let title = entry.title.clone();
+            drop(refmap);
+            return click_element_by_path(resolved_pid, &path, &role, title.as_deref());
+        } else {
+            drop(refmap);
+            bail!("Ref {} not found. Run `sidekar desktop find` to refresh refs.", ref_id);
+        }
+    }
+
     let matches = find_elements(pid, query)?;
 
     let first = match matches.first() {
@@ -841,6 +881,58 @@ pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
         x: None,
         y: None,
     })
+}
+
+/// Click an element by its resolved path (used by ref resolution).
+fn click_element_by_path(
+    pid: i32,
+    path: &DesktopElementPath,
+    role: &str,
+    title: Option<&str>,
+) -> Result<DesktopClickResult> {
+    let app_element = unsafe { AXUIElementCreateApplication(pid) };
+    if let Some(element) = resolve_element(app_element, path) {
+        let actions = ax_action_names(element);
+        if actions.iter().any(|a| a == kAXPressAction) {
+            let guard = super::focus_guard::FocusGuard::new();
+            let ctx = guard.begin(pid, std::ptr::null_mut(), element as *mut c_void);
+            let cf_action = CFString::new(kAXPressAction);
+            let err = unsafe { AXUIElementPerformAction(element, cf_action.as_concrete_TypeRef()) };
+            guard.end(ctx);
+            unsafe {
+                CFRelease(element as *const c_void);
+                CFRelease(app_element as *const c_void);
+            };
+            if err == AX_ERROR_SUCCESS {
+                return Ok(DesktopClickResult {
+                    kind: "axPress".into(),
+                    role: Some(role.to_string()),
+                    title: title.map(String::from),
+                    x: None,
+                    y: None,
+                });
+            }
+        }
+        // Try coordinate fallback
+        let position = ax_point_attribute(element, kAXPositionAttribute);
+        let size = ax_size_attribute(element, kAXSizeAttribute);
+        unsafe { CFRelease(element as *const c_void) };
+        unsafe { CFRelease(app_element as *const c_void) };
+        if let (Some(pos), Some(sz)) = (position, size) {
+            let cx = pos.x + sz.width / 2.0;
+            let cy = pos.y + sz.height / 2.0;
+            return Ok(DesktopClickResult {
+                kind: "fallbackClick".into(),
+                role: Some(role.to_string()),
+                title: title.map(String::from),
+                x: Some(cx),
+                y: Some(cy),
+            });
+        }
+    } else {
+        unsafe { CFRelease(app_element as *const c_void) };
+    }
+    bail!("Ref resolved but element no longer exists in AX tree (stale ref)")
 }
 
 /// Walk the AX tree following a DesktopElementPath to find the actual element.

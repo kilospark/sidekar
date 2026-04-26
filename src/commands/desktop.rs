@@ -320,8 +320,26 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
             bail!("Usage: sidekar desktop find --app <name>|--pid <pid> <query>");
         }
         let matches = crate::desktop::native::find_elements(pid, &query)?;
+
+        // Collect ref assignments for the output
+        let ref_entries: Vec<(String, String, Option<String>)> = {
+            let refmap = crate::desktop::refs::ref_map().lock().unwrap();
+            refmap.entries_sorted()
+                .iter()
+                .filter(|(_, e)| e.pid == pid)
+                .map(|(id, e)| (id.to_string(), e.role.clone(), e.title.clone()))
+                .collect()
+        };
+        // Build a lookup: (role, title) → ref_id for matching
+        let ref_lookup: std::collections::HashMap<(String, Option<String>), String> = ref_entries
+            .into_iter()
+            .map(|(id, role, title)| ((role, title), id))
+            .collect();
+
         #[derive(serde::Serialize)]
         struct FindMatch {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            ref_id: Option<String>,
             role: String,
             title: Option<String>,
             actions: Vec<String>,
@@ -345,7 +363,10 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
                     } else {
                         format!(" [{}]", m.actions.join(", "))
                     };
-                    writeln!(w, "  {} \"{}\"{}", m.role, title, actions)?;
+                    let ref_tag = m.ref_id.as_deref()
+                        .map(|r| format!("{} ", r))
+                        .unwrap_or_default();
+                    writeln!(w, "  {}{} \"{}\"{}", ref_tag, m.role, title, actions)?;
                 }
                 Ok(())
             }
@@ -354,10 +375,16 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
             query: query.clone(),
             matches: matches
                 .into_iter()
-                .map(|m| FindMatch {
-                    role: m.role,
-                    title: m.title,
-                    actions: m.actions,
+                .map(|m| {
+                    let ref_id = ref_lookup
+                        .get(&(m.role.clone(), m.title.clone()))
+                        .cloned();
+                    FindMatch {
+                        ref_id,
+                        role: m.role,
+                        title: m.title,
+                        actions: m.actions,
+                    }
                 })
                 .collect(),
         };
