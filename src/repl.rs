@@ -706,7 +706,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         resume_cmd.push_str(&format!(" -m {m}"));
     }
     resume_cmd.push_str(&format!(" -r {session_id}"));
-    tunnel_println(&format!("\n\x1b[2mResume: {resume_cmd}\x1b[0m"));
+    tunnel_println(&format!("\n\x1b[2m{resume_cmd}\x1b[0m"));
 
     // Stop the journaling polling task, if it was spawned. Abort
     // is immediate; any in-flight LLM call is dropped. Not calling
