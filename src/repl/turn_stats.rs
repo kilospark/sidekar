@@ -110,6 +110,7 @@ mod tests {
             stop_reason: stop,
             model: "m".into(),
             response_id: rid.into(),
+            rate_limit: None,
         }
     }
 

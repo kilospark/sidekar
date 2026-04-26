@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamConfig, StreamEvent,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamConfig, StreamEvent,
     ToolDef, Usage,
 };
 
@@ -107,10 +107,12 @@ pub async fn stream(
         bail!("Anthropic API error ({}): {}", status, text);
     }
 
+    let rate_limit = RateLimitSnapshot::from_anthropic_headers(response.headers()).into_option();
+
     let (tx, rx) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
-        if let Err(e) = parse_sse_stream(response, &tx).await {
+        if let Err(e) = parse_sse_stream(response, rate_limit, &tx).await {
             let _ = tx.send(StreamEvent::Error {
                 message: format!("{e:#}"),
             });
@@ -488,6 +490,7 @@ fn compute_cch(body: &str) -> String {
 // ---------------------------------------------------------------------------
 async fn parse_sse_stream(
     response: reqwest::Response,
+    rate_limit: Option<RateLimitSnapshot>,
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
     let mut stream = response.bytes_stream();
@@ -678,6 +681,7 @@ async fn parse_sse_stream(
                             stop_reason: stop_reason.clone(),
                             model: model_id.clone(),
                             response_id: String::new(),
+                            rate_limit: rate_limit.clone(),
                         },
                     });
                 }

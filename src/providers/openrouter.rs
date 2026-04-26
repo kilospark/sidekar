@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent, ToolDef, Usage,
 };
 
 /// Streaming call to OpenRouter's OpenAI-compatible chat completions API.
@@ -75,7 +75,8 @@ pub async fn stream_with_provider(
     let (tx, rx) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
-        if let Err(e) = parse_sse_stream(response, &tx).await {
+        let rate_limit = RateLimitSnapshot::from_openai_headers(response.headers()).into_option();
+        if let Err(e) = parse_sse_stream(response, rate_limit, &tx).await {
             let _ = tx.send(StreamEvent::Error {
                 message: format!("{e:#}"),
             });
@@ -261,6 +262,7 @@ struct PendingToolCall {
 
 async fn parse_sse_stream(
     response: reqwest::Response,
+    rate_limit: Option<RateLimitSnapshot>,
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
     let mut stream = response.bytes_stream();
@@ -441,6 +443,7 @@ async fn parse_sse_stream(
             stop_reason: stop,
             model: model_id,
             response_id: String::new(),
+                            rate_limit: rate_limit.clone(),
         },
     });
 

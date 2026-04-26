@@ -190,6 +190,7 @@ mod tests {
             stop_reason: StopReason::Stop,
             model: "test".into(),
             response_id: String::new(),
+            rate_limit: None,
         };
         let fwd = EventForwarder::new();
         fwd.forward(&StreamEvent::Done {

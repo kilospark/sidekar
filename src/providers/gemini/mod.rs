@@ -824,6 +824,7 @@ async fn parse_sse_stream(
             stop_reason,
             model: model.to_string(),
             response_id: String::new(),
+                            rate_limit: None,
         },
     });
 

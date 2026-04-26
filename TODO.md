@@ -108,6 +108,29 @@ All implementations in `~/src/oss/Interceptor/interceptor-bridge/Sources/Domains
 
 ---
 
+## First-class Vertex AI provider
+
+**Status:** deferred. v3.2.8 ships a Vertex adapter inside the OpenAI-compat provider type — works but clunky (manual base URL paste, manual `gcloud print-access-token`, no project picker, model IDs surface as `<publisher>/<id>`).
+
+**What "first-class" means:**
+- Own entry in provider picker (alongside Anthropic, OpenAI, Gemini, Codex, OpenRouter, OpenAI-compat). Shortcut: `ver` or `vertex`.
+- Settings UI fields: GCP project, region (default `global`), publisher allowlist. No URL pasting.
+- Auth: Application Default Credentials (`~/.config/gcloud/application_default_credentials.json`) with automatic token refresh. Service account JSON as alternative. Falls back to `gcloud auth print-access-token` shell-out only if ADC missing.
+- Token cache + refresh-before-expiry (ya29 tokens last 1h). Reuse the OAuth refresh pattern from `src/providers/oauth.rs`.
+- Model picker shows clean IDs (`gemini-2.5-pro`, `claude-sonnet-4@20250514`, `qwen3-coder-480b`) grouped by publisher. Internal mapping handles the `<publisher>/<id>` form Vertex's openapi compat requires.
+- Model Garden enablement check: when a publisher returns 0 models, surface a hint linking to `https://console.cloud.google.com/vertex-ai/model-garden` with the project pre-selected.
+- Region-aware: some models are region-pinned (Claude on Vertex requires `us-east5`/`europe-west1`, not `global`). Provider should know the per-model region constraint and route accordingly, or surface the constraint in the picker.
+
+**Why deferred:** v3.2.8 unblocks the immediate need (Vertex chat works via OpenAI-compat with the auto-detection adapter). Promoting to first-class is ~400 LOC + ADC integration + UI work — worth doing if Vertex becomes a regular driver, not for one-off use.
+
+**Reference:** existing adapter logic in `src/providers/vertex.rs` (publisher discovery, project extraction, header injection) — most of it carries over; the new work is auth, settings UI, and the provider-trait wrapper.
+
+**Prereq when revived:**
+- Decide ADC discovery order (env `GOOGLE_APPLICATION_CREDENTIALS` → file path → metadata server) and document in `context/release-cycle.md` style doc.
+- Pick the canonical region default for the picker (`global` works for Gemini; Claude needs `us-east5`).
+
+---
+
 ## Cross-cutting
 
 ### macOS code-signing + notarization pipeline

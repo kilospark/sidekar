@@ -525,6 +525,7 @@ mod consume_stream_tests {
             response_id: String::new(),
             model: String::new(),
             usage: Default::default(),
+            rate_limit: None,
         }
     }
 

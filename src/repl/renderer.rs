@@ -213,15 +213,16 @@ impl EventRenderer {
                 emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
                 let u = &message.usage;
+                let rl = crate::repl::ratelimit::format_compact(message.rate_limit.as_ref());
                 if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
                     self.emitln(&format!(
-                        "\x1b[2m[{} in / {} out / {} cache read / {} cache write tokens]\x1b[0m",
-                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
+                        "\x1b[2m[{} in / {} out / {} cache read / {} cache write tokens{}]\x1b[0m",
+                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, rl
                     ));
                 } else {
                     self.emitln(&format!(
-                        "\x1b[2m[{} in / {} out tokens]\x1b[0m",
-                        u.input_tokens, u.output_tokens
+                        "\x1b[2m[{} in / {} out tokens{}]\x1b[0m",
+                        u.input_tokens, u.output_tokens, rl
                     ));
                 }
                 let _ = io::stdout().flush();

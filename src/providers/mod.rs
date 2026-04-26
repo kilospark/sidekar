@@ -448,6 +448,154 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+/// Snapshot of provider rate-limit / quota state from response headers (or 429 body).
+/// All fields optional — providers vary in coverage.
+/// `reset_at` and `session_reset_at` are Unix epoch seconds.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct RateLimitSnapshot {
+    /// Requests-per-window remaining (e.g. RPM bucket).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_remaining: Option<u64>,
+    /// Requests-per-window limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_limit: Option<u64>,
+    /// Tokens-per-window remaining (combined or input — provider-dependent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_remaining: Option<u64>,
+    /// Tokens-per-window limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_limit: Option<u64>,
+    /// Earliest header-reset (Unix epoch seconds) — short-window throttle (e.g. 60s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<u64>,
+    /// Anthropic Pro/Team session-window reset (Unix epoch seconds), parsed from 429 body
+    /// when message contains "Your limit will reset at HH:MM ...". Multi-hour scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_reset_at: Option<u64>,
+}
+
+impl RateLimitSnapshot {
+    /// Returns Self wrapped in Option::Some, or None if all fields are empty.
+    pub fn into_option(self) -> Option<Self> {
+        if self.is_empty() { None } else { Some(self) }
+    }
+
+    /// True if no fields populated — used to skip emitting empty snapshots.
+    pub fn is_empty(&self) -> bool {
+        self.requests_remaining.is_none()
+            && self.requests_limit.is_none()
+            && self.tokens_remaining.is_none()
+            && self.tokens_limit.is_none()
+            && self.reset_at.is_none()
+            && self.session_reset_at.is_none()
+        }
+
+    /// Parse rate-limit headers in the OpenAI-style schema (`x-ratelimit-*`).
+    /// Used by OpenAI, Codex, OpenRouter, xAI, most OpenAI-compat hosts.
+    pub fn from_openai_headers(h: &reqwest::header::HeaderMap) -> Self {
+        let mut snap = Self::default();
+        snap.requests_limit = parse_u64_header(h, "x-ratelimit-limit-requests");
+        snap.requests_remaining = parse_u64_header(h, "x-ratelimit-remaining-requests");
+        snap.tokens_limit = parse_u64_header(h, "x-ratelimit-limit-tokens");
+        snap.tokens_remaining = parse_u64_header(h, "x-ratelimit-remaining-tokens");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let r1 = parse_reset_header(h, "x-ratelimit-reset-requests", now);
+        let r2 = parse_reset_header(h, "x-ratelimit-reset-tokens", now);
+        // OpenRouter sometimes uses bare "x-ratelimit-reset" (ms epoch).
+        let r3 = parse_reset_header(h, "x-ratelimit-reset", now);
+        snap.reset_at = [r1, r2, r3].into_iter().flatten().min();
+        snap
+    }
+
+    /// Parse rate-limit headers in Anthropic's schema (`anthropic-ratelimit-*`).
+    pub fn from_anthropic_headers(h: &reqwest::header::HeaderMap) -> Self {
+        let mut snap = Self::default();
+        snap.requests_limit = parse_u64_header(h, "anthropic-ratelimit-requests-limit");
+        snap.requests_remaining = parse_u64_header(h, "anthropic-ratelimit-requests-remaining");
+        // Anthropic exposes input/output separately + a combined "tokens".
+        // Prefer combined "tokens" if present, else fall back to input bucket.
+        snap.tokens_limit = parse_u64_header(h, "anthropic-ratelimit-tokens-limit")
+            .or_else(|| parse_u64_header(h, "anthropic-ratelimit-input-tokens-limit"));
+        snap.tokens_remaining = parse_u64_header(h, "anthropic-ratelimit-tokens-remaining")
+            .or_else(|| parse_u64_header(h, "anthropic-ratelimit-input-tokens-remaining"));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let resets = [
+            parse_reset_header(h, "anthropic-ratelimit-requests-reset", now),
+            parse_reset_header(h, "anthropic-ratelimit-tokens-reset", now),
+            parse_reset_header(h, "anthropic-ratelimit-input-tokens-reset", now),
+            parse_reset_header(h, "anthropic-ratelimit-output-tokens-reset", now),
+        ];
+        snap.reset_at = resets.into_iter().flatten().min();
+        snap
+    }
+
+    /// Parse Anthropic's Pro/Team session-window reset from a 429 error body.
+    /// Body shape: { error: { type: "rate_limit_error", message: "... reset at 14:32 UTC ..." } }
+    /// Sets `session_reset_at` if a HH:MM reset time is found.
+    pub fn parse_anthropic_session_reset(body: &str) -> Option<u64> {
+        // Look for "reset at HH:MM" or "resets at HH:MM" (UTC implied).
+        let re = regex::Regex::new(r"reset(?:s)? at (\d{1,2}):(\d{2})").ok()?;
+        let caps = re.captures(body)?;
+        let hour: u32 = caps.get(1)?.as_str().parse().ok()?;
+        let minute: u32 = caps.get(2)?.as_str().parse().ok()?;
+        if hour > 23 || minute > 59 {
+            return None;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        // Compute target time today (UTC).
+        let secs_today = now % 86_400;
+        let target_secs = (hour as u64) * 3600 + (minute as u64) * 60;
+        let day_start = now - secs_today;
+        let mut target = day_start + target_secs;
+        if target <= now {
+            target += 86_400; // next day
+        }
+        Some(target)
+    }
+}
+
+fn parse_u64_header(h: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
+    h.get(name)?.to_str().ok()?.trim().parse::<u64>().ok()
+}
+
+/// Parse a rate-limit reset header. Accepts:
+///   - Unix epoch seconds (10-digit) → returned as-is
+///   - Unix epoch milliseconds (13-digit) → divided by 1000
+///   - ISO 8601 timestamp → converted (best-effort; falls through if no parser)
+///   - Duration like "60s", "1.5s", "60" → added to `now`
+fn parse_reset_header(h: &reqwest::header::HeaderMap, name: &str, now: u64) -> Option<u64> {
+    let raw = h.get(name)?.to_str().ok()?.trim();
+    if let Ok(n) = raw.parse::<u64>() {
+        // 13-digit → ms epoch
+        if n > 1_000_000_000_000 {
+            return Some(n / 1000);
+        }
+        // 10-digit → s epoch (treat as absolute if plausibly in the future)
+        if n > 1_000_000_000 {
+            return Some(n);
+        }
+        // small int → seconds-from-now
+        return Some(now + n);
+    }
+    // Try float (e.g. "1.5s")
+    let stripped = raw.trim_end_matches('s').trim_end_matches("ms");
+    if let Ok(f) = stripped.parse::<f64>() {
+        let secs = if raw.ends_with("ms") { f / 1000.0 } else { f };
+        return Some(now + secs.round() as u64);
+    }
+    None
+}
+
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u32,
@@ -672,6 +820,10 @@ pub struct AssistantResponse {
     /// `previous_response_id`). Empty for providers that don't support it.
     #[serde(default)]
     pub response_id: String,
+    /// Quota / rate-limit snapshot parsed from response headers (or 429 body).
+    /// `None` for providers that don't expose any (Gemini, Vertex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitSnapshot>,
 }
 
 /// Cached model metadata fetched from provider APIs.

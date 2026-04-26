@@ -18,6 +18,7 @@ mod spinner;
 mod stats;
 mod status;
 mod system_prompt;
+mod ratelimit;
 mod turn_stats;
 mod user_turn;
 

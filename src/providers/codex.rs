@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, Role, StopReason, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent, ToolDef, Usage,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,10 +79,12 @@ pub async fn stream(
         bail!("Codex API error ({}): {}", status, text);
     }
 
+    let rate_limit = { let snap = RateLimitSnapshot::from_openai_headers(response.headers()); if snap.is_empty() { None } else { Some(snap) } };
+
     let (tx, rx) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
-        if let Err(e) = parse_sse_stream(response, &tx).await {
+        if let Err(e) = parse_sse_stream(response, rate_limit, &tx).await {
             let _ = tx.send(StreamEvent::Error {
                 message: format!("{e:#}"),
             });
@@ -302,6 +304,7 @@ fn build_request_body(
 
 async fn parse_sse_stream(
     response: reqwest::Response,
+    rate_limit: Option<RateLimitSnapshot>,
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
     let mut stream = response.bytes_stream();
@@ -532,6 +535,7 @@ async fn parse_sse_stream(
                             stop_reason: stop,
                             model: model_id.clone(),
                             response_id: response_id.clone(),
+                            rate_limit: rate_limit.clone(),
                         },
                     });
                 }
@@ -1228,6 +1232,7 @@ where
                         stop_reason: stop,
                         model: model_id.clone(),
                         response_id: response_id.clone(),
+                            rate_limit: None,
                     },
                 });
                 completed = true;
