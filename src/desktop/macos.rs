@@ -681,7 +681,7 @@ pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> 
     {
         let mut refmap = super::refs::ref_map().lock().unwrap();
         refmap.clear_pid(pid);
-        for m in &matches {
+        for m in &mut matches {
             if super::refs::INTERACTIVE_ROLES.contains(&m.role.as_str()) || !m.actions.is_empty() {
                 let fh = m.frame.as_ref().map(|f| {
                     super::refs::frame_hash(f.x, f.y, f.width, f.height)
@@ -695,11 +695,12 @@ pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> 
                     path: m.path.clone(),
                     frame_hash: fh,
                 });
-                // Store ref_id on the match (via ref_id field)
-                let _ = ref_id; // refs are stored in the global map
+                m.ref_id = Some(ref_id);
             }
         }
     }
+    // Persist refs so they survive across CLI invocations
+    super::refs::save_refs();
 
     Ok(matches)
 }
@@ -775,6 +776,7 @@ fn walk_tree(
             }),
             frame,
             actions,
+            ref_id: None, // assigned later by find_elements
         });
     }
 
@@ -802,6 +804,8 @@ fn walk_tree(
 pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
     // Check if query is a ref like @e3
     if let Some(ref_id) = super::refs::parse_ref(query) {
+        // Load persisted refs from disk
+        super::refs::load_refs();
         let refmap = super::refs::ref_map().lock().unwrap();
         if let Some(entry) = refmap.get(ref_id) {
             let resolved_pid = entry.pid;

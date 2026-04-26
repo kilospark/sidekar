@@ -54,6 +54,9 @@ pub struct DesktopElementMatch {
     pub value: Option<String>,
     pub frame: Option<DesktopRect>,
     pub actions: Vec<String>,
+    /// Stable ref id (e.g. `@e3`), assigned by `find_elements`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

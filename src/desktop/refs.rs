@@ -8,7 +8,7 @@
 //! Key differences: sidekar stores refs in-memory (process-global), not on
 //! disk; refs are scoped per-pid and invalidated on re-snapshot.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -40,7 +40,7 @@ fn is_interactive_role(role: &str) -> bool {
 }
 
 /// A stored element reference.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefEntry {
     pub pid: i32,
     pub role: String,
@@ -53,7 +53,9 @@ pub struct RefEntry {
 }
 
 /// The ref map — maps `@e1` → RefEntry.
-#[derive(Debug, Default)]
+/// Persisted to `~/.sidekar/desktop-refs.json` so refs survive across
+/// CLI invocations.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct RefMap {
     entries: HashMap<String, RefEntry>,
     counter: u32,
@@ -124,6 +126,39 @@ static REF_MAP: OnceLock<Mutex<RefMap>> = OnceLock::new();
 
 pub fn ref_map() -> &'static Mutex<RefMap> {
     REF_MAP.get_or_init(|| Mutex::new(RefMap::new()))
+}
+
+fn refs_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".sidekar")
+        .join("desktop-refs.json")
+}
+
+/// Save the current ref map to disk.
+pub fn save_refs() {
+    let map = ref_map().lock().unwrap();
+    if map.is_empty() {
+        return;
+    }
+    let path = refs_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&*map) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// Load refs from disk into the process-global map.
+pub fn load_refs() {
+    let path = refs_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(loaded) = serde_json::from_str::<RefMap>(&data) {
+            let mut map = ref_map().lock().unwrap();
+            *map = loaded;
+        }
+    }
 }
 
 /// Parse a ref id from a query string. Returns Some("@e3") if the query
