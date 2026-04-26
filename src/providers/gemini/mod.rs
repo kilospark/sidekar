@@ -446,16 +446,37 @@ pub(crate) fn build_request_body(
             Role::Assistant => {
                 let mut parts: Vec<Value> = Vec::new();
                 let mut call_index = 0u32;
+                // Track whether this turn contains thinking. Gemini 2.5+
+                // requires `thoughtSignature` on thought text parts and on
+                // functionCall parts that follow thinking. When replaying
+                // history from a different provider (e.g. Claude→Gemini)
+                // we don't have a valid Gemini signature, so we use the
+                // documented skip sentinel.
+                let has_thinking = msg.content.iter().any(|b| {
+                    matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.is_empty())
+                });
+                // Sentinel value documented by Google for cross-model
+                // history transfer:
+                // https://ai.google.dev/gemini-api/docs/thought-signatures
+                const SKIP_SIG: &str = "skip_thought_signature_validator";
                 for block in &msg.content {
                     match block {
                         ContentBlock::Text { text } if !text.is_empty() => {
                             parts.push(json!({ "text": text }));
                         }
-                        ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
-                            // Replay as a thought part so the server can
-                            // reconstruct reasoning context. Requires
-                            // `thought: true` to be recognized as such.
-                            parts.push(json!({ "text": thinking, "thought": true }));
+                        ContentBlock::Thinking { thinking, .. }
+                            if !thinking.is_empty() =>
+                        {
+                            // Replay as a thought part. Always use the
+                            // skip sentinel — we may be replaying history
+                            // from a different provider whose signatures
+                            // are incompatible.
+                            let sig = SKIP_SIG;
+                            parts.push(json!({
+                                "text": thinking,
+                                "thought": true,
+                                "thoughtSignature": sig,
+                            }));
                         }
                         ContentBlock::ToolCall {
                             id,
@@ -466,12 +487,19 @@ pub(crate) fn build_request_body(
                             // ToolResult can resolve back to a
                             // functionResponse.name.
                             id_map.insert(id.clone(), name.clone());
-                            parts.push(json!({
+                            let mut part = json!({
                                 "functionCall": {
                                     "name": name,
                                     "args": arguments,
                                 }
-                            }));
+                            });
+                            // Gemini requires thoughtSignature on
+                            // functionCall parts when thinking was present
+                            // in the same turn.
+                            if has_thinking {
+                                part["thoughtSignature"] = json!(SKIP_SIG);
+                            }
+                            parts.push(part);
                             call_index += 1;
                         }
                         _ => {}
@@ -552,6 +580,7 @@ async fn parse_sse_stream(
     // chunked; functionCall parts are atomic (delivered whole).
     let mut text_accum = String::new();
     let mut thinking_accum = String::new();
+    let mut thinking_sig = String::new();
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut usage = Usage::default();
     let mut stop_reason = StopReason::Stop;
@@ -598,6 +627,17 @@ async fn parse_sse_stream(
                             .get("thought")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
+                        // Capture thoughtSignature from either thought-text
+                        // or functionCall parts. The signature appears on
+                        // the last thought chunk and on functionCall parts.
+                        if let Some(sig) = part
+                            .get("thoughtSignature")
+                            .and_then(|v| v.as_str())
+                        {
+                            if !sig.is_empty() {
+                                thinking_sig = sig.to_string();
+                            }
+                        }
                         if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                             if text.is_empty() {
                                 continue;
@@ -636,7 +676,7 @@ async fn parse_sse_stream(
                             if !thinking_accum.is_empty() {
                                 content_blocks.push(ContentBlock::Thinking {
                                     thinking: std::mem::take(&mut thinking_accum),
-                                    signature: String::new(),
+                                    signature: std::mem::take(&mut thinking_sig),
                                 });
                             }
                             // Synthesize a stable ID. Per-name index
@@ -742,7 +782,7 @@ async fn parse_sse_stream(
     if !thinking_accum.is_empty() {
         content_blocks.push(ContentBlock::Thinking {
             thinking: thinking_accum,
-            signature: String::new(),
+            signature: thinking_sig,
         });
     }
 
