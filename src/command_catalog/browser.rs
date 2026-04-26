@@ -616,7 +616,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     spec(
         "desktop",
         "<subcommand> [args]",
-        "Desktop automation subcommands",
+        "Desktop automation (macOS). Background-safe via SkyLight SPI — no focus/cursor steal when --app/--pid given. Subcommands: screenshot, apps, windows, find, click, press, type, paste, scroll, launch, activate, quit, trust, check-bg, clipboard, menu, monitor",
         CommandGroup::Desktop,
         false,
         false,

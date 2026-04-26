@@ -354,25 +354,42 @@ sidekar run <sessionId> [command args...]
             "\
 sidekar desktop <subcommand> [args...]
 
-  Desktop automation via the macOS Accessibility API.
+  Desktop automation via macOS Accessibility API + SkyLight SPI.
+  Background-safe — when --app/--pid is given, input is delivered
+  per-pid without stealing focus or moving the cursor.
 
   Subcommands:
     screenshot [--app <name>|--pid <pid>] [--output <path>]
-    apps
-    windows --app <name>|--pid <pid>
-    find --app <name>|--pid <pid> <query>
-    click --app <name>|--pid <pid> <query>
-    press <key|combo>
-    type <text>
-    paste <text>
-    launch <app>
-    activate --app <name>|--pid <pid>
-    quit --app <name>|--pid <pid>
+    apps                                    List running apps
+    windows   --app <name>|--pid <pid>      List windows
+    find      --app <name>|--pid <pid> <query>
+    click     --app <name>|--pid <pid> <query>
+    press     [--app <name>|--pid <pid>] <key|combo>
+    type      [--app <name>|--pid <pid>] <text>
+    paste     <text>
+    scroll    [--app <name>|--pid <pid>] <up|down|left|right> [amount] [page|line]
+    launch    <app>
+    activate  --app <name>|--pid <pid>
+    quit      --app <name>|--pid <pid>
+    trust                                   Check macOS permissions
+    check-bg                                Verify SkyLight SPI availability
+    clipboard <read|write> [text]
+    menu      [--app <name>|--pid <pid>]    List menu items
+    monitor   <start|stop|stats|log|watch>
+
+  Background input (SkyLight SPI, macOS 14+):
+    With --app/--pid, press/type/click/scroll deliver events directly
+    to the target process via SLEventPostToPid — no cursor warp, no
+    focus steal. Run 'sidekar desktop check-bg' to verify availability.
 
   Examples:
     sidekar desktop apps
     sidekar desktop screenshot --app Safari
-    sidekar desktop click --app Finder \"New Folder\""
+    sidekar desktop click --app Finder \"New Folder\"
+    sidekar desktop type --app Chrome \"hello world\"
+    sidekar desktop press --app Chrome cmd+l
+    sidekar desktop scroll --app Chrome down 5 page
+    sidekar desktop check-bg"
         }
         "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
         "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
