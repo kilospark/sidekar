@@ -62,6 +62,9 @@ pub(crate) fn openai_chat_completions_url(base_url: &str) -> String {
         base.to_string()
     } else if base.ends_with("/v1") {
         format!("{base}/chat/completions")
+    } else if url_has_path(base) {
+        // Custom endpoint with existing path (e.g. Vertex AI) — append directly, no /v1/
+        format!("{base}/chat/completions")
     } else {
         format!("{base}/v1/chat/completions")
     }
@@ -73,9 +76,23 @@ fn openai_models_url(base_url: &str) -> String {
         format!("{prefix}/models")
     } else if base.ends_with("/v1") {
         format!("{base}/models")
+    } else if url_has_path(base) {
+        format!("{base}/models")
     } else {
         format!("{base}/v1/models")
     }
+}
+
+/// Returns true if the URL has a non-trivial path (more than just the host).
+/// e.g. "https://api.x.ai" → false, "https://aiplatform.googleapis.com/v1/projects/foo" → true
+fn url_has_path(url: &str) -> bool {
+    // Strip scheme
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    // If there's a '/' after the host, there's a path
+    after_scheme.contains('/')
 }
 
 pub(super) fn log_api_request(url: &str, headers: &HeaderMap, body: &serde_json::Value) {

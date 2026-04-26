@@ -88,6 +88,20 @@ fn openai_compat_urls_accept_root_or_v1_or_full_endpoint() {
         openai_models_url("https://api.x.ai/v1/chat/completions"),
         "https://api.x.ai/v1/models"
     );
+    // Custom endpoint with existing path (e.g. Vertex AI) — no /v1/ injected
+    assert_eq!(
+        openai_chat_completions_url("https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi"),
+        "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/chat/completions"
+    );
+    assert_eq!(
+        openai_models_url("https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi"),
+        "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/models"
+    );
+    // Trailing slash stripped
+    assert_eq!(
+        openai_chat_completions_url("https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/"),
+        "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/chat/completions"
+    );
 }
 
 
