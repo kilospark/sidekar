@@ -1,4 +1,8 @@
 #[cfg(target_os = "macos")]
+pub mod bg_input;
+#[cfg(target_os = "macos")]
+pub mod focus_guard;
+#[cfg(target_os = "macos")]
 pub mod input;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -8,4 +12,6 @@ pub use macos as native;
 pub mod monitor;
 #[cfg(target_os = "macos")]
 pub mod screen;
+#[cfg(target_os = "macos")]
+pub mod skylight;
 pub mod types;

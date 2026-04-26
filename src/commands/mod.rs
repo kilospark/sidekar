@@ -362,6 +362,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 "activate" => "desktop-activate",
                 "quit" => "desktop-quit",
                 "trust" => "desktop-trust",
+                "check-bg" => "desktop-check-bg",
                 "clipboard" => "desktop-clipboard",
                 "menu" => "desktop-menu",
                 "monitor" => {
@@ -374,7 +375,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     }
                 }
                 _ => bail!(
-                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|launch|activate|quit|trust|clipboard|menu|monitor> [args...]"
+                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|launch|activate|quit|trust|check-bg|clipboard|menu|monitor> [args...]"
                 ),
             };
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
@@ -391,6 +392,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-activate" => cmd_desktop_activate(ctx, args).await,
         "desktop-quit" => cmd_desktop_quit(ctx, args).await,
         "desktop-trust" => cmd_desktop_trust(ctx, args).await,
+        "desktop-check-bg" => cmd_desktop_check_bg(ctx, args).await,
         "desktop-clipboard" => cmd_desktop_clipboard(ctx, args).await,
         "desktop-menu" => cmd_desktop_menu(ctx, args).await,
         "desktop-monitor" => cmd_desktop_monitor(ctx, args).await,

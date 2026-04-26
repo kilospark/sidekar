@@ -404,6 +404,42 @@ fn parse_desktop_pid_and_rest(args: &[String]) -> Result<(i32, Vec<String>)> {
     Ok((pid, rest))
 }
 
+/// Like `parse_desktop_pid_and_rest` but doesn't require --app/--pid.
+/// Returns `(None, all_args)` when neither is given.
+#[cfg(target_os = "macos")]
+fn parse_desktop_pid_and_rest_optional(args: &[String]) -> (Option<i32>, Vec<String>) {
+    let mut pid: Option<i32> = None;
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--app" => {
+                i += 1;
+                if let Some(name) = args.get(i) {
+                    pid = resolve_pid_by_app_name(name).ok();
+                }
+            }
+            "--pid" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    pid = v.parse().ok();
+                }
+            }
+            "--query" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    rest.push(v.to_string());
+                }
+            }
+            other => {
+                rest.push(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    (pid, rest)
+}
+
 pub(super) async fn cmd_desktop_launch(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     bail!("Desktop automation is only available on macOS");
@@ -464,16 +500,31 @@ pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> 
 
     #[cfg(target_os = "macos")]
     {
-        let spec = args.join(" ");
+        let (pid, remaining) = parse_desktop_pid_and_rest_optional(args);
+        let spec = remaining.join(" ");
         if spec.is_empty() {
-            bail!("Usage: sidekar desktop press <key|combo>");
+            bail!("Usage: sidekar desktop press [--app <name>|--pid <pid>] <key|combo>");
         }
-        crate::desktop::input::press_chord(&spec)?;
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new(format!("Pressed {}", spec)))?
-        );
+        if let Some(pid) = pid {
+            // Background-safe per-pid delivery
+            let keys: Vec<&str> = spec.split('+').map(|s| s.trim()).collect();
+            crate::desktop::bg_input::hotkey(&keys, Some(pid))?;
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!(
+                    "Pressed {} → pid {}", spec, pid
+                )))?
+            );
+        } else {
+            // Legacy foreground path
+            crate::desktop::input::press_chord(&spec)?;
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!("Pressed {}", spec)))?
+            );
+        }
         Ok(())
     }
 }
@@ -484,19 +535,35 @@ pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> R
 
     #[cfg(target_os = "macos")]
     {
-        let text = args.join(" ");
+        let (pid, remaining) = parse_desktop_pid_and_rest_optional(args);
+        let text = remaining.join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar desktop type <text>");
+            bail!("Usage: sidekar desktop type [--app <name>|--pid <pid>] <text>");
         }
-        crate::desktop::input::type_text(&text)?;
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new(format!(
-                "Typed {} chars",
-                text.chars().count()
-            )))?
-        );
+        if let Some(pid) = pid {
+            // Background-safe per-pid delivery via CGEvent + SkyLight
+            crate::desktop::bg_input::type_characters(&text, 5, Some(pid))?;
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!(
+                    "Typed {} chars → pid {}",
+                    text.chars().count(),
+                    pid
+                )))?
+            );
+        } else {
+            // Legacy foreground path via enigo
+            crate::desktop::input::type_text(&text)?;
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(format!(
+                    "Typed {} chars",
+                    text.chars().count()
+                )))?
+            );
+        }
         Ok(())
     }
 }
@@ -545,7 +612,12 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
             }
             "fallbackClick" => {
                 if let (Some(x), Some(y)) = (result.x, result.y) {
-                    crate::desktop::input::click_at(x, y)?;
+                    // Use bg_input for per-pid click when we have a target pid
+                    crate::desktop::bg_input::click_at_pid(
+                        x, y, pid,
+                        crate::desktop::bg_input::MouseButton::Left,
+                        1, None,
+                    )?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
                     format!(
@@ -600,7 +672,11 @@ pub(crate) fn try_desktop_click_fallback(browser_name: &str, query: &str) -> Res
             }
             "fallbackClick" => {
                 if let (Some(x), Some(y)) = (result.x, result.y) {
-                    crate::desktop::input::click_at(x, y)?;
+                    crate::desktop::bg_input::click_at_pid(
+                        x, y, pid,
+                        crate::desktop::bg_input::MouseButton::Left,
+                        1, None,
+                    )?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
                     Ok(format!(
@@ -756,6 +832,67 @@ pub(super) async fn cmd_desktop_menu(ctx: &mut AppContext, args: &[String]) -> R
         } else {
             out!(ctx, "{}", entries.join("\n"));
         }
+        Ok(())
+    }
+}
+
+pub(super) async fn cmd_desktop_check_bg(ctx: &mut AppContext, _args: &[String]) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    bail!("Desktop automation is only available on macOS");
+
+    #[cfg(target_os = "macos")]
+    {
+        let skylight = crate::desktop::skylight::is_available();
+        let focus_wr = crate::desktop::skylight::is_focus_without_raise_available();
+        let win_loc = crate::desktop::skylight::is_window_location_available();
+
+        #[derive(serde::Serialize)]
+        struct BgStatus {
+            skylight_event_post: bool,
+            focus_without_raise: bool,
+            window_location: bool,
+            background_input_ready: bool,
+        }
+        impl CommandOutput for BgStatus {
+            fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+                writeln!(w, "Background desktop automation:")?;
+                writeln!(
+                    w,
+                    "  SLEventPostToPid + auth message : {}",
+                    if self.skylight_event_post { "✓" } else { "✗" }
+                )?;
+                writeln!(
+                    w,
+                    "  FocusWithoutRaise (SLPSPost)    : {}",
+                    if self.focus_without_raise { "✓" } else { "✗" }
+                )?;
+                writeln!(
+                    w,
+                    "  CGEventSetWindowLocation        : {}",
+                    if self.window_location { "✓" } else { "✗" }
+                )?;
+                writeln!(
+                    w,
+                    "  Background input ready          : {}",
+                    if self.background_input_ready { "✓" } else { "✗" }
+                )?;
+                if !self.background_input_ready {
+                    writeln!(
+                        w,
+                        "\n  Background input requires macOS 14+ with SkyLight SPI.\n  \
+                         Falling back to foreground input (cursor will move)."
+                    )?;
+                }
+                Ok(())
+            }
+        }
+        let output = BgStatus {
+            skylight_event_post: skylight,
+            focus_without_raise: focus_wr,
+            window_location: win_loc,
+            background_input_ready: skylight && focus_wr,
+        };
+        out!(ctx, "{}", crate::output::to_string(&output)?);
         Ok(())
     }
 }
