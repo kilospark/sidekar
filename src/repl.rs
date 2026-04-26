@@ -720,22 +720,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     crate::poller::shutdown_poller();
     let _ = broker::unregister_agent(&bus_name);
 
-    // ExecSession cleanup: kill any still-running PTY sessions
-    // and log usage telemetry so we can tell whether the tool is
-    // earning its keep. See context/unified-exec.md §Usage
-    // telemetry. Logged via wlog! (debug-only) to avoid polluting
-    // the REPL exit with noise for users who didn't use the tool.
+    // ExecSession cleanup: kill any still-running PTY sessions.
     #[cfg(unix)]
     {
         let mgr = crate::agent::tools::exec_session_manager();
-        let count = mgr.usage_count();
-        if count > 0 {
-            crate::wlog!(
-                "ExecSession used {} times this session; {} live at exit",
-                count,
-                mgr.session_count().await
-            );
-        }
         mgr.terminate_all().await;
     }
 
