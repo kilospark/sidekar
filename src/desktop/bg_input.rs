@@ -294,6 +294,61 @@ pub fn type_characters(text: &str, delay_ms: u32, pid: Option<i32>) -> Result<()
 }
 
 // ---------------------------------------------------------------------------
+// Scroll: keyboard-based (wheel events dropped by Chromium via SkyLight)
+// ---------------------------------------------------------------------------
+
+/// Scroll direction.
+#[derive(Debug, Clone, Copy)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// Scroll granularity.
+#[derive(Debug, Clone, Copy)]
+pub enum ScrollGranularity {
+    Line,
+    Page,
+}
+
+/// Scroll via synthesized keystrokes — PageUp/PageDown for page, arrow
+/// keys for line. Keyboard events route through the auth-signed SkyLight
+/// path, so they reach backgrounded Chromium/WebKit windows.
+///
+/// CUA Driver tried `CGEventCreateScrollWheelEvent2` via SkyLight but
+/// Chromium silently drops them — no Scroll-specific auth subclass exists
+/// in SkyLight, so the factory falls back to the bare parent class which
+/// renderers reject.
+pub fn scroll(
+    direction: ScrollDirection,
+    granularity: ScrollGranularity,
+    amount: u32,
+    pid: Option<i32>,
+) -> Result<()> {
+    let key = match (direction, granularity) {
+        (ScrollDirection::Up, ScrollGranularity::Line) => "up",
+        (ScrollDirection::Down, ScrollGranularity::Line) => "down",
+        (ScrollDirection::Left, ScrollGranularity::Line) => "left",
+        (ScrollDirection::Right, ScrollGranularity::Line) => "right",
+        (ScrollDirection::Up, ScrollGranularity::Page) => "pageup",
+        (ScrollDirection::Down, ScrollGranularity::Page) => "pagedown",
+        // No standard horizontal page scroll — fall back to arrow keys
+        (ScrollDirection::Left, ScrollGranularity::Page) => "left",
+        (ScrollDirection::Right, ScrollGranularity::Page) => "right",
+    };
+    let clamped = amount.clamp(1, 50);
+    for _ in 0..clamped {
+        press_key(key, &[], pid)?;
+        if clamped > 1 {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Mouse: per-pid click synthesis
 // ---------------------------------------------------------------------------
 

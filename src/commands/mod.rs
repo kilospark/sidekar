@@ -358,6 +358,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 "press" => "desktop-press",
                 "type" => "desktop-type",
                 "paste" => "desktop-paste",
+                "scroll" => "desktop-scroll",
                 "launch" => "desktop-launch",
                 "activate" => "desktop-activate",
                 "quit" => "desktop-quit",
@@ -375,7 +376,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     }
                 }
                 _ => bail!(
-                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|launch|activate|quit|trust|check-bg|clipboard|menu|monitor> [args...]"
+                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|scroll|launch|activate|quit|trust|check-bg|clipboard|menu|monitor> [args...]"
                 ),
             };
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
@@ -388,6 +389,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-press" => cmd_desktop_press(ctx, args).await,
         "desktop-type" => cmd_desktop_type(ctx, args).await,
         "desktop-paste" => cmd_desktop_paste(ctx, args).await,
+        "desktop-scroll" => cmd_desktop_scroll(ctx, args).await,
         "desktop-launch" => cmd_desktop_launch(ctx, args).await,
         "desktop-activate" => cmd_desktop_activate(ctx, args).await,
         "desktop-quit" => cmd_desktop_quit(ctx, args).await,

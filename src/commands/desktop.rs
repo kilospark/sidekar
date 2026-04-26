@@ -568,6 +568,57 @@ pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> R
     }
 }
 
+pub(super) async fn cmd_desktop_scroll(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    bail!("Desktop automation is only available on macOS");
+
+    #[cfg(target_os = "macos")]
+    {
+        let (pid, remaining) = parse_desktop_pid_and_rest_optional(args);
+        let mut direction = String::from("down");
+        let mut by = "line";
+        let mut amount: u32 = 3;
+        for arg in &remaining {
+            match arg.as_str() {
+                "up" | "down" | "left" | "right" => direction = arg.clone(),
+                "page" => by = "page",
+                "line" => by = "line",
+                _ => {
+                    if let Ok(n) = arg.parse::<u32>() {
+                        amount = n;
+                    } else if let Some(v) = arg.strip_prefix("--amount=") {
+                        amount = v.parse().unwrap_or(3);
+                    } else if let Some(v) = arg.strip_prefix("--by=") {
+                        by = if v == "page" { "page" } else { "line" };
+                    }
+                }
+            }
+        }
+        let dir = match direction.as_str() {
+            "up" => crate::desktop::bg_input::ScrollDirection::Up,
+            "down" => crate::desktop::bg_input::ScrollDirection::Down,
+            "left" => crate::desktop::bg_input::ScrollDirection::Left,
+            "right" => crate::desktop::bg_input::ScrollDirection::Right,
+            _ => crate::desktop::bg_input::ScrollDirection::Down,
+        };
+        let gran = if by == "page" {
+            crate::desktop::bg_input::ScrollGranularity::Page
+        } else {
+            crate::desktop::bg_input::ScrollGranularity::Line
+        };
+        crate::desktop::bg_input::scroll(dir, gran, amount, pid)?;
+        let target = pid.map(|p| format!(" → pid {p}")).unwrap_or_default();
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(format!(
+                "Scrolled {direction} {amount}× ({by}){target}"
+            )))?
+        );
+        Ok(())
+    }
+}
+
 pub(super) async fn cmd_desktop_paste(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     bail!("Desktop automation is only available on macOS");

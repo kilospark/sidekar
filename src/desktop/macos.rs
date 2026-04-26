@@ -785,13 +785,17 @@ pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
         }
     };
 
-    // Try to resolve the element and AXPress it
+    // Try to resolve the element and AXPress it, wrapped in FocusGuard
+    // so the target app doesn't steal focus during the action.
     let app_element = unsafe { AXUIElementCreateApplication(pid) };
     if let Some(element) = resolve_element(app_element, &first.path) {
         let actions = ax_action_names(element);
         if actions.iter().any(|a| a == kAXPressAction) {
+            let guard = super::focus_guard::FocusGuard::new();
+            let ctx = guard.begin(pid, std::ptr::null_mut(), element as *mut c_void);
             let cf_action = CFString::new(kAXPressAction);
             let err = unsafe { AXUIElementPerformAction(element, cf_action.as_concrete_TypeRef()) };
+            guard.end(ctx);
             unsafe {
                 CFRelease(element as *const c_void);
                 CFRelease(app_element as *const c_void);
