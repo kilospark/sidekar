@@ -1062,22 +1062,44 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
 
 pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
     let url = openai_models_url(base_url);
+    let verbose = is_verbose();
+    if verbose {
+        eprintln!("\x1b[2m[fetching models from {url}]\x1b[0m");
+    }
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            if verbose {
+                eprintln!("\x1b[33m[model list: failed to build http client: {e}]\x1b[0m");
+            }
+            return Vec::new();
+        }
     };
 
     let resp = match client
-        .get(url)
+        .get(&url)
         .header("authorization", format!("Bearer {api_key}"))
         .send()
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => return Vec::new(),
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            if verbose {
+                eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
+            }
+            return Vec::new();
+        }
+        Err(e) => {
+            if verbose {
+                eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
+            }
+            return Vec::new();
+        }
     };
 
     let body: serde_json::Value = match resp.json().await {

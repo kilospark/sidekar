@@ -920,7 +920,18 @@ pub(super) async fn interactive_select_model(
     ));
     let models = providers::fetch_model_list_for_provider(prov).await;
     if models.is_empty() {
-        tunnel_println("No models found.");
+        tunnel_println("No models returned by provider.");
+        tunnel_println("Type a model name directly (or Enter to cancel):");
+        print!("> ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        if io::stdin().lock().read_line(&mut line).is_ok() {
+            let name = line.trim();
+            if !name.is_empty() {
+                tunnel_println(&format!("\x1b[32mModel set: {name}\x1b[0m"));
+                return Some(name.to_string());
+            }
+        }
         return None;
     }
     let current = current_model.unwrap_or_default();
@@ -953,16 +964,20 @@ pub(super) async fn interactive_select_model(
                 tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
             }
             return None;
-        } else if let Ok(idx) = choice.parse::<usize>()
-            && let Some(m) = models.get(idx)
-        {
-            tunnel_println(&format!(
-                "\x1b[32mModel set: {} \x1b[0m({})",
-                m.id, m.display_name
-            ));
-            return Some(m.id.clone());
+        } else if let Ok(idx) = choice.parse::<usize>() {
+            if let Some(m) = models.get(idx) {
+                tunnel_println(&format!(
+                    "\x1b[32mModel set: {} \x1b[0m({})",
+                    m.id, m.display_name
+                ));
+                return Some(m.id.clone());
+            }
+            tunnel_println("Invalid index.");
+        } else {
+            // Not a number — treat as a model name typed directly.
+            tunnel_println(&format!("\x1b[32mModel set: {choice}\x1b[0m"));
+            return Some(choice.to_string());
         }
-        tunnel_println("Invalid selection.");
     }
     None
 }

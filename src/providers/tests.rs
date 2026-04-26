@@ -90,6 +90,7 @@ fn openai_compat_urls_accept_root_or_v1_or_full_endpoint() {
     );
 }
 
+
 #[test]
 fn openai_compat_provider_type_is_preserved() {
     let grok = Provider::grok("key".to_string(), None);
