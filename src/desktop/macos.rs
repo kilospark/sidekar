@@ -990,11 +990,28 @@ fn resolve_element(root: AXUIElementRef, path: &DesktopElementPath) -> Option<AX
 // launch_app — NSWorkspace
 // ---------------------------------------------------------------------------
 
+/// Launch an app without stealing focus. Uses `open -gjga` to open in
+/// background. Falls back to `launchApplication:` if `open` fails.
 pub fn launch_app(name: &str) -> Result<()> {
+    // Try `open -g -a <name>` first — `-g` opens in background without
+    // activating. This avoids the focus steal that `launchApplication:` causes.
+    let status = std::process::Command::new("open")
+        .arg("-g")
+        .arg("-a")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .status();
+    if let Ok(s) = status {
+        if s.success() {
+            return Ok(());
+        }
+    }
+
+    // Fallback: NSWorkspace (activates, but at least launches)
     unsafe {
         let workspace = NSWorkspace::sharedWorkspace();
 
-        // Try launchApplication: (deprecated but simple and works)
         let ns_name = NSString::from_str(name);
         let ok: bool = msg_send![&workspace, launchApplication: &*ns_name];
         if ok {
