@@ -47,6 +47,11 @@ pub async fn stream_with_provider(
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
     headers.insert("authorization", format!("Bearer {api_key}").parse()?);
+    if let Some(project) = super::vertex::extract_project(base_url) {
+        if let Ok(value) = project.parse() {
+            headers.insert("x-goog-user-project", value);
+        }
+    }
 
     super::log_api_request(&url, &headers, &body);
 

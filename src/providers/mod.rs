@@ -3,6 +3,7 @@ pub mod codex;
 pub mod gemini;
 pub mod oauth;
 pub mod openrouter;
+pub mod vertex;
 
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
@@ -1078,6 +1079,9 @@ async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
 }
 
 pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
+    if vertex::is_vertex_openapi_base(base_url) {
+        return vertex::fetch_models(api_key, base_url).await;
+    }
     let url = openai_models_url(base_url);
     let verbose = is_verbose();
     if verbose {
