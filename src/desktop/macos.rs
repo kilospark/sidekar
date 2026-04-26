@@ -593,6 +593,10 @@ fn cg_window_ids_for_pid(pid: i32) -> Vec<(u32, Option<String>)> {
 // ---------------------------------------------------------------------------
 
 pub fn list_windows(pid: i32) -> Result<Vec<DesktopWindowInfo>> {
+    // Ensure Chromium/Electron targets have their AX tree activated
+    let enablement = super::focus_guard::AXEnablement::new();
+    enablement.assert_for_pid(pid);
+
     let app_element = unsafe { AXUIElementCreateApplication(pid) };
 
     let cf_attr = CFString::new(kAXWindowsAttribute);
@@ -664,6 +668,10 @@ pub fn list_windows(pid: i32) -> Result<Vec<DesktopWindowInfo>> {
 // ---------------------------------------------------------------------------
 
 pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> {
+    // Ensure Chromium/Electron targets have their AX tree activated
+    let enablement = super::focus_guard::AXEnablement::new();
+    enablement.assert_for_pid(pid);
+
     let lower_query = query.to_lowercase();
     let mut matches = Vec::new();
 
