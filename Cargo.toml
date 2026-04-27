@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "3.2.11"
+version = "3.2.12"
 edition = "2024"
 build = "build.rs"
 license = "MIT"
@@ -54,6 +54,7 @@ socket2 = "0.6.3"
 fs2 = "0.4"
 libc = "0.2"
 totp-rs = { version = "5.6", features = ["gen_secret", "otpauth"] }
+qrcode = "0.14"
 aes-gcm = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 rcgen = "0.13"

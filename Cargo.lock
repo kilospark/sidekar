@@ -2087,6 +2087,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+dependencies = [
+ "image",
+]
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2606,7 +2615,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidekar"
-version = "3.2.10"
+version = "3.2.11"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2628,6 +2637,7 @@ dependencies = [
  "objc2-foundation",
  "portable-pty",
  "pulldown-cmark",
+ "qrcode",
  "rand",
  "rcgen",
  "regex",
