@@ -318,8 +318,8 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     XAI_API_KEY                Fallback for grok credentials
 
   Subcommands:
-    sidekar repl login <provider>                         Store OAuth/API credentials
-    sidekar repl login oac <name> <url> [key] Store generic OpenAI-compat credentials
+    sidekar repl login <provider> [name]                  Store OAuth/API credentials
+    sidekar repl login oac <name> <url> [key]             Store generic OpenAI-compat credentials
     sidekar repl logout [name|all]                        Remove stored credentials
     sidekar repl credentials                              List stored credentials
     sidekar repl models -c <credential>                   List available models for a provider
@@ -327,7 +327,8 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
 
   Examples:
     sidekar repl login claude
-    sidekar repl login or
+    sidekar repl login claude work        → stored as 'claude-work'
+    sidekar repl login or personal        → stored as 'or-personal'
     sidekar repl login grok
     sidekar repl login oac local http://localhost:11434/v1
     sidekar repl models -c claude-1

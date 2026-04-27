@@ -21,10 +21,10 @@ pub async fn handle(
 }
 
 async fn handle_login(args: &[String]) -> Result<()> {
-    let nickname = match args.get(1).map(|s| s.as_str()) {
+    let provider = match args.get(1).map(|s| s.as_str()) {
         Some(n) => n,
         None => {
-            eprintln!("Usage: sidekar repl login <provider>");
+            eprintln!("Usage: sidekar repl login <provider> [name]");
             eprintln!();
             eprintln!("Providers:");
             eprintln!("  claude     Claude (Anthropic) — OAuth");
@@ -35,13 +35,17 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  gem        Gemini (Google) — API key");
             eprintln!("  oac <name> <url> [api_key]");
             eprintln!();
-            eprintln!(
-                "Named credentials: claude-work, codex-2, or-personal, oc-work, grok-work, gem-personal, etc."
-            );
+            eprintln!("Examples:");
+            eprintln!("  sidekar repl login claude            → stored as 'claude'");
+            eprintln!("  sidekar repl login claude work       → stored as 'claude-work'");
+            eprintln!("  sidekar repl login or personal       → stored as 'or-personal'");
+            eprintln!("  sidekar repl login oac local http://localhost:11434/v1");
             std::process::exit(1);
         }
     };
-    if nickname == "oac" {
+
+    // oac is positional: oac <name> <url> [api_key]
+    if provider == "oac" {
         let name = args.get(2).map(String::as_str).unwrap_or("oac");
         let base_url = args.get(3).map(String::as_str);
         let api_key = args.get(4).map(String::as_str);
@@ -54,29 +58,43 @@ async fn handle_login(args: &[String]) -> Result<()> {
         )))?;
         return Ok(());
     }
+
+    // Optional name: `sidekar repl login claude work` → nickname = "claude-work"
+    // If no name given, nickname = provider as-is (e.g. "claude", "or-personal").
+    let nickname: String = match args.get(2).map(String::as_str) {
+        Some(name) if !name.starts_with('-') => {
+            // Avoid double-hyphen: "claude-work work" → "claude-work" not "claude-work-work"
+            let base = provider.trim_end_matches(|c: char| c == '-');
+            format!("{base}-{name}")
+        }
+        _ => provider.to_string(),
+    };
+    let nickname = nickname.as_str();
+
     let provider_type =
         sidekar::providers::oauth::provider_type_for(nickname).unwrap_or_else(|| {
-            if nickname == "anthropic" {
-                "anthropic"
-            } else if nickname == "codex" || nickname == "openai" {
-                "codex"
-            } else if nickname == "openrouter" {
-                "openrouter"
-            } else if nickname == "opencode" {
-                "opencode"
-            } else if nickname == "gemini" || nickname == "gem" {
-                "gemini"
-            } else {
-                eprintln!("Unknown provider: '{nickname}'.");
-                eprintln!(
-                    "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, gem-<name> for Gemini, or `sidekar repl login oac <name> <url>`."
-                );
-                std::process::exit(1);
+            // Fall back on the bare provider keyword
+            match provider {
+                "claude" | "anthropic" => "anthropic",
+                "codex" | "openai" => "codex",
+                "or" | "openrouter" => "openrouter",
+                "oc" | "opencode" => "opencode",
+                "grok" => "grok",
+                "gem" | "gemini" => "gemini",
+                _ => {
+                    eprintln!("Unknown provider: '{provider}'.");
+                    eprintln!(
+                        "Use: claude, codex, or, oc, grok, gem, oac"
+                    );
+                    std::process::exit(1);
+                }
             }
         });
+
     // Clear existing creds for this nickname before login
     let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
     let _ = sidekar::broker::kv_delete(&kv_key);
+
     match provider_type {
         "anthropic" => {
             let _ = sidekar::providers::oauth::login_anthropic(Some(nickname)).await?;
@@ -119,26 +137,9 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "Logged in as '{nickname}' (Gemini)."
             )))?;
         }
-        "oac" => {
-            let base_url = args.get(2).map(String::as_str);
-            let api_key = args.get(3).map(String::as_str);
-            let creds = sidekar::providers::oauth::login_openai_compat(
-                nickname,
-                Some(nickname),
-                base_url,
-                api_key,
-            )
-            .await?;
-            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
-                "Logged in as '{nickname}' ({} at {}).",
-                creds.name, creds.base_url
-            )))?;
-        }
         _ => {
-            eprintln!("Unknown provider type for nickname '{nickname}'.");
-            eprintln!(
-                "Use claude-<name> for Claude, codex-<name> for Codex, or-<name> for OpenRouter, oc-<name> for OpenCode, grok-<name> for Grok, gem-<name> for Gemini, or `sidekar repl login oac <name> <url>`."
-            );
+            eprintln!("Unknown provider type for '{nickname}'.");
+            eprintln!("Use: claude, codex, or, oc, grok, gem, oac");
             std::process::exit(1);
         }
     }
