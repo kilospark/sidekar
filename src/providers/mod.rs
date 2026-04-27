@@ -1258,7 +1258,7 @@ async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
 }
 
 async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
-    fetch_openai_compat_model_list(api_key, "https://openrouter.ai/api").await
+    fetch_openai_compat_model_list(api_key, "https://openrouter.ai/api/v1").await
 }
 
 pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
@@ -1451,7 +1451,7 @@ impl Provider {
     pub fn openrouter(api_key: String, credential: Option<String>) -> Self {
         Provider::OpenRouter {
             api_key,
-            base_url: "https://openrouter.ai/api".to_string(),
+            base_url: "https://openrouter.ai/api/v1".to_string(),
             credential,
         }
     }
