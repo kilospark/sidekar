@@ -473,6 +473,12 @@ pub struct RateLimitSnapshot {
     /// when message contains "Your limit will reset at HH:MM ...". Multi-hour scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_reset_at: Option<u64>,
+    /// Anthropic unified-5h utilization percent (0..=100), if returned via OAuth headers.
+    pub util_5h_pct: Option<u32>,
+    pub reset_5h_at: Option<u64>,
+    /// Anthropic unified-7d utilization percent (0..=100).
+    pub util_7d_pct: Option<u32>,
+    pub reset_7d_at: Option<u64>,
 }
 
 impl RateLimitSnapshot {
@@ -489,7 +495,9 @@ impl RateLimitSnapshot {
             && self.tokens_limit.is_none()
             && self.reset_at.is_none()
             && self.session_reset_at.is_none()
-        }
+            && self.util_5h_pct.is_none()
+            && self.util_7d_pct.is_none()
+    }
 
     /// Parse rate-limit headers in the OpenAI-style schema (`x-ratelimit-*`).
     /// Used by OpenAI, Codex, OpenRouter, xAI, most OpenAI-compat hosts.
@@ -533,6 +541,24 @@ impl RateLimitSnapshot {
             parse_reset_header(h, "anthropic-ratelimit-output-tokens-reset", now),
         ];
         snap.reset_at = resets.into_iter().flatten().min();
+
+        // Anthropic OAuth (Pro/Team) returns a different "unified" schema:
+        //   anthropic-ratelimit-unified-5h-{status,utilization,reset}
+        //   anthropic-ratelimit-unified-7d-{status,utilization,reset}
+        // utilization is a decimal in [0,1], reset is Unix epoch seconds.
+        snap.util_5h_pct = h
+            .get("anthropic-ratelimit-unified-5h-utilization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|f| (f * 100.0).round().clamp(0.0, 100.0) as u32);
+        snap.reset_5h_at = parse_u64_header(h, "anthropic-ratelimit-unified-5h-reset");
+        snap.util_7d_pct = h
+            .get("anthropic-ratelimit-unified-7d-utilization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|f| (f * 100.0).round().clamp(0.0, 100.0) as u32);
+        snap.reset_7d_at = parse_u64_header(h, "anthropic-ratelimit-unified-7d-reset");
+
         snap
     }
 

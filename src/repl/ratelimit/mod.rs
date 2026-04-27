@@ -3,17 +3,39 @@ use crate::providers::RateLimitSnapshot;
 pub fn format_rate_limit(rl: &RateLimitSnapshot) -> Option<String> {
     let mut parts = Vec::new();
 
-    if let (Some(rem), Some(lim)) = (rl.requests_remaining, rl.requests_limit) {
-        parts.push(format!("req {}/{}", rem, lim));
+    // Anthropic OAuth (Pro/Team) unified 5h + 7d caps — primary signal for subscription users.
+    if let Some(pct) = rl.util_5h_pct {
+        let mut s = format!("5h {}%", pct);
+        if let Some(reset) = rl.reset_5h_at {
+            if let Some(t) = format_reset_time(reset) {
+                s.push_str(&format!(" (resets {})", t));
+            }
+        }
+        parts.push(s);
+    }
+    if let Some(pct) = rl.util_7d_pct {
+        let mut s = format!("7d {}%", pct);
+        if let Some(reset) = rl.reset_7d_at {
+            if let Some(t) = format_reset_time(reset) {
+                s.push_str(&format!(" (resets {})", t));
+            }
+        }
+        parts.push(s);
     }
 
-    if let (Some(rem), Some(lim)) = (rl.tokens_remaining, rl.tokens_limit) {
-        parts.push(format!("tok {}/{}", short_num(rem), short_num(lim)));
-    }
-
-    if let Some(reset) = rl.reset_at {
-        if let Some(s) = format_reset_time(reset) {
-            parts.push(format!("reset {}", s));
+    // API-tier (per-minute) limits — used by raw API key billing and other providers.
+    // Hide if unified is present (subscription users don't care about ITPM).
+    if rl.util_5h_pct.is_none() && rl.util_7d_pct.is_none() {
+        if let (Some(rem), Some(lim)) = (rl.requests_remaining, rl.requests_limit) {
+            parts.push(format!("req {}/{}", rem, lim));
+        }
+        if let (Some(rem), Some(lim)) = (rl.tokens_remaining, rl.tokens_limit) {
+            parts.push(format!("tok {}/{}", short_num(rem), short_num(lim)));
+        }
+        if let Some(reset) = rl.reset_at {
+            if let Some(s) = format_reset_time(reset) {
+                parts.push(format!("reset {}", s));
+            }
         }
     }
 
