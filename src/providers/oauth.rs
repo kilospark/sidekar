@@ -1245,12 +1245,12 @@ fn open_browser(url: &str) -> Result<()> {
 // KV persistence
 // ---------------------------------------------------------------------------
 
-fn save_credentials(key: &str, creds: &OAuthCredentials) -> Result<()> {
+pub(crate) fn save_credentials(key: &str, creds: &OAuthCredentials) -> Result<()> {
     let json = serde_json::to_string(creds)?;
     crate::broker::kv_set(key, &json, None)
 }
 
-fn load_credentials(key: &str) -> Result<Option<OAuthCredentials>> {
+pub(crate) fn load_credentials(key: &str) -> Result<Option<OAuthCredentials>> {
     match crate::broker::kv_get(key)? {
         Some(entry) => {
             let creds: OAuthCredentials = serde_json::from_str(&entry.value)

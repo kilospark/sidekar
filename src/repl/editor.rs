@@ -2273,6 +2273,14 @@ pub(super) fn print_banner(model: Option<&str>, credential: Option<&str>) {
         }
     };
     println!("{line2}");
+    if let Some(c) = credential {
+        if let Some(until) = crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(c)) {
+            let mins = (until.saturating_sub(crate::providers::session_lock::current_epoch()) + 59) / 60;
+            let h = mins / 60; let m = mins % 60;
+            let when = if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") };
+            println!("\x1b[31m! {c} is rate-limited; resets in {when}\x1b[0m");
+        }
+    }
     println!();
 }
 

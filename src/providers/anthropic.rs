@@ -102,12 +102,21 @@ pub async fn stream(
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
         let text = response.text().await.unwrap_or_default();
         super::log_api_error(status, &text);
+        if status.as_u16() == 429 {
+            if let Some(kv_key) = config.credential_kv_key.as_deref() {
+                if let Some(until) = super::session_lock::parse_anthropic_lock(retry_after.as_deref(), &text) {
+                    let _ = super::session_lock::mark_locked(kv_key, until, &text);
+                }
+            }
+        }
         bail!("Anthropic API error ({}): {}", status, text);
     }
 
     let rate_limit = RateLimitSnapshot::from_anthropic_headers(response.headers()).into_option();
+    if let Some(kv_key) = config.credential_kv_key.as_deref() { super::session_lock::clear_locked(kv_key); }
 
     let (tx, rx) = mpsc::unbounded_channel();
 

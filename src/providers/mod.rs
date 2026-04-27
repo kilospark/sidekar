@@ -4,6 +4,7 @@ pub mod gemini;
 pub mod oauth;
 pub mod openrouter;
 pub mod vertex;
+pub mod session_lock;
 
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
@@ -732,6 +733,9 @@ pub struct StreamConfig {
     /// Below this, the creation round-trip costs more than the
     /// cache-read savings for a single reuse.
     pub gemini_cache_min_tokens: u32,
+    /// KV key under which credentials are stored (e.g. "oauth.claude-a").
+    /// Used to persist session-window lockouts on 429.
+    pub credential_kv_key: Option<String>,
 }
 
 /// Reasoning parameters sent to the Codex Responses API.
@@ -758,6 +762,7 @@ impl Default for StreamConfig {
             gemini_caching: false,
             gemini_cache_ttl_secs: 3600,
             gemini_cache_min_tokens: 4096,
+            credential_kv_key: None,
         }
     }
 }
@@ -1638,7 +1643,7 @@ impl Provider {
         let stream_config = self.default_stream_config();
         match self {
             Provider::Anthropic {
-                api_key, base_url, ..
+                api_key, base_url, credential, ..
             } => {
                 let key = api_key_override.unwrap_or(api_key);
                 let rx = anthropic::stream(
@@ -1649,7 +1654,7 @@ impl Provider {
                     messages,
                     tools,
                     prompt_cache_key,
-                    &stream_config,
+                    &{ let mut c = stream_config.clone(); c.credential_kv_key = credential.as_ref().map(|n| crate::providers::oauth::kv_key_for(n)); c },
                 )
                 .await?;
                 Ok(no_ws_reclaim(rx))
