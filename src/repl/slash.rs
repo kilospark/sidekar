@@ -918,7 +918,24 @@ pub(super) async fn interactive_select_model(
     tunnel_println(&format!(
         "Fetching models for \x1b[1m{cred_name}\x1b[0m ({pt})..."
     ));
-    let models = providers::fetch_model_list_for_provider(prov).await;
+    let models = match providers::fetch_model_list_for_provider(prov).await {
+        Ok(m) => m,
+        Err(err) => {
+            tunnel_println(&format!("\x1b[31mError listing models: {err}\x1b[0m"));
+            tunnel_println("Type a model name directly (or Enter to cancel):");
+            print!("> ");
+            let _ = io::stdout().flush();
+            let mut line = String::new();
+            if io::stdin().lock().read_line(&mut line).is_ok() {
+                let name = line.trim();
+                if !name.is_empty() {
+                    tunnel_println(&format!("\x1b[32mModel set: {name}\x1b[0m"));
+                    return Some(name.to_string());
+                }
+            }
+            return None;
+        }
+    };
     if models.is_empty() {
         tunnel_println("No models returned by provider.");
         tunnel_println("Type a model name directly (or Enter to cancel):");

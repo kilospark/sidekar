@@ -264,6 +264,13 @@ async fn handle_models(args: &[String]) -> Result<()> {
     } else {
         sidekar::providers::fetch_model_list(provider_type, &api_key).await
     };
+    let models = match models {
+        Ok(m) => m,
+        Err(err) => {
+            eprintln!("Error listing models for '{cred}' ({provider_type}): {err}");
+            std::process::exit(1);
+        }
+    };
     let items: Vec<ModelEntry> = models
         .iter()
         .map(|m| ModelEntry {

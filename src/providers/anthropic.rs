@@ -32,6 +32,15 @@ pub async fn stream(
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let is_oauth = api_key.contains("sk-ant-oat");
 
+    // The REPL surfaces a `<id>#1m` variant for models whose 1M-context tier
+    // is gated behind `anthropic-beta: context-1m-2025-08-07`. Selecting that
+    // row routes the chat through here with the suffix attached; strip it
+    // before talking to Anthropic and remember to enable the beta header.
+    let (model, enable_1m_beta) = match model.strip_suffix(super::ANTHROPIC_1M_SUFFIX) {
+        Some(clean) => (clean, true),
+        None => (model, false),
+    };
+
     let body = build_request_body(
         api_key,
         model,
@@ -62,7 +71,9 @@ pub async fn stream(
     headers.insert("anthropic-version", "2023-06-01".parse()?);
     headers.insert("anthropic-dangerous-direct-browser-access", "true".parse()?);
 
-    if is_oauth {
+    // Base beta list per auth mode. `context-1m-2025-08-07` is appended below
+    // when the user picked the `#1m` variant of an eligible model.
+    let mut beta_list = if is_oauth {
         // `prompt-caching-scope-2026-01-05` gates the `cache_control.ephemeral.
         // scope` field. Without it, Anthropic returns 400
         // `system.N.cache_control.ephemeral.scope: Extra inputs are not
@@ -70,19 +81,22 @@ pub async fn stream(
         // and it's what lets the cache survive the volatile per-request
         // billing header (block 0, which changes every turn because `cch`
         // is a body hash).
-        headers.insert(
-            "anthropic-beta",
-            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,prompt-caching-scope-2026-01-05"
-                .parse()?,
-        );
+        String::from(
+            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,prompt-caching-scope-2026-01-05",
+        )
+    } else {
+        String::from("fine-grained-tool-streaming-2025-05-14")
+    };
+    if enable_1m_beta {
+        beta_list.push_str(",context-1m-2025-08-07");
+    }
+    headers.insert("anthropic-beta", beta_list.parse()?);
+
+    if is_oauth {
         headers.insert("authorization", format!("Bearer {api_key}").parse()?);
         headers.insert("user-agent", "claude-cli/2.1.87".parse()?);
         headers.insert("x-app", "cli".parse()?);
     } else {
-        headers.insert(
-            "anthropic-beta",
-            "fine-grained-tool-streaming-2025-05-14".parse()?,
-        );
         headers.insert("x-api-key", api_key.parse()?);
     }
 

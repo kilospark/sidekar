@@ -1092,7 +1092,10 @@ pub struct RemoteModel {
 }
 
 /// Fetch available models from a provider's API.
-pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteModel> {
+pub async fn fetch_model_list(
+    provider_type: &str,
+    api_key: &str,
+) -> Result<Vec<RemoteModel>, String> {
     match provider_type {
         "anthropic" => fetch_anthropic_model_list(api_key).await,
         "codex" => fetch_codex_model_list(api_key).await,
@@ -1100,11 +1103,13 @@ pub async fn fetch_model_list(provider_type: &str, api_key: &str) -> Vec<RemoteM
         "grok" => fetch_openai_compat_model_list(api_key, oauth::GROK_BASE_URL).await,
         "opencode" => fetch_opencode_model_list(api_key).await,
         "gemini" => gemini::fetch_gemini_model_list(api_key).await,
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
     }
 }
 
-pub async fn fetch_model_list_for_provider(provider: &Provider) -> Vec<RemoteModel> {
+pub async fn fetch_model_list_for_provider(
+    provider: &Provider,
+) -> Result<Vec<RemoteModel>, String> {
     match provider {
         Provider::Anthropic {
             api_key, base_url, ..
@@ -1119,15 +1124,12 @@ pub async fn fetch_model_list_for_provider(provider: &Provider) -> Vec<RemoteMod
     }
 }
 
-async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
+async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
     let url = "https://api.anthropic.com/v1/models";
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(url).header("anthropic-version", "2023-06-01");
@@ -1145,25 +1147,24 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
             if !r.status().is_success() {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
-                crate::broker::try_log_error(
-                    "models",
-                    &format!("API {status}"),
-                    Some(&text),
-                );
-                return Vec::new();
+                let detail = format_api_error_body(&text);
+                let msg = format!("Anthropic API error ({status}): {detail}");
+                crate::broker::try_log_error("models", &format!("API {status}"), Some(&text));
+                return Err(msg);
             }
             r
         }
         Err(e) => {
+            let msg = format!("Anthropic API request failed: {e}");
             crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
-            return Vec::new();
+            return Err(msg);
         }
     };
 
-    let body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Anthropic API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1174,30 +1175,94 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Vec<RemoteModel> {
                 .get("max_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            if !id.is_empty() {
+            if id.is_empty() {
+                continue;
+            }
+            // For models whose 1M tier is gated behind the
+            // `context-1m-2025-08-07` beta header (Sonnet 4, Sonnet 4.5),
+            // Anthropic's `/v1/models` reports `max_input_tokens=1000000`
+            // unconditionally even though inference at >200k requires the
+            // header. Pin the base row to 200k and emit a sibling `#1m`
+            // variant; the runtime strips the suffix and adds the beta
+            // header. For everything else (Sonnet 4.6+, Opus 4.6+, Opus 4/4.1,
+            // Haiku 4.5, etc.) trust whatever the API reported.
+            let gated = supports_1m_context_beta(id);
+            let base_ctx = if gated { 200_000 } else { ctx };
+            models.push(RemoteModel {
+                id: id.to_string(),
+                display_name: name.to_string(),
+                context_window: base_ctx,
+            });
+            if gated {
                 models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: ctx,
+                    id: format!("{id}{ANTHROPIC_1M_SUFFIX}"),
+                    display_name: format!("{name} (1M ctx, beta)"),
+                    context_window: 1_000_000,
                 });
             }
         }
     }
-    if models.is_empty() {
-        return Vec::new();
-    }
-    models
+    Ok(models)
 }
 
-async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
+/// Suffix appended to a model id to opt the request into the 1M-context beta.
+/// Stripped before the id is sent to Anthropic; presence flips on the beta
+/// header `context-1m-2025-08-07`.
+pub const ANTHROPIC_1M_SUFFIX: &str = "#1m";
+
+/// Models whose 1M-context tier is gated by the beta header. Keep this list
+/// narrow: only models where Anthropic still reports `max_input_tokens=200000`
+/// but accept the `context-1m-2025-08-07` beta. Newer models (Sonnet 4.6+,
+/// Opus 4.6+) advertise 1M directly and don't need a synthetic variant.
+fn supports_1m_context_beta(id: &str) -> bool {
+    // Per https://docs.anthropic.com/en/docs/build-with-claude/context-windows
+    // the beta currently covers Sonnet 4 (claude-sonnet-4-YYYYMMDD) and
+    // Sonnet 4.5 (claude-sonnet-4-5-YYYYMMDD).
+    // Match exact known prefixes; reject anything starting with claude-sonnet-4-6 or higher.
+    if id.starts_with("claude-sonnet-4-5-") {
+        return true;
+    }
+    if let Some(rest) = id.strip_prefix("claude-sonnet-4-") {
+        // rest starts with the date (e.g. "20250514") for plain Sonnet 4.
+        // Reject minor-version-prefixed IDs ("6-...", "7-...", etc.).
+        let next = rest.chars().next().unwrap_or('-');
+        return next.is_ascii_digit() && rest.len() >= 8 && !rest.starts_with(|c: char| matches!(c, '6'..='9'));
+    }
+    false
+}
+
+/// Trim and shorten an API error body for inline display. Falls back to the
+/// raw text when JSON parsing fails so we never lose the server message.
+fn format_api_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "(empty body)".to_string();
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(msg) = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|s| s.as_str())
+        {
+            return msg.to_string();
+        }
+        if let Some(msg) = v.get("message").and_then(|s| s.as_str()) {
+            return msg.to_string();
+        }
+    }
+    if trimmed.len() > 400 {
+        format!("{}…", &trimmed[..400])
+    } else {
+        trimmed.to_string()
+    }
+}
+
+async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
     let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let resp = match client
         .get(url)
@@ -1210,25 +1275,24 @@ async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
             if !r.status().is_success() {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
-                crate::broker::try_log_error(
-                    "models",
-                    &format!("API {status}"),
-                    Some(&text),
-                );
-                return Vec::new();
+                let detail = format_api_error_body(&text);
+                let msg = format!("Codex API error ({status}): {detail}");
+                crate::broker::try_log_error("models", &format!("API {status}"), Some(&text));
+                return Err(msg);
             }
             r
         }
         Err(e) => {
+            let msg = format!("Codex API request failed: {e}");
             crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
-            return Vec::new();
+            return Err(msg);
         }
     };
 
-    let body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Codex API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     let arr = body
@@ -1254,34 +1318,29 @@ async fn fetch_codex_model_list(api_key: &str) -> Vec<RemoteModel> {
             }
         }
     }
-    models
+    Ok(models)
 }
 
-async fn fetch_openrouter_model_list(api_key: &str) -> Vec<RemoteModel> {
+async fn fetch_openrouter_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
     fetch_openai_compat_model_list(api_key, "https://openrouter.ai/api/v1").await
 }
 
-pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
+pub async fn fetch_openai_compat_model_list(
+    api_key: &str,
+    base_url: &str,
+) -> Result<Vec<RemoteModel>, String> {
     if vertex::is_vertex_openapi_base(base_url) {
-        return vertex::fetch_models(api_key, base_url).await;
+        return Ok(vertex::fetch_models(api_key, base_url).await);
     }
     let url = openai_models_url(base_url);
     let verbose = is_verbose();
     if verbose {
         eprintln!("\x1b[2m[fetching models from {url}]\x1b[0m");
     }
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            if verbose {
-                eprintln!("\x1b[33m[model list: failed to build http client: {e}]\x1b[0m");
-            }
-            return Vec::new();
-        }
-    };
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let resp = match client
         .get(&url)
@@ -1296,20 +1355,21 @@ pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Ve
             if verbose {
                 eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
             }
-            return Vec::new();
+            let detail = format_api_error_body(&body);
+            return Err(format!("API error ({status}) at {url}: {detail}"));
         }
         Err(e) => {
             if verbose {
                 eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
             }
-            return Vec::new();
+            return Err(format!("API request to {url} failed: {e}"));
         }
     };
 
-    let body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("API at {url}: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1335,21 +1395,15 @@ pub async fn fetch_openai_compat_model_list(api_key: &str, base_url: &str) -> Ve
             }
         }
     }
-    if models.is_empty() {
-        return Vec::new();
-    }
-    models
+    Ok(models)
 }
 
-async fn fetch_opencode_model_list(_api_key: &str) -> Vec<RemoteModel> {
+async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
     let url = "https://opencode.ai/zen/v1/models";
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let resp = match client
         .get(url)
@@ -1358,13 +1412,19 @@ async fn fetch_opencode_model_list(_api_key: &str) -> Vec<RemoteModel> {
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => return Vec::new(),
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let detail = format_api_error_body(&text);
+            return Err(format!("Opencode API error ({status}): {detail}"));
+        }
+        Err(e) => return Err(format!("Opencode API request failed: {e}")),
     };
 
-    let body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Opencode API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1379,7 +1439,7 @@ async fn fetch_opencode_model_list(_api_key: &str) -> Vec<RemoteModel> {
             }
         }
     }
-    models
+    Ok(models)
 }
 
 // ---------------------------------------------------------------------------

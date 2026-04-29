@@ -224,3 +224,25 @@ fn build_request_body_converts_oauth_string_content_for_cache_control() {
         Some(&json!({"type": "ephemeral"}))
     );
 }
+
+#[test]
+fn supports_1m_context_beta_gates_only_sonnet_4_and_4_5() {
+    use crate::providers::supports_1m_context_beta;
+
+    // Sonnet 4 and 4.5 require the beta header for the 1M tier.
+    assert!(supports_1m_context_beta("claude-sonnet-4-20250514"));
+    assert!(supports_1m_context_beta("claude-sonnet-4-5-20250929"));
+
+    // Sonnet 4.6 and Opus 4.6/4.7 ship 1M as default — no beta gating.
+    assert!(!supports_1m_context_beta("claude-sonnet-4-6"));
+    assert!(!supports_1m_context_beta("claude-sonnet-4-6-20251015"));
+    assert!(!supports_1m_context_beta("claude-opus-4-6"));
+    assert!(!supports_1m_context_beta("claude-opus-4-7"));
+
+    // Older / non-eligible models stay off.
+    assert!(!supports_1m_context_beta("claude-opus-4-1-20250805"));
+    assert!(!supports_1m_context_beta("claude-opus-4-20250514"));
+    assert!(!supports_1m_context_beta("claude-opus-4-5-20251101"));
+    assert!(!supports_1m_context_beta("claude-haiku-4-5-20251001"));
+    assert!(!supports_1m_context_beta("claude-3-5-sonnet-20241022"));
+}

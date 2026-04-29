@@ -836,15 +836,12 @@ async fn parse_sse_stream(
 // ---------------------------------------------------------------------------
 
 /// Fetch Gemini's model list. GET /v1beta/models?pageSize=100.
-pub async fn fetch_gemini_model_list(api_key: &str) -> Vec<super::RemoteModel> {
+pub async fn fetch_gemini_model_list(api_key: &str) -> Result<Vec<super::RemoteModel>, String> {
     let url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100";
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+        .map_err(|e| format!("HTTP client error: {e}"))?;
     let resp = match client
         .get(url)
         .header("x-goog-api-key", api_key)
@@ -852,16 +849,22 @@ pub async fn fetch_gemini_model_list(api_key: &str) -> Vec<super::RemoteModel> {
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => return Vec::new(),
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let detail = super::format_api_error_body(&text);
+            return Err(format!("Gemini API error ({status}): {detail}"));
+        }
+        Err(e) => return Err(format!("Gemini API request failed: {e}")),
     };
-    let body: Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Gemini API: invalid JSON response: {e}"))?;
     let Some(models) = body.get("models").and_then(|m| m.as_array()) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    models
+    Ok(models
         .iter()
         .filter_map(|m| {
             // Gemini returns names as "models/gemini-2.5-pro"; strip
@@ -899,7 +902,7 @@ pub async fn fetch_gemini_model_list(api_key: &str) -> Vec<super::RemoteModel> {
                 context_window,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Fetch context window + max output tokens for a specific Gemini model.
