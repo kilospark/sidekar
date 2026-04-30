@@ -148,6 +148,11 @@ pub(super) fn classify(history: &[ChatMessage]) -> Verdict {
                     corpus.push('\n');
                     nonws_chars += thinking.chars().filter(|c| !c.is_whitespace()).count();
                 }
+                ContentBlock::Reasoning { text } => {
+                    corpus.push_str(text);
+                    corpus.push('\n');
+                    nonws_chars += text.chars().filter(|c| !c.is_whitespace()).count();
+                }
                 ContentBlock::ToolResult { content, .. } => {
                     corpus.push_str(content);
                     corpus.push('\n');
@@ -210,17 +215,13 @@ mod tests {
     fn u(text: &str) -> ChatMessage {
         ChatMessage {
             role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: text.into(),
-            }],
+            content: vec![ContentBlock::Text { text: text.into() }],
         }
     }
     fn a(text: &str) -> ChatMessage {
         ChatMessage {
             role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: text.into(),
-            }],
+            content: vec![ContentBlock::Text { text: text.into() }],
         }
     }
 
@@ -242,7 +243,10 @@ mod tests {
     fn preference_triggers_proceed() {
         let h = vec![u("I prefer using cargo test --lib always")];
         match classify(&h) {
-            Verdict::Proceed { signals, length_fallback } => {
+            Verdict::Proceed {
+                signals,
+                length_fallback,
+            } => {
                 assert!(!length_fallback);
                 assert!(signals.contains(&"preference"));
             }
@@ -323,9 +327,7 @@ mod tests {
         let h = vec![ChatMessage {
             role: Role::Assistant,
             content: vec![
-                ContentBlock::Text {
-                    text: "ok".into(),
-                },
+                ContentBlock::Text { text: "ok".into() },
                 ContentBlock::ToolCall {
                     id: "t-1".into(),
                     name: "Read".into(),
@@ -335,7 +337,10 @@ mod tests {
             ],
         }];
         match classify(&h) {
-            Verdict::Proceed { signals, length_fallback } => {
+            Verdict::Proceed {
+                signals,
+                length_fallback,
+            } => {
                 assert!(!length_fallback);
                 assert!(signals.contains(&"tool-activity"));
             }
@@ -351,7 +356,10 @@ mod tests {
         let text = "apple ".repeat(200); // 1000+ non-ws chars
         let h = vec![u(&text)];
         match classify(&h) {
-            Verdict::Proceed { signals, length_fallback } => {
+            Verdict::Proceed {
+                signals,
+                length_fallback,
+            } => {
                 assert!(length_fallback, "expected length fallback to fire");
                 assert!(signals.is_empty(), "expected no signals, got {signals:?}");
             }

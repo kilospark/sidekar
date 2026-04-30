@@ -47,12 +47,7 @@ impl ResourceSnapshot {
         #[cfg(target_os = "linux")]
         {
             let out = std::process::Command::new("ps")
-                .args([
-                    "-o",
-                    "rss=,pcpu=,nlwp=",
-                    "-p",
-                    &pid.to_string(),
-                ])
+                .args(["-o", "rss=,pcpu=,nlwp=", "-p", &pid.to_string()])
                 .output();
             if let Ok(o) = out
                 && o.status.success()
@@ -97,11 +92,7 @@ impl ResourceSnapshot {
                 }
                 let text = String::from_utf8_lossy(&o.stdout);
                 let n = text.lines().count();
-                if n > 1 {
-                    Some((n - 1) as u32)
-                } else {
-                    None
-                }
+                if n > 1 { Some((n - 1) as u32) } else { None }
             });
 
         Self {

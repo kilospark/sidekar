@@ -86,8 +86,8 @@ pub async fn stream(
     // The retry loop handles the "cache evicted server-side" case once.
     let mut cache_ref: Option<String> = None;
     let mut cache_fingerprint: Option<String> = None;
-    if config.gemini_caching {
-        if let Some(prep) = prepare_cache(
+    if config.gemini_caching
+        && let Some(prep) = prepare_cache(
             api_key,
             base_url,
             model,
@@ -97,10 +97,9 @@ pub async fn stream(
             config,
         )
         .await
-        {
-            cache_ref = Some(prep.name);
-            cache_fingerprint = Some(prep.fingerprint);
-        }
+    {
+        cache_ref = Some(prep.name);
+        cache_fingerprint = Some(prep.fingerprint);
     }
 
     // Decide which messages go in `contents`. When cached, only the
@@ -108,7 +107,7 @@ pub async fn stream(
     let (effective_system, effective_tools, effective_messages) = if cache_ref.is_some() {
         let prefix_len = cacheable_prefix_len(messages);
         (
-            "", // system lives in cache
+            "",      // system lives in cache
             &[][..], // tools live in cache
             &messages[prefix_len..],
         )
@@ -216,7 +215,8 @@ fn is_cache_not_found_error(err: &anyhow::Error) -> bool {
     // Status code 404 is the common case. Message text mentioning
     // "not found" + "cachedContent" catches the less-specific
     // rendering when the server returns 400 with NOT_FOUND in body.
-    s.contains("(404") || (s.to_lowercase().contains("cached") && s.to_lowercase().contains("not found"))
+    s.contains("(404")
+        || (s.to_lowercase().contains("cached") && s.to_lowercase().contains("not found"))
 }
 
 /// Result of the cache preparation step: a ready-to-use cache name
@@ -251,8 +251,7 @@ async fn prepare_cache(
     // with #[derive(Serialize)].
     let tools_json = serde_json::to_string(tools).ok()?;
     let prefix_json = serde_json::to_string(prefix).ok()?;
-    let fingerprint =
-        cache_registry::fingerprint(model, system_prompt, &tools_json, &prefix_json);
+    let fingerprint = cache_registry::fingerprint(model, system_prompt, &tools_json, &prefix_json);
 
     // Registry hit → reuse.
     if let Some(entry) = cache_registry::lookup(&fingerprint) {
@@ -292,16 +291,16 @@ async fn prepare_cache(
     let system_instruction = prefix_body.get("systemInstruction").cloned();
 
     let display_name = format!("sidekar-{}", &fingerprint[..8]);
-    let created = cache::create_cache(
+    let created = cache::create_cache(cache::CreateCacheRequest {
         api_key,
         base_url,
         model,
-        &contents,
-        &tools_decls,
-        system_instruction.as_ref(),
-        config.gemini_cache_ttl_secs,
-        &display_name,
-    )
+        contents: &contents,
+        tools: &tools_decls,
+        system_instruction: system_instruction.as_ref(),
+        ttl_secs: config.gemini_cache_ttl_secs,
+        display_name: &display_name,
+    })
     .await;
 
     let created = match created {
@@ -454,6 +453,7 @@ pub(crate) fn build_request_body(
                 // documented skip sentinel.
                 let has_thinking = msg.content.iter().any(|b| {
                     matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.is_empty())
+                        || matches!(b, ContentBlock::Reasoning { text, .. } if !text.is_empty())
                 });
                 // Sentinel value documented by Google for cross-model
                 // history transfer:
@@ -482,6 +482,9 @@ pub(crate) fn build_request_body(
                                 "thought": true,
                                 "thoughtSignature": sig,
                             }));
+                        }
+                        ContentBlock::Reasoning { text } if !text.is_empty() => {
+                            parts.push(json!({ "text": text }));
                         }
                         ContentBlock::ToolCall {
                             id,
@@ -641,15 +644,11 @@ async fn parse_sse_stream(
                         // only (not functionCall parts — those get their
                         // own sig stored on ContentBlock::ToolCall).
                         let is_fc_part = part.get("functionCall").is_some();
-                        if !is_fc_part {
-                            if let Some(sig) = part
-                                .get("thoughtSignature")
-                                .and_then(|v| v.as_str())
-                            {
-                                if !sig.is_empty() {
-                                    thinking_sig = sig.to_string();
-                                }
-                            }
+                        if !is_fc_part
+                            && let Some(sig) = part.get("thoughtSignature").and_then(|v| v.as_str())
+                            && !sig.is_empty()
+                        {
+                            thinking_sig = sig.to_string();
                         }
                         if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                             if text.is_empty() {
@@ -674,10 +673,7 @@ async fn parse_sse_stream(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let args = fc
-                                .get("args")
-                                .cloned()
-                                .unwrap_or_else(|| json!({}));
+                            let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
                             // Capture the functionCall part's own
                             // thoughtSignature for replay.
                             let fc_sig = part
@@ -743,15 +739,12 @@ async fn parse_sse_stream(
                     stop_reason = match reason {
                         "STOP" => StopReason::Stop,
                         "MAX_TOKENS" => StopReason::Length,
-                        "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" | "BLOCKLIST"
-                        | "SPII" => {
+                        "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" | "BLOCKLIST" | "SPII" => {
                             // Log the reason so it shows up in proxy
                             // captures / debug output. Agent loop will
                             // see an empty assistant turn and likely
                             // bail with "no output" — acceptable.
-                            eprintln!(
-                                "gemini: stream ended with content-policy stop: {reason}"
-                            );
+                            eprintln!("gemini: stream ended with content-policy stop: {reason}");
                             StopReason::Stop
                         }
                         "OTHER" | "MALFORMED_FUNCTION_CALL" => {
@@ -824,7 +817,7 @@ async fn parse_sse_stream(
             stop_reason,
             model: model.to_string(),
             response_id: String::new(),
-                            rate_limit: None,
+            rate_limit: None,
         },
     });
 
@@ -838,29 +831,10 @@ async fn parse_sse_stream(
 /// Fetch Gemini's model list. GET /v1beta/models?pageSize=100.
 pub async fn fetch_gemini_model_list(api_key: &str) -> Result<Vec<super::RemoteModel>, String> {
     let url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-    let resp = match client
-        .get(url)
-        .header("x-goog-api-key", api_key)
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            let detail = super::format_api_error_body(&text);
-            return Err(format!("Gemini API error ({status}): {detail}"));
-        }
-        Err(e) => return Err(format!("Gemini API request failed: {e}")),
-    };
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Gemini API: invalid JSON response: {e}"))?;
+    let client = super::catalog_http_client(super::MODEL_CATALOG_TIMEOUT_SECS)?;
+    let body: Value =
+        super::catalog_send_json_plain(client.get(url).header("x-goog-api-key", api_key), "Gemini")
+            .await?;
     let Some(models) = body.get("models").and_then(|m| m.as_array()) else {
         return Ok(Vec::new());
     };
@@ -879,10 +853,7 @@ pub async fn fetch_gemini_model_list(api_key: &str) -> Result<Vec<super::RemoteM
             let supports_generate = m
                 .get("supportedGenerationMethods")
                 .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .any(|s| s.as_str() == Some("generateContent"))
-                })
+                .map(|arr| arr.iter().any(|s| s.as_str() == Some("generateContent")))
                 .unwrap_or(true);
             if !supports_generate {
                 return None;
@@ -911,15 +882,8 @@ pub async fn fetch_gemini_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let url = format!(
-        "{}/models/{}",
-        base_url.trim_end_matches('/'),
-        model
-    );
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
+    let url = format!("{}/models/{}", base_url.trim_end_matches('/'), model);
+    let client = super::catalog_http_client(super::MODEL_CATALOG_TIMEOUT_SECS).ok()?;
     let resp = client
         .get(&url)
         .header("x-goog-api-key", api_key)

@@ -64,7 +64,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
     let nickname: String = match args.get(2).map(String::as_str) {
         Some(name) if !name.starts_with('-') => {
             // Avoid double-hyphen: "claude-work work" → "claude-work" not "claude-work-work"
-            let base = provider.trim_end_matches(|c: char| c == '-');
+            let base = provider.trim_end_matches('-');
             format!("{base}-{name}")
         }
         _ => provider.to_string(),
@@ -72,24 +72,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
     let nickname = nickname.as_str();
 
     let provider_type =
-        sidekar::providers::oauth::provider_type_for(nickname).unwrap_or_else(|| {
-            // Fall back on the bare provider keyword
-            match provider {
-                "claude" | "anthropic" => "anthropic",
-                "codex" | "openai" => "codex",
-                "or" | "openrouter" => "openrouter",
-                "oc" | "opencode" => "opencode",
-                "grok" => "grok",
-                "gem" | "gemini" => "gemini",
-                _ => {
-                    eprintln!("Unknown provider: '{provider}'.");
-                    eprintln!(
-                        "Use: claude, codex, or, oc, grok, gem, oac"
-                    );
-                    std::process::exit(1);
-                }
-            }
-        });
+        sidekar::providers::oauth::resolve_provider_type_for_login(nickname, provider)
+            .unwrap_or_else(|| {
+                eprintln!("Unknown provider: '{provider}'.");
+                eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
+                std::process::exit(1);
+            });
 
     // Clear existing creds for this nickname before login
     let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
@@ -125,6 +113,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "Logged in as '{nickname}' (OpenCode)."
             )))?;
         }
+        "opencode-go" => {
+            let _ = sidekar::providers::oauth::login_opencode_go(Some(nickname)).await?;
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (OpenCode Go)."
+            )))?;
+        }
         "grok" => {
             let _ = sidekar::providers::oauth::login_grok(Some(nickname)).await?;
             sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
@@ -139,7 +133,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
         }
         _ => {
             eprintln!("Unknown provider type for '{nickname}'.");
-            eprintln!("Use: claude, codex, or, oc, grok, gem, oac");
+            eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
             std::process::exit(1);
         }
     }
@@ -180,7 +174,10 @@ struct CredentialsListOutput {
 impl sidekar::output::CommandOutput for CredentialsListOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         if self.credentials.is_empty() {
-            writeln!(w, "No stored credentials. Use: sidekar repl login <nickname>")?;
+            writeln!(
+                w,
+                "No stored credentials. Use: sidekar repl login <nickname>"
+            )?;
         } else {
             writeln!(w, "Stored credentials:")?;
             for c in &self.credentials {
@@ -221,50 +218,15 @@ async fn handle_models(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     };
-    let provider_type = sidekar::providers::oauth::provider_type_for(&cred).unwrap_or_else(|| {
-        if cred == "anthropic" {
-            "anthropic"
-        } else if cred == "codex" || cred == "openai" {
-            "codex"
-        } else if cred == "openrouter" {
-            "openrouter"
-        } else if cred == "opencode" {
-            "opencode"
-        } else if cred == "grok" {
-            "grok"
-        } else {
-            eprintln!("Unknown provider for '{cred}'.");
-            std::process::exit(1);
-        }
-    });
-    // Get token silently (don't trigger login)
-    let api_key = match provider_type {
-        "anthropic" => sidekar::providers::oauth::get_anthropic_token(Some(&cred)).await,
-        "codex" => sidekar::providers::oauth::get_codex_token(Some(&cred))
-            .await
-            .map(|(t, _)| t),
-        "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
-        "opencode" => sidekar::providers::oauth::get_opencode_token(Some(&cred)).await,
-        "grok" => sidekar::providers::oauth::get_grok_token(Some(&cred)).await,
-        "oac" => sidekar::providers::oauth::get_openai_compat_credentials(&cred)
-            .await
-            .map(|c| c.api_key),
-        _ => anyhow::bail!("Unknown provider"),
-    };
-    let api_key = match api_key {
-        Ok(k) => k,
+    let prov = match sidekar::repl::provider_from_credential(&cred).await {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("Failed to get credentials for '{cred}': {e}");
             std::process::exit(1);
         }
     };
-    let models = if provider_type == "oac" {
-        let creds = sidekar::providers::oauth::get_openai_compat_credentials(&cred).await?;
-        sidekar::providers::fetch_openai_compat_model_list(&creds.api_key, &creds.base_url).await
-    } else {
-        sidekar::providers::fetch_model_list(provider_type, &api_key).await
-    };
-    let models = match models {
+    let provider_type = prov.provider_type();
+    let models = match sidekar::providers::fetch_model_list_for_provider(&prov).await {
         Ok(m) => m,
         Err(err) => {
             eprintln!("Error listing models for '{cred}' ({provider_type}): {err}");
@@ -356,10 +318,7 @@ impl sidekar::output::CommandOutput for ReplSessionsOutput {
         }
         writeln!(w, "Sessions (most recent first):\n")?;
         for s in &self.items {
-            let name = s
-                .name
-                .as_deref()
-                .unwrap_or(&s.id[..s.id.len().min(8)]);
+            let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
             let age = super::format_age(s.updated_at);
             if self.show_cwd {
                 let dir = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);

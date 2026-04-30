@@ -25,7 +25,6 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::time::Duration;
 
 /// Response metadata from a successful create.
 #[derive(Debug, Clone)]
@@ -53,19 +52,31 @@ pub struct CreatedCache {
 ///   "displayName": "sidekar-session-<fingerprint-prefix>"
 /// }
 /// ```
+pub struct CreateCacheRequest<'a> {
+    pub api_key: &'a str,
+    pub base_url: &'a str,
+    pub model: &'a str,
+    pub contents: &'a [Value],
+    pub tools: &'a [Value],
+    pub system_instruction: Option<&'a Value>,
+    pub ttl_secs: u32,
+    pub display_name: &'a str,
+}
+
 /// Returns `Ok(None)` for 4xx (unretryable, e.g. under min tokens) so
 /// callers can fall back to the uncached path. Returns `Err` for 5xx
 /// and network errors — caller typically still falls back but logs.
-pub async fn create_cache(
-    api_key: &str,
-    base_url: &str,
-    model: &str,
-    contents: &[Value],
-    tools: &[Value],
-    system_instruction: Option<&Value>,
-    ttl_secs: u32,
-    display_name: &str,
-) -> Result<Option<CreatedCache>> {
+pub async fn create_cache(req: CreateCacheRequest<'_>) -> Result<Option<CreatedCache>> {
+    let CreateCacheRequest {
+        api_key,
+        base_url,
+        model,
+        contents,
+        tools,
+        system_instruction,
+        ttl_secs,
+        display_name,
+    } = req;
     let url = format!("{}/cachedContents", base_url.trim_end_matches('/'));
 
     // Gemini's model field on cachedContents must be the full
@@ -90,9 +101,8 @@ pub async fn create_cache(
         body["systemInstruction"] = sys.clone();
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
+    let client = super::super::catalog_http_client(30)
+        .map_err(anyhow::Error::msg)
         .context("build http client")?;
 
     let resp = client
@@ -117,7 +127,10 @@ pub async fn create_cache(
             );
             return Ok(None);
         }
-        bail!("cachedContents create failed ({status}): {}", truncate_for_log(&text, 500));
+        bail!(
+            "cachedContents create failed ({status}): {}",
+            truncate_for_log(&text, 500)
+        );
     }
 
     let data: Value = resp
@@ -157,9 +170,7 @@ pub async fn create_cache(
 #[allow(dead_code)]
 pub async fn delete_cache(api_key: &str, base_url: &str, name: &str) -> Result<()> {
     let url = format!("{}/{name}", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let client = super::super::catalog_http_client(10).map_err(anyhow::Error::msg)?;
     let resp = client
         .delete(&url)
         .header("x-goog-api-key", api_key)

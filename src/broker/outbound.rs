@@ -345,10 +345,7 @@ pub fn cancel_outbound_request(msg_id: &str, cancelled_at: u64) -> Result<usize>
 /// Cancel all open outbound requests owned by `sender_name`. Returns the
 /// list of msg_ids that were actually cancelled (were open → cancelled).
 /// Pending rows for those msg_ids are also removed.
-pub fn cancel_all_outbound_for_sender(
-    sender_name: &str,
-    cancelled_at: u64,
-) -> Result<Vec<String>> {
+pub fn cancel_all_outbound_for_sender(sender_name: &str, cancelled_at: u64) -> Result<Vec<String>> {
     let mut conn = open()?;
     let tx = conn.transaction()?;
 
@@ -382,10 +379,7 @@ pub fn cancel_all_outbound_for_sender(
         ],
     )?;
     for id in &ids {
-        tx.execute(
-            "DELETE FROM pending_requests WHERE id = ?1",
-            params![id],
-        )?;
+        tx.execute("DELETE FROM pending_requests WHERE id = ?1", params![id])?;
     }
     tx.commit()?;
     Ok(ids)

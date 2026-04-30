@@ -120,8 +120,8 @@ fn modifier_mask(modifiers: &[&str]) -> u64 {
 }
 
 const MODIFIER_NAMES: &[&str] = &[
-    "cmd", "command", "meta", "super", "shift", "option", "alt", "opt",
-    "ctrl", "control", "fn", "function",
+    "cmd", "command", "meta", "super", "shift", "option", "alt", "opt", "ctrl", "control", "fn",
+    "function",
 ];
 
 fn is_modifier(name: &str) -> bool {
@@ -173,13 +173,32 @@ fn virtual_key_code(name: &str) -> Option<u16> {
         m.insert("f12", 0x6F);
         // Letters
         for (c, code) in [
-            ('a', 0x00u16), ('b', 0x0B), ('c', 0x08), ('d', 0x02),
-            ('e', 0x0E), ('f', 0x03), ('g', 0x05), ('h', 0x04),
-            ('i', 0x22), ('j', 0x26), ('k', 0x28), ('l', 0x25),
-            ('m', 0x2E), ('n', 0x2D), ('o', 0x1F), ('p', 0x23),
-            ('q', 0x0C), ('r', 0x0F), ('s', 0x01), ('t', 0x11),
-            ('u', 0x20), ('v', 0x09), ('w', 0x0D), ('x', 0x07),
-            ('y', 0x10), ('z', 0x06),
+            ('a', 0x00u16),
+            ('b', 0x0B),
+            ('c', 0x08),
+            ('d', 0x02),
+            ('e', 0x0E),
+            ('f', 0x03),
+            ('g', 0x05),
+            ('h', 0x04),
+            ('i', 0x22),
+            ('j', 0x26),
+            ('k', 0x28),
+            ('l', 0x25),
+            ('m', 0x2E),
+            ('n', 0x2D),
+            ('o', 0x1F),
+            ('p', 0x23),
+            ('q', 0x0C),
+            ('r', 0x0F),
+            ('s', 0x01),
+            ('t', 0x11),
+            ('u', 0x20),
+            ('v', 0x09),
+            ('w', 0x0D),
+            ('x', 0x07),
+            ('y', 0x10),
+            ('z', 0x06),
         ] {
             m.insert(
                 // Leak a &str for the static map — one-time cost, 26 entries
@@ -189,14 +208,18 @@ fn virtual_key_code(name: &str) -> Option<u16> {
         }
         // Digits
         for (c, code) in [
-            ('0', 0x1Du16), ('1', 0x12), ('2', 0x13), ('3', 0x14),
-            ('4', 0x15), ('5', 0x17), ('6', 0x16), ('7', 0x1A),
-            ('8', 0x1C), ('9', 0x19),
+            ('0', 0x1Du16),
+            ('1', 0x12),
+            ('2', 0x13),
+            ('3', 0x14),
+            ('4', 0x15),
+            ('5', 0x17),
+            ('6', 0x16),
+            ('7', 0x1A),
+            ('8', 0x1C),
+            ('9', 0x19),
         ] {
-            m.insert(
-                Box::leak(String::from(c).into_boxed_str()),
-                code,
-            );
+            m.insert(Box::leak(String::from(c).into_boxed_str()), code);
         }
         m
     });
@@ -234,8 +257,7 @@ fn send_key(code: u16, down: bool, flags: u64, pid: Option<i32>) -> Result<()> {
 /// targeting a specific PID (background-safe). When `pid` is `None`, posts
 /// to the system HID tap (frontmost app).
 pub fn press_key(key: &str, modifiers: &[&str], pid: Option<i32>) -> Result<()> {
-    let code = virtual_key_code(key)
-        .ok_or_else(|| anyhow::anyhow!("unknown key: {key}"))?;
+    let code = virtual_key_code(key).ok_or_else(|| anyhow::anyhow!("unknown key: {key}"))?;
     let flags = modifier_mask(modifiers);
     send_key(code, true, flags, pid)?;
     send_key(code, false, flags, pid)?;
@@ -266,18 +288,12 @@ pub fn type_characters(text: &str, delay_ms: u32, pid: Option<i32>) -> Result<()
     for ch in text.chars() {
         let utf16: Vec<u16> = ch.encode_utf16(&mut [0u16; 2]).to_vec();
         for key_down in [true, false] {
-            let event = unsafe {
-                CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, key_down)
-            };
+            let event = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, key_down) };
             if event.is_null() {
                 bail!("failed to create unicode key event for '{ch}'");
             }
             unsafe {
-                CGEventKeyboardSetUnicodeString(
-                    event,
-                    utf16.len() as u32,
-                    utf16.as_ptr(),
-                );
+                CGEventKeyboardSetUnicodeString(event, utf16.len() as u32, utf16.as_ptr());
             }
             if let Some(pid) = pid {
                 if !skylight::post_to_pid(pid, event, true) {
@@ -389,12 +405,7 @@ impl MouseButton {
 
 /// Click at `(x, y)` in the frontmost window via HID tap.
 /// Convenience wrapper for browser OS-click and other foreground scenarios.
-pub fn click_frontmost(
-    x: f64,
-    y: f64,
-    button: MouseButton,
-    count: u32,
-) -> Result<()> {
+pub fn click_frontmost(x: f64, y: f64, button: MouseButton, count: u32) -> Result<()> {
     click_frontmost_via_hid_tap(x, y, button, count)
 }
 
@@ -441,17 +452,16 @@ type ObjcMsgSendBoolFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i8;
 
 fn is_pid_frontmost(pid: i32) -> bool {
     unsafe {
-        let cls = objc_getClass(b"NSRunningApplication\0".as_ptr());
+        let cls = objc_getClass(c"NSRunningApplication".as_ptr().cast());
         if cls.is_null() {
             return false;
         }
-        let sel_run_app = sel_registerName(
-            b"runningApplicationWithProcessIdentifier:\0".as_ptr(),
-        );
-        let sel_active = sel_registerName(b"isActive\0".as_ptr());
+        let sel_run_app =
+            sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr().cast());
+        let sel_active = sel_registerName(c"isActive".as_ptr().cast());
 
         // Resolve objc_msgSend — it's always loaded
-        let msgsend_ptr = super::skylight::dlsym_raw(b"objc_msgSend\0");
+        let msgsend_ptr = super::skylight::dlsym_raw(c"objc_msgSend");
         if msgsend_ptr.is_null() {
             return false;
         }
@@ -491,12 +501,7 @@ fn click_via_auth_signed(
     // Helper: create CGEvent for mouse
     let make_event = |mouse_type: u32, loc: CGPoint, click_count: i64| -> Result<CGEventRef> {
         let event = unsafe {
-            CGEventCreateMouseEvent(
-                std::ptr::null_mut(),
-                mouse_type,
-                loc,
-                kCGMouseButtonLeft,
-            )
+            CGEventCreateMouseEvent(std::ptr::null_mut(), mouse_type, loc, kCGMouseButtonLeft)
         };
         if event.is_null() {
             bail!("failed to create mouse event type={mouse_type}");
@@ -507,11 +512,7 @@ fn click_via_auth_signed(
             CGEventSetIntegerValueField(event, kCGMouseEventSubtype, 3);
             CGEventSetIntegerValueField(event, kCGMouseEventClickState, click_count);
             if wid != 0 {
-                CGEventSetIntegerValueField(
-                    event,
-                    kCGMouseEventWindowUnderMousePointer,
-                    wid_i64,
-                );
+                CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointer, wid_i64);
                 CGEventSetIntegerValueField(
                     event,
                     kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent,
@@ -572,21 +573,14 @@ fn click_via_auth_signed(
 }
 
 /// Frontmost target: use system HID tap (reaches OpenGL/GHOST viewports).
-fn click_frontmost_via_hid_tap(
-    x: f64,
-    y: f64,
-    button: MouseButton,
-    count: u32,
-) -> Result<()> {
+fn click_frontmost_via_hid_tap(x: f64, y: f64, button: MouseButton, count: u32) -> Result<()> {
     let clamped = count.clamp(1, 3);
     let point = CGPoint { x, y };
     let cg_button = button.cg_button();
     let src = unsafe { CGEventSourceCreate(kCGEventSourceStateHIDSystemState) };
 
     // Leading mouseMoved
-    let move_ev = unsafe {
-        CGEventCreateMouseEvent(src, kCGEventMouseMoved, point, cg_button)
-    };
+    let move_ev = unsafe { CGEventCreateMouseEvent(src, kCGEventMouseMoved, point, cg_button) };
     if !move_ev.is_null() {
         unsafe { CGEventPost(kCGHIDEventTap, move_ev) };
         unsafe { CFRelease(move_ev as *const c_void) };
@@ -594,15 +588,15 @@ fn click_frontmost_via_hid_tap(
     std::thread::sleep(std::time::Duration::from_millis(30));
 
     for click_idx in 1..=clamped {
-        let down = unsafe {
-            CGEventCreateMouseEvent(src, button.down_type(), point, cg_button)
-        };
-        let up = unsafe {
-            CGEventCreateMouseEvent(src, button.up_type(), point, cg_button)
-        };
+        let down = unsafe { CGEventCreateMouseEvent(src, button.down_type(), point, cg_button) };
+        let up = unsafe { CGEventCreateMouseEvent(src, button.up_type(), point, cg_button) };
         if down.is_null() || up.is_null() {
-            if !down.is_null() { unsafe { CFRelease(down as *const c_void) }; }
-            if !up.is_null() { unsafe { CFRelease(up as *const c_void) }; }
+            if !down.is_null() {
+                unsafe { CFRelease(down as *const c_void) };
+            }
+            if !up.is_null() {
+                unsafe { CFRelease(up as *const c_void) };
+            }
             bail!("failed to create mouse event for frontmost click");
         }
         unsafe {
@@ -628,13 +622,7 @@ fn click_frontmost_via_hid_tap(
 }
 
 /// Dual-post fallback: SkyLight + public CGEventPostToPid.
-fn click_via_dual_post(
-    x: f64,
-    y: f64,
-    pid: i32,
-    button: MouseButton,
-    count: u32,
-) -> Result<()> {
+fn click_via_dual_post(x: f64, y: f64, pid: i32, button: MouseButton, count: u32) -> Result<()> {
     let clamped = count.clamp(1, 3);
     let point = CGPoint { x, y };
     let cg_button = button.cg_button();
@@ -647,8 +635,12 @@ fn click_via_dual_post(
             CGEventCreateMouseEvent(std::ptr::null_mut(), button.up_type(), point, cg_button)
         };
         if down.is_null() || up.is_null() {
-            if !down.is_null() { unsafe { CFRelease(down as *const c_void) }; }
-            if !up.is_null() { unsafe { CFRelease(up as *const c_void) }; }
+            if !down.is_null() {
+                unsafe { CFRelease(down as *const c_void) };
+            }
+            if !up.is_null() {
+                unsafe { CFRelease(up as *const c_void) };
+            }
             bail!("failed to create mouse event");
         }
         unsafe {

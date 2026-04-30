@@ -254,12 +254,7 @@ fn age_old_tool_cycles_stubs_old_results() {
 
     // 8 tool cycles — with keep=3, the oldest 5 should be aged.
     for i in 0..8 {
-        history.extend(tool_cycle(
-            &format!("t{i}"),
-            "Read",
-            big_args.clone(),
-            &big,
-        ));
+        history.extend(tool_cycle(&format!("t{i}"), "Read", big_args.clone(), &big));
     }
 
     let mut view = history.clone();
@@ -348,12 +343,7 @@ fn age_old_tool_cycles_noop_when_fewer_than_keep() {
 
     // Only 3 cycles, keep=5 → no aging
     for i in 0..3 {
-        history.extend(tool_cycle(
-            &format!("t{i}"),
-            "Grep",
-            json!({}),
-            &big,
-        ));
+        history.extend(tool_cycle(&format!("t{i}"), "Grep", json!({}), &big));
     }
 
     let mut view = history.clone();
@@ -374,12 +364,7 @@ fn age_old_tool_cycles_canonical_history_untouched() {
     let mut history: Vec<ChatMessage> = Vec::new();
 
     for i in 0..10 {
-        history.extend(tool_cycle(
-            &format!("t{i}"),
-            "Read",
-            big_args.clone(),
-            &big,
-        ));
+        history.extend(tool_cycle(&format!("t{i}"), "Read", big_args.clone(), &big));
     }
 
     let snapshot: Vec<String> = history
@@ -404,7 +389,10 @@ fn age_old_tool_cycles_canonical_history_untouched() {
         })
         .collect();
 
-    assert_eq!(snapshot, after, "canonical history must not be mutated by prepare_context");
+    assert_eq!(
+        snapshot, after,
+        "canonical history must not be mutated by prepare_context"
+    );
 }
 
 #[test]
@@ -416,12 +404,7 @@ fn age_boundary_stable_across_user_messages() {
 
     // 6 tool cycles
     for i in 0..6 {
-        history.extend(tool_cycle(
-            &format!("t{i}"),
-            "Read",
-            json!({}),
-            &big,
-        ));
+        history.extend(tool_cycle(&format!("t{i}"), "Read", json!({}), &big));
     }
 
     let view1 = prepare_context(&history, 1_000_000);
@@ -484,12 +467,17 @@ fn age_old_tool_cycles_mixed_content_assistant_msg() {
                         "text blocks must be preserved"
                     );
                 }
-                ContentBlock::ToolCall { arguments, name, .. } => {
+                ContentBlock::ToolCall {
+                    arguments, name, ..
+                } => {
                     assert_eq!(arguments, &json!({}), "old args should be cleared");
                     assert_eq!(name, "Read", "tool name must be preserved");
                 }
                 ContentBlock::ToolResult { content, .. } => {
-                    assert!(content.starts_with("[tool output cleared"), "old result should be stubbed");
+                    assert!(
+                        content.starts_with("[tool output cleared"),
+                        "old result should be stubbed"
+                    );
                 }
                 _ => {}
             }

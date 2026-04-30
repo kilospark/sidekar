@@ -149,6 +149,11 @@ fn render_block(block: &ContentBlock, out: &mut String) {
             out.push_str(&truncate_with_note(thinking, BLOCK_CHAR_CAP));
             out.push('\n');
         }
+        ContentBlock::Reasoning { text } => {
+            out.push_str("[reasoning] ");
+            out.push_str(&truncate_with_note(text, BLOCK_CHAR_CAP));
+            out.push('\n');
+        }
         ContentBlock::ToolCall {
             name, arguments, ..
         } => {
@@ -258,10 +263,7 @@ mod tests {
             "relevant_files",
             "critical_context",
         ] {
-            assert!(
-                out.contains(field),
-                "schema must mention field {field}"
-            );
+            assert!(out.contains(field), "schema must mention field {field}");
         }
     }
 

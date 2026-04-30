@@ -97,7 +97,10 @@ pub async fn measure_window(cdp: &mut CdpClient) -> Result<WindowMetrics> {
         chrome_left,
         chrome_top,
         dpr: parsed.get("dpr").and_then(|v| v.as_f64()).unwrap_or(1.0),
-        page_zoom: parsed.get("vvScale").and_then(|v| v.as_f64()).unwrap_or(1.0),
+        page_zoom: parsed
+            .get("vvScale")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0),
     })
 }
 
@@ -134,7 +137,8 @@ pub async fn os_click_css(
     #[cfg(target_os = "macos")]
     {
         crate::desktop::bg_input::click_frontmost(
-            zx, zy,
+            zx,
+            zy,
             crate::desktop::bg_input::MouseButton::Left,
             1,
         )?;

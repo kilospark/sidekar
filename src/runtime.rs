@@ -328,7 +328,9 @@ mod tests {
         // Anything that isn't in the alias set is None, not a
         // silent default. Prevents a typo like `/journal o` from
         // being interpreted as `off`.
-        for s in ["", "maybe", "2", "ok", "enabled", "tru", "f" /* not 'n' */] {
+        for s in [
+            "", "maybe", "2", "ok", "enabled", "tru", "f", /* not 'n' */
+        ] {
             assert_eq!(parse_bool_arg(s), None, "expected None for {s:?}");
         }
     }

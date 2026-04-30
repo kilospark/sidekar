@@ -7,7 +7,6 @@
 //! Requires Accessibility permission (same as AX tree walks). If unavailable,
 //! `start` returns an error pointing the user at `sidekar desktop trust`.
 
-#![cfg(target_os = "macos")]
 #![allow(non_upper_case_globals, dead_code)]
 
 use anyhow::{Result, bail};
@@ -83,11 +82,7 @@ unsafe extern "C" {
         order: isize,
     ) -> CFRunLoopSourceRef;
 
-    fn CFRunLoopAddSource(
-        loop_ref: CFRunLoopRef,
-        source: CFRunLoopSourceRef,
-        mode: *const c_void,
-    );
+    fn CFRunLoopAddSource(loop_ref: CFRunLoopRef, source: CFRunLoopSourceRef, mode: *const c_void);
 
     fn CFRunLoopGetCurrent() -> CFRunLoopRef;
     fn CFRunLoopRun();
@@ -179,14 +174,18 @@ impl MonitorState {
     }
 }
 
-unsafe impl Send for MonitorHandle {}
-unsafe impl Sync for MonitorHandle {}
+// SAFETY: `MonitorState` is only mutated through `Mutex` and carries raw
+// pointers solely for CoreGraphics run-loop integration on the owning thread.
+unsafe impl Send for MonitorState {}
 
 /// Raw pointers from CoreFoundation are not naturally Send; wrapping them
 /// here and keeping all access behind the global mutex makes it safe.
 struct MonitorHandle {
     state: Arc<Mutex<MonitorState>>,
 }
+
+unsafe impl Send for MonitorHandle {}
+unsafe impl Sync for MonitorHandle {}
 
 fn monitor() -> &'static MonitorHandle {
     static H: OnceLock<MonitorHandle> = OnceLock::new();
@@ -310,9 +309,8 @@ pub fn start() -> Result<()> {
                 }
                 return;
             }
-            let runloop_source = unsafe {
-                CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0)
-            };
+            let runloop_source =
+                unsafe { CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) };
             let current_loop = unsafe { CFRunLoopGetCurrent() };
             unsafe {
                 CFRunLoopAddSource(current_loop, runloop_source, kCFRunLoopCommonModes);

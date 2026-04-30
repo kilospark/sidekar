@@ -590,7 +590,9 @@ impl crate::output::CommandOutput for TabsOutput {
                 w,
                 "[{}] {} - {}{}",
                 tab.id,
-                tab.title.clone().unwrap_or_else(|| "(untitled)".to_string()),
+                tab.title
+                    .clone()
+                    .unwrap_or_else(|| "(untitled)".to_string()),
                 tab.url.clone().unwrap_or_else(|| "(no url)".to_string()),
                 active
             )?;
@@ -743,7 +745,11 @@ pub(crate) async fn cmd_back(ctx: &mut AppContext) -> Result<()> {
     .await?;
     sleep(Duration::from_millis(500)).await;
     let brief = get_page_brief(&mut cdp).await?;
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(brief))?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -778,7 +784,11 @@ pub(crate) async fn cmd_forward(ctx: &mut AppContext) -> Result<()> {
     .await?;
     sleep(Duration::from_millis(500)).await;
     let brief = get_page_brief(&mut cdp).await?;
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(brief))?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -789,7 +799,11 @@ pub(crate) async fn cmd_reload(ctx: &mut AppContext) -> Result<()> {
     cdp.send("Page.reload", json!({})).await?;
     wait_for_ready_state_complete(&mut cdp, Duration::from_secs(15)).await?;
     let brief = get_page_brief(&mut cdp).await?;
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(brief))?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -948,4 +962,3 @@ pub(crate) async fn cmd_stealth(ctx: &mut AppContext, args: &[String]) -> Result
     }
     Ok(())
 }
-

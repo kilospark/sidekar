@@ -1,26 +1,11 @@
 //! Session journaling — top-level module.
 //!
-//! Structure (per the implementation plan in
-//! `context/todo-journaling.md`):
+//! The `store` submodule is SQLite CRUD for the v2 journaling tables (no LLM,
+//! no tokio, no threat scanning). Future work (`prompt`, `parse`, `idle`,
+//! `task`, `inject`, `promote`) is outlined in `context/todo-journaling.md`.
 //!
-//!   - `store`   — SQLite CRUD against the v2 journaling tables.
-//!                 No LLM, no tokio, no threat scanning. This is
-//!                 the only module that touches the DB directly;
-//!                 everything else funnels through it.
-//!
-//! Not yet present (planned, separate commits):
-//!   - `prompt`  — build the 12-section summarization prompt.
-//!   - `parse`   — parse the LLM's JSON response, defensively.
-//!   - `idle`    — arm/cancel the idle timer from the REPL loop.
-//!   - `task`    — the background task body: select model,
-//!                 run the LLM call, write the row.
-//!   - `inject`  — compose the system-prompt suffix on resume.
-//!   - `promote` — memory promotion from repeated journal entries.
-//!
-//! The `runtime::journal()` switch gates everything here. When it
-//! returns false, no journaling code runs; the module still
-//! compiles and exposes its types so tests and `/journal` can
-//! still exercise the CRUD layer.
+//! The `runtime::journal()` flag gates execution. When it is off, no journaling
+//! runs; the module still exposes types so tests and `/journal` can hit CRUD.
 
 // Unused until the idle-timer and /journal consumers land in
 // subsequent commits. The re-exports exist so higher layers can

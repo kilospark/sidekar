@@ -57,7 +57,11 @@ fn cmd_tasks_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         project.as_deref(),
     )?;
     let msg = format!("Stored task [{}].", id);
-    out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -164,7 +168,11 @@ fn cmd_tasks_done(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let id = parse_task_id(args.first(), "Usage: sidekar tasks done <id>")?;
     update_task_status(id, "done")?;
     let msg = format!("Completed task [{}].", id);
-    out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -172,7 +180,11 @@ fn cmd_tasks_reopen(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let id = parse_task_id(args.first(), "Usage: sidekar tasks reopen <id>")?;
     update_task_status(id, "open")?;
     let msg = format!("Reopened task [{}].", id);
-    out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -184,7 +196,11 @@ fn cmd_tasks_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         bail!("Task [{}] not found.", id);
     }
     let msg = format!("Deleted task [{}].", id);
-    out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -362,11 +378,7 @@ impl crate::output::CommandOutput for TaskDepsOutput {
             writeln!(w, "  blocks: -")?;
         } else {
             for dep in &self.blocks {
-                writeln!(
-                    w,
-                    "  blocks [{}] {} ({})",
-                    dep.id, dep.title, dep.status
-                )?;
+                writeln!(w, "  blocks [{}] {} ({})", dep.id, dep.title, dep.status)?;
             }
         }
         Ok(())

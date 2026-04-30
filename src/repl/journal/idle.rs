@@ -270,10 +270,7 @@ mod tests {
         // A Done fires microseconds later.
         t.arm_at(t0 + Duration::from_millis(11));
         // Still within threshold after the new arm — no fire yet.
-        assert!(!t.should_fire_at(
-            Duration::from_millis(50),
-            t0 + Duration::from_millis(20)
-        ));
+        assert!(!t.should_fire_at(Duration::from_millis(50), t0 + Duration::from_millis(20)));
         // Past threshold from the new arm => fire.
         assert!(t.should_fire_at(Duration::from_millis(50), t0 + Duration::from_millis(100)));
     }

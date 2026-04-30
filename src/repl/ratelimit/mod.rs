@@ -6,19 +6,19 @@ pub fn format_rate_limit(rl: &RateLimitSnapshot) -> Option<String> {
     // Anthropic OAuth (Pro/Team) unified 5h + 7d caps — primary signal for subscription users.
     if let Some(pct) = rl.util_5h_pct {
         let mut s = format!("5h {}%", pct);
-        if let Some(reset) = rl.reset_5h_at {
-            if let Some(t) = format_reset_time(reset) {
-                s.push_str(&format!(" (resets {})", t));
-            }
+        if let Some(reset) = rl.reset_5h_at
+            && let Some(t) = format_reset_time(reset)
+        {
+            s.push_str(&format!(" (resets {})", t));
         }
         parts.push(s);
     }
     if let Some(pct) = rl.util_7d_pct {
         let mut s = format!("7d {}%", pct);
-        if let Some(reset) = rl.reset_7d_at {
-            if let Some(t) = format_reset_time(reset) {
-                s.push_str(&format!(" (resets {})", t));
-            }
+        if let Some(reset) = rl.reset_7d_at
+            && let Some(t) = format_reset_time(reset)
+        {
+            s.push_str(&format!(" (resets {})", t));
         }
         parts.push(s);
     }
@@ -32,10 +32,10 @@ pub fn format_rate_limit(rl: &RateLimitSnapshot) -> Option<String> {
         if let (Some(rem), Some(lim)) = (rl.tokens_remaining, rl.tokens_limit) {
             parts.push(format!("tok {}/{}", short_num(rem), short_num(lim)));
         }
-        if let Some(reset) = rl.reset_at {
-            if let Some(s) = format_reset_time(reset) {
-                parts.push(format!("reset {}", s));
-            }
+        if let Some(reset) = rl.reset_at
+            && let Some(s) = format_reset_time(reset)
+        {
+            parts.push(format!("reset {}", s));
         }
     }
 
