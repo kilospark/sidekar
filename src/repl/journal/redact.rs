@@ -129,6 +129,11 @@ pub(super) fn redact_history_in_place(history: &mut [crate::providers::ChatMessa
                         *thinking = redact(thinking);
                     }
                 }
+                ContentBlock::Reasoning { text } => {
+                    if PATTERN_SET.is_match(text) {
+                        *text = redact(text);
+                    }
+                }
                 ContentBlock::ToolResult { content, .. } => {
                     if PATTERN_SET.is_match(content) {
                         *content = redact(content);

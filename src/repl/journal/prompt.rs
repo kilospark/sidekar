@@ -149,6 +149,11 @@ fn render_block(block: &ContentBlock, out: &mut String) {
             out.push_str(&truncate_with_note(thinking, BLOCK_CHAR_CAP));
             out.push('\n');
         }
+        ContentBlock::Reasoning { text } => {
+            out.push_str("[reasoning] ");
+            out.push_str(&truncate_with_note(text, BLOCK_CHAR_CAP));
+            out.push('\n');
+        }
         ContentBlock::ToolCall {
             name, arguments, ..
         } => {

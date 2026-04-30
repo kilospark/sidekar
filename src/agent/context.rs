@@ -77,6 +77,7 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 .map(|b| match b {
                     ContentBlock::Text { text } => text.len(),
                     ContentBlock::Thinking { thinking, .. } => thinking.len(),
+                    ContentBlock::Reasoning { text } => text.len(),
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),

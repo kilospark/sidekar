@@ -148,6 +148,11 @@ pub(super) fn classify(history: &[ChatMessage]) -> Verdict {
                     corpus.push('\n');
                     nonws_chars += thinking.chars().filter(|c| !c.is_whitespace()).count();
                 }
+                ContentBlock::Reasoning { text } => {
+                    corpus.push_str(text);
+                    corpus.push('\n');
+                    nonws_chars += text.chars().filter(|c| !c.is_whitespace()).count();
+                }
                 ContentBlock::ToolResult { content, .. } => {
                     corpus.push_str(content);
                     corpus.push('\n');

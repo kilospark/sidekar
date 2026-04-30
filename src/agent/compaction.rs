@@ -239,7 +239,7 @@ async fn phase2_summarize(
                         truncate(content, 500)
                     ));
                 }
-                ContentBlock::Thinking { .. } => {}
+                ContentBlock::Thinking { .. } | ContentBlock::Reasoning { .. } => {}
                 ContentBlock::Image { .. } => {
                     summary_input.push_str(&format!("{role}: [image attachment]\n"));
                 }

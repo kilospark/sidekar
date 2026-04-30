@@ -946,6 +946,22 @@ fn model_from_list_by_id<'a>(
         .find(|m| m.get("id").and_then(|v| v.as_str()).unwrap_or("") == model_id)
 }
 
+/// Bearer GET `/v1/models` (OpenRouter, generic OpenAI-compatible bases).
+async fn fetch_bearer_models_list_json(api_key: &str, base_url: &str) -> Option<serde_json::Value> {
+    let url = openai_models_url(base_url);
+    let client = provider_models_list_client(10)?;
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json().await.ok()
+}
+
 /// Anthropic: GET /v1/models → max_input_tokens, max_tokens
 async fn fetch_anthropic_model_limits(
     api_key: &str,
@@ -988,21 +1004,7 @@ async fn fetch_openrouter_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let url = openai_models_url(base_url);
-    let client = provider_models_list_client(10)?;
-
-    let resp = client
-        .get(&url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let body: serde_json::Value = resp.json().await.ok()?;
+    let body = fetch_bearer_models_list_json(api_key, base_url).await?;
     let models_arr = body.get("data").and_then(|d| d.as_array())?;
     let m = model_from_list_by_id(models_arr, model)?;
     let ctx = m
@@ -1023,21 +1025,7 @@ async fn fetch_openai_compat_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let url = openai_models_url(base_url);
-    let client = provider_models_list_client(10)?;
-
-    let resp = client
-        .get(&url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let body: serde_json::Value = resp.json().await.ok()?;
+    let body = fetch_bearer_models_list_json(api_key, base_url).await?;
     let models_arr = body.get("data").and_then(|d| d.as_array())?;
     let m = model_from_list_by_id(models_arr, model)?;
     let ctx = m

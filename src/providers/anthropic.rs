@@ -434,6 +434,8 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
             })),
             // Encrypted reasoning is Codex-only; skip for Anthropic.
             ContentBlock::EncryptedReasoning { .. } => None,
+            // OpenAI-compat reasoning replay; skip on Anthropic.
+            ContentBlock::Reasoning { .. } => None,
         })
         .collect()
 }
