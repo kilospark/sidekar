@@ -18,7 +18,7 @@ use zip::ZipArchive;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
 
-pub const EXTENSION_ZIP: &[u8] = include_bytes!("../assets/extension.zip");
+pub const EXTENSION_ZIP: &[u8] = include_bytes!("assets/extension.zip");
 
 mod cli;
 mod verify;
@@ -115,11 +115,6 @@ impl PassiveNetRing {
 
     pub fn len(&self) -> usize {
         self.events.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
     }
 
     pub fn total_received(&self) -> u64 {

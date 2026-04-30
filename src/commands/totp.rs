@@ -322,9 +322,7 @@ async fn cmd_totp_remove(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         rec.id
     } else {
         // numeric id form
-        args[0]
-            .parse::<i64>()
-            .context("Expected a numeric ID or <service> <account>")?
+        args[0].parse::<i64>().context("Expected a numeric ID or <service> <account>")?
     };
     crate::broker::totp_delete(id)?;
     let msg = format!("Deleted TOTP secret {}.", id);

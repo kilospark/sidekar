@@ -215,7 +215,11 @@ impl crate::output::CommandOutput for KvHistoryOutput {
                 format!(" [{}]", e.tags.join(","))
             };
             match &e.age {
-                Some(age) => writeln!(w, "  {}  {}{}  ({})", e.version, e.value, tag_str, age)?,
+                Some(age) => writeln!(
+                    w,
+                    "  {}  {}{}  ({})",
+                    e.version, e.value, tag_str, age
+                )?,
                 None => writeln!(w, "  {}  {}{}", e.version, e.value, tag_str)?,
             }
         }

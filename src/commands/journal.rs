@@ -40,10 +40,7 @@ pub fn cmd_journal(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 fn print_help(ctx: &mut AppContext) {
-    out!(
-        ctx,
-        "\x1b[1mUsage:\x1b[0m sidekar journal <list|show> [args]"
-    );
+    out!(ctx, "\x1b[1mUsage:\x1b[0m sidekar journal <list|show> [args]");
     out!(ctx, "");
     out!(
         ctx,
@@ -53,10 +50,7 @@ fn print_help(ctx: &mut AppContext) {
         ctx,
         "                           (default N=10, --project overrides cwd)"
     );
-    out!(
-        ctx,
-        "  show <id>                Full 12-section view of one journal"
-    );
+    out!(ctx, "  show <id>                Full 12-section view of one journal");
     out!(ctx, "");
     out!(
         ctx,
@@ -120,7 +114,11 @@ fn cmd_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         // in a typical per-project journal list without filling the
         // row with the full UUID.
         let sid_short = r.session_id[..r.session_id.len().min(8)].to_string();
-        out!(ctx, "  [{id:>5}] {age:>8}  {sid_short}  {head}", id = r.id);
+        out!(
+            ctx,
+            "  [{id:>5}] {age:>8}  {sid_short}  {head}",
+            id = r.id
+        );
     }
     Ok(())
 }

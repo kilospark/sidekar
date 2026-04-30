@@ -32,11 +32,7 @@ impl crate::output::CommandOutput for FindOutput {
         if !self.also.is_empty() {
             writeln!(w, "Also:")?;
             for m in &self.also {
-                writeln!(
-                    w,
-                    "  [{}] {} \"{}\" ({:.2})",
-                    m.ref_id, m.role, m.name, m.score
-                )?;
+                writeln!(w, "  [{}] {} \"{}\" ({:.2})", m.ref_id, m.role, m.name, m.score)?;
             }
         }
         Ok(())
@@ -80,13 +76,7 @@ struct FindTextRow {
 impl crate::output::CommandOutput for FindTextOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         for m in &self.matches {
-            writeln!(
-                w,
-                "<{}> \"{}\" — {}",
-                m.tag,
-                truncate(&m.text, 60),
-                m.selector
-            )?;
+            writeln!(w, "<{}> \"{}\" — {}", m.tag, truncate(&m.text, 60), m.selector)?;
         }
         writeln!(w, "{} match(es)", self.matches.len())?;
         Ok(())
@@ -466,21 +456,9 @@ async fn cmd_find_by_text(ctx: &mut AppContext, text: &str) -> Result<()> {
     let rows: Vec<FindTextRow> = items
         .iter()
         .map(|item| FindTextRow {
-            tag: item
-                .get("tag")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_string(),
-            text: item
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            selector: item
-                .get("selector")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
+            tag: item.get("tag").and_then(Value::as_str).unwrap_or("?").to_string(),
+            text: item.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+            selector: item.get("selector").and_then(Value::as_str).unwrap_or("").to_string(),
         })
         .collect();
     let output = FindTextOutput { matches: rows };
@@ -542,21 +520,9 @@ async fn cmd_find_by_label(ctx: &mut AppContext, label: &str) -> Result<()> {
     let rows: Vec<FindLabelRow> = items
         .iter()
         .map(|item| FindLabelRow {
-            tag: item
-                .get("tag")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_string(),
-            label: item
-                .get("label")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            selector: item
-                .get("selector")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
+            tag: item.get("tag").and_then(Value::as_str).unwrap_or("?").to_string(),
+            label: item.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
+            selector: item.get("selector").and_then(Value::as_str).unwrap_or("").to_string(),
         })
         .collect();
     let output = FindLabelOutput { matches: rows };
@@ -642,23 +608,11 @@ pub(crate) async fn cmd_resolve(ctx: &mut AppContext, selector: &str) -> Result<
 
     let output = ResolveOutput {
         href: parsed.get("href").and_then(Value::as_str).map(String::from),
-        action: parsed
-            .get("action")
-            .and_then(Value::as_str)
-            .map(String::from),
-        form_action: parsed
-            .get("formAction")
-            .and_then(Value::as_str)
-            .map(String::from),
+        action: parsed.get("action").and_then(Value::as_str).map(String::from),
+        form_action: parsed.get("formAction").and_then(Value::as_str).map(String::from),
         src: parsed.get("src").and_then(Value::as_str).map(String::from),
-        onclick: parsed
-            .get("onclick")
-            .and_then(Value::as_str)
-            .map(String::from),
-        target: parsed
-            .get("target")
-            .and_then(Value::as_str)
-            .map(String::from),
+        onclick: parsed.get("onclick").and_then(Value::as_str).map(String::from),
+        target: parsed.get("target").and_then(Value::as_str).map(String::from),
         tag: parsed
             .get("tagName")
             .and_then(Value::as_str)

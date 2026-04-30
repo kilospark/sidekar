@@ -151,13 +151,7 @@ impl ProcessManager {
             // Try to take the state lock briefly. We must not hold
             // the registry lock through long operations, so read
             // the exit flag and move on.
-            if entry
-                .process
-                .state
-                .try_lock()
-                .map(|st| st.exit_code.is_some())
-                .unwrap_or(false)
-            {
+            if entry.process.state.try_lock().map(|st| st.exit_code.is_some()).unwrap_or(false) {
                 to_remove.push(id);
             }
         }
@@ -241,7 +235,8 @@ impl ProcessManager {
                 // small — longer waits would penalize genuinely
                 // long-running commands that just happened to
                 // print their banner quickly.
-                let grace_deadline = Instant::now() + Duration::from_millis(100);
+                let grace_deadline =
+                    Instant::now() + Duration::from_millis(100);
                 let mut exited = None;
                 while Instant::now() < grace_deadline {
                     // Critical: read exit_code AND signal under the
@@ -268,7 +263,12 @@ impl ProcessManager {
                         // Drain any bytes that arrived in the
                         // grace window too. Cursor is
                         // `position_after` from the first yield.
-                        let tail = proc.state.lock().await.buffer.drain_since(position_after);
+                        let tail = proc
+                            .state
+                            .lock()
+                            .await
+                            .buffer
+                            .drain_since(position_after);
                         let mut out_bytes = output;
                         out_bytes.extend_from_slice(&tail);
                         Ok(ExecOutput {
@@ -603,10 +603,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fast_exit_does_not_register_session() {
         let mgr = ProcessManager::new();
-        let out = mgr
-            .spawn(opts("echo hi; exit 0"), 3000, None)
-            .await
-            .unwrap();
+        let out = mgr.spawn(opts("echo hi; exit 0"), 3000, None).await.unwrap();
         assert!(out.session_id.is_none(), "fast-exit must not register");
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(mgr.session_count().await, 0);
@@ -633,18 +630,17 @@ mod tests {
         let sid = out.session_id.expect("cat should still be running");
 
         // Send a line. PTY echoes it back.
-        let out2 = mgr.write_stdin(sid, b"hello\n", 500, None).await.unwrap();
+        let out2 = mgr
+            .write_stdin(sid, b"hello\n", 500, None)
+            .await
+            .unwrap();
         let s = String::from_utf8_lossy(&out2.output);
         assert!(s.contains("hello"), "cat should echo; got: {s:?}");
 
         // Send EOF → cat exits.
         let out3 = mgr.write_stdin(sid, &[0x04], 2000, None).await.unwrap();
         assert_eq!(out3.exit_code, Some(0));
-        assert_eq!(
-            mgr.session_count().await,
-            0,
-            "exited session must be reaped"
-        );
+        assert_eq!(mgr.session_count().await, 0, "exited session must be reaped");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -654,11 +650,7 @@ mod tests {
         // second.
         let mgr = ProcessManager::new();
         let out = mgr
-            .spawn(
-                opts("printf one\\\\n; sleep 0.5; printf two\\\\n; sleep 30"),
-                300,
-                None,
-            )
+            .spawn(opts("printf one\\\\n; sleep 0.5; printf two\\\\n; sleep 30"), 300, None)
             .await
             .unwrap();
         let sid = out.session_id.unwrap();
@@ -671,10 +663,7 @@ mod tests {
         let second = String::from_utf8_lossy(&out2.output).to_string();
 
         let combined = format!("{first}{second}");
-        assert!(
-            combined.contains("two"),
-            "must see 'two' across calls; got: {combined:?}"
-        );
+        assert!(combined.contains("two"), "must see 'two' across calls; got: {combined:?}");
 
         mgr.kill(sid).await.unwrap();
     }
@@ -689,15 +678,18 @@ mod tests {
             .await
             .unwrap();
         let sid = out.session_id.unwrap();
-        let first_seen = String::from_utf8_lossy(&out.output).contains("alpha");
+        let first_seen =
+            String::from_utf8_lossy(&out.output).contains("alpha");
 
         // Drain anything pending with a quick poll.
         let out2 = mgr.write_stdin(sid, b"", 300, None).await.unwrap();
-        let second_seen = String::from_utf8_lossy(&out2.output).contains("alpha");
+        let second_seen =
+            String::from_utf8_lossy(&out2.output).contains("alpha");
 
         // Second poll: should see nothing (process is sleeping).
         let out3 = mgr.write_stdin(sid, b"", 300, None).await.unwrap();
-        let third_seen = String::from_utf8_lossy(&out3.output).contains("alpha");
+        let third_seen =
+            String::from_utf8_lossy(&out3.output).contains("alpha");
 
         // 'alpha' must appear in exactly one of first+second, and
         // must NOT appear in third.

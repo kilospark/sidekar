@@ -78,12 +78,10 @@ fn last_prompt_snippet_extracts_first_text_block_and_truncates() {
         last_user_content_json: Some(content_json.to_string()),
     };
     // Short prompt — no truncation, no ellipsis.
-    let sc = make(
-        &serde_json::to_string(&vec![ContentBlock::Text {
-            text: "hello".into(),
-        }])
-        .unwrap(),
-    );
+    let sc = make(&serde_json::to_string(&vec![ContentBlock::Text {
+        text: "hello".into(),
+    }])
+    .unwrap());
     assert_eq!(sc.last_prompt_snippet(30).as_deref(), Some("hello"));
 
     // Long prompt — truncated to N chars with a trailing ellipsis.
@@ -275,7 +273,9 @@ fn list_sessions_with_counts_respects_cwd_scoping() -> Result<()> {
         let a = create_session("/repo/a", "m", "c")?;
         let msg = crate::providers::ChatMessage {
             role: crate::providers::Role::User,
-            content: vec![crate::providers::ContentBlock::Text { text: "hi".into() }],
+            content: vec![crate::providers::ContentBlock::Text {
+                text: "hi".into(),
+            }],
         };
         append_message(&a, &msg)?;
 

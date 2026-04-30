@@ -64,3 +64,4 @@ fn markdown_fence(snapshot: &RepoSnapshot) -> String {
     }
     "`".repeat(max_ticks)
 }
+

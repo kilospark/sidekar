@@ -115,7 +115,10 @@ fn to_candidate(
         return None;
     }
     let confidence = m.confidence.clamp(0.4, 1.0);
-    let mut tags = vec!["imported".to_string(), source_kind.replace(':', "-")];
+    let mut tags = vec![
+        "imported".to_string(),
+        source_kind.replace(':', "-"),
+    ];
     if !m.evidence.trim().is_empty() {
         tags.push("has-evidence".to_string());
     }

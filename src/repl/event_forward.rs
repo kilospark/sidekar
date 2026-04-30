@@ -103,12 +103,12 @@ impl EventForwarder {
                 //   - Image: handled out-of-band; no url to show.
                 //   - ToolResult: belongs to next turn's user message.
                 for block in &message.content {
-                    if let ContentBlock::Text { text } = block
-                        && !text.is_empty()
-                    {
-                        tunnel_send_event(event_to_json(&AgentEvent::Text {
-                            content: text.clone(),
-                        }));
+                    if let ContentBlock::Text { text } = block {
+                        if !text.is_empty() {
+                            tunnel_send_event(event_to_json(&AgentEvent::Text {
+                                content: text.clone(),
+                            }));
+                        }
                     }
                 }
                 // Turn-boundary marker: relay's boundary classifier uses
@@ -149,10 +149,7 @@ mod tests {
         assert_eq!(v["ch"], "events");
         assert_eq!(v["v"], 1);
         assert_eq!(v["event"], "assistant_complete");
-        assert!(
-            v["event"].is_string(),
-            "relay boundary check requires event to be a string"
-        );
+        assert!(v["event"].is_string(), "relay boundary check requires event to be a string");
     }
 
     #[test]
@@ -206,6 +203,9 @@ mod tests {
         }));
         assert_eq!(text["event"]["kind"], "text");
         let boundary = parse(&lifecycle_to_json("assistant_complete"));
-        assert!(boundary["event"].as_str().unwrap().ends_with("complete"));
+        assert!(boundary["event"]
+            .as_str()
+            .unwrap()
+            .ends_with("complete"));
     }
 }

@@ -33,10 +33,7 @@ fn text_only_request_shape() {
     );
     assert_eq!(body["contents"][0]["role"], "user");
     assert_eq!(body["contents"][0]["parts"][0]["text"], "hello");
-    assert!(
-        body.get("tools").is_none(),
-        "no tools passed, no tools in body"
-    );
+    assert!(body.get("tools").is_none(), "no tools passed, no tools in body");
     // Safety defaults present.
     let safety = body["safetySettings"].as_array().unwrap();
     assert_eq!(safety.len(), 4);
@@ -50,9 +47,7 @@ fn multimodal_request_includes_inline_data() {
     let msg = ChatMessage {
         role: Role::User,
         content: vec![
-            ContentBlock::Text {
-                text: "what is this".into(),
-            },
+            ContentBlock::Text { text: "what is this".into() },
             ContentBlock::Image {
                 media_type: "image/png".into(),
                 data_base64: "ZmFrZQ==".into(),
@@ -274,14 +269,10 @@ fn cached_content_reference_omits_system_and_tools() {
     // Cache reference present.
     assert_eq!(body["cachedContent"], "cachedContents/abc123");
     // System and tools MUST be absent (they're in the cache payload).
-    assert!(
-        body.get("systemInstruction").is_none(),
-        "systemInstruction must not be sent when cachedContent is set"
-    );
-    assert!(
-        body.get("tools").is_none(),
-        "tools must not be sent when cachedContent is set"
-    );
+    assert!(body.get("systemInstruction").is_none(),
+        "systemInstruction must not be sent when cachedContent is set");
+    assert!(body.get("tools").is_none(),
+        "tools must not be sent when cachedContent is set");
     // The incremental user turn is still in contents.
     assert_eq!(
         body["contents"][0]["parts"][0]["text"],
@@ -298,9 +289,7 @@ fn assistant_thinking_replayed_as_thought_part() {
                 thinking: "let me think about this".into(),
                 signature: "ignored".into(),
             },
-            ContentBlock::Text {
-                text: "answer".into(),
-            },
+            ContentBlock::Text { text: "answer".into() },
         ],
     };
     let (body, _) = build_request_body("gemini-2.5-pro", "", &[msg], &[], None);
@@ -346,9 +335,7 @@ fn cacheable_prefix_includes_last_assistant_turn() {
         mk_user_text("hi"),
         ChatMessage {
             role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: "hello".into(),
-            }],
+            content: vec![ContentBlock::Text { text: "hello".into() }],
         },
         mk_user_text("follow-up"),
     ];
@@ -381,9 +368,7 @@ fn cacheable_prefix_spans_tool_round_trip() {
         },
         ChatMessage {
             role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: "one file".into(),
-            }],
+            content: vec![ContentBlock::Text { text: "one file".into() }],
         },
         mk_user_text("thanks"),
     ];
@@ -395,9 +380,7 @@ fn cacheable_prefix_spans_tool_round_trip() {
 #[test]
 fn cache_not_found_error_detection() {
     // 404 status code in error string.
-    let e = anyhow::anyhow!(
-        "Gemini API error (404 Not Found): cachedContent \"cachedContents/abc\" was not found"
-    );
+    let e = anyhow::anyhow!("Gemini API error (404 Not Found): cachedContent \"cachedContents/abc\" was not found");
     assert!(is_cache_not_found_error(&e));
     // 400 with NOT_FOUND body text.
     let e = anyhow::anyhow!("Gemini API error (400 Bad Request): CachedContent not found");
@@ -450,21 +433,20 @@ fn tool_id_synthesis_disambiguates_same_name_calls() {
             },
         ],
     };
-    let (body, id_map) =
-        build_request_body("gemini-2.5-pro", "", &[assistant, user_reply], &[], None);
+    let (body, id_map) = build_request_body(
+        "gemini-2.5-pro",
+        "",
+        &[assistant, user_reply],
+        &[],
+        None,
+    );
     assert_eq!(id_map.get("call_Bash_0").unwrap(), "Bash");
     assert_eq!(id_map.get("call_Bash_1").unwrap(), "Bash");
 
     // Both functionResponses resolve to name "Bash".
     let user_parts = body["contents"][1]["parts"].as_array().unwrap();
     assert_eq!(user_parts[0]["functionResponse"]["name"], "Bash");
-    assert_eq!(
-        user_parts[0]["functionResponse"]["response"]["content"],
-        "a\nb"
-    );
+    assert_eq!(user_parts[0]["functionResponse"]["response"]["content"], "a\nb");
     assert_eq!(user_parts[1]["functionResponse"]["name"], "Bash");
-    assert_eq!(
-        user_parts[1]["functionResponse"]["response"]["content"],
-        "/home"
-    );
+    assert_eq!(user_parts[1]["functionResponse"]["response"]["content"], "/home");
 }

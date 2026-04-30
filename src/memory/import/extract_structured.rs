@@ -10,7 +10,6 @@ use super::Candidate;
 use serde_json::Value;
 use std::path::Path;
 
-#[allow(clippy::too_many_arguments)]
 fn push(
     out: &mut Vec<Candidate>,
     project: &str,
@@ -317,7 +316,9 @@ fn extract_go_mod(path: &Path, content: &str, project: &str, out: &mut Vec<Candi
             if let Some(name) = rest.split_whitespace().next() {
                 deps.push(name.to_string());
             }
-        } else if in_require && let Some(name) = line.split_whitespace().next() {
+        } else if in_require
+            && let Some(name) = line.split_whitespace().next()
+        {
             deps.push(name.to_string());
         }
     }

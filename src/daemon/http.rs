@@ -80,11 +80,7 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
         match tokio_tungstenite::accept_async(stream).await {
             Ok(ws) => handle_ext_websocket(ws, ext_state).await,
             Err(e) => {
-                crate::broker::try_log_error(
-                    "http",
-                    "WS handshake failed",
-                    Some(&format!("{e:#}")),
-                );
+                crate::broker::try_log_error("http", "WS handshake failed", Some(&format!("{e:#}")));
             }
         }
         return;

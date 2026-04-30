@@ -47,32 +47,6 @@ pub(super) struct SlashContext<'a> {
     pub turn_stats: &'a std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
 }
 
-/// Parsed line from a numbered REPL menu (`/session`, `/credential`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StdinMenuIndex {
-    EofOrReadError,
-    Blank,
-    Index(usize),
-    NotANumber,
-}
-
-fn read_stdin_menu_index(prompt: &str) -> StdinMenuIndex {
-    print!("{prompt}");
-    let _ = io::stdout().flush();
-    let mut line = String::new();
-    if io::stdin().lock().read_line(&mut line).is_err() {
-        return StdinMenuIndex::EofOrReadError;
-    }
-    let choice = line.trim();
-    if choice.is_empty() {
-        return StdinMenuIndex::Blank;
-    }
-    match choice.parse::<usize>() {
-        Ok(i) => StdinMenuIndex::Index(i),
-        Err(_) => StdinMenuIndex::NotANumber,
-    }
-}
-
 pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
     let input = ctx.input;
     let cwd = ctx.cwd;
@@ -126,7 +100,11 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             let non_empty = match session::list_sessions_with_counts(cwd, 20, true) {
                 Ok(v) => v,
                 Err(e) => {
-                    broker::try_log_error("session", &format!("failed to list: {e}"), None);
+                    broker::try_log_error(
+                        "session",
+                        &format!("failed to list: {e}"),
+                        None,
+                    );
                     Vec::new()
                 }
             };
@@ -138,7 +116,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             } else {
                 session::list_sessions_with_counts(cwd, 20, false)
                     .ok()
-                    .and_then(|all| all.into_iter().find(|s| s.session.id == *current_session))
+                    .and_then(|all| {
+                        all.into_iter().find(|s| s.session.id == *current_session)
+                    })
             };
             let mut sessions = non_empty;
             // Truncate display to 10 rows after we know the current
@@ -185,13 +165,17 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     tunnel_println("Pick session to switch:");
                     for (i, sc) in sessions.iter().enumerate() {
                         let s = &sc.session;
-                        let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
+                        let name = s
+                            .name
+                            .as_deref()
+                            .unwrap_or(&s.id[..s.id.len().min(8)]);
                         let cred = if s.provider.is_empty() {
                             "?"
                         } else {
                             s.provider.as_str()
                         };
-                        let age = session::format_relative_age(s.updated_at, now);
+                        let age =
+                            session::format_relative_age(s.updated_at, now);
                         tunnel_println(&format!(
                             "  [{i}] {name} — {} msgs, {age} ago, {cred}/{}",
                             sc.messages, s.model
@@ -203,27 +187,32 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         // tool-result-only session or, for the
                         // current-empty case, nothing has been sent).
                         if let Some(snip) = sc.last_prompt_snippet(30) {
-                            tunnel_println(&format!("      \x1b[2m\"{snip}\"\x1b[0m"));
+                            tunnel_println(&format!(
+                                "      \x1b[2m\"{snip}\"\x1b[0m"
+                            ));
                         }
                     }
-                    match read_stdin_menu_index("Enter number or Enter: ") {
-                        StdinMenuIndex::Blank => {
+                    print!("Enter number or Enter: ");
+                    let _ = io::stdout().flush();
+                    let mut line = String::new();
+                    if io::stdin().lock().read_line(&mut line).is_ok() {
+                        let choice = line.trim();
+                        if choice.is_empty() {
                             tunnel_println("\x1b[2mStaying current.\x1b[0m");
                             SlashResult::Continue
-                        }
-                        StdinMenuIndex::Index(idx) => {
+                        } else if let Ok(idx) = choice.parse::<usize>() {
                             if let Some(sc) = sessions.get(idx) {
                                 SlashResult::SwitchSession(sc.session.id.clone())
                             } else {
                                 tunnel_println("Invalid.");
                                 SlashResult::Continue
                             }
-                        }
-                        StdinMenuIndex::NotANumber => {
+                        } else {
                             tunnel_println("Invalid.");
                             SlashResult::Continue
                         }
-                        StdinMenuIndex::EofOrReadError => SlashResult::Continue,
+                    } else {
+                        SlashResult::Continue
                     }
                 }
             }
@@ -264,24 +253,27 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}{marker}"));
                         }
-                        match read_stdin_menu_index("Enter number or Enter: ") {
-                            StdinMenuIndex::Blank => {
+                        print!("Enter number or Enter: ");
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        if io::stdin().lock().read_line(&mut line).is_ok() {
+                            let choice = line.trim();
+                            if choice.is_empty() {
                                 tunnel_println("\x1b[2mStaying current.\x1b[0m");
                                 SlashResult::Continue
-                            }
-                            StdinMenuIndex::Index(idx) => {
+                            } else if let Ok(idx) = choice.parse::<usize>() {
                                 if let Some((name, _)) = creds.get(idx) {
                                     SlashResult::SetCredential(name.clone())
                                 } else {
                                     tunnel_println("Invalid.");
                                     SlashResult::Continue
                                 }
-                            }
-                            StdinMenuIndex::NotANumber => {
+                            } else {
                                 tunnel_println("Invalid.");
                                 SlashResult::Continue
                             }
-                            StdinMenuIndex::EofOrReadError => SlashResult::Continue,
+                        } else {
+                            SlashResult::Continue
                         }
                     }
                 }
@@ -298,8 +290,12 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}"));
                         }
-                        match read_stdin_menu_index("Enter number or Enter to cancel: ") {
-                            StdinMenuIndex::Index(idx) => {
+                        print!("Enter number or Enter to cancel: ");
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        if io::stdin().lock().read_line(&mut line).is_ok() {
+                            let choice = line.trim();
+                            if let Ok(idx) = choice.parse::<usize>() {
                                 if let Some((name, _)) = creds.get(idx) {
                                     let kv_key = providers::oauth::kv_key_for(name);
                                     match crate::broker::kv_delete(&kv_key) {
@@ -313,11 +309,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 } else {
                                     tunnel_println("Invalid.");
                                 }
-                            }
-                            StdinMenuIndex::NotANumber => {
+                            } else if !choice.is_empty() {
                                 tunnel_println("Invalid.");
                             }
-                            StdinMenuIndex::Blank | StdinMenuIndex::EofOrReadError => {}
                         }
                         SlashResult::Continue
                     }
@@ -400,11 +394,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
 
             match sub {
                 "" => {
-                    let state = if crate::runtime::journal() {
-                        "on"
-                    } else {
-                        "off"
-                    };
+                    let state = if crate::runtime::journal() { "on" } else { "off" };
                     tunnel_println(&format!("Journal: {state}"));
                     tunnel_println(
                         "\x1b[2mSubcommands: on|off | list [N] | show <id> | now\x1b[0m",
@@ -433,17 +423,23 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .map(|d| d.as_secs_f64())
                                 .unwrap_or(0.0);
                             for r in rows {
-                                let age = crate::session::format_relative_age(r.created_at, now);
+                                let age =
+                                    crate::session::format_relative_age(r.created_at, now);
                                 let head = if r.headline.is_empty() {
                                     "(no headline)"
                                 } else {
                                     r.headline.as_str()
                                 };
-                                tunnel_println(&format!("  [{id:>4}] {age:>8}  {head}", id = r.id));
+                                tunnel_println(&format!(
+                                    "  [{id:>4}] {age:>8}  {head}",
+                                    id = r.id
+                                ));
                             }
                         }
                         Err(e) => {
-                            tunnel_println(&format!("\x1b[31m/journal list failed: {e:#}\x1b[0m"));
+                            tunnel_println(&format!(
+                                "\x1b[31m/journal list failed: {e:#}\x1b[0m"
+                            ));
                         }
                     }
                 }
@@ -466,7 +462,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                             tunnel_println(&format!("No journal with id {id}."));
                         }
                         Err(e) => {
-                            tunnel_println(&format!("\x1b[31m/journal show failed: {e:#}\x1b[0m"));
+                            tunnel_println(&format!(
+                                "\x1b[31m/journal show failed: {e:#}\x1b[0m"
+                            ));
                         }
                     }
                 }
@@ -491,9 +489,14 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 other => {
                     if let Some(parsed) = crate::runtime::parse_bool_arg(other) {
                         crate::runtime::set_journal(parsed);
-                        tunnel_println(&format!("Journal: {}", if parsed { "on" } else { "off" }));
+                        tunnel_println(&format!(
+                            "Journal: {}",
+                            if parsed { "on" } else { "off" }
+                        ));
                     } else {
-                        tunnel_println("Usage: /journal [on|off | list [N] | show <id> | now]");
+                        tunnel_println(
+                            "Usage: /journal [on|off | list [N] | show <id> | now]",
+                        );
                     }
                 }
             }
@@ -505,9 +508,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 None => {
                     if ctx.loaded_skills.is_empty() {
                         tunnel_println("No skills loaded this session.");
-                        tunnel_println(
-                            "\x1b[2mUse /skill list to see available, /skill <name> to load.\x1b[0m",
-                        );
+                        tunnel_println("\x1b[2mUse /skill list to see available, /skill <name> to load.\x1b[0m");
                     } else {
                         tunnel_println("Loaded skills (session-only):");
                         for name in ctx.loaded_skills {
@@ -573,7 +574,10 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             let snap_age;
             let snap_since;
             {
-                let ts = ctx.turn_stats.lock().expect("turn_stats mutex poisoned");
+                let ts = ctx
+                    .turn_stats
+                    .lock()
+                    .expect("turn_stats mutex poisoned");
                 snap_cum = ts.cumulative.clone();
                 snap_last = ts.last.clone();
                 snap_turns = ts.turn_count;
@@ -583,7 +587,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 snap_since = ts.last_turn_at.map(|t| t.elapsed());
             }
             let cw = providers::cached_context_window(model);
-            let tokens_estimate = crate::agent::compaction::estimate_tokens_public(ctx.history);
+            let tokens_estimate =
+                crate::agent::compaction::estimate_tokens_public(ctx.history);
             let view = super::status::StatusView {
                 session_id: current_session,
                 cwd,
@@ -815,7 +820,8 @@ fn render_journal_show(row: &crate::repl::journal::store::JournalRow) -> String 
         .unwrap_or(0.0);
     let age = crate::session::format_relative_age(row.created_at, now);
 
-    let outcome = crate::repl::journal::parse::parse_response(&row.structured_json);
+    let outcome =
+        crate::repl::journal::parse::parse_response(&row.structured_json);
     let j = outcome.journal;
 
     let mut out = String::with_capacity(1024);
@@ -1022,10 +1028,10 @@ pub(super) async fn run_compact(
 }
 
 pub async fn build_provider(cred_name: &str) -> Result<Provider> {
-    let provider_type =
-        providers::oauth::resolve_provider_type_for_credential(cred_name).ok_or_else(|| {
+    let provider_type = providers::oauth::provider_type_for(cred_name)
+        .ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…); see `sidekar repl login --help`."
+                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', 'oc', 'grok', 'gem', or 'oac'."
             )
         })?;
     let cred = Some(cred_name.to_string());
@@ -1045,10 +1051,6 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
         "opencode" => {
             let api_key = providers::oauth::get_opencode_token(Some(cred_name)).await?;
             Ok(Provider::opencode(api_key, cred))
-        }
-        "opencode-go" => {
-            let api_key = providers::oauth::get_opencode_go_token(Some(cred_name)).await?;
-            Ok(Provider::opencode_go(api_key, cred))
         }
         "grok" => {
             let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
@@ -1070,3 +1072,4 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
         _ => anyhow::bail!("Unknown provider type: {provider_type}"),
     }
 }
+

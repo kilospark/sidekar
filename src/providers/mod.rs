@@ -1,10 +1,11 @@
 pub mod anthropic;
+pub mod cache;
 pub mod codex;
 pub mod gemini;
 pub mod oauth;
 pub mod openrouter;
-pub mod session_lock;
 pub mod vertex;
+pub mod session_lock;
 
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
@@ -76,7 +77,9 @@ fn openai_models_url(base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
     if let Some(prefix) = base.strip_suffix("/chat/completions") {
         format!("{prefix}/models")
-    } else if base.ends_with("/v1") || url_has_path(base) {
+    } else if base.ends_with("/v1") {
+        format!("{base}/models")
+    } else if url_has_path(base) {
         format!("{base}/models")
     } else {
         format!("{base}/v1/models")
@@ -299,7 +302,9 @@ impl SseDecoder {
             // an offset relative to the search slice, so add read_pos
             // to make it an absolute position in the buffer.
             let unread = &self.buffer[self.read_pos..];
-            let rel_end = unread.find("\n\n")?;
+            let Some(rel_end) = unread.find("\n\n") else {
+                return None;
+            };
             let event_end = self.read_pos + rel_end;
 
             // Parse the event. We can't hold &str borrows into
@@ -430,37 +435,6 @@ pub enum ContentBlock {
         /// Human-readable summary entries (e.g. `[{"type":"summary_text","text":"..."}]`).
         summary: Vec<serde_json::Value>,
     },
-    /// Plain-text reasoning trace returned by OpenAI-compat reasoning models
-    /// (DeepSeek `reasoning_content`, Kimi `reasoning`). Captured during a
-    /// streamed assistant turn and replayed verbatim on the next request so
-    /// the upstream provider accepts the subsequent tool_result. Stored as a
-    /// sibling of `Text`/`ToolCall` blocks on the same assistant message.
-    #[serde(rename = "reasoning")]
-    Reasoning { text: String },
-}
-
-/// User-visible assistant `content` fragments for OpenAI Chat Completions (joined with `\n`).
-pub(super) fn openai_compat_assistant_join_text(blocks: &[ContentBlock]) -> String {
-    blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Concatenate `Reasoning` blocks for `reasoning_content` / provider-specific replay keys.
-pub(super) fn openai_compat_assistant_concat_reasoning_chunks(blocks: &[ContentBlock]) -> String {
-    blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Reasoning { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .concat()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -529,6 +503,11 @@ impl RateLimitSnapshot {
     /// Parse rate-limit headers in the OpenAI-style schema (`x-ratelimit-*`).
     /// Used by OpenAI, Codex, OpenRouter, xAI, most OpenAI-compat hosts.
     pub fn from_openai_headers(h: &reqwest::header::HeaderMap) -> Self {
+        let mut snap = Self::default();
+        snap.requests_limit = parse_u64_header(h, "x-ratelimit-limit-requests");
+        snap.requests_remaining = parse_u64_header(h, "x-ratelimit-remaining-requests");
+        snap.tokens_limit = parse_u64_header(h, "x-ratelimit-limit-tokens");
+        snap.tokens_remaining = parse_u64_header(h, "x-ratelimit-remaining-tokens");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -537,18 +516,21 @@ impl RateLimitSnapshot {
         let r2 = parse_reset_header(h, "x-ratelimit-reset-tokens", now);
         // OpenRouter sometimes uses bare "x-ratelimit-reset" (ms epoch).
         let r3 = parse_reset_header(h, "x-ratelimit-reset", now);
-        Self {
-            requests_limit: parse_u64_header(h, "x-ratelimit-limit-requests"),
-            requests_remaining: parse_u64_header(h, "x-ratelimit-remaining-requests"),
-            tokens_limit: parse_u64_header(h, "x-ratelimit-limit-tokens"),
-            tokens_remaining: parse_u64_header(h, "x-ratelimit-remaining-tokens"),
-            reset_at: [r1, r2, r3].into_iter().flatten().min(),
-            ..Self::default()
-        }
+        snap.reset_at = [r1, r2, r3].into_iter().flatten().min();
+        snap
     }
 
     /// Parse rate-limit headers in Anthropic's schema (`anthropic-ratelimit-*`).
     pub fn from_anthropic_headers(h: &reqwest::header::HeaderMap) -> Self {
+        let mut snap = Self::default();
+        snap.requests_limit = parse_u64_header(h, "anthropic-ratelimit-requests-limit");
+        snap.requests_remaining = parse_u64_header(h, "anthropic-ratelimit-requests-remaining");
+        // Anthropic exposes input/output separately + a combined "tokens".
+        // Prefer combined "tokens" if present, else fall back to input bucket.
+        snap.tokens_limit = parse_u64_header(h, "anthropic-ratelimit-tokens-limit")
+            .or_else(|| parse_u64_header(h, "anthropic-ratelimit-input-tokens-limit"));
+        snap.tokens_remaining = parse_u64_header(h, "anthropic-ratelimit-tokens-remaining")
+            .or_else(|| parse_u64_header(h, "anthropic-ratelimit-input-tokens-remaining"));
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -559,29 +541,26 @@ impl RateLimitSnapshot {
             parse_reset_header(h, "anthropic-ratelimit-input-tokens-reset", now),
             parse_reset_header(h, "anthropic-ratelimit-output-tokens-reset", now),
         ];
-        Self {
-            requests_limit: parse_u64_header(h, "anthropic-ratelimit-requests-limit"),
-            requests_remaining: parse_u64_header(h, "anthropic-ratelimit-requests-remaining"),
-            // Prefer combined tokens bucket when present.
-            tokens_limit: parse_u64_header(h, "anthropic-ratelimit-tokens-limit")
-                .or_else(|| parse_u64_header(h, "anthropic-ratelimit-input-tokens-limit")),
-            tokens_remaining: parse_u64_header(h, "anthropic-ratelimit-tokens-remaining")
-                .or_else(|| parse_u64_header(h, "anthropic-ratelimit-input-tokens-remaining")),
-            reset_at: resets.into_iter().flatten().min(),
-            util_5h_pct: h
-                .get("anthropic-ratelimit-unified-5h-utilization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(|f| (f * 100.0).round().clamp(0.0, 100.0) as u32),
-            reset_5h_at: parse_u64_header(h, "anthropic-ratelimit-unified-5h-reset"),
-            util_7d_pct: h
-                .get("anthropic-ratelimit-unified-7d-utilization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(|f| (f * 100.0).round().clamp(0.0, 100.0) as u32),
-            reset_7d_at: parse_u64_header(h, "anthropic-ratelimit-unified-7d-reset"),
-            ..Self::default()
-        }
+        snap.reset_at = resets.into_iter().flatten().min();
+
+        // Anthropic OAuth (Pro/Team) returns a different "unified" schema:
+        //   anthropic-ratelimit-unified-5h-{status,utilization,reset}
+        //   anthropic-ratelimit-unified-7d-{status,utilization,reset}
+        // utilization is a decimal in [0,1], reset is Unix epoch seconds.
+        snap.util_5h_pct = h
+            .get("anthropic-ratelimit-unified-5h-utilization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|f| (f * 100.0).round().clamp(0.0, 100.0) as u32);
+        snap.reset_5h_at = parse_u64_header(h, "anthropic-ratelimit-unified-5h-reset");
+        snap.util_7d_pct = h
+            .get("anthropic-ratelimit-unified-7d-utilization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|f| (f * 100.0).round().clamp(0.0, 100.0) as u32);
+        snap.reset_7d_at = parse_u64_header(h, "anthropic-ratelimit-unified-7d-reset");
+
+        snap
     }
 
     /// Parse Anthropic's Pro/Team session-window reset from a 429 error body.
@@ -643,6 +622,7 @@ fn parse_reset_header(h: &reqwest::header::HeaderMap, name: &str, now: u64) -> O
     }
     None
 }
+
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
@@ -904,35 +884,47 @@ pub fn cached_context_window(model: &str) -> Option<u32> {
         .and_then(|c| c.get(model).map(|(ctx, _)| *ctx))
 }
 
-/// Cache hit → Some; cache miss → network fetch, populate cache → Some.
-/// None when the provider has no usable models endpoint for this probe.
-async fn context_max_output_cached_pair(model: &str, provider: &Provider) -> Option<(u32, u32)> {
-    let cached = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied());
-    if let Some(pair) = cached {
-        return Some(pair);
-    }
-    let fetched = fetch_model_limits(model, provider).await?;
-    if let Ok(mut cache) = MODEL_CACHE.lock() {
-        cache.insert(model.to_string(), fetched);
-    }
-    Some(fetched)
-}
-
 /// Fetch context window for a model from the provider API.
 /// Tries the provider's models endpoint first, falls back to static registry.
 pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
-    context_max_output_cached_pair(model, provider)
-        .await
-        .map(|(ctx, _)| ctx)
-        .unwrap_or(128_000)
+    if let Some(&(ctx, _)) = MODEL_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(model).copied())
+        .as_ref()
+    {
+        return ctx;
+    }
+
+    if let Some((ctx, max_out)) = fetch_model_limits(model, provider).await {
+        if let Ok(mut cache) = MODEL_CACHE.lock() {
+            cache.insert(model.to_string(), (ctx, max_out));
+        }
+        return ctx;
+    }
+
+    128_000 // safe default
 }
 
 /// Fetch max output tokens for a model from the provider API.
 pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
-    context_max_output_cached_pair(model, provider)
-        .await
-        .map(|(_, max_out)| max_out)
-        .unwrap_or(16_384)
+    if let Some(&(_, max_out)) = MODEL_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(model).copied())
+        .as_ref()
+    {
+        return max_out;
+    }
+
+    if let Some((ctx, max_out)) = fetch_model_limits(model, provider).await {
+        if let Ok(mut cache) = MODEL_CACHE.lock() {
+            cache.insert(model.to_string(), (ctx, max_out));
+        }
+        return max_out;
+    }
+
+    16_384 // safe default
 }
 
 /// Fetch (context_window, max_output) from the provider's models API.
@@ -954,46 +946,6 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
     }
 }
 
-/// Default timeout for model-catalog HTTP (list endpoints, `/v1/models` probes).
-const MODEL_CATALOG_TIMEOUT_SECS: u64 = 10;
-
-/// Build a short-timeout client for model catalog / metadata requests.
-fn catalog_http_client(secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(secs))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))
-}
-
-fn provider_models_list_client(secs: u64) -> Option<reqwest::Client> {
-    catalog_http_client(secs).ok()
-}
-
-fn model_from_list_by_id<'a>(
-    models: &'a [serde_json::Value],
-    model_id: &str,
-) -> Option<&'a serde_json::Value> {
-    models
-        .iter()
-        .find(|m| m.get("id").and_then(|v| v.as_str()).unwrap_or("") == model_id)
-}
-
-/// Bearer GET `/v1/models` (OpenRouter, generic OpenAI-compatible bases).
-async fn fetch_bearer_models_list_json(api_key: &str, base_url: &str) -> Option<serde_json::Value> {
-    let url = openai_models_url(base_url);
-    let client = provider_models_list_client(MODEL_CATALOG_TIMEOUT_SECS)?;
-    let resp = client
-        .get(&url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    resp.json().await.ok()
-}
-
 /// Anthropic: GET /v1/models → max_input_tokens, max_tokens
 async fn fetch_anthropic_model_limits(
     api_key: &str,
@@ -1001,7 +953,10 @@ async fn fetch_anthropic_model_limits(
     model: &str,
 ) -> Option<(u32, u32)> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-    let client = provider_models_list_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
@@ -1017,17 +972,24 @@ async fn fetch_anthropic_model_limits(
     }
 
     let body: serde_json::Value = resp.json().await.ok()?;
-    let models_arr = body.get("data").and_then(|d| d.as_array())?;
-    let m = model_from_list_by_id(models_arr, model)?;
-    let ctx = m
-        .get("max_input_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(200_000) as u32;
-    let max_out = m
-        .get("max_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(16_000) as u32;
-    Some((ctx, max_out))
+    let models = body.get("data").and_then(|d| d.as_array())?;
+
+    for m in models {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == model {
+            let ctx = m
+                .get("max_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200_000) as u32;
+            let max_out = m
+                .get("max_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16_000) as u32;
+            return Some((ctx, max_out));
+        }
+    }
+
+    None
 }
 
 /// OpenRouter: GET /v1/models → context_length, top_provider.max_completion_tokens
@@ -1036,19 +998,43 @@ async fn fetch_openrouter_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let body = fetch_bearer_models_list_json(api_key, base_url).await?;
-    let models_arr = body.get("data").and_then(|d| d.as_array())?;
-    let m = model_from_list_by_id(models_arr, model)?;
-    let ctx = m
-        .get("context_length")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(128_000) as u32;
-    let max_out = m
-        .get("top_provider")
-        .and_then(|tp| tp.get("max_completion_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(16_384) as u32;
-    Some((ctx, max_out))
+    let url = openai_models_url(base_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let models = body.get("data").and_then(|d| d.as_array())?;
+
+    for m in models {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == model {
+            let ctx = m
+                .get("context_length")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(128_000) as u32;
+            let max_out = m
+                .get("top_provider")
+                .and_then(|tp| tp.get("max_completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16_384) as u32;
+            return Some((ctx, max_out));
+        }
+    }
+
+    None
 }
 
 /// Generic OpenAI-compat: GET /v1/models, using common context fields if exposed.
@@ -1057,21 +1043,45 @@ async fn fetch_openai_compat_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let body = fetch_bearer_models_list_json(api_key, base_url).await?;
-    let models_arr = body.get("data").and_then(|d| d.as_array())?;
-    let m = model_from_list_by_id(models_arr, model)?;
-    let ctx = m
-        .get("context_length")
-        .or_else(|| m.get("context_window"))
-        .or_else(|| m.get("max_context_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(128_000) as u32;
-    let max_out = m
-        .get("max_output_tokens")
-        .or_else(|| m.get("max_completion_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(16_384) as u32;
-    Some((ctx, max_out))
+    let url = openai_models_url(base_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let models = body.get("data").and_then(|d| d.as_array())?;
+
+    for m in models {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == model {
+            let ctx = m
+                .get("context_length")
+                .or_else(|| m.get("context_window"))
+                .or_else(|| m.get("max_context_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(128_000) as u32;
+            let max_out = m
+                .get("max_output_tokens")
+                .or_else(|| m.get("max_completion_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16_384) as u32;
+            return Some((ctx, max_out));
+        }
+    }
+
+    None
 }
 
 /// A model entry returned by a provider's list endpoint.
@@ -1093,7 +1103,6 @@ pub async fn fetch_model_list(
         "openrouter" => fetch_openrouter_model_list(api_key).await,
         "grok" => fetch_openai_compat_model_list(api_key, oauth::GROK_BASE_URL).await,
         "opencode" => fetch_opencode_model_list(api_key).await,
-        "opencode-go" => fetch_opencode_go_model_list(api_key).await,
         "gemini" => gemini::fetch_gemini_model_list(api_key).await,
         _ => Ok(Vec::new()),
     }
@@ -1103,9 +1112,6 @@ pub async fn fetch_model_list_for_provider(
     provider: &Provider,
 ) -> Result<Vec<RemoteModel>, String> {
     match provider {
-        Provider::Anthropic {
-            api_key, base_url, ..
-        } if base_url.contains("opencode.ai/zen/go") => fetch_opencode_go_model_list(api_key).await,
         Provider::Anthropic {
             api_key, base_url, ..
         } if base_url.contains("opencode.ai") => fetch_opencode_model_list(api_key).await,
@@ -1121,7 +1127,10 @@ pub async fn fetch_model_list_for_provider(
 
 async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
     let url = "https://api.anthropic.com/v1/models";
-    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(url).header("anthropic-version", "2023-06-01");
@@ -1134,7 +1143,29 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, S
         req = req.header("x-api-key", api_key);
     }
 
-    let body = catalog_send_json_broker_logged(req, "Anthropic API").await?;
+    let resp = match req.send().await {
+        Ok(r) => {
+            if !r.status().is_success() {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                let detail = format_api_error_body(&text);
+                let msg = format!("Anthropic API error ({status}): {detail}");
+                crate::broker::try_log_error("models", &format!("API {status}"), Some(&text));
+                return Err(msg);
+            }
+            r
+        }
+        Err(e) => {
+            let msg = format!("Anthropic API request failed: {e}");
+            crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
+            return Err(msg);
+        }
+    };
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Anthropic API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1148,39 +1179,26 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, S
             if id.is_empty() {
                 continue;
             }
-            // Offer both 200k and 1M context variants for models that
-            // support extended context. Two categories:
-            //
-            // 1. **Beta-gated** (Sonnet 4, Sonnet 4.5, Opus 4.5): API reports
-            //    1M unconditionally but inference >200k needs the
-            //    `context-1m-2025-08-07` beta header. Pin base row to 200k.
-            //
-            // 2. **Native 1M** (Opus 4.7, Opus 4.6, Sonnet 4.6): 1M is the
-            //    real default. Still offer a 200k row so users can choose
-            //    the lower-context tier (cheaper/faster inference).
-            //
-            // In both cases the `#1m` variant triggers the beta header at
-            // runtime; for native-1M models this is harmless/no-op.
+            // For models whose 1M tier is gated behind the
+            // `context-1m-2025-08-07` beta header (Sonnet 4, Sonnet 4.5),
+            // Anthropic's `/v1/models` reports `max_input_tokens=1000000`
+            // unconditionally even though inference at >200k requires the
+            // header. Pin the base row to 200k and emit a sibling `#1m`
+            // variant; the runtime strips the suffix and adds the beta
+            // header. For everything else (Sonnet 4.6+, Opus 4.6+, Opus 4/4.1,
+            // Haiku 4.5, etc.) trust whatever the API reported.
             let gated = supports_1m_context_beta(id);
-            let native_1m = !gated && ctx >= 1_000_000;
-            if gated || native_1m {
-                // Base row: 200k context (no beta header)
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: 200_000,
-                });
-                // 1M variant: adds beta header at runtime
+            let base_ctx = if gated { 200_000 } else { ctx };
+            models.push(RemoteModel {
+                id: id.to_string(),
+                display_name: name.to_string(),
+                context_window: base_ctx,
+            });
+            if gated {
                 models.push(RemoteModel {
                     id: format!("{id}{ANTHROPIC_1M_SUFFIX}"),
-                    display_name: format!("{name} (1M ctx)"),
+                    display_name: format!("{name} (1M ctx, beta)"),
                     context_window: 1_000_000,
-                });
-            } else {
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: ctx,
                 });
             }
         }
@@ -1193,23 +1211,23 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, S
 /// header `context-1m-2025-08-07`.
 pub const ANTHROPIC_1M_SUFFIX: &str = "#1m";
 
-/// Models whose 1M-context tier is gated by the beta header. These models
-/// report `max_input_tokens=1000000` from the API but inference >200k needs
-/// `context-1m-2025-08-07` beta. Newer models (Sonnet 4.6+, Opus 4.6+)
-/// advertise 1M natively and are handled separately.
+/// Models whose 1M-context tier is gated by the beta header. Keep this list
+/// narrow: only models where Anthropic still reports `max_input_tokens=200000`
+/// but accept the `context-1m-2025-08-07` beta. Newer models (Sonnet 4.6+,
+/// Opus 4.6+) advertise 1M directly and don't need a synthetic variant.
 fn supports_1m_context_beta(id: &str) -> bool {
     // Per https://docs.anthropic.com/en/docs/build-with-claude/context-windows
-    // Covers: Sonnet 4, Sonnet 4.5, Opus 4.5.
-    if id.starts_with("claude-sonnet-4-5-") || id.starts_with("claude-opus-4-5-") {
+    // the beta currently covers Sonnet 4 (claude-sonnet-4-YYYYMMDD) and
+    // Sonnet 4.5 (claude-sonnet-4-5-YYYYMMDD).
+    // Match exact known prefixes; reject anything starting with claude-sonnet-4-6 or higher.
+    if id.starts_with("claude-sonnet-4-5-") {
         return true;
     }
     if let Some(rest) = id.strip_prefix("claude-sonnet-4-") {
         // rest starts with the date (e.g. "20250514") for plain Sonnet 4.
-        // Reject minor-version-prefixed IDs ("5-...", "6-...", etc.).
+        // Reject minor-version-prefixed IDs ("6-...", "7-...", etc.).
         let next = rest.chars().next().unwrap_or('-');
-        return next.is_ascii_digit()
-            && rest.len() >= 8
-            && !rest.starts_with(|c: char| matches!(c, '5'..='9'));
+        return next.is_ascii_digit() && rest.len() >= 8 && !rest.starts_with(|c: char| matches!(c, '6'..='9'));
     }
     false
 }
@@ -1240,97 +1258,42 @@ fn format_api_error_body(body: &str) -> String {
     }
 }
 
-/// Catalog HTTP request; on failure logs to the broker (`models`) and returns a structured `Err`.
-async fn catalog_send_json_broker_logged(
-    req: reqwest::RequestBuilder,
-    error_label: &'static str,
-) -> Result<serde_json::Value, String> {
-    let resp = match req.send().await {
+async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
+    let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    let resp = match client
+        .get(url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("originator", "sidekar")
+        .send()
+        .await
+    {
         Ok(r) => {
             if !r.status().is_success() {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
                 let detail = format_api_error_body(&text);
-                let msg = format!("{error_label} error ({status}): {detail}");
+                let msg = format!("Codex API error ({status}): {detail}");
                 crate::broker::try_log_error("models", &format!("API {status}"), Some(&text));
                 return Err(msg);
             }
             r
         }
         Err(e) => {
-            let msg = format!("{error_label} request failed: {e}");
+            let msg = format!("Codex API request failed: {e}");
             crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
             return Err(msg);
         }
     };
-    resp.json()
+
+    let body: serde_json::Value = resp
+        .json()
         .await
-        .map_err(|e| format!("{error_label}: invalid JSON response: {e}"))
-}
-
-/// Catalog request without broker logging (OpenCode public lists, Gemini list, etc.).
-async fn catalog_send_json_plain(
-    req: reqwest::RequestBuilder,
-    label_for_errors: &'static str,
-) -> Result<serde_json::Value, String> {
-    let resp = match req.send().await {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            let detail = format_api_error_body(&text);
-            return Err(format!("{label_for_errors} API error ({status}): {detail}"));
-        }
-        Err(e) => {
-            return Err(format!("{label_for_errors} API request failed: {e}"));
-        }
-    };
-    resp.json()
-        .await
-        .map_err(|e| format!("{label_for_errors} API: invalid JSON response: {e}"))
-}
-
-/// OpenAI-compat model list: optional verbose stderr on failure; URL appears in error strings.
-async fn catalog_send_openai_compat_model_list_json(
-    req: reqwest::RequestBuilder,
-    url: &str,
-    verbose: bool,
-) -> Result<serde_json::Value, String> {
-    let resp = match req.send().await {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            if verbose {
-                eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
-            }
-            let detail = format_api_error_body(&body);
-            return Err(format!("API error ({status}) at {url}: {detail}"));
-        }
-        Err(e) => {
-            if verbose {
-                eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
-            }
-            return Err(format!("API request to {url} failed: {e}"));
-        }
-    };
-    resp.json()
-        .await
-        .map_err(|e| format!("API at {url}: invalid JSON response: {e}"))
-}
-
-async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
-    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
-
-    let body = catalog_send_json_broker_logged(
-        client
-            .get(url)
-            .header("authorization", format!("Bearer {api_key}"))
-            .header("originator", "sidekar"),
-        "Codex API",
-    )
-    .await?;
+        .map_err(|e| format!("Codex API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     let arr = body
@@ -1375,16 +1338,39 @@ pub async fn fetch_openai_compat_model_list(
     if verbose {
         eprintln!("\x1b[2m[fetching models from {url}]\x1b[0m");
     }
-    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let body = catalog_send_openai_compat_model_list_json(
-        client
-            .get(&url)
-            .header("authorization", format!("Bearer {api_key}")),
-        &url,
-        verbose,
-    )
-    .await?;
+    let resp = match client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            if verbose {
+                eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
+            }
+            let detail = format_api_error_body(&body);
+            return Err(format!("API error ({status}) at {url}: {detail}"));
+        }
+        Err(e) => {
+            if verbose {
+                eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
+            }
+            return Err(format!("API request to {url} failed: {e}"));
+        }
+    };
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("API at {url}: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1413,20 +1399,33 @@ pub async fn fetch_openai_compat_model_list(
     Ok(models)
 }
 
-/// Public OpenCode catalog (`/zen/v1` vs `/zen/go/v1`). Zen sends `anthropic-version`; Go does not.
-async fn fetch_opencode_public_model_list(
-    url: &'static str,
-    label: &'static str,
-    with_anthropic_version: bool,
-) -> Result<Vec<RemoteModel>, String> {
-    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
+    let url = "https://opencode.ai/zen/v1/models";
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let mut req = client.get(url);
-    if with_anthropic_version {
-        req = req.header("anthropic-version", "2023-06-01");
-    }
+    let resp = match client
+        .get(url)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let detail = format_api_error_body(&text);
+            return Err(format!("Opencode API error ({status}): {detail}"));
+        }
+        Err(e) => return Err(format!("Opencode API request failed: {e}")),
+    };
 
-    let body = catalog_send_json_plain(req, label).await?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Opencode API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1442,15 +1441,6 @@ async fn fetch_opencode_public_model_list(
         }
     }
     Ok(models)
-}
-
-async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "Opencode", true).await
-}
-
-async fn fetch_opencode_go_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    fetch_opencode_public_model_list("https://opencode.ai/zen/go/v1/models", "OpenCode Go", false)
-        .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1561,22 +1551,6 @@ impl Provider {
         }
     }
 
-    /// OpenCode Go — budget open-weight models routed through OpenCode Zen
-    /// Go's OpenAI-compatible endpoint. Despite exposing an Anthropic-shaped
-    /// `/v1/messages` route, that route silently breaks tool calls for most
-    /// upstreams (DeepSeek, Kimi, GLM, Mimo); only `/v1/chat/completions`
-    /// works end-to-end across the full model list. OpenCode's own client
-    /// uses `@ai-sdk/openai-compatible` for the same reason, so we mirror it.
-    pub fn opencode_go(api_key: String, credential: Option<String>) -> Self {
-        Provider::OpenAiCompat {
-            api_key,
-            base_url: "https://opencode.ai/zen/go/v1".to_string(),
-            provider_type: "opencode-go".to_string(),
-            display_name: "opencode-go".to_string(),
-            credential,
-        }
-    }
-
     /// Gemini native provider. Uses Google's generativelanguage v1beta
     /// API directly (not the OpenAI-compat shim), giving access to
     /// thinking tokens, cachedContents, and native usageMetadata.
@@ -1610,9 +1584,6 @@ impl Provider {
 
     pub fn provider_type(&self) -> &str {
         match self {
-            Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai/zen/go") => {
-                "opencode-go"
-            }
             Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai") => "opencode",
             Provider::Anthropic { .. } => "anthropic",
             Provider::Codex { .. } => "codex",
@@ -1708,9 +1679,7 @@ impl Provider {
                     match oauth::force_refresh_token(&cred).await {
                         Ok(new_key) => {
                             refreshed_key = Some(new_key);
-                            eprintln!(
-                                "\x1b[2m[credential `{cred}` refreshed after 401, retrying]\x1b[0m"
-                            );
+                            eprintln!("\x1b[2m[credential `{cred}` refreshed after 401, retrying]\x1b[0m");
                         }
                         Err(refresh_err) => {
                             eprintln!(
@@ -1761,16 +1730,9 @@ impl Provider {
         let stream_config = self.default_stream_config();
         match self {
             Provider::Anthropic {
-                api_key,
-                base_url,
-                credential,
-                ..
+                api_key, base_url, credential, ..
             } => {
                 let key = api_key_override.unwrap_or(api_key);
-                let mut cfg = stream_config.clone();
-                cfg.credential_kv_key = credential
-                    .as_ref()
-                    .map(|n| crate::providers::oauth::kv_key_for(n));
                 let rx = anthropic::stream(
                     key,
                     base_url,
@@ -1779,7 +1741,7 @@ impl Provider {
                     messages,
                     tools,
                     prompt_cache_key,
-                    &cfg,
+                    &{ let mut c = stream_config.clone(); c.credential_kv_key = credential.as_ref().map(|n| crate::providers::oauth::kv_key_for(n)); c },
                 )
                 .await?;
                 Ok(no_ws_reclaim(rx))
@@ -1903,8 +1865,13 @@ fn is_auth_error(err: &anyhow::Error) -> bool {
 
 /// Check if an error is retryable (5xx, 429 rate limit, or connection failure).
 ///
-/// Used when opening the HTTP stream (`stream_once` / `Provider::stream`) and
-/// again for mid-stream recovery in `agent::run` when bytes never reach the UI.
+/// Used by two retry layers:
+///   1. `stream_once` → `Provider::stream` — retries at the HTTP
+///      open boundary, before any SSE bytes flow.
+///   2. `agent::run` → mid-stream retry — retries when the stream
+///      opens but fails before any content renders to the user.
+/// Both layers must agree on what "retryable" means, hence this
+/// is now `pub(crate)` rather than module-private.
 pub(crate) fn is_retryable_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}");
     let lower = msg.to_ascii_lowercase();

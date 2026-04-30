@@ -386,10 +386,7 @@ mod tests {
         let later = now + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
         match burst.flush_if_due(later) {
             FlushResult::Paste(s) => assert_eq!(s, path),
-            other => panic!(
-                "expected Paste, got {:?}",
-                matches!(other, FlushResult::None)
-            ),
+            other => panic!("expected Paste, got {:?}", matches!(other, FlushResult::None)),
         }
     }
 }

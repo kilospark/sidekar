@@ -342,7 +342,11 @@ pub(crate) async fn cmd_double_click(ctx: &mut AppContext, selector: &str) -> Re
     prepare_cdp(ctx, &mut cdp).await?;
     let loc = locate_element(ctx, &mut cdp, selector).await?;
     dispatch_double_click(&mut cdp, loc.x, loc.y).await?;
-    let action_line = format!("Double-clicked {} \"{}\"", loc.tag.to_lowercase(), loc.text);
+    let action_line = format!(
+        "Double-clicked {} \"{}\"",
+        loc.tag.to_lowercase(),
+        loc.text
+    );
     sleep(Duration::from_millis(150)).await;
     let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;
@@ -360,7 +364,11 @@ pub(crate) async fn cmd_right_click(ctx: &mut AppContext, selector: &str) -> Res
     prepare_cdp(ctx, &mut cdp).await?;
     let loc = locate_element(ctx, &mut cdp, selector).await?;
     dispatch_right_click(&mut cdp, loc.x, loc.y).await?;
-    let action_line = format!("Right-clicked {} \"{}\"", loc.tag.to_lowercase(), loc.text);
+    let action_line = format!(
+        "Right-clicked {} \"{}\"",
+        loc.tag.to_lowercase(),
+        loc.text
+    );
     sleep(Duration::from_millis(150)).await;
     let page_brief = get_page_brief(&mut cdp).await?;
     cdp.close().await;

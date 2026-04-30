@@ -136,11 +136,7 @@ fn frame_node_from_value(node: &Value) -> Option<FrameNode> {
     })
 }
 
-fn write_frame_node(
-    w: &mut dyn std::io::Write,
-    node: &FrameNode,
-    depth: usize,
-) -> std::io::Result<()> {
+fn write_frame_node(w: &mut dyn std::io::Write, node: &FrameNode, depth: usize) -> std::io::Result<()> {
     let indent = "  ".repeat(depth);
     match &node.name {
         Some(name) => writeln!(w, "{}[{}] name=\"{}\" {}", indent, node.id, name, node.url)?,
@@ -187,11 +183,7 @@ pub(crate) async fn cmd_frame(
     if matches!(frame_id_or_selector, "main" | "top") {
         state.active_frame_id = None;
         ctx.save_session_state(&state)?;
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new("Switched to main frame."))?
-        );
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Switched to main frame."))?);
         return Ok(());
     }
 

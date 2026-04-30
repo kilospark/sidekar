@@ -99,20 +99,20 @@ fn spawn_spinner(
         let started = Instant::now();
         let mut i = 0usize;
         while !stop_spinner.load(Ordering::Relaxed) {
-            if !output_started.load(Ordering::Relaxed)
-                && let Ok(_g) = term_lock.lock()
-            {
-                // Re-check inside the lock so we don't race the reader.
-                if !output_started.load(Ordering::Relaxed) {
-                    // \r\x1b[2K returns to col 0 and clears the line so
-                    // each tick replaces the previous frame in place.
-                    let line = format!(
-                        "\r\x1b[2K{}",
-                        spinner::frame(i, started.elapsed(), "running…")
-                    );
-                    let mut out = std::io::stdout();
-                    let _ = out.write_all(line.as_bytes());
-                    let _ = out.flush();
+            if !output_started.load(Ordering::Relaxed) {
+                if let Ok(_g) = term_lock.lock() {
+                    // Re-check inside the lock so we don't race the reader.
+                    if !output_started.load(Ordering::Relaxed) {
+                        // \r\x1b[2K returns to col 0 and clears the line so
+                        // each tick replaces the previous frame in place.
+                        let line = format!(
+                            "\r\x1b[2K{}",
+                            spinner::frame(i, started.elapsed(), "running…")
+                        );
+                        let mut out = std::io::stdout();
+                        let _ = out.write_all(line.as_bytes());
+                        let _ = out.flush();
+                    }
                 }
             }
             i = i.wrapping_add(1);

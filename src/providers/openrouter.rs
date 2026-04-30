@@ -3,9 +3,9 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent,
-    ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent, ToolDef, Usage,
 };
+use crate::providers::cache;
 
 /// Streaming call to OpenRouter's OpenAI-compatible chat completions API.
 pub async fn stream(
@@ -48,10 +48,10 @@ pub async fn stream_with_provider(
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
     headers.insert("authorization", format!("Bearer {api_key}").parse()?);
-    if let Some(project) = super::vertex::extract_project(base_url)
-        && let Ok(value) = project.parse()
-    {
-        headers.insert("x-goog-user-project", value);
+    if let Some(project) = super::vertex::extract_project(base_url) {
+        if let Ok(value) = project.parse() {
+            headers.insert("x-goog-user-project", value);
+        }
     }
 
     super::log_api_request(&url, &headers, &body);
@@ -173,7 +173,15 @@ fn build_request_body(
                 flush_openrouter_user(&mut api_messages, &mut pending_user_parts);
             }
             Role::Assistant => {
-                let text: String = super::openai_compat_assistant_join_text(&msg.content);
+                let text: String = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 let tool_calls: Vec<Value> = msg
                     .content
@@ -196,13 +204,6 @@ fn build_request_body(
                     })
                     .collect();
 
-                // Reasoning replay: DeepSeek (`reasoning_content`) and Kimi
-                // (`reasoning`) require the prior assistant turn to carry the
-                // exact thinking text alongside its tool_calls. Set both keys;
-                // each provider ignores the one it doesn't recognize.
-                let reasoning_text: String =
-                    super::openai_compat_assistant_concat_reasoning_chunks(&msg.content);
-
                 let mut msg_obj = json!({"role": "assistant"});
                 if !text.is_empty() {
                     msg_obj["content"] = json!(text);
@@ -212,10 +213,6 @@ fn build_request_body(
                 }
                 if !tool_calls.is_empty() {
                     msg_obj["tool_calls"] = json!(tool_calls);
-                }
-                if !reasoning_text.is_empty() {
-                    msg_obj["reasoning_content"] = json!(reasoning_text);
-                    msg_obj["reasoning"] = json!(reasoning_text);
                 }
                 api_messages.push(msg_obj);
             }
@@ -248,7 +245,7 @@ fn build_request_body(
         body["tool_choice"] = json!("auto");
     }
 
-    maybe_add_anthropic_cache_control(model, &mut body);
+     cache::maybe_add_anthropic_cache_control(model, &mut body);
 
     body
 }
@@ -274,7 +271,6 @@ async fn parse_sse_stream(
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut text_buf = String::new();
-    let mut reasoning_buf = String::new();
     let mut usage = Usage::default();
     let mut model_id = String::new();
     let mut finish_reason: Option<String> = None;
@@ -327,17 +323,6 @@ async fn parse_sse_stream(
                     let _ = tx.send(StreamEvent::TextDelta {
                         delta: content.to_string(),
                     });
-                }
-
-                // Reasoning content delta — DeepSeek (`reasoning_content`), Kimi/OpenRouter
-                // (`reasoning`). Capture verbatim; some providers (DeepSeek) reject the
-                // next request unless the prior assistant turn replays this string.
-                for key in ["reasoning_content", "reasoning"] {
-                    if let Some(r) = delta.get(key).and_then(|v| v.as_str())
-                        && !r.is_empty()
-                    {
-                        reasoning_buf.push_str(r);
-                    }
                 }
 
                 // Tool call deltas
@@ -421,15 +406,7 @@ async fn parse_sse_stream(
         }
     }
 
-    // Finalize: build content blocks from accumulated state.
-    // Reasoning is emitted first so it serializes ahead of text/tool_calls on
-    // the next request (DeepSeek requires this on the same assistant message
-    // that produced tool_calls).
-    if !reasoning_buf.is_empty() {
-        content_blocks.push(ContentBlock::Reasoning {
-            text: reasoning_buf,
-        });
-    }
+    // Finalize: build content blocks from accumulated state
     if !text_buf.is_empty() {
         content_blocks.push(ContentBlock::Text { text: text_buf });
     }
@@ -467,57 +444,14 @@ async fn parse_sse_stream(
             stop_reason: stop,
             model: model_id,
             response_id: String::new(),
-            rate_limit: rate_limit.clone(),
+                            rate_limit: rate_limit.clone(),
         },
     });
 
     Ok(())
 }
 
-fn supports_anthropic_cache_control(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("claude")
-}
-
-fn maybe_add_anthropic_cache_control(model: &str, body: &mut Value) {
-    if !supports_anthropic_cache_control(model) {
-        return;
-    }
-
-    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
-        return;
-    };
-
-    for msg in messages.iter_mut().rev() {
-        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        if role != "user" && role != "assistant" {
-            continue;
-        }
-
-        let Some(content) = msg.get_mut("content") else {
-            continue;
-        };
-
-        if let Some(text) = content.as_str() {
-            *content = json!([{
-                "type": "text",
-                "text": text,
-                "cache_control": {"type": "ephemeral"},
-            }]);
-            return;
-        }
-
-        let Some(parts) = content.as_array_mut() else {
-            continue;
-        };
-
-        for part in parts.iter_mut().rev() {
-            if part.get("type").and_then(|v| v.as_str()) == Some("text") {
-                part["cache_control"] = json!({"type": "ephemeral"});
-                return;
-            }
-        }
-    }
-}
+// Functions moved to cache.rs module
 
 fn apply_usage(u: &Value, usage: &mut Usage) {
     let prompt_total = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;

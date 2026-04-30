@@ -225,8 +225,9 @@ pub async fn run(
                         && crate::providers::is_retryable_error(&e);
                     if should_retry {
                         stream_attempt += 1;
-                        let delay =
-                            std::time::Duration::from_millis(500 * 2u64.pow(stream_attempt - 1));
+                        let delay = std::time::Duration::from_millis(
+                            500 * 2u64.pow(stream_attempt - 1),
+                        );
                         eprintln!(
                             "\x1b[33m[mid-stream error before any content; \
                              retrying {stream_attempt}/{STREAM_CONTENT_RETRIES} \
@@ -322,7 +323,9 @@ pub async fn run(
                     // landed and the tool tree was killed — otherwise the
                     // turn unwinds silently and it looks like nothing
                     // happened even though cancel did propagate.
-                    crate::tunnel::tunnel_println(&format!("\x1b[33m[cancelled: {name}]\x1b[0m"));
+                    crate::tunnel::tunnel_println(&format!(
+                        "\x1b[33m[cancelled: {name}]\x1b[0m"
+                    ));
                     return Err(e);
                 }
                 Err(e) => {
@@ -442,7 +445,10 @@ async fn consume_stream(
         // retryable mid-stream failure (empty stream is almost
         // always a proxy or connection-reset edge case).
         if !emitted_content {
-            return Err(MidStreamNoContent("stream ended without a response".to_string()).into());
+            return Err(MidStreamNoContent(
+                "stream ended without a response".to_string(),
+            )
+            .into());
         }
         bail!("LLM stream ended without a response")
     }

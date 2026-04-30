@@ -214,7 +214,7 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
                 // Inside a blockquote, a soft break is a real line break in
                 // the rendered output so each visual line carries the "> "
                 // prefix. Elsewhere, follow CommonMark and collapse to a space.
-                if style_stack.contains(&Style::BlockQuote) {
+                if style_stack.iter().any(|s| *s == Style::BlockQuote) {
                     push_line(&mut lines, &mut current_line);
                     current_line.push_str(&format!("{GREEN}> "));
                 } else {
@@ -223,7 +223,7 @@ pub(super) fn render_markdown(source: &str) -> Vec<String> {
             }
             Event::HardBreak => {
                 push_line(&mut lines, &mut current_line);
-                if style_stack.contains(&Style::BlockQuote) {
+                if style_stack.iter().any(|s| *s == Style::BlockQuote) {
                     current_line.push_str(&format!("{GREEN}> "));
                 }
             }

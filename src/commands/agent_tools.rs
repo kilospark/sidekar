@@ -5,9 +5,9 @@ use crate::tasks::cmd_tasks;
 use crate::*;
 
 use super::agent_sessions::cmd_agent_sessions;
+use super::journal::cmd_journal;
 use super::cron;
 use super::doc::cmd_doc;
-use super::journal::cmd_journal;
 use super::kv::cmd_kv;
 use super::monitor::cmd_monitor;
 use super::totp::cmd_totp;
@@ -60,7 +60,9 @@ async fn dispatch_bus_root(ctx: &mut AppContext, args: &[String]) -> Result<()> 
         "send" => "bus-send",
         "done" => "bus-done",
         "cancel" => "bus-cancel",
-        _ => bail!("Usage: sidekar bus <who|requests|replies|show|send|done|cancel> [args...]"),
+        _ => bail!(
+            "Usage: sidekar bus <who|requests|replies|show|send|done|cancel> [args...]"
+        ),
     };
     Box::pin(super::dispatch(ctx, subcommand, &args[1..])).await
 }

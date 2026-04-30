@@ -146,12 +146,11 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
             let entries: Vec<CookieEntry> = cookies
                 .iter()
                 .map(|c| {
-                    let name = c
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    let value = truncate(c.get("value").and_then(Value::as_str).unwrap_or(""), 60);
+                    let name = c.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                    let value = truncate(
+                        c.get("value").and_then(Value::as_str).unwrap_or(""),
+                        60,
+                    );
                     let domain = c
                         .get("domain")
                         .and_then(Value::as_str)
@@ -209,7 +208,12 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
                 json!({ "name": name, "value": value, "domain": domain, "path": "/" }),
             )
             .await?;
-            let msg = format!("Cookie set: {}={} ({})", name, truncate(&value, 40), domain);
+            let msg = format!(
+                "Cookie set: {}={} ({})",
+                name,
+                truncate(&value, 40),
+                domain
+            );
             out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             cdp.close().await;
         }
@@ -217,11 +221,7 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
             let mut cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut cdp).await?;
             cdp.send("Network.clearBrowserCookies", json!({})).await?;
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new("All cookies cleared."))?
-            );
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("All cookies cleared."))?);
             cdp.close().await;
         }
         "delete" => {
@@ -340,13 +340,7 @@ pub(crate) async fn cmd_console(ctx: &mut AppContext, action: Option<&str>) -> R
             let mut cdp = open_cdp(ctx).await?;
             prepare_cdp(ctx, &mut cdp).await?;
             cdp.send("Runtime.enable", json!({})).await?;
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new(
-                    "Listening for console output (Ctrl+C to stop)..."
-                ))?
-            );
+            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Listening for console output (Ctrl+C to stop)..."))?);
             loop {
                 let Some(event) = cdp.next_event(Duration::from_secs(60)).await? else {
                     continue;
@@ -368,11 +362,7 @@ pub(crate) async fn cmd_console(ctx: &mut AppContext, action: Option<&str>) -> R
                         .collect::<Vec<_>>()
                         .join(" ");
                     let line = format!("[{}] {}", event_type, truncate(&text, 500));
-                    out!(
-                        ctx,
-                        "{}",
-                        crate::output::to_string(&PlainOutput::new(line))?
-                    );
+                    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(line))?);
                 } else if event.get("method").and_then(Value::as_str)
                     == Some("Runtime.exceptionThrown")
                 {
@@ -387,11 +377,7 @@ pub(crate) async fn cmd_console(ctx: &mut AppContext, action: Option<&str>) -> R
                         })
                         .unwrap_or("Unknown error");
                     let line = format!("[exception] {}", truncate(desc, 500));
-                    out!(
-                        ctx,
-                        "{}",
-                        crate::output::to_string(&PlainOutput::new(line))?
-                    );
+                    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(line))?);
                 }
             }
         }
@@ -710,26 +696,26 @@ async fn cmd_network_passive(ctx: &mut AppContext, args: &[String]) -> Result<()
     let mut i = 1;
     while i < args.len() {
         let a = &args[i];
-        if (a == "-n" || a == "--limit")
-            && let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok())
-        {
-            limit = Some(v);
-            i += 2;
-            continue;
+        if a == "-n" || a == "--limit" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                limit = Some(v);
+                i += 2;
+                continue;
+            }
         }
-        if a == "--profile"
-            && let Some(v) = args.get(i + 1)
-        {
-            profile = Some(v.clone());
-            i += 2;
-            continue;
+        if a == "--profile" {
+            if let Some(v) = args.get(i + 1) {
+                profile = Some(v.clone());
+                i += 2;
+                continue;
+            }
         }
-        if a == "--conn"
-            && let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok())
-        {
-            conn_id = Some(v);
-            i += 2;
-            continue;
+        if a == "--conn" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                conn_id = Some(v);
+                i += 2;
+                continue;
+            }
         }
         i += 1;
     }
@@ -776,9 +762,15 @@ async fn cmd_network_passive(ctx: &mut AppContext, args: &[String]) -> Result<()
                 out!(ctx, "No passive events captured.");
             } else {
                 for e in events {
-                    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    let kind = e
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let detail = e.get("detail").cloned().unwrap_or(Value::Null);
-                    let method = detail.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                    let method = detail
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let url = detail.get("url").and_then(|v| v.as_str()).unwrap_or("");
                     let status = detail
                         .get("status")
@@ -788,14 +780,23 @@ async fn cmd_network_passive(ctx: &mut AppContext, args: &[String]) -> Result<()
                     let t0 = detail.get("t0").and_then(|v| v.as_i64()).unwrap_or(0);
                     let t1 = detail.get("t1").and_then(|v| v.as_i64()).unwrap_or(0);
                     let dur = if t0 > 0 && t1 >= t0 { t1 - t0 } else { 0 };
-                    let sse = detail.get("sse").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let sse = detail
+                        .get("sse")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let sse_tag = if sse { " [sse]" } else { "" };
-                    out!(ctx, "[{kind}] {method} {status} {url} ({dur}ms){sse_tag}");
+                    out!(
+                        ctx,
+                        "[{kind}] {method} {status} {url} ({dur}ms){sse_tag}"
+                    );
                 }
             }
         }
         "clear" => {
-            let cleared = resp.get("cleared").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cleared = resp
+                .get("cleared")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             out!(ctx, "Cleared {cleared} passive events.");
         }
         "stats" => {
@@ -828,26 +829,26 @@ async fn cmd_network_sse(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut i = 1;
     while i < args.len() {
         let a = &args[i];
-        if a == "--conn"
-            && let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok())
-        {
-            conn_id = Some(v);
-            i += 2;
-            continue;
+        if a == "--conn" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                conn_id = Some(v);
+                i += 2;
+                continue;
+            }
         }
-        if a == "--profile"
-            && let Some(v) = args.get(i + 1)
-        {
-            profile = Some(v.clone());
-            i += 2;
-            continue;
+        if a == "--profile" {
+            if let Some(v) = args.get(i + 1) {
+                profile = Some(v.clone());
+                i += 2;
+                continue;
+            }
         }
-        if (a == "-n" || a == "--limit")
-            && let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok())
-        {
-            limit = Some(v);
-            i += 2;
-            continue;
+        if a == "-n" || a == "--limit" {
+            if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                limit = Some(v);
+                i += 2;
+                continue;
+            }
         }
         if !a.starts_with("--") && url_filter.is_none() && sub != "streams" {
             url_filter = Some(a.clone());
@@ -947,11 +948,7 @@ pub(crate) async fn cmd_block(ctx: &mut AppContext, args: &[String]) -> Result<(
     if args.first().map(String::as_str) == Some("off") {
         state.block_patterns = None;
         ctx.save_session_state(&state)?;
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new("Request blocking disabled."))?
-        );
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Request blocking disabled."))?);
         return Ok(());
     }
 

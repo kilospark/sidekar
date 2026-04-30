@@ -25,6 +25,6 @@ pub(crate) mod buffer;
 pub(crate) mod manager;
 pub(crate) mod process;
 
-pub(crate) use manager::{DEFAULT_POLL_YIELD_MS, DEFAULT_SPAWN_YIELD_MS, DEFAULT_WRITE_YIELD_MS};
 pub(crate) use manager::{ExecOutput, ProcessManager, SessionInfo};
+pub(crate) use manager::{DEFAULT_POLL_YIELD_MS, DEFAULT_SPAWN_YIELD_MS, DEFAULT_WRITE_YIELD_MS};
 pub(crate) use process::SpawnOptions;

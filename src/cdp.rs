@@ -1,7 +1,7 @@
 use crate::*;
 
-pub mod stealth;
 mod tabs;
+pub mod stealth;
 
 pub use tabs::*;
 
@@ -218,7 +218,12 @@ impl DirectCdp {
 impl Drop for DirectCdp {
     fn drop(&mut self) {
         if !self.closed {
-            crate::broker::try_log_event("debug", "cdp", "DirectCdp dropped without close()", None);
+            crate::broker::try_log_event(
+                "debug",
+                "cdp",
+                "DirectCdp dropped without close()",
+                None,
+            );
         }
     }
 }

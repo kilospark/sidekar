@@ -67,13 +67,18 @@ pub async fn fetch_models(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
         Some(p) => p,
         None => {
             if verbose {
-                eprintln!("\x1b[33m[vertex: could not extract project from {base_url}]\x1b[0m");
+                eprintln!(
+                    "\x1b[33m[vertex: could not extract project from {base_url}]\x1b[0m"
+                );
             }
             return Vec::new();
         }
     };
 
-    let client = match super::catalog_http_client(15) {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             if verbose {

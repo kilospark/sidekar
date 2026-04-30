@@ -298,7 +298,11 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
 mod tests {
     use super::*;
 
-    fn view_defaults<'a>(cum: &'a Usage, turns: u32, last: Option<&'a Usage>) -> StatusView<'a> {
+    fn view_defaults<'a>(
+        cum: &'a Usage,
+        turns: u32,
+        last: Option<&'a Usage>,
+    ) -> StatusView<'a> {
         StatusView {
             session_id: "sess",
             cwd: "/tmp",

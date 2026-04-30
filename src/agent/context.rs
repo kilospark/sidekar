@@ -77,7 +77,6 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 .map(|b| match b {
                     ContentBlock::Text { text } => text.len(),
                     ContentBlock::Thinking { thinking, .. } => thinking.len(),
-                    ContentBlock::Reasoning { text } => text.len(),
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
@@ -125,7 +124,7 @@ fn age_old_tool_cycles(view: &mut [ChatMessage], keep: usize) {
 
     let boundary = match protect_start {
         Some(0) | None => return, // fewer than `keep` cycles, or nothing before the protected window
-        Some(b) => b,             // age view[..b]
+        Some(b) => b, // age view[..b]
     };
 
     // Pass 2: Build a tool_use_id → tool_name map for aged messages so
@@ -154,10 +153,8 @@ fn age_old_tool_cycles(view: &mut [ChatMessage], keep: usize) {
                         .get(tool_use_id.as_str())
                         .map(|s| s.as_str())
                         .unwrap_or("unknown");
-                    *content = format!(
-                        "[tool output cleared — {} chars, tool: {tool_name}]",
-                        content.len()
-                    );
+                    *content =
+                        format!("[tool output cleared — {} chars, tool: {tool_name}]", content.len());
                 }
                 ContentBlock::ToolCall { arguments, .. }
                     if arguments.to_string().len() > AGING_MIN_BYTES =>

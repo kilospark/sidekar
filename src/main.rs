@@ -302,9 +302,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // implies managed. Without either, managed-default is used and Chrome is
     // auto-launched on first session-requiring command.
     if host_mode && global_profile.is_some() {
-        bail!(
-            "--host and --profile are mutually exclusive (--host = host Chrome, --profile = managed Chrome with named profile)"
-        );
+        bail!("--host and --profile are mutually exclusive (--host = host Chrome, --profile = managed Chrome with named profile)");
     }
 
     if ctx.override_tab_id.is_some() {
@@ -422,10 +420,11 @@ async fn run_command_file(ctx: &mut AppContext) -> Result<()> {
 /// Subcommands on session-requiring commands that don't actually need a
 /// browser session — e.g. `network passive` reads a daemon ring buffer.
 fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
-    matches!(
-        (command, args.first().map(String::as_str)),
-        ("network", Some("passive")) | ("network", Some("sse"))
-    )
+    match (command, args.first().map(String::as_str)) {
+        ("network", Some("passive")) => true,
+        ("network", Some("sse")) => true,
+        _ => false,
+    }
 }
 
 fn tab_id_from_global_flag(override_tab_id: &Option<String>) -> Option<u64> {
@@ -601,7 +600,11 @@ mod tests {
     #[test]
     fn format_space_value_is_parsed() {
         use sidekar::output::OutputFormat;
-        let mut args = vec!["--format".to_string(), "json".to_string(), "kv".to_string()];
+        let mut args = vec![
+            "--format".to_string(),
+            "json".to_string(),
+            "kv".to_string(),
+        ];
         assert_eq!(
             extract_global_format_flag(&mut args).unwrap(),
             Some(OutputFormat::Json)

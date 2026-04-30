@@ -110,7 +110,7 @@ where
                 Err(_) => continue,
             };
             if ft.is_dir() {
-                if depth < max_depth {
+                if depth + 1 <= max_depth {
                     stack.push((path, depth + 1));
                 }
                 continue;

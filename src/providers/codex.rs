@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent,
-    ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent, ToolDef, Usage,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,10 +79,7 @@ pub async fn stream(
         bail!("Codex API error ({}): {}", status, text);
     }
 
-    let rate_limit = {
-        let snap = RateLimitSnapshot::from_openai_headers(response.headers());
-        if snap.is_empty() { None } else { Some(snap) }
-    };
+    let rate_limit = { let snap = RateLimitSnapshot::from_openai_headers(response.headers()); if snap.is_empty() { None } else { Some(snap) } };
 
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -199,7 +195,15 @@ fn build_request_body(
                 }
 
                 // Text output
-                let text = super::openai_compat_assistant_join_text(&msg.content);
+                let text = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 if !text.is_empty() {
                     input.push(json!({
@@ -1228,7 +1232,7 @@ where
                         stop_reason: stop,
                         model: model_id.clone(),
                         response_id: response_id.clone(),
-                        rate_limit: None,
+                            rate_limit: None,
                     },
                 });
                 completed = true;

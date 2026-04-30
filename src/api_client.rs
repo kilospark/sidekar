@@ -140,9 +140,15 @@ pub async fn check_for_update() -> Result<Option<String>> {
     touch_last_check(); // always throttle, even if update is available
     let current = env!("CARGO_PKG_VERSION");
     let info = check_version(current).await?;
-    let latest = info.get("latest").and_then(Value::as_str).ok_or_else(|| {
-        anyhow::anyhow!("version endpoint response missing `latest` field: {}", info)
-    })?;
+    let latest = info
+        .get("latest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "version endpoint response missing `latest` field: {}",
+                info
+            )
+        })?;
     if latest == current {
         Ok(None)
     } else {

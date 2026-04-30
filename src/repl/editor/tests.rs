@@ -41,10 +41,7 @@ fn empty_enter_is_silent_noop() {
     editor
         .process_input_bytes(b"\n", |_, line| lines.push(line))
         .unwrap();
-    assert!(
-        lines.is_empty(),
-        "empty Enter must not produce a submission"
-    );
+    assert!(lines.is_empty(), "empty Enter must not produce a submission");
     assert!(editor.buffer.is_empty());
     assert!(editor.pending_submits.is_empty());
     assert!(editor.pending_followups.is_empty());
@@ -131,10 +128,7 @@ fn drain_pending_followups_as_submit_renumbers_image_labels() {
     assert_eq!(merged.text, "see [Image #1]\nalso [Image #2]");
     assert_eq!(
         merged.image_paths,
-        vec![
-            std::path::PathBuf::from("/tmp/a.png"),
-            std::path::PathBuf::from("/tmp/b.png")
-        ]
+        vec![std::path::PathBuf::from("/tmp/a.png"), std::path::PathBuf::from("/tmp/b.png")]
     );
 }
 

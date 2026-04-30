@@ -1,8 +1,5 @@
 use super::{
-    ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, Provider, SseDecoder, catalog_http_client,
-    is_retryable_error, openai_chat_completions_url,
-    openai_compat_assistant_concat_reasoning_chunks, openai_compat_assistant_join_text,
-    openai_models_url, provider_models_list_client,
+    Provider, SseDecoder, is_retryable_error, openai_chat_completions_url, openai_models_url,
 };
 
 #[test]
@@ -93,25 +90,20 @@ fn openai_compat_urls_accept_root_or_v1_or_full_endpoint() {
     );
     // Custom endpoint with existing path (e.g. Vertex AI) — no /v1/ injected
     assert_eq!(
-        openai_chat_completions_url(
-            "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi"
-        ),
+        openai_chat_completions_url("https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi"),
         "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/chat/completions"
     );
     assert_eq!(
-        openai_models_url(
-            "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi"
-        ),
+        openai_models_url("https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi"),
         "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/models"
     );
     // Trailing slash stripped
     assert_eq!(
-        openai_chat_completions_url(
-            "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/"
-        ),
+        openai_chat_completions_url("https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/"),
         "https://aiplatform.googleapis.com/v1/projects/foo/locations/global/endpoints/openapi/chat/completions"
     );
 }
+
 
 #[test]
 fn openai_compat_provider_type_is_preserved() {
@@ -170,15 +162,9 @@ fn retryable_transport_shapes() {
     assert!(is_retryable_error(&err("failed to connect to host")));
     assert!(is_retryable_error(&err("operation timed out")));
     assert!(is_retryable_error(&err("Broken pipe (os error 32)")));
-    assert!(is_retryable_error(&err(
-        "connection closed before message completed"
-    )));
-    assert!(is_retryable_error(&err(
-        "connection error: incomplete message"
-    )));
-    assert!(is_retryable_error(&err(
-        "unexpected EOF during chunk size line"
-    )));
+    assert!(is_retryable_error(&err("connection closed before message completed")));
+    assert!(is_retryable_error(&err("connection error: incomplete message")));
+    assert!(is_retryable_error(&err("unexpected EOF during chunk size line")));
 }
 
 #[test]
@@ -187,24 +173,4 @@ fn not_retryable_4xx_client_errors() {
     assert!(!is_retryable_error(&err("api error (401): unauthorized")));
     assert!(!is_retryable_error(&err("api error (403): forbidden")));
     assert!(!is_retryable_error(&err("api error (404): not found")));
-}
-
-#[test]
-fn catalog_http_clients_build_successfully() {
-    assert!(catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS).is_ok());
-    assert!(provider_models_list_client(MODEL_CATALOG_TIMEOUT_SECS).is_some());
-}
-
-#[test]
-fn openai_compat_assistant_text_helpers_split_text_and_reasoning() {
-    let blocks = vec![
-        ContentBlock::Text { text: "a".into() },
-        ContentBlock::Reasoning { text: "r".into() },
-        ContentBlock::Text { text: "b".into() },
-    ];
-    assert_eq!(openai_compat_assistant_join_text(&blocks), "a\nb");
-    assert_eq!(
-        openai_compat_assistant_concat_reasoning_chunks(&blocks),
-        "r"
-    );
 }

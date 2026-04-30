@@ -429,7 +429,12 @@ fn cancel_all_outbound_for_sender_only_touches_open_rows() -> Result<()> {
         }
 
         // Answer r2 so it's no longer open.
-        let reply = Envelope::new_response(AgentId::new("r2"), "sender", "ok", r2.id.clone());
+        let reply = Envelope::new_response(
+            AgentId::new("r2"),
+            "sender",
+            "ok",
+            r2.id.clone(),
+        );
         record_reply(&r2.id, &reply)?;
 
         let cancelled = cancel_all_outbound_for_sender("sender", r1.created_at + 5)?;

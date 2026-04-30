@@ -14,7 +14,7 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -115,9 +115,7 @@ pub async fn cmd_memory_import(ctx: &mut AppContext, args: &[String]) -> Result<
                         stats.written += 1;
                     }
                 }
-                Err(e) => stats
-                    .errors
-                    .push(format!("{}: {:#}", c.source_file.display(), e)),
+                Err(e) => stats.errors.push(format!("{}: {:#}", c.source_file.display(), e)),
             }
         }
         for c in &r.candidates {
@@ -279,22 +277,10 @@ fn parse_duration(s: &str) -> Result<u64, String> {
     let (num_str, suffix) = s.split_at(s.len() - 1);
     let (num, mult): (u64, u64) = match suffix {
         "s" => (num_str.parse().map_err(|_| format!("bad duration {s}"))?, 1),
-        "m" => (
-            num_str.parse().map_err(|_| format!("bad duration {s}"))?,
-            60,
-        ),
-        "h" => (
-            num_str.parse().map_err(|_| format!("bad duration {s}"))?,
-            3600,
-        ),
-        "d" => (
-            num_str.parse().map_err(|_| format!("bad duration {s}"))?,
-            86_400,
-        ),
-        "w" => (
-            num_str.parse().map_err(|_| format!("bad duration {s}"))?,
-            604_800,
-        ),
+        "m" => (num_str.parse().map_err(|_| format!("bad duration {s}"))?, 60),
+        "h" => (num_str.parse().map_err(|_| format!("bad duration {s}"))?, 3600),
+        "d" => (num_str.parse().map_err(|_| format!("bad duration {s}"))?, 86_400),
+        "w" => (num_str.parse().map_err(|_| format!("bad duration {s}"))?, 604_800),
         _ => {
             let n: u64 = s.parse().map_err(|_| format!("bad duration {s}"))?;
             return Ok(n);
@@ -339,7 +325,10 @@ async fn scan_claude(
     // <cwd>/.claude/CLAUDE.md (project).
     for pref in sources::detect_claude_prefs(cwd) {
         report.files_seen += 1;
-        let scope = if pref.path.to_string_lossy().contains("/.claude/CLAUDE.md")
+        let scope = if pref
+            .path
+            .to_string_lossy()
+            .contains("/.claude/CLAUDE.md")
             && pref.path.to_string_lossy().starts_with(home_str().as_str())
         {
             crate::scope::GLOBAL_SCOPE
@@ -428,7 +417,10 @@ async fn scan_cursor(
     // Rules are text — straight LLM path.
     for f in sources::detect_cursor_rules(cwd) {
         report.files_seen += 1;
-        let scope = if f.path.to_string_lossy().starts_with(home_str().as_str())
+        let scope = if f
+            .path
+            .to_string_lossy()
+            .starts_with(home_str().as_str())
             && !f.path.starts_with(cwd)
         {
             crate::scope::GLOBAL_SCOPE
@@ -455,7 +447,9 @@ async fn scan_cursor(
         let transcript = match parse_sqlite::parse_cursor_store_db(&f.path) {
             Ok(t) => t,
             Err(e) => {
-                report.errors.push(format!("{}: {e:#}", f.path.display()));
+                report
+                    .errors
+                    .push(format!("{}: {e:#}", f.path.display()));
                 continue;
             }
         };
@@ -637,9 +631,7 @@ async fn run_text_llm(
         .await
     {
         Ok(cands) => report.candidates.extend(cands),
-        Err(e) => report
-            .errors
-            .push(format!("{}: LLM: {e:#}", path.display())),
+        Err(e) => report.errors.push(format!("{}: LLM: {e:#}", path.display())),
     }
 }
 
@@ -673,16 +665,7 @@ async fn run_transcript_llm(
             return;
         }
     };
-    run_transcript_from(
-        report,
-        &f.path,
-        transcript,
-        source_kind,
-        opts,
-        provider,
-        model,
-    )
-    .await;
+    run_transcript_from(report, &f.path, transcript, source_kind, opts, provider, model).await;
 }
 
 /// Shared tail of every transcript-based scanner. Once a
@@ -811,7 +794,7 @@ fn file_hash(path: &Path) -> Result<String> {
 
 fn record_import(
     source_kind: &str,
-    path: &Path,
+    path: &PathBuf,
     content_hash: &str,
     batch_id: &str,
     stats: &WriteStats,

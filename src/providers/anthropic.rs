@@ -8,9 +8,10 @@ use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason,
-    StreamConfig, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamConfig, StreamEvent,
+    ToolDef, Usage,
 };
+use crate::providers::cache;
 
 const CLAUDE_CODE_VERSION: &str = "2.1.87";
 const FINGERPRINT_SALT: &str = "59cf53e54c78";
@@ -32,11 +33,10 @@ pub async fn stream(
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let is_oauth = api_key.contains("sk-ant-oat");
 
-    // The REPL surfaces a `<id>#1m` variant for models that support 1M
-    // context. For beta-gated models (Sonnet 4/4.5, Opus 4.5), this enables
-    // the `context-1m-2025-08-07` header. For native-1M models (Opus 4.7/4.6,
-    // Sonnet 4.6), the header is harmless/no-op. Strip the suffix before
-    // talking to Anthropic.
+    // The REPL surfaces a `<id>#1m` variant for models whose 1M-context tier
+    // is gated behind `anthropic-beta: context-1m-2025-08-07`. Selecting that
+    // row routes the chat through here with the suffix attached; strip it
+    // before talking to Anthropic and remember to enable the beta header.
     let (model, enable_1m_beta) = match model.strip_suffix(super::ANTHROPIC_1M_SUFFIX) {
         Some(clean) => (clean, true),
         None => (model, false),
@@ -117,27 +117,21 @@ pub async fn stream(
 
     if !response.status().is_success() {
         let status = response.status();
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+        let retry_after = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
         let text = response.text().await.unwrap_or_default();
         super::log_api_error(status, &text);
-        if status.as_u16() == 429
-            && let Some(kv_key) = config.credential_kv_key.as_deref()
-            && let Some(until) =
-                super::session_lock::parse_anthropic_lock(retry_after.as_deref(), &text)
-        {
-            let _ = super::session_lock::mark_locked(kv_key, until, &text);
+        if status.as_u16() == 429 {
+            if let Some(kv_key) = config.credential_kv_key.as_deref() {
+                if let Some(until) = super::session_lock::parse_anthropic_lock(retry_after.as_deref(), &text) {
+                    let _ = super::session_lock::mark_locked(kv_key, until, &text);
+                }
+            }
         }
         bail!("Anthropic API error ({}): {}", status, text);
     }
 
     let rate_limit = RateLimitSnapshot::from_anthropic_headers(response.headers()).into_option();
-    if let Some(kv_key) = config.credential_kv_key.as_deref() {
-        let _ = super::session_lock::clear_locked(kv_key);
-    }
+    if let Some(kv_key) = config.credential_kv_key.as_deref() { super::session_lock::clear_locked(kv_key); }
 
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -282,23 +276,17 @@ fn build_system_blocks(
     blocks
 }
 
-fn ephemeral_cache_marker(config: &StreamConfig, include_scope: bool) -> Value {
-    let mut marker = json!({ "type": "ephemeral" });
-    if let Some(ttl) = &config.cache_ttl {
-        marker["ttl"] = json!(ttl);
-    }
-    if include_scope && let Some(scope) = &config.cache_scope {
-        marker["scope"] = json!(scope);
-    }
-    marker
-}
-
 fn apply_cache_control(request: &mut AnthropicRequest, config: &StreamConfig) {
-    // Stable breakpoint: TTL + optional `scope` (tools/system accept scope).
-    // Rolling breakpoint (latest message): TTL only — Anthropic rejects
-    // `cache_control.ephemeral.scope` on message content.
-    let stable_marker = ephemeral_cache_marker(config, true);
-    let rolling_marker = ephemeral_cache_marker(config, false);
+    // "Stable" marker carries `scope` (if configured) because Anthropic
+    // accepts it on system and tool blocks. This is what lets the cache
+    // survive the volatile billing header (block 0's `cch` changes every
+    // turn as a body hash) — matches Claude Code's captured behavior.
+    let stable_marker = cache::create_stable_marker(config.cache_ttl.as_ref(), config.cache_scope.as_ref());
+
+    // Rolling marker for the latest message. Intentionally OMITS `scope` —
+    // Anthropic rejects `cache_control.ephemeral.scope` on message-content
+    // cache_control blocks with a 400. TTL alone is sufficient here.
+    let rolling_marker = cache::create_rolling_marker(config.cache_ttl.as_ref());
 
     // Place the stable breakpoint on the LAST TOOL definition, not on the
     // system block. Reason: Anthropic's minimum cacheable prefix is 1024
@@ -311,80 +299,19 @@ fn apply_cache_control(request: &mut AnthropicRequest, config: &StreamConfig) {
     //
     // If there are no tools, fall back to the system block and accept that
     // tiny system prompts won't cache — still beats missing the feature.
-    let _ = apply_tools_cache_control(&mut request.tools, &stable_marker)
-        || apply_system_cache_control(&mut request.system, &stable_marker);
+    let placed_stable = cache::apply_tools_cache_control(&mut request.tools, &stable_marker)
+        || cache::apply_system_cache_control(&mut request.system, &stable_marker);
+    let _ = placed_stable;
 
     // Only stamp the LATEST message. The cache rolls forward automatically
     // because Anthropic matches the longest cached prefix from prior turns
     // on each new request. Matches Claude Code's one-marker-on-tail pattern.
     if let Some(last) = request.messages.last_mut() {
-        apply_message_cache_control(last, &rolling_marker);
+        cache::apply_message_cache_control(last, &rolling_marker);
     }
 }
 
-fn apply_tools_cache_control(tools: &mut Option<Vec<Value>>, marker: &Value) -> bool {
-    let Some(tools) = tools.as_mut() else {
-        return false;
-    };
-    let Some(last) = tools.last_mut() else {
-        return false;
-    };
-    last["cache_control"] = marker.clone();
-    true
-}
 
-fn apply_system_cache_control(system: &mut [Value], marker: &Value) -> bool {
-    for block in system.iter_mut().rev() {
-        if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-            block["cache_control"] = marker.clone();
-            return true;
-        }
-    }
-    false
-}
-
-fn apply_message_cache_control(message: &mut Value, marker: &Value) -> bool {
-    let Some(content) = message.get_mut("content") else {
-        return false;
-    };
-
-    if let Some(text) = content.as_str() {
-        let text = text.to_string();
-        if text.is_empty() {
-            return false;
-        }
-        *content = json!([{
-            "type": "text",
-            "text": text,
-            "cache_control": marker,
-        }]);
-        return true;
-    }
-
-    let Some(parts) = content.as_array_mut() else {
-        return false;
-    };
-
-    for part in parts.iter_mut().rev() {
-        match part.get("type").and_then(|v| v.as_str()) {
-            Some("text") => {
-                let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                if text.is_empty() {
-                    continue;
-                }
-                part["cache_control"] = marker.clone();
-                return true;
-            }
-            Some("tool_result") => {
-                part["cache_control"] = marker.clone();
-                return true;
-            }
-            _ => {}
-        }
-    }
-
-    false
-}
 
 fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> {
     blocks
@@ -434,8 +361,6 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
             })),
             // Encrypted reasoning is Codex-only; skip for Anthropic.
             ContentBlock::EncryptedReasoning { .. } => None,
-            // OpenAI-compat reasoning replay; skip on Anthropic.
-            ContentBlock::Reasoning { .. } => None,
         })
         .collect()
 }

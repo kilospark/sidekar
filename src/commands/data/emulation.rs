@@ -73,11 +73,7 @@ pub(crate) async fn cmd_media(ctx: &mut AppContext, args: &[String]) -> Result<(
             json!({"media": "", "features": []}),
         )
         .await?;
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new("Media emulation reset."))?
-        );
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Media emulation reset."))?);
         cdp.close().await;
         return Ok(());
     }
@@ -106,11 +102,7 @@ pub(crate) async fn cmd_media(ctx: &mut AppContext, args: &[String]) -> Result<(
                     json!({"media": "", "features": []}),
                 )
                 .await?;
-                out!(
-                    ctx,
-                    "{}",
-                    crate::output::to_string(&PlainOutput::new("Media emulation reset."))?
-                );
+                out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Media emulation reset."))?);
                 cdp.close().await;
                 return Ok(());
             }
@@ -486,11 +478,7 @@ pub(crate) async fn cmd_geo(ctx: &mut AppContext, args: &[String]) -> Result<()>
     if args.first().map(String::as_str) == Some("off") {
         cdp.send("Emulation.clearGeolocationOverride", json!({}))
             .await?;
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new("Geolocation override cleared"))?
-        );
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new("Geolocation override cleared"))?);
         cdp.close().await;
         return Ok(());
     }

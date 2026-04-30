@@ -464,18 +464,18 @@ impl ActivePromptSession {
                         editor.flush_paste_burst_if_due(|ed, line| {
                             ed.queue_pending_followup(line);
                         });
-                        if editor.paste_burst_is_active() {
-                            10
-                        } else {
-                            50
-                        }
+                        if editor.paste_burst_is_active() { 10 } else { 50 }
                     } else {
                         50
                     };
 
                     let mut fds = build_input_pollfds(stdin_poll_fd, tunnel_fd);
                     let ready = unsafe {
-                        libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, poll_timeout_ms)
+                        libc::poll(
+                            fds.as_mut_ptr(),
+                            fds.len() as libc::nfds_t,
+                            poll_timeout_ms,
+                        )
                     };
                     let now = std::time::Instant::now();
                     if ready > 0 {
@@ -860,11 +860,8 @@ impl LineEditor {
     /// sorted by start. Longer placeholders win when they overlap shorter ones (e.g.,
     /// `[Pasted Content 100 chars]` vs `[Pasted Content 100 chars] #2`).
     fn placeholder_spans(&self) -> Vec<std::ops::Range<usize>> {
-        let mut placeholders: Vec<&str> = self
-            .pending_pastes
-            .iter()
-            .map(|p| p.placeholder.as_str())
-            .collect();
+        let mut placeholders: Vec<&str> =
+            self.pending_pastes.iter().map(|p| p.placeholder.as_str()).collect();
         placeholders.sort_by_key(|p| std::cmp::Reverse(p.len()));
         let mut taken = vec![false; self.buffer.len()];
         let mut spans = Vec::new();
@@ -1240,10 +1237,7 @@ impl LineEditor {
         match byte {
             b'\r' | b'\n' => {
                 let now = std::time::Instant::now();
-                if self
-                    .paste_burst
-                    .newline_should_insert_instead_of_submit(now)
-                {
+                if self.paste_burst.newline_should_insert_instead_of_submit(now) {
                     if !self.paste_burst.append_newline_if_active(now) {
                         self.handle_plain_char('\n', false);
                     }
@@ -2192,11 +2186,7 @@ pub(super) fn read_input_or_bus(
                 return InputEvent::Eof;
             }
 
-            let poll_timeout_ms = if editor.paste_burst_is_active() {
-                10
-            } else {
-                100
-            };
+            let poll_timeout_ms = if editor.paste_burst_is_active() { 10 } else { 100 };
             let ready = libc::poll(
                 fds_arr.as_mut_ptr(),
                 fds_arr.len() as libc::nfds_t,
@@ -2283,21 +2273,13 @@ pub(super) fn print_banner(model: Option<&str>, credential: Option<&str>) {
         }
     };
     println!("{line2}");
-    if let Some(c) = credential
-        && let Some(until) =
-            crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(c))
-    {
-        let mins = until
-            .saturating_sub(crate::providers::session_lock::current_epoch())
-            .div_ceil(60);
-        let h = mins / 60;
-        let m = mins % 60;
-        let when = if h > 0 {
-            format!("{h}h {m}m")
-        } else {
-            format!("{m}m")
-        };
-        println!("\x1b[31m! {c} is rate-limited; resets in {when}\x1b[0m");
+    if let Some(c) = credential {
+        if let Some(until) = crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(c)) {
+            let mins = (until.saturating_sub(crate::providers::session_lock::current_epoch()) + 59) / 60;
+            let h = mins / 60; let m = mins % 60;
+            let when = if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") };
+            println!("\x1b[31m! {c} is rate-limited; resets in {when}\x1b[0m");
+        }
     }
     println!();
 }

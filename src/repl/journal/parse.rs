@@ -62,7 +62,10 @@ pub fn parse_response(raw: &str) -> ParseOutcome {
     let candidate = match extract_json_object(raw) {
         Some(s) => s,
         None => {
-            return degraded(raw, "no JSON object found in response");
+            return degraded(
+                raw,
+                "no JSON object found in response",
+            );
         }
     };
 
@@ -72,7 +75,10 @@ pub fn parse_response(raw: &str) -> ParseOutcome {
     let val: Value = match serde_json::from_str(&candidate) {
         Ok(v) => v,
         Err(e) => {
-            return degraded(raw, &format!("JSON parse failed: {e}"));
+            return degraded(
+                raw,
+                &format!("JSON parse failed: {e}"),
+            );
         }
     };
 

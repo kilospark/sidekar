@@ -115,7 +115,11 @@ impl sidekar::output::CommandOutput for RelaySessionsOutput {
             writeln!(w, "No active sessions.")?;
             return Ok(());
         }
-        writeln!(w, "{:<20} {:<15} {:<12} CWD", "NAME", "AGENT", "HOSTNAME")?;
+        writeln!(
+            w,
+            "{:<20} {:<15} {:<12} CWD",
+            "NAME", "AGENT", "HOSTNAME"
+        )?;
         for s in &self.items {
             writeln!(
                 w,

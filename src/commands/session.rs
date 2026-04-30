@@ -437,7 +437,11 @@ pub(super) async fn cmd_unlock(ctx: &mut AppContext) -> Result<()> {
             Ok(format!("Tab {} unlocked.", tab_id))
         }
     })?;
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(msg))?
+    );
     Ok(())
 }
 
@@ -882,7 +886,8 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                     json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
                 )
                 .await?;
-                let action_msg = format!("Auth \"{name}\": filled credentials and clicked submit");
+                let action_msg =
+                    format!("Auth \"{name}\": filled credentials and clicked submit");
                 sleep(Duration::from_millis(500)).await;
                 let brief = get_page_brief(&mut cdp).await?;
                 #[derive(serde::Serialize)]

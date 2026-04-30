@@ -160,10 +160,7 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                 .get("profile")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            let limit = cmd
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as usize);
+            let limit = cmd.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
 
             let ext_state = {
                 let s = state.lock().await;
@@ -222,7 +219,8 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                 }
                 "sse_streams" | "sse_list" => {
                     // Group sse/sse_open/sse_done/sse_error by url.
-                    let events = crate::ext::passive_snapshot(&ext_state, conn_id, None).await;
+                    let events =
+                        crate::ext::passive_snapshot(&ext_state, conn_id, None).await;
                     let mut by_url: std::collections::BTreeMap<String, Value> =
                         std::collections::BTreeMap::new();
                     for e in events {
@@ -325,7 +323,8 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                         .get("url")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    let events = crate::ext::passive_snapshot(&ext_state, conn_id, None).await;
+                    let events =
+                        crate::ext::passive_snapshot(&ext_state, conn_id, None).await;
                     let mut chunks: Vec<Value> = Vec::new();
                     for e in events {
                         let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -380,10 +379,8 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                         .get("limit")
                         .and_then(|v| v.as_u64())
                         .map(|n| n as usize);
-                    let events: Vec<Value> = monitor::snapshot(limit)
-                        .iter()
-                        .map(|e| e.as_json())
-                        .collect();
+                    let events: Vec<Value> =
+                        monitor::snapshot(limit).iter().map(|e| e.as_json()).collect();
                     json!({"ok": true, "events": events})
                 }
                 other => json!({"error": format!("Unknown monitor action: {other}")}),

@@ -118,12 +118,12 @@ pub(super) fn build_system_prompt_with_project(project: Option<&str>) -> String 
     // baseline would expect. The block is appended last so that
     // user-authored AGENTS.md still leads; journals are
     // supplementary recall, not authority.
-    if crate::runtime::journal()
-        && let Some(p) = project
-    {
-        let block = crate::repl::journal::build_injection_block(p);
-        if !block.is_empty() {
-            prompt.push_str(&block);
+    if crate::runtime::journal() {
+        if let Some(p) = project {
+            let block = crate::repl::journal::build_injection_block(p);
+            if !block.is_empty() {
+                prompt.push_str(&block);
+            }
         }
     }
 

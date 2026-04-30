@@ -75,7 +75,8 @@ struct ClaudeMessage {
 }
 
 pub(super) fn parse_claude_jsonl(path: &Path) -> Result<SessionTranscript> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))?;
     let mut turns = Vec::new();
     let mut cwd = None;
 
@@ -94,10 +95,7 @@ pub(super) fn parse_claude_jsonl(path: &Path) -> Result<SessionTranscript> {
         {
             cwd = Some(PathBuf::from(c));
         }
-        if !matches!(
-            entry.entry_type.as_deref(),
-            Some("user") | Some("assistant")
-        ) {
+        if !matches!(entry.entry_type.as_deref(), Some("user") | Some("assistant")) {
             continue;
         }
         let Some(msg) = entry.message else { continue };
@@ -158,7 +156,8 @@ struct CodexEntry {
 }
 
 pub(super) fn parse_codex_jsonl(path: &Path) -> Result<SessionTranscript> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))?;
     let mut turns = Vec::new();
     let mut cwd = None;
 
@@ -172,9 +171,7 @@ pub(super) fn parse_codex_jsonl(path: &Path) -> Result<SessionTranscript> {
             Err(_) => continue,
         };
         let entry_type = entry.entry_type.as_deref().unwrap_or("");
-        let Some(payload) = entry.payload else {
-            continue;
-        };
+        let Some(payload) = entry.payload else { continue };
 
         // session_meta — grab the cwd.
         if entry_type == "session_meta"
@@ -221,13 +218,15 @@ pub(super) fn parse_codex_jsonl(path: &Path) -> Result<SessionTranscript> {
             && let Some(role) = payload.get("role").and_then(Value::as_str)
             && matches!(role, "user" | "assistant")
             && let Some(content) = payload.get("content")
-            && let Some(text) = extract_codex_text(content)
-            && !text.trim().is_empty()
         {
-            turns.push(Turn {
-                role: role.to_string(),
-                text,
-            });
+            if let Some(text) = extract_codex_text(content)
+                && !text.trim().is_empty()
+            {
+                turns.push(Turn {
+                    role: role.to_string(),
+                    text,
+                });
+            }
         }
     }
 
@@ -279,9 +278,10 @@ struct GeminiMessage {
 }
 
 pub(super) fn parse_gemini_json(path: &Path) -> Result<SessionTranscript> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let file: GeminiFile =
-        serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let file: GeminiFile = serde_json::from_str(&text)
+        .with_context(|| format!("parse {}", path.display()))?;
     let mut turns = Vec::new();
     for msg in file.messages.unwrap_or_default() {
         let role = match msg.msg_type.as_deref() {
@@ -294,7 +294,9 @@ pub(super) fn parse_gemini_json(path: &Path) -> Result<SessionTranscript> {
             Value::String(s) => s.clone(),
             Value::Array(items) => items
                 .iter()
-                .filter_map(|item| item.get("text").and_then(Value::as_str).map(String::from))
+                .filter_map(|item| {
+                    item.get("text").and_then(Value::as_str).map(String::from)
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
             _ => continue,
@@ -309,7 +311,10 @@ pub(super) fn parse_gemini_json(path: &Path) -> Result<SessionTranscript> {
     }
 
     // Gemini stores project via the parent dir name (`.gemini/tmp/<project>/chats/...`).
-    let cwd = path.parent().and_then(|p| p.parent()).map(PathBuf::from);
+    let cwd = path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(PathBuf::from);
     Ok(SessionTranscript {
         source_path: path.to_path_buf(),
         cwd,
@@ -323,8 +328,10 @@ mod tests {
     use std::fs;
 
     fn write_tmp(name: &str, body: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("sidekar-transcript-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "sidekar-transcript-test-{}",
+            std::process::id()
+        ));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join(name);
         fs::write(&path, body).expect("write fixture");
@@ -334,14 +341,10 @@ mod tests {
     #[test]
     fn parse_claude_jsonl_extracts_user_and_text_content() {
         let body = concat!(
-            r#"{"type":"file-history-snapshot","messageId":"x"}"#,
-            "\n",
-            r#"{"type":"user","cwd":"/p","message":{"role":"user","content":"Hello"}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","text":"..."},{"type":"text","text":"Hi"}]}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use"}]}}"#,
-            "\n",
+            r#"{"type":"file-history-snapshot","messageId":"x"}"#, "\n",
+            r#"{"type":"user","cwd":"/p","message":{"role":"user","content":"Hello"}}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","text":"..."},{"type":"text","text":"Hi"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use"}]}}"#, "\n",
         );
         let path = write_tmp("claude.jsonl", body);
         let t = parse_claude_jsonl(&path).unwrap();
@@ -357,8 +360,7 @@ mod tests {
     fn parse_claude_jsonl_skips_bad_lines() {
         let body = concat!(
             "not json\n",
-            r#"{"type":"user","message":{"role":"user","content":"ok"}}"#,
-            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"ok"}}"#, "\n",
         );
         let path = write_tmp("claude-bad.jsonl", body);
         let t = parse_claude_jsonl(&path).unwrap();
@@ -368,14 +370,10 @@ mod tests {
     #[test]
     fn parse_codex_jsonl_picks_up_cwd_and_user_agent_messages() {
         let body = concat!(
-            r#"{"type":"session_meta","payload":{"cwd":"/Users/me/demo"}}"#,
-            "\n",
-            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}"#,
-            "\n",
-            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hi back"}}"#,
-            "\n",
-            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
-            "\n",
+            r#"{"type":"session_meta","payload":{"cwd":"/Users/me/demo"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hi back"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#, "\n",
         );
         let path = write_tmp("codex.jsonl", body);
         let t = parse_codex_jsonl(&path).unwrap();
@@ -390,12 +388,9 @@ mod tests {
         // Developer messages are system prompts / sandbox
         // instructions. They must never become "user" memories.
         let body = concat!(
-            r#"{"type":"session_meta","payload":{"cwd":"/p"}}"#,
-            "\n",
-            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions ...>"}]}}"#,
-            "\n",
-            r#"{"type":"event_msg","payload":{"type":"user_message","message":"real user turn"}}"#,
-            "\n",
+            r#"{"type":"session_meta","payload":{"cwd":"/p"}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions ...>"}]}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"real user turn"}}"#, "\n",
         );
         let path = write_tmp("codex-dev.jsonl", body);
         let t = parse_codex_jsonl(&path).unwrap();
@@ -427,18 +422,9 @@ mod tests {
             source_path: PathBuf::from("/tmp/x"),
             cwd: None,
             turns: vec![
-                Turn {
-                    role: "user".into(),
-                    text: "A".repeat(100),
-                },
-                Turn {
-                    role: "assistant".into(),
-                    text: "B".repeat(100),
-                },
-                Turn {
-                    role: "user".into(),
-                    text: "CRECENT".into(),
-                },
+                Turn { role: "user".into(), text: "A".repeat(100) },
+                Turn { role: "assistant".into(), text: "B".repeat(100) },
+                Turn { role: "user".into(), text: "CRECENT".into() },
             ],
         };
         let out = t.concatenated(80);

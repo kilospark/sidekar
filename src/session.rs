@@ -137,7 +137,10 @@ impl SessionWithCount {
             ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
         })?;
-        let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flattened = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         if flattened.is_empty() {
             return None;
         }
@@ -217,23 +220,26 @@ pub fn list_sessions_with_counts(
           ORDER BY s.updated_at DESC
           LIMIT ?3";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(rusqlite::params![cwd, only_nonempty as i64, limit], |row| {
-        let msg_count: i64 = row.get(7)?;
-        let last_user_content_json: Option<String> = row.get(8)?;
-        Ok(SessionWithCount {
-            session: Session {
-                id: row.get(0)?,
-                cwd: row.get(1)?,
-                model: row.get(2)?,
-                provider: row.get(3)?,
-                name: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            },
-            messages: msg_count.max(0) as usize,
-            last_user_content_json,
-        })
-    })?;
+    let rows = stmt.query_map(
+        rusqlite::params![cwd, only_nonempty as i64, limit],
+        |row| {
+            let msg_count: i64 = row.get(7)?;
+            let last_user_content_json: Option<String> = row.get(8)?;
+            Ok(SessionWithCount {
+                session: Session {
+                    id: row.get(0)?,
+                    cwd: row.get(1)?,
+                    model: row.get(2)?,
+                    provider: row.get(3)?,
+                    name: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                },
+                messages: msg_count.max(0) as usize,
+                last_user_content_json,
+            })
+        },
+    )?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row?);

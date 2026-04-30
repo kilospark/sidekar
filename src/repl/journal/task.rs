@@ -154,7 +154,11 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
             // DB error reading the budget isn't fatal — fall through,
             // the insert at the end will surface the same issue if
             // the problem is persistent. Log and continue.
-            broker::try_log_error("journal", &format!("budget read failed: {e:#}"), None);
+            broker::try_log_error(
+                "journal",
+                &format!("budget read failed: {e:#}"),
+                None,
+            );
         }
     }
 
@@ -201,7 +205,11 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
     redact::redact_history_in_place(&mut messages);
 
     let now_iso = format_iso_now();
-    let user_prompt = prompt::format_prompt(&messages, prev_structured.as_deref(), &now_iso);
+    let user_prompt = prompt::format_prompt(
+        &messages,
+        prev_structured.as_deref(),
+        &now_iso,
+    );
     let tokens_in_est = estimate_tokens(&user_prompt);
 
     // LLM call. Resolve the model override if the user set one
@@ -211,7 +219,13 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| ctx.model.clone());
 
-    let raw_response = match call_summarizer(&ctx.provider, &summary_model, &user_prompt).await {
+    let raw_response = match call_summarizer(
+        &ctx.provider,
+        &summary_model,
+        &user_prompt,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => return Outcome::Failed(e),
     };
@@ -223,7 +237,8 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
     // leave the from/to_entry_id bound unrecorded, so the NEXT
     // pass would re-summarize the same turns at double cost.
     let outcome = parse::parse_response(&raw_response);
-    let (journal, degraded, parse_reason) = (outcome.journal, outcome.was_degraded, outcome.reason);
+    let (journal, degraded, parse_reason) =
+        (outcome.journal, outcome.was_degraded, outcome.reason);
 
     // Threat scan every field. Even the LLM's own output can carry
     // a prompt-injection it inherited from a poisoned turn in the
@@ -282,7 +297,11 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
             // Scan ran, nothing reached the threshold. Normal.
         }
         Err(e) => {
-            broker::try_log_error("journal", &format!("promote failed: {e:#}"), None);
+            broker::try_log_error(
+                "journal",
+                &format!("promote failed: {e:#}"),
+                None,
+            );
         }
     }
 
@@ -370,7 +389,11 @@ pub(crate) fn spawn_polling_loop(
                     }
                 }
                 Outcome::Failed(e) => {
-                    broker::try_log_error("journal", &format!("pass failed: {e:#}"), None);
+                    broker::try_log_error(
+                        "journal",
+                        &format!("pass failed: {e:#}"),
+                        None,
+                    );
                 }
                 _skipped => {
                     // Skips are expected — over-budget, empty
@@ -523,7 +546,10 @@ mod tests {
         // 00:00:00 UTC.
         assert_eq!(epoch_to_ymdhms(951_868_800), (2000, 3, 1, 0, 0, 0));
         // 2024-02-29 12:34:56 — leap day edge.
-        assert_eq!(epoch_to_ymdhms(1_709_210_096), (2024, 2, 29, 12, 34, 56));
+        assert_eq!(
+            epoch_to_ymdhms(1_709_210_096),
+            (2024, 2, 29, 12, 34, 56)
+        );
         // Midnight at the start of 2026. Authoritative: POSIX
         // timestamp 1_767_225_600 == 2026-01-01T00:00:00Z.
         assert_eq!(epoch_to_ymdhms(1_767_225_600), (2026, 1, 1, 0, 0, 0));

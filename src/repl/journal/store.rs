@@ -299,7 +299,8 @@ pub fn load_slice_after(
             "assistant" => Role::Assistant,
             _ => Role::User,
         };
-        let content: Vec<ContentBlock> = serde_json::from_str(&content_json).unwrap_or_default();
+        let content: Vec<ContentBlock> =
+            serde_json::from_str(&content_json).unwrap_or_default();
         out.push((id, ChatMessage { role, content }));
     }
     Ok(out)
@@ -362,8 +363,10 @@ mod tests {
             .lock()
             .map_err(|_| anyhow::anyhow!("home lock poisoned"))?;
         let old_home = std::env::var_os("HOME");
-        let temp =
-            std::env::temp_dir().join(format!("sidekar-journal-test-{}", std::process::id()));
+        let temp = std::env::temp_dir().join(format!(
+            "sidekar-journal-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&temp)?;
         // Safety: in-process test, HOME restored before return.
         unsafe {
@@ -490,7 +493,10 @@ mod tests {
             e2.created_at = Some(2_000.0);
             insert_journal(&e2)?;
 
-            assert_eq!(latest_to_entry_id("s-3")?, Some("id-second".to_string()));
+            assert_eq!(
+                latest_to_entry_id("s-3")?,
+                Some("id-second".to_string())
+            );
             Ok(())
         })
     }
@@ -519,7 +525,12 @@ mod tests {
     }
 
     /// Seed a message row directly. Returns the assigned entry id.
-    fn seed_message(session_id: &str, role: &str, text: &str, created_at: f64) -> Result<String> {
+    fn seed_message(
+        session_id: &str,
+        role: &str,
+        text: &str,
+        created_at: f64,
+    ) -> Result<String> {
         let conn = broker::open()?;
         let id = format!("e-{}-{:x}", role, (created_at * 1_000.0) as u64);
         let content_json = serde_json::to_string(&serde_json::json!([

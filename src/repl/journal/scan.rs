@@ -187,15 +187,16 @@ pub(super) fn scan_journal(
         labels(o.matched);
         o.sanitized
     };
-    let scan_array = |arr: &[String], labels: &mut dyn FnMut(Vec<&'static str>)| -> Vec<String> {
-        arr.iter()
-            .map(|s| {
-                let o = scan(s);
-                labels(o.matched);
-                o.sanitized
-            })
-            .collect()
-    };
+    let scan_array =
+        |arr: &[String], labels: &mut dyn FnMut(Vec<&'static str>)| -> Vec<String> {
+            arr.iter()
+                .map(|s| {
+                    let o = scan(s);
+                    labels(o.matched);
+                    o.sanitized
+                })
+                .collect()
+        };
 
     let mut collector = |hits: Vec<&'static str>| add(hits);
 

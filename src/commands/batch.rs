@@ -94,7 +94,8 @@ impl CommandOutput for BatchOutput {
             "error": self.error,
             "results": self.results,
         });
-        let s = serde_json::to_string_pretty(&v).map_err(std::io::Error::other)?;
+        let s = serde_json::to_string_pretty(&v)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         writeln!(w, "{s}")
     }
 }
