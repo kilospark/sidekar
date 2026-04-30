@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, bail};
-use futures_util::{pin_mut, StreamExt};
+use futures_util::{StreamExt, pin_mut};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -538,10 +538,7 @@ pub(super) fn bedrock_request_body_bytes(
     let mut v = serde_json::to_value(&req)?;
     if let Some(obj) = v.as_object_mut() {
         obj.remove("model");
-        obj.insert(
-            "anthropic_version".to_string(),
-            json!("bedrock-2023-05-31"),
-        );
+        obj.insert("anthropic_version".to_string(), json!("bedrock-2023-05-31"));
     }
     Ok(serde_json::to_vec(&v)?)
 }

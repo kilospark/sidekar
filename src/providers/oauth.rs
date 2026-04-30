@@ -359,7 +359,7 @@ async fn get_opencode_token_inner(nickname: Option<&str>, interactive: bool) -> 
         "OpenCode",
         interactive,
         ApiKeyInteractive {
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({ "provider_type": "opencode" }),
             saved_message: "OpenCode API key saved.",
             prompt_label: "Paste API key",
             prelude_lines: &["No OpenCode credentials found. Opening https://opencode.ai/auth ..."],
@@ -387,7 +387,7 @@ async fn get_opencode_go_token_inner(nickname: Option<&str>, interactive: bool) 
         "OpenCode Go",
         interactive,
         ApiKeyInteractive {
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({ "provider_type": "opencode-go" }),
             saved_message: "OpenCode Go API key saved.",
             prompt_label: "Paste API key",
             prelude_lines: &[

@@ -9,8 +9,8 @@ use aws_types::region::Region;
 use futures_util::stream;
 use tokio::sync::mpsc;
 
-use super::{ChatMessage, RemoteModel, StreamConfig, StreamEvent, ToolDef};
 use super::{ANTHROPIC_1M_SUFFIX, anthropic};
+use super::{ChatMessage, RemoteModel, StreamConfig, StreamEvent, ToolDef};
 
 async fn load_sdk_config(region: &str, profile: Option<&str>) -> aws_types::SdkConfig {
     let mut loader =
@@ -32,13 +32,26 @@ pub async fn fetch_bedrock_model_list(
         .list_foundation_models()
         .send()
         .await
-        .map_err(|e| format!("Bedrock ListFoundationModels: {e:?}"))?;
+        .map_err(|e| {
+            let detail = format!("{e:?}");
+            let iam = detail.contains("AccessDenied")
+                || detail.contains("not authorized")
+                || detail.contains("UnauthorizedOperation");
+            if iam {
+                format!(
+                    "Bedrock ListFoundationModels: {detail} (needs bedrock:ListFoundationModels, or skip listing with `-m` / `/model <id>`)"
+                )
+            } else {
+                format!("Bedrock ListFoundationModels: {detail}")
+            }
+        })?;
 
     let mut models: Vec<RemoteModel> = Vec::new();
     for m in out.model_summaries() {
         let id = m.model_id();
         let is_anthropic = id.contains("anthropic.")
-            || m.provider_name().is_some_and(|p| p.eq_ignore_ascii_case("Anthropic"));
+            || m.provider_name()
+                .is_some_and(|p| p.eq_ignore_ascii_case("Anthropic"));
         let text_in = m.input_modalities().contains(&ModelModality::Text);
         let text_out = m.output_modalities().contains(&ModelModality::Text);
         let streams = m.response_streaming_supported().unwrap_or(false);

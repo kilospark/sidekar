@@ -4,7 +4,10 @@
 //! canonical history in ways that break the prompt cache prefix.
 //!
 //! Three optimizations applied in order:
-//! 1. Thinking block eviction — strip from all but the last assistant message.
+//! 1. Extended-thinking eviction — strip `Thinking` from historic assistant
+//!    turns **except** the last assistant and those that emitted tool calls so
+//!    OpenAI-compat backends (DeepSeek thinking mode via OpenCode) can replay
+//!    `reasoning_content` correctly after tool loops.
 //! 2. Tool cycle aging — stub old tool results/arguments beyond the last K
 //!    complete tool cycles. The boundary advances only when a new tool cycle
 //!    is created (during an agent turn), NOT on every user message, so the
@@ -178,6 +181,11 @@ pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<Chat
     drop_orphan_tool_results(&mut view);
 
     // --- Step 1: Thinking block eviction (ephemeral, view-only) ---
+    //
+    // Anthropic-scale extended-thinking blocks inflate prompts; we strip them
+    // from historic assistant turns — but assistants that emitted **tool calls**
+    // may need that text echoed back (`reasoning_content`) on gateways that wrap
+    // DeepSeek-thinking models (OpenCode Zen/Go).
 
     let last_assistant_idx = view
         .iter()
@@ -185,10 +193,18 @@ pub fn prepare_context(history: &[ChatMessage], token_budget: usize) -> Vec<Chat
         .unwrap_or(usize::MAX);
 
     for (i, msg) in view.iter_mut().enumerate() {
-        if i != last_assistant_idx {
-            msg.content
-                .retain(|b| !matches!(b, ContentBlock::Thinking { .. }));
+        if msg.role != Role::Assistant || i == last_assistant_idx {
+            continue;
         }
+        let tool_assistant_turn = msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolCall { .. }));
+        if tool_assistant_turn {
+            continue;
+        }
+        msg.content
+            .retain(|b| !matches!(b, ContentBlock::Thinking { .. }));
     }
     // Drop messages that became empty after stripping.
     view.retain(|m| !m.content.is_empty());

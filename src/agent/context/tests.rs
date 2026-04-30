@@ -95,6 +95,53 @@ fn thinking_evicted_except_last_assistant() {
 }
 
 #[test]
+fn thinking_kept_on_prior_assistant_that_emitted_tools() {
+    // DeepSeek thinking mode (+ tool_calls) requires replaying chain-of-thought.
+    let history = vec![
+        text_msg(Role::User, "hello"),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "plan for tools".to_string(),
+                    signature: "".to_string(),
+                },
+                ContentBlock::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "sidekar_bus_send".to_string(),
+                    arguments: json!({"k": "v"}),
+                    thought_signature: None,
+                },
+            ],
+        },
+        tool_result_msg("call_1", "ok"),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "final".into(),
+            }],
+        },
+    ];
+
+    let view = prepare_context(&history, 1_000_000);
+    let tool_asst = view
+        .iter()
+        .find(|m| {
+            m.role == Role::Assistant
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+        })
+        .expect("tool-call assistant exists");
+    assert!(
+        tool_asst
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }))
+    );
+}
+
+#[test]
 fn empty_messages_removed_after_eviction() {
     // An assistant message with only a thinking block should be dropped.
     let history = vec![

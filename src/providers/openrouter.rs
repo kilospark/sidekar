@@ -196,12 +196,17 @@ fn build_request_body(
                     })
                     .collect();
 
-                // Reasoning replay: DeepSeek (`reasoning_content`) and Kimi
-                // (`reasoning`) require the prior assistant turn to carry the
-                // exact thinking text alongside its tool_calls. Set both keys;
-                // each provider ignores the one it doesn't recognize.
-                let reasoning_text: String =
+                // Reasoning replay: DeepSeek thinking mode rejects follow-up turns when
+                // `reasoning_content` is omitted or empty after tool_calls — pydantic-ai
+                // surfaced this as `"Missing reasoning_content field"`. Gateways sometimes
+                // fold CoT into ordinary `delta.content`; mirror that server-side split by
+                // replaying plain text that appeared before the first tool_use.
+                let is_deepseek = model.to_ascii_lowercase().contains("deepseek");
+                let mut reasoning_wire: String =
                     super::openai_compat_assistant_concat_reasoning_chunks(&msg.content);
+                if reasoning_wire.is_empty() && !tool_calls.is_empty() {
+                    reasoning_wire = super::openai_plain_text_before_first_tool_call(&msg.content);
+                }
 
                 let mut msg_obj = json!({"role": "assistant"});
                 if !text.is_empty() {
@@ -213,9 +218,12 @@ fn build_request_body(
                 if !tool_calls.is_empty() {
                     msg_obj["tool_calls"] = json!(tool_calls);
                 }
-                if !reasoning_text.is_empty() {
-                    msg_obj["reasoning_content"] = json!(reasoning_text);
-                    msg_obj["reasoning"] = json!(reasoning_text);
+
+                let need_reasoning_keys = !reasoning_wire.is_empty()
+                    || (is_deepseek && !tool_calls.is_empty());
+                if need_reasoning_keys {
+                    msg_obj["reasoning_content"] = json!(reasoning_wire);
+                    msg_obj["reasoning"] = json!(reasoning_wire);
                 }
                 api_messages.push(msg_obj);
             }
@@ -248,9 +256,65 @@ fn build_request_body(
         body["tool_choice"] = json!("auto");
     }
 
+    maybe_add_deepseek_compat_thinking(model, &mut body);
     maybe_add_anthropic_cache_control(model, &mut body);
 
     body
+}
+
+/// DeepSeek "thinking mode" (see api-docs.deepseek.com `thinking_mode`): when enabled,
+/// **`reasoning_content` must be replayed after tool loops**. OpenCode's gateway may
+/// already enable thinking, but emitting these fields matches their official OpenAI-compat
+/// example and avoids subtle server-side inconsistencies.
+fn maybe_add_deepseek_compat_thinking(model: &str, body: &mut Value) {
+    if !model.to_ascii_lowercase().contains("deepseek") {
+        return;
+    }
+    body["thinking"] = json!({ "type": "enabled" });
+    body["reasoning_effort"] = json!("high");
+}
+
+/// Pull text-ish reasoning fragments from heterogeneous OpenAI-compat / gateway JSON.
+fn append_openai_compat_reasoning_json(buf: &mut String, v: &Value) {
+    if let Some(s) = v.as_str() {
+        if !s.is_empty() {
+            buf.push_str(s);
+        }
+        return;
+    }
+    if let Some(map) = v.as_object() {
+        if let Some(s) = map
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            buf.push_str(s);
+        } else if let Some(inner) = map.get("reasoning") {
+            append_openai_compat_reasoning_json(buf, inner);
+        }
+        return;
+    }
+    if let Some(arr) = v.as_array() {
+        for item in arr {
+            append_openai_compat_reasoning_json(buf, item);
+        }
+    }
+}
+
+fn ingest_openai_sse_reasoning_from_delta(buf: &mut String, delta: &Value) {
+    for key in ["reasoning_content", "reasoning", "thinking"] {
+        if let Some(v) = delta.get(key) {
+            append_openai_compat_reasoning_json(buf, v);
+        }
+    }
+}
+
+fn ingest_openai_sse_reasoning_from_message(buf: &mut String, msg: &Value) {
+    for key in ["reasoning_content", "reasoning", "thinking"] {
+        if let Some(v) = msg.get(key) {
+            append_openai_compat_reasoning_json(buf, v);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +355,13 @@ async fn parse_sse_stream(
                 None => continue,
             };
 
+            // OpenCode Zen/Go (and strict OpenAI-compat proxies) may emit error JSON in
+            // the SSE stream without a `choices` array. Older code skipped those frames
+            // and surfaced an empty assistant turn instead of the real error.
+            if let Some(msg) = openai_compat_stream_error_message(&data) {
+                bail!("{msg}");
+            }
+
             // Extract model from first chunk
             if model_id.is_empty()
                 && let Some(m) = data.get("model").and_then(|v| v.as_str())
@@ -329,14 +400,18 @@ async fn parse_sse_stream(
                     });
                 }
 
-                // Reasoning content delta — DeepSeek (`reasoning_content`), Kimi/OpenRouter
-                // (`reasoning`). Capture verbatim; some providers (DeepSeek) reject the
-                // next request unless the prior assistant turn replays this string.
-                for key in ["reasoning_content", "reasoning"] {
-                    if let Some(r) = delta.get(key).and_then(|v| v.as_str())
-                        && !r.is_empty()
-                    {
-                        reasoning_buf.push_str(r);
+                // Reasoning deltas — gateways may stringify, nest objects,
+                // duplicate into `choice.message`, or use alternate keys (`thinking`).
+                ingest_openai_sse_reasoning_from_delta(&mut reasoning_buf, delta);
+                if let Some(msg) = choice.get("message") {
+                    let mut snap = String::new();
+                    ingest_openai_sse_reasoning_from_message(&mut snap, msg);
+                    // Some proxies omit per-chunk `delta.reasoning_content` until a final snapshot
+                    // on `choices[].message` — replacing only when strictly longer avoids duplicating
+                    // identical prefixes every SSE frame.
+                    if snap.len() > reasoning_buf.len() {
+                        reasoning_buf.clear();
+                        reasoning_buf.push_str(&snap);
                     }
                 }
 
@@ -472,6 +547,79 @@ async fn parse_sse_stream(
     });
 
     Ok(())
+}
+
+/// Best-effort error text from OpenAI-style or OpenCode-shaped stream payloads.
+fn openai_compat_stream_error_message(v: &Value) -> Option<String> {
+    // OpenCode: `{"type":"error","error":{"type":"AuthError","message":"..."}}`
+    if v.get("type").and_then(|t| t.as_str()) == Some("error") {
+        return v
+            .pointer("/error/message")
+            .and_then(|x| x.as_str())
+            .map(String::from)
+            .or_else(|| v.get("error").map(std::string::ToString::to_string));
+    }
+    // OpenAI: `{"error":{"message":"...","type":"..."}}`
+    match v.get("error") {
+        None | Some(Value::Null) => None,
+        Some(err) => Some(openai_compat_error_detail(err)),
+    }
+}
+
+fn openai_compat_error_detail(err: &Value) -> String {
+    let msg = err
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let typ = err.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if msg.is_empty() {
+        err.to_string()
+    } else if typ.is_empty() {
+        msg
+    } else {
+        format!("{typ}: {msg}")
+    }
+}
+
+#[cfg(test)]
+mod stream_error_tests {
+    use serde_json::json;
+
+    use super::{openai_compat_error_detail, openai_compat_stream_error_message};
+
+    #[test]
+    fn stream_error_detects_opencode_envelope() {
+        let v = json!({"type":"error","error":{"type":"AuthError","message":"Invalid API key."}});
+        assert_eq!(
+            openai_compat_stream_error_message(&v).as_deref(),
+            Some("Invalid API key.")
+        );
+    }
+
+    #[test]
+    fn stream_error_detects_openai_error_object() {
+        let v =
+            json!({"error":{"type":"invalid_request_error","message":"max_tokens is too large"}});
+        assert_eq!(
+            openai_compat_stream_error_message(&v).as_deref(),
+            Some("invalid_request_error: max_tokens is too large")
+        );
+        assert!(
+            openai_compat_stream_error_message(&json!({
+                "object": "chat.completion.chunk",
+                "choices": [],
+                "usage": {"prompt_tokens": 1}
+            }))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn openai_error_detail_fallback() {
+        let err = json!({});
+        assert_eq!(openai_compat_error_detail(&err), "{}");
+    }
 }
 
 fn supports_anthropic_cache_control(model: &str) -> bool {

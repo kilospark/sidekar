@@ -49,3 +49,114 @@ fn apply_usage_extracts_cached_tokens() {
     assert_eq!(usage.cache_read_tokens, 300);
     assert_eq!(usage.cache_write_tokens, 50);
 }
+
+#[test]
+fn deepseek_model_enables_compat_thinking_in_request_body() {
+    let body = build_request_body(
+        "deepseek-v4-pro",
+        "",
+        &[ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        &[],
+    );
+    assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    assert_eq!(body["reasoning_effort"], json!("high"));
+}
+
+#[test]
+fn non_deepseek_skips_compat_thinking_field() {
+    let body = build_request_body(
+        "kimi-k2.5",
+        "",
+        &[ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        &[],
+    );
+    assert!(
+        body.get("thinking").is_none(),
+        "thinking is DeepSeek-specific"
+    );
+}
+
+#[test]
+fn reasoning_sse_delta_accepts_nested_object_and_thinking_key() {
+    use super::{
+        ingest_openai_sse_reasoning_from_delta as ingest_delta,
+        ingest_openai_sse_reasoning_from_message as ingest_msg,
+    };
+    let mut buf = String::new();
+    let delta = json!({"reasoning": {"text": "nested"}});
+    ingest_delta(&mut buf, &delta);
+    assert_eq!(buf, "nested");
+
+    buf.clear();
+    ingest_delta(&mut buf, &json!({"thinking": [{"text":"a"},{"text":"b"}]}));
+    assert_eq!(buf, "ab");
+
+    buf.clear();
+    ingest_msg(
+        &mut buf,
+        &json!({"role":"assistant","content":"","reasoning_content":"full"}),
+    );
+    assert_eq!(buf, "full");
+}
+
+#[test]
+fn deepseek_tool_assistant_always_serializes_reasoning_content() {
+    let body = build_request_body(
+        "deepseek-v4-pro",
+        "",
+        &[ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call_1".into(),
+                name: "noop".into(),
+                arguments: json!({}),
+                thought_signature: None,
+            }],
+        }],
+        &[],
+    );
+    let messages = body.get("messages").and_then(|m| m.as_array()).unwrap();
+    let asst = &messages[0];
+    assert!(asst.get("tool_calls").is_some());
+    assert!(
+        asst.get("reasoning_content").is_some(),
+        "DeepSeek + tools requires reasoning_content field"
+    );
+    assert_eq!(asst["reasoning_content"], "");
+}
+
+#[test]
+fn deepseek_tool_assistant_maps_pre_tool_plain_text_into_reasoning_content() {
+    let body = build_request_body(
+        "deepseek-v4-pro",
+        "",
+        &[ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "planning excerpt".into(),
+                },
+                ContentBlock::ToolCall {
+                    id: "call_1".into(),
+                    name: "noop".into(),
+                    arguments: json!({}),
+                    thought_signature: None,
+                },
+            ],
+        }],
+        &[],
+    );
+    let messages = body.get("messages").and_then(|m| m.as_array()).unwrap();
+    assert_eq!(messages[0]["reasoning_content"], "planning excerpt");
+    assert_eq!(messages[0]["content"], "planning excerpt");
+}

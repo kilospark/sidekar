@@ -2,7 +2,7 @@ use super::{
     ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, Provider, SseDecoder, catalog_http_client,
     is_retryable_error, openai_chat_completions_url,
     openai_compat_assistant_concat_reasoning_chunks, openai_compat_assistant_join_text,
-    openai_models_url, provider_models_list_client,
+    openai_models_url, openai_plain_text_before_first_tool_call, provider_models_list_client,
 };
 
 #[test]
@@ -207,4 +207,38 @@ fn openai_compat_assistant_text_helpers_split_text_and_reasoning() {
         openai_compat_assistant_concat_reasoning_chunks(&blocks),
         "r"
     );
+
+    let mixed = vec![
+        ContentBlock::Thinking {
+            thinking: "t1".into(),
+            signature: "".into(),
+        },
+        ContentBlock::Reasoning { text: "r1".into() },
+    ];
+    assert_eq!(
+        openai_compat_assistant_concat_reasoning_chunks(&mixed),
+        "t1r1"
+    );
+}
+
+#[test]
+fn plain_text_before_first_tool_stops_at_tool_call() {
+    let blocks = vec![
+        ContentBlock::Text {
+            text: "step 1".into(),
+        },
+        ContentBlock::Reasoning {
+            text: "ignored here".into(),
+        },
+        ContentBlock::ToolCall {
+            id: "x".into(),
+            name: "n".into(),
+            arguments: serde_json::json!({}),
+            thought_signature: None,
+        },
+        ContentBlock::Text {
+            text: "after".into(),
+        },
+    ];
+    assert_eq!(openai_plain_text_before_first_tool_call(&blocks), "step 1");
 }

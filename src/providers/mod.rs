@@ -452,16 +452,36 @@ pub(super) fn openai_compat_assistant_join_text(blocks: &[ContentBlock]) -> Stri
         .join("\n")
 }
 
-/// Concatenate `Reasoning` blocks for `reasoning_content` / provider-specific replay keys.
+/// Concatenate cognition blocks into a single replay string — `Reasoning` from
+/// OpenAI-compat streams plus `Thinking` (Anthropic/native) should any history
+/// path store tool turns that way: DeepSeek **thinking mode + tool_calls**
+/// rejects the next request unless `reasoning_content` echoes prior CoT text.
 pub(super) fn openai_compat_assistant_concat_reasoning_chunks(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
         .filter_map(|b| match b {
             ContentBlock::Reasoning { text } => Some(text.as_str()),
+            ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
         .concat()
+}
+
+/// Join `Text` blocks that precede the first `ToolCall` (in block order).
+/// DeepSeek-compat gateways occasionally stream chain-of-thought into `delta.content`
+/// rather than `reasoning_content`; on replay those strings must populate
+/// `reasoning_content` or the upstream 400s.
+pub(super) fn openai_plain_text_before_first_tool_call(blocks: &[ContentBlock]) -> String {
+    let mut chunks: Vec<&str> = Vec::new();
+    for b in blocks {
+        match b {
+            ContentBlock::Text { text } if !text.trim().is_empty() => chunks.push(text.as_str()),
+            ContentBlock::ToolCall { .. } => break,
+            _ => {}
+        }
+    }
+    chunks.join("\n").trim().to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1122,9 +1142,10 @@ pub async fn fetch_model_list_for_provider(
             api_key, base_url, ..
         } => fetch_openai_compat_model_list(api_key, base_url).await,
         Provider::Gemini { api_key, .. } => gemini::fetch_gemini_model_list(api_key).await,
-        Provider::Bedrock { region, aws_profile } => {
-            bedrock::fetch_bedrock_model_list(region, aws_profile.as_deref()).await
-        }
+        Provider::Bedrock {
+            region,
+            aws_profile,
+        } => bedrock::fetch_bedrock_model_list(region, aws_profile.as_deref()).await,
     }
 }
 
@@ -1631,6 +1652,18 @@ impl Provider {
         }
     }
 
+    /// Only Anthropic OAuth and Codex use refreshable bearer tokens stored per
+    /// credential. Static-key providers (`openrouter`, `opencode-*`, Gemini,
+    /// …) attach a nickname for UX but must not invoke `force_refresh_token`
+    /// on 401 — that path only exists for Claude/Codex OAuth.
+    pub(crate) fn supports_oauth_refresh_on_401(&self) -> bool {
+        match self {
+            Provider::Codex { .. } => true,
+            Provider::Anthropic { api_key, .. } => api_key.contains("sk-ant-oat"),
+            _ => false,
+        }
+    }
+
     pub fn provider_type(&self) -> &str {
         match self {
             Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai/zen/go") => {
@@ -1731,7 +1764,12 @@ impl Provider {
             match &result {
                 // Token expired server-side (or our expires_at drifted). Force
                 // a refresh via the stored refresh_token and retry once.
-                Err(e) if !auth_retry_used && is_auth_error(e) && self.credential().is_some() => {
+                Err(e)
+                    if !auth_retry_used
+                        && self.supports_oauth_refresh_on_401()
+                        && is_auth_error(e)
+                        && self.credential().is_some() =>
+                {
                     auth_retry_used = true;
                     let cred = self.credential().expect("checked above").to_string();
                     match oauth::force_refresh_token(&cred).await {

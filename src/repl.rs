@@ -500,19 +500,23 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             }
         }
 
-        // Guard: need provider + model to run the agent
+        // Guard: need provider + model to run the agent.
+        // Bus wakeups reuse this loop often; printing here would flood the terminal
+        // (hint includes `/model <name>`) while the credential is OK but `-m`/model unset.
         if provider.is_none() || model.is_none() {
-            let mut missing = Vec::new();
-            if provider.is_none() {
-                missing.push("/credential <name>");
+            if staged_user_content.is_some() {
+                let mut missing = Vec::new();
+                if provider.is_none() {
+                    missing.push("/credential <name>");
+                }
+                if model.is_none() {
+                    missing.push("/model <name>");
+                }
+                tunnel_println(&format!(
+                    "\x1b[33mSet {} before sending messages.\x1b[0m",
+                    missing.join(" and ")
+                ));
             }
-            if model.is_none() {
-                missing.push("/model <name>");
-            }
-            tunnel_println(&format!(
-                "\x1b[33mSet {} before sending messages.\x1b[0m",
-                missing.join(" and ")
-            ));
             continue;
         }
 
