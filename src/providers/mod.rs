@@ -1374,33 +1374,37 @@ pub async fn fetch_openai_compat_model_list(
     Ok(models)
 }
 
-async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    let url = "https://opencode.ai/zen/v1/models";
+/// Public OpenCode catalog (`/zen/v1` vs `/zen/go/v1`). Zen sends `anthropic-version`; Go does not.
+async fn fetch_opencode_public_model_list(
+    url: &'static str,
+    label: &'static str,
+    with_anthropic_version: bool,
+) -> Result<Vec<RemoteModel>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let resp = match client
-        .get(url)
-        .header("anthropic-version", "2023-06-01")
-        .send()
-        .await
-    {
+    let mut req = client.get(url);
+    if with_anthropic_version {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
+
+    let resp = match req.send().await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
             let status = r.status();
             let text = r.text().await.unwrap_or_default();
             let detail = format_api_error_body(&text);
-            return Err(format!("Opencode API error ({status}): {detail}"));
+            return Err(format!("{label} API error ({status}): {detail}"));
         }
-        Err(e) => return Err(format!("Opencode API request failed: {e}")),
+        Err(e) => return Err(format!("{label} API request failed: {e}")),
     };
 
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("Opencode API: invalid JSON response: {e}"))?;
+        .map_err(|e| format!("{label} API: invalid JSON response: {e}"))?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1418,43 +1422,13 @@ async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, S
     Ok(models)
 }
 
+async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
+    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "Opencode", true).await
+}
+
 async fn fetch_opencode_go_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    let url = "https://opencode.ai/zen/go/v1/models";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
-    let resp = match client.get(url).send().await {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            let detail = format_api_error_body(&text);
-            return Err(format!("OpenCode Go API error ({status}): {detail}"));
-        }
-        Err(e) => return Err(format!("OpenCode Go API request failed: {e}")),
-    };
-
-    let body: serde_json::Value = resp
-        .json()
+    fetch_opencode_public_model_list("https://opencode.ai/zen/go/v1/models", "OpenCode Go", false)
         .await
-        .map_err(|e| format!("OpenCode Go API: invalid JSON response: {e}"))?;
-
-    let mut models = Vec::new();
-    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
-        for m in data {
-            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if !id.is_empty() {
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: String::new(),
-                    context_window: 0,
-                });
-            }
-        }
-    }
-    Ok(models)
 }
 
 // ---------------------------------------------------------------------------
