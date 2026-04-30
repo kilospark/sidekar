@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod bedrock;
 pub mod codex;
 pub mod gemini;
 pub mod oauth;
@@ -780,6 +781,8 @@ pub struct StreamConfig {
     /// Below this, the creation round-trip costs more than the
     /// cache-read savings for a single reuse.
     pub gemini_cache_min_tokens: u32,
+    /// Omit Anthropic `cache_control` (required for Bedrock Messages inference).
+    pub suppress_anthropic_cache_markers: bool,
     /// KV key under which credentials are stored (e.g. "oauth.claude-a").
     /// Used to persist session-window lockouts on 429.
     pub credential_kv_key: Option<String>,
@@ -809,6 +812,7 @@ impl Default for StreamConfig {
             gemini_caching: false,
             gemini_cache_ttl_secs: 3600,
             gemini_cache_min_tokens: 4096,
+            suppress_anthropic_cache_markers: false,
             credential_kv_key: None,
         }
     }
@@ -951,14 +955,15 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
         Provider::Gemini {
             api_key, base_url, ..
         } => gemini::fetch_gemini_model_limits(api_key, base_url, model).await,
+        Provider::Bedrock { .. } => None,
     }
 }
 
 /// Default timeout for model-catalog HTTP (list endpoints, `/v1/models` probes).
-const MODEL_CATALOG_TIMEOUT_SECS: u64 = 10;
+pub(crate) const MODEL_CATALOG_TIMEOUT_SECS: u64 = 10;
 
 /// Build a short-timeout client for model catalog / metadata requests.
-fn catalog_http_client(secs: u64) -> Result<reqwest::Client, String> {
+pub(crate) fn catalog_http_client(secs: u64) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(secs))
         .build()
@@ -1095,6 +1100,7 @@ pub async fn fetch_model_list(
         "opencode" => fetch_opencode_model_list(api_key).await,
         "opencode-go" => fetch_opencode_go_model_list(api_key).await,
         "gemini" => gemini::fetch_gemini_model_list(api_key).await,
+        "bedrock" => Ok(Vec::new()),
         _ => Ok(Vec::new()),
     }
 }
@@ -1116,6 +1122,9 @@ pub async fn fetch_model_list_for_provider(
             api_key, base_url, ..
         } => fetch_openai_compat_model_list(api_key, base_url).await,
         Provider::Gemini { api_key, .. } => gemini::fetch_gemini_model_list(api_key).await,
+        Provider::Bedrock { region, aws_profile } => {
+            bedrock::fetch_bedrock_model_list(region, aws_profile.as_deref()).await
+        }
     }
 }
 
@@ -1499,6 +1508,11 @@ pub enum Provider {
         base_url: String,
         credential: Option<String>,
     },
+    /// Claude via Amazon Bedrock — IAM credentials (AWS SDK default chain).
+    Bedrock {
+        region: String,
+        aws_profile: Option<String>,
+    },
 }
 
 impl Provider {
@@ -1588,6 +1602,13 @@ impl Provider {
         }
     }
 
+    pub fn bedrock(region: String, aws_profile: Option<String>) -> Self {
+        Provider::Bedrock {
+            region,
+            aws_profile,
+        }
+    }
+
     pub fn api_key(&self) -> &str {
         match self {
             Provider::Anthropic { api_key, .. } => api_key,
@@ -1595,6 +1616,7 @@ impl Provider {
             Provider::OpenRouter { api_key, .. } => api_key,
             Provider::OpenAiCompat { api_key, .. } => api_key,
             Provider::Gemini { api_key, .. } => api_key,
+            Provider::Bedrock { .. } => "_",
         }
     }
 
@@ -1605,6 +1627,7 @@ impl Provider {
             Provider::OpenRouter { credential, .. } => credential.as_deref(),
             Provider::OpenAiCompat { credential, .. } => credential.as_deref(),
             Provider::Gemini { credential, .. } => credential.as_deref(),
+            Provider::Bedrock { .. } => None,
         }
     }
 
@@ -1619,6 +1642,7 @@ impl Provider {
             Provider::OpenRouter { .. } => "openrouter",
             Provider::OpenAiCompat { provider_type, .. } => provider_type,
             Provider::Gemini { .. } => "gemini",
+            Provider::Bedrock { .. } => "bedrock",
         }
     }
 
@@ -1660,6 +1684,11 @@ impl Provider {
             // StreamConfig::default() (3600s / 4096).
             Provider::Gemini { .. } => StreamConfig {
                 gemini_caching: true,
+                ..StreamConfig::default()
+            },
+            Provider::Bedrock { .. } => StreamConfig {
+                max_tokens: 64_000,
+                suppress_anthropic_cache_markers: true,
                 ..StreamConfig::default()
             },
         }
@@ -1871,6 +1900,22 @@ impl Provider {
                     messages,
                     tools,
                     prompt_cache_key,
+                    &stream_config,
+                )
+                .await?;
+                Ok(no_ws_reclaim(rx))
+            }
+            Provider::Bedrock {
+                region,
+                aws_profile,
+            } => {
+                let rx = bedrock::stream(
+                    region,
+                    aws_profile.as_deref(),
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
                     &stream_config,
                 )
                 .await?;

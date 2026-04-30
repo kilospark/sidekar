@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, bail};
+use futures_util::{pin_mut, StreamExt};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -294,6 +295,9 @@ fn ephemeral_cache_marker(config: &StreamConfig, include_scope: bool) -> Value {
 }
 
 fn apply_cache_control(request: &mut AnthropicRequest, config: &StreamConfig) {
+    if config.suppress_anthropic_cache_markers {
+        return;
+    }
     // Stable breakpoint: TTL + optional `scope` (tools/system accept scope).
     // Rolling breakpoint (latest message): TTL only — Anthropic rejects
     // `cache_control.ephemeral.scope` on message content.
@@ -515,13 +519,54 @@ fn compute_cch(body: &str) -> String {
     format!("{hash:05x}")
 }
 
+pub(super) fn bedrock_request_body_bytes(
+    bedrock_model_id: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    config: &StreamConfig,
+) -> Result<Vec<u8>> {
+    let req = build_request_body(
+        "",
+        bedrock_model_id,
+        system_prompt,
+        messages,
+        tools,
+        config,
+        false,
+    );
+    let mut v = serde_json::to_value(&req)?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("model");
+        obj.insert(
+            "anthropic_version".to_string(),
+            json!("bedrock-2023-05-31"),
+        );
+    }
+    Ok(serde_json::to_vec(&v)?)
+}
+
 // ---------------------------------------------------------------------------
 async fn parse_sse_stream(
     response: reqwest::Response,
     rate_limit: Option<RateLimitSnapshot>,
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    let mut stream = response.bytes_stream();
+    let stream = response
+        .bytes_stream()
+        .map(|r| r.map_err(anyhow::Error::from));
+    parse_sse_bytes_stream(stream, rate_limit, tx).await
+}
+
+pub(super) async fn parse_sse_bytes_stream<S>(
+    stream: S,
+    rate_limit: Option<RateLimitSnapshot>,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = std::result::Result<bytes::Bytes, anyhow::Error>> + Send,
+{
+    pin_mut!(stream);
     let mut decoder = super::SseDecoder::new();
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -537,7 +582,6 @@ async fn parse_sse_stream(
     let mut tool_id = String::new();
     let mut tool_name = String::new();
 
-    use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("error reading SSE chunk")?;
         decoder.push_chunk(&chunk);

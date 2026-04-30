@@ -33,6 +33,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  oc         OpenCode — API key");
             eprintln!("  grok       Grok (xAI) — API key");
             eprintln!("  gem        Gemini (Google) — API key");
+            eprintln!("  bedrock | brk Amazon Bedrock (Claude) — IAM / AWS credential chain");
             eprintln!("  oac <name> <url> [api_key]");
             eprintln!();
             eprintln!("Examples:");
@@ -75,7 +76,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
         sidekar::providers::oauth::resolve_provider_type_for_login(nickname, provider)
             .unwrap_or_else(|| {
                 eprintln!("Unknown provider: '{provider}'.");
-                eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
+                eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, oac");
                 std::process::exit(1);
             });
 
@@ -131,9 +132,15 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "Logged in as '{nickname}' (Gemini)."
             )))?;
         }
+        "bedrock" => {
+            sidekar::providers::oauth::login_bedrock(Some(nickname)).await?;
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (Amazon Bedrock)."
+            )))?;
+        }
         _ => {
             eprintln!("Unknown provider type for '{nickname}'.");
-            eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
+            eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, oac");
             std::process::exit(1);
         }
     }

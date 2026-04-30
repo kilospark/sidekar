@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, Write};
 
 // ---------------------------------------------------------------------------
 // Provider configs (from pi-mono)
@@ -29,6 +29,7 @@ pub const KV_KEY_OPENCODE: &str = "oauth:opencode";
 pub const KV_KEY_OPENCODE_GO: &str = "oauth:opencode-go";
 pub const KV_KEY_GROK: &str = "oauth:grok";
 pub const KV_KEY_GEMINI: &str = "oauth:gemini";
+pub const KV_KEY_BEDROCK: &str = "oauth:bedrock";
 pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
 /// KV key for a named credential. e.g., "claude-1" → "oauth:claude-1"
@@ -70,6 +71,8 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
         // family and would require a different prefix if we ever
         // added it.
         Some("gemini")
+    } else if matches_convention(nickname, "brk") || matches_convention(nickname, "bedrock") {
+        Some("bedrock")
     } else if matches_convention(nickname, "oac") {
         Some("oac")
     } else {
@@ -93,6 +96,7 @@ fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("opencode-go") => Some("opencode-go"),
         Some("grok") => Some("grok"),
         Some("gemini") => Some("gemini"),
+        Some("bedrock") => Some("bedrock"),
         Some("oac") => Some("oac"),
         Some("openai-compatible") => Some("oac"),
         _ => None,
@@ -109,6 +113,7 @@ fn legacy_kv_credential_type(stem: &str) -> Option<&'static str> {
         "opencode-go" => Some("opencode-go"),
         "grok" => Some("grok"),
         "gemini" => Some("gemini"),
+        "bedrock" | "brk" => Some("bedrock"),
         _ => None,
     }
 }
@@ -128,6 +133,7 @@ pub fn provider_type_from_cli_keyword(keyword: &str) -> Option<&'static str> {
         "ocg" | "opencode-go" => Some("opencode-go"),
         "grok" => Some("grok"),
         "gem" | "gemini" => Some("gemini"),
+        "bedrock" | "brk" => Some("bedrock"),
         _ => None,
     }
 }
@@ -499,6 +505,78 @@ pub async fn login_gemini(nickname: Option<&str>) -> Result<String> {
         },
     )
     .await
+}
+
+#[derive(Debug, Clone)]
+pub struct BedrockStored {
+    pub region: String,
+    pub aws_profile: Option<String>,
+}
+
+pub fn load_bedrock_stored(nickname: &str) -> Result<BedrockStored> {
+    let kv_key = kv_key_for(nickname);
+    let creds = load_credentials(&kv_key)?.with_context(|| {
+        format!(
+            "No Bedrock credential for '{nickname}'.\n\
+             Run: sidekar repl login bedrock [nickname]"
+        )
+    })?;
+    if creds.metadata.get("provider_type").and_then(|v| v.as_str()) != Some("bedrock") {
+        bail!("credential '{nickname}' is not Bedrock");
+    }
+    let region = creds
+        .metadata
+        .get("region")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .context("Bedrock credential missing metadata.region")?
+        .to_string();
+    let aws_profile = creds
+        .metadata
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    Ok(BedrockStored {
+        region,
+        aws_profile,
+    })
+}
+
+pub async fn login_bedrock(nickname: Option<&str>) -> Result<()> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_BEDROCK);
+    eprintln!(
+        "Bedrock uses IAM via the AWS SDK default chain (environment, ~/.aws/credentials, SSO, …)."
+    );
+    let region = prompt_required("AWS region", Some("us-east-1"))?;
+    eprint!("AWS named profile (optional, Enter → default credential chain): ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("reading AWS profile")?;
+    let profile_trim = line.trim();
+    let profile_val = if profile_trim.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(profile_trim)
+    };
+
+    save_static_token(
+        &kv_key,
+        "_",
+        serde_json::json!({
+            "provider_type": "bedrock",
+            "region": region,
+            "profile": profile_val,
+        }),
+    )?;
+    eprintln!(
+        "Saved Bedrock config to `{kv_key}`. IAM needs `bedrock:InvokeModelWithResponseStream`."
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

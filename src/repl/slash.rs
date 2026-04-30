@@ -1058,6 +1058,10 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
             let api_key = providers::oauth::get_gemini_token(Some(cred_name)).await?;
             Ok(Provider::gemini(api_key, cred))
         }
+        "bedrock" => {
+            let b = providers::oauth::load_bedrock_stored(cred_name)?;
+            Ok(Provider::bedrock(b.region, b.aws_profile))
+        }
         "oac" => {
             let creds = providers::oauth::get_openai_compat_credentials(cred_name).await?;
             Ok(Provider::openai_compat(
