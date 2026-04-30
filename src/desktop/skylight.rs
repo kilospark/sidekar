@@ -19,7 +19,11 @@
 //! callers fall back to the public `CGEventPostToPid`.
 
 #![allow(non_upper_case_globals, non_camel_case_types)]
+// CGEventRef APIs dereference Objective-C/CoreGraphics pointers;
+// callers must supply handles from the system's event constructors.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+use std::ffi::CStr;
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::ptr;
@@ -127,20 +131,24 @@ struct Resolved {
 fn ensure_frameworks_loaded() {
     unsafe {
         dlopen(
-            b"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight\0".as_ptr(),
+            c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
+                .as_ptr()
+                .cast::<u8>(),
             RTLD_LAZY,
         );
         // Carbon needed for GetProcessForPID (PSN conversion)
         dlopen(
-            b"/System/Library/Frameworks/Carbon.framework/Carbon\0".as_ptr(),
+            c"/System/Library/Frameworks/Carbon.framework/Carbon"
+                .as_ptr()
+                .cast::<u8>(),
             RTLD_LAZY,
         );
     }
 }
 
-fn sym<T>(name: &[u8]) -> Option<T> {
+fn sym<T>(name: &'static CStr) -> Option<T> {
     ensure_frameworks_loaded();
-    let p = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr()) };
+    let p = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr().cast::<u8>()) };
     if p.is_null() {
         None
     } else {
@@ -150,19 +158,18 @@ fn sym<T>(name: &[u8]) -> Option<T> {
 
 fn resolve_all() -> Resolved {
     let core = (|| {
-        let post_to_pid: SLEventPostToPidFn = sym(b"SLEventPostToPid\0")?;
-        let set_auth_message: SLEventSetAuthMessageFn =
-            sym(b"SLEventSetAuthenticationMessage\0")?;
-        let msg_send_factory: ObjcMsgSendFactoryFn = sym(b"objc_msgSend\0")?;
+        let post_to_pid: SLEventPostToPidFn = sym(c"SLEventPostToPid")?;
+        let set_auth_message: SLEventSetAuthMessageFn = sym(c"SLEventSetAuthenticationMessage")?;
+        let msg_send_factory: ObjcMsgSendFactoryFn = sym(c"objc_msgSend")?;
 
         let message_class =
-            unsafe { objc_getClass(b"SLSEventAuthenticationMessage\0".as_ptr()) };
+            unsafe { objc_getClass(c"SLSEventAuthenticationMessage".as_ptr().cast::<u8>()) };
         if message_class.is_null() {
             return None;
         }
 
         let factory_selector = unsafe {
-            sel_registerName(b"messageWithEventRecord:pid:version:\0".as_ptr())
+            sel_registerName(c"messageWithEventRecord:pid:version:".as_ptr().cast::<u8>())
         };
         if factory_selector.is_null() {
             return None;
@@ -178,12 +185,12 @@ fn resolve_all() -> Resolved {
     })();
 
     let extras = ResolvedExtras {
-        set_int_field: sym(b"SLEventSetIntegerValueField\0"),
-        connection_id: sym(b"CGSMainConnectionID\0"),
-        set_window_location: sym(b"CGEventSetWindowLocation\0"),
-        post_event_record_to: sym(b"SLPSPostEventRecordTo\0"),
-        get_front_process: sym(b"_SLPSGetFrontProcess\0"),
-        get_process_for_pid: sym(b"GetProcessForPID\0"),
+        set_int_field: sym(c"SLEventSetIntegerValueField"),
+        connection_id: sym(c"CGSMainConnectionID"),
+        set_window_location: sym(c"CGEventSetWindowLocation"),
+        post_event_record_to: sym(c"SLPSPostEventRecordTo"),
+        get_front_process: sym(c"_SLPSGetFrontProcess"),
+        get_process_for_pid: sym(c"GetProcessForPID"),
     };
 
     Resolved { core, extras }
@@ -219,9 +226,9 @@ unsafe fn extract_event_record(event: CGEventRef) -> *mut c_void {
 
 /// Resolve an arbitrary symbol name from all loaded images.
 /// Null-terminated `name`. Returns null on failure.
-pub fn dlsym_raw(name: &[u8]) -> *mut c_void {
+pub fn dlsym_raw(name: &'static CStr) -> *mut c_void {
     ensure_frameworks_loaded();
-    unsafe { dlsym(RTLD_DEFAULT, name.as_ptr()) }
+    unsafe { dlsym(RTLD_DEFAULT, name.as_ptr().cast::<u8>()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -266,13 +273,7 @@ pub fn post_to_pid(pid: i32, event: CGEventRef, attach_auth_message: bool) -> bo
         let record = unsafe { extract_event_record(event) };
         if !record.is_null() {
             let msg = unsafe {
-                (r.msg_send_factory)(
-                    r.message_class,
-                    r.factory_selector,
-                    record,
-                    pid,
-                    0,
-                )
+                (r.msg_send_factory)(r.message_class, r.factory_selector, record, pid, 0)
             };
             if !msg.is_null() {
                 unsafe { (r.set_auth_message)(event, msg) };

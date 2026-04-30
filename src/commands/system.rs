@@ -84,7 +84,11 @@ fn cmd_event(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             let level_filter = parse_event_clear_level(args)?;
             let deleted = crate::broker::events_clear(level_filter)?;
             let msg = format!("Deleted {deleted} events.");
-            out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+            );
             Ok(())
         }
         _ => bail!("Unknown subcommand: event {sub}. Use: event list, event clear"),
@@ -274,7 +278,11 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 if matches!(raw_value, "false" | "none" | "default") {
                     crate::config::config_delete(key)?;
                     let msg = "Cleared browser preference (will use system default)".to_string();
-                    out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+                    out!(
+                        ctx,
+                        "{}",
+                        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+                    );
                     return Ok(());
                 }
                 if find_browser_by_name(raw_value).is_none() {
@@ -288,7 +296,11 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             }
             crate::config::config_set(key, raw_value)?;
             let msg = format!("Set {key} = {raw_value}");
-            out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+            );
             Ok(())
         }
         "reset" => {
@@ -305,7 +317,11 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 default
             };
             let msg = format!("Reset {key} to default: {display}");
-            out!(ctx, "{}", crate::output::to_string(&crate::output::PlainOutput::new(msg))?);
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+            );
             Ok(())
         }
         _ => bail!("Usage: sidekar config [list|get <key>|set <key> <value>|reset <key>]"),
@@ -448,8 +464,8 @@ impl crate::output::CommandOutput for ProxyLogOutput {
         }
         writeln!(
             w,
-            "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
-            "ID", "TIME", "METHOD", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ", "RESP"
+            "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} RESP",
+            "ID", "TIME", "METHOD", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ"
         )?;
         for r in &self.items {
             let time = {

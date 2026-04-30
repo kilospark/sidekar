@@ -71,4 +71,3 @@ fn tree_reports_estimated_tokens() {
     assert!(tree.contains("src/ (~4 tok, 1 files)"));
     assert!(tree.contains("main.rs (~4 tok)"));
 }
-

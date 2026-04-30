@@ -343,7 +343,10 @@ impl crate::output::CommandOutput for RequestsOutput {
             writeln!(w, "No outbound requests.")?;
             return Ok(());
         }
-        writeln!(w, "msg_id\tstatus\tkind\tto\tcreated_at\tanswered_at\tpreview")?;
+        writeln!(
+            w,
+            "msg_id\tstatus\tkind\tto\tcreated_at\tanswered_at\tpreview"
+        )?;
         for r in &self.items {
             writeln!(
                 w,
@@ -577,9 +580,7 @@ struct CancelOutput {
 
 impl crate::output::CommandOutput for CancelOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
-        if self.cancelled.is_empty()
-            && self.not_found.is_empty()
-            && self.already_closed.is_empty()
+        if self.cancelled.is_empty() && self.not_found.is_empty() && self.already_closed.is_empty()
         {
             writeln!(w, "No open requests to cancel.")?;
             return Ok(());

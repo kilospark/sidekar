@@ -20,10 +20,7 @@ pub(crate) async fn cmd_debug(ctx: &mut AppContext, args: &[String]) -> Result<(
 }
 
 async fn click_probe(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    let (x, y) = match crate::utils::parse_coordinates(args) {
-        Some(p) => p,
-        None => (200.0, 360.0),
-    };
+    let (x, y) = crate::utils::parse_coordinates(args).unwrap_or((200.0, 360.0));
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
 
@@ -144,7 +141,11 @@ async fn click_probe(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         os_result.error.as_deref().unwrap_or("(none)"),
         suspect = suspect_note,
     );
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(report))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(report))?
+    );
     Ok(())
 }
 

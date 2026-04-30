@@ -8,17 +8,17 @@ use crate::*;
 pub async fn capture_desktop_screenshot(pid: Option<i32>, output_path: &Path) -> Result<()> {
     if let Some(pid) = pid {
         // Try CGWindowList first (works even when AX can't enumerate windows)
-        if let Some(wid) = frontmost_window_id_for_pid(pid) {
-            if capture_window_cg(wid, output_path)? {
-                return Ok(());
-            }
+        if let Some(wid) = frontmost_window_id_for_pid(pid)
+            && capture_window_cg(wid, output_path)?
+        {
+            return Ok(());
         }
         // Fallback: try AX-based window list
         let windows = crate::desktop::native::list_windows(pid)?;
-        if let Some(win_id) = windows.first().and_then(|w| w.window_id) {
-            if capture_window_cg(win_id, output_path)? {
-                return Ok(());
-            }
+        if let Some(win_id) = windows.first().and_then(|w| w.window_id)
+            && capture_window_cg(win_id, output_path)?
+        {
+            return Ok(());
         }
     } else {
         // Full-screen capture
@@ -66,9 +66,8 @@ fn frontmost_window_id_for_pid(pid: i32) -> Option<u32> {
         let Some(pid_val) = dict.find(&key_pid) else {
             continue;
         };
-        let cf_pid: CFNumber = unsafe {
-            CFNumber::wrap_under_get_rule(pid_val.as_CFTypeRef() as _)
-        };
+        let cf_pid: CFNumber =
+            unsafe { CFNumber::wrap_under_get_rule(pid_val.as_CFTypeRef() as _) };
         let Some(entry_pid) = cf_pid.to_i32() else {
             continue;
         };
@@ -78,21 +77,19 @@ fn frontmost_window_id_for_pid(pid: i32) -> Option<u32> {
 
         // Check layer == 0 (normal windows, not menubars/overlays)
         if let Some(layer_val) = dict.find(&key_layer) {
-            let cf_layer: CFNumber = unsafe {
-                CFNumber::wrap_under_get_rule(layer_val.as_CFTypeRef() as _)
-            };
-            if let Some(layer) = cf_layer.to_i32() {
-                if layer != 0 {
-                    continue;
-                }
+            let cf_layer: CFNumber =
+                unsafe { CFNumber::wrap_under_get_rule(layer_val.as_CFTypeRef() as _) };
+            if let Some(layer) = cf_layer.to_i32()
+                && layer != 0
+            {
+                continue;
             }
         }
 
         // Get window ID
         if let Some(wid_val) = dict.find(&key_wid) {
-            let cf_wid: CFNumber = unsafe {
-                CFNumber::wrap_under_get_rule(wid_val.as_CFTypeRef() as _)
-            };
+            let cf_wid: CFNumber =
+                unsafe { CFNumber::wrap_under_get_rule(wid_val.as_CFTypeRef() as _) };
             if let Some(wid) = cf_wid.to_i32() {
                 return Some(wid as u32);
             }
@@ -141,10 +138,8 @@ fn capture_window_cg(window_id: u32, output_path: &Path) -> Result<bool> {
 
     let image = unsafe {
         CGWindowListCreateImage(
-            null_rect,
-            8,          // kCGWindowListOptionIncludingWindow
-            window_id,
-            1,          // kCGWindowImageBoundsIgnoreFraming
+            null_rect, 8, // kCGWindowListOptionIncludingWindow
+            window_id, 1, // kCGWindowImageBoundsIgnoreFraming
         )
     };
 
@@ -251,9 +246,7 @@ fn save_cgimage_as_png(image: *const std::ffi::c_void, path: &Path) -> Result<()
         fn CGImageDestinationFinalize(dest: CGImageDestinationRef) -> bool;
     }
 
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow!("non-UTF8 path"))?;
+    let path_str = path.to_str().ok_or_else(|| anyhow!("non-UTF8 path"))?;
     let c_path = format!("{path_str}\0");
 
     unsafe {
@@ -273,11 +266,8 @@ fn save_cgimage_as_png(image: *const std::ffi::c_void, path: &Path) -> Result<()
             bail!("failed to create CFURL");
         }
 
-        let png_type = CFStringCreateWithCString(
-            std::ptr::null(),
-            b"public.png\0".as_ptr(),
-            0x08000100,
-        );
+        let png_type =
+            CFStringCreateWithCString(std::ptr::null(), c"public.png".as_ptr().cast(), 0x08000100);
 
         let dest = CGImageDestinationCreateWithURL(url, png_type, 1, std::ptr::null());
         CFRelease(url);

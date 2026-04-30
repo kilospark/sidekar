@@ -348,7 +348,9 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
                     } else {
                         format!(" [{}]", m.actions.join(", "))
                     };
-                    let ref_tag = m.ref_id.as_deref()
+                    let ref_tag = m
+                        .ref_id
+                        .as_deref()
                         .map(|r| format!("{} ", r))
                         .unwrap_or_default();
                     writeln!(w, "  {}{} \"{}\"{}", ref_tag, m.role, title, actions)?;
@@ -518,9 +520,7 @@ pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> 
         out!(
             ctx,
             "{}",
-            crate::output::to_string(&PlainOutput::new(format!(
-                "Pressed {}{}", spec, target
-            )))?
+            crate::output::to_string(&PlainOutput::new(format!("Pressed {}{}", spec, target)))?
         );
         Ok(())
     }
@@ -653,9 +653,12 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
                 if let (Some(x), Some(y)) = (result.x, result.y) {
                     // Use bg_input for per-pid click when we have a target pid
                     crate::desktop::bg_input::click_at_pid(
-                        x, y, pid,
+                        x,
+                        y,
+                        pid,
                         crate::desktop::bg_input::MouseButton::Left,
-                        1, None,
+                        1,
+                        None,
                     )?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
@@ -677,11 +680,7 @@ pub(super) async fn cmd_desktop_click(ctx: &mut AppContext, args: &[String]) -> 
                 bail!("Unexpected click result: {}", other);
             }
         };
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new(msg))?
-        );
+        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
         Ok(())
     }
 }
@@ -712,9 +711,12 @@ pub(crate) fn try_desktop_click_fallback(browser_name: &str, query: &str) -> Res
             "fallbackClick" => {
                 if let (Some(x), Some(y)) = (result.x, result.y) {
                     crate::desktop::bg_input::click_at_pid(
-                        x, y, pid,
+                        x,
+                        y,
+                        pid,
                         crate::desktop::bg_input::MouseButton::Left,
-                        1, None,
+                        1,
+                        None,
                     )?;
                     let role = result.role.as_deref().unwrap_or("element");
                     let title = result.title.as_deref().unwrap_or("");
@@ -731,11 +733,7 @@ pub(crate) fn try_desktop_click_fallback(browser_name: &str, query: &str) -> Res
     }
 }
 
-
-pub(super) async fn cmd_desktop_trust(
-    ctx: &mut AppContext,
-    _args: &[String],
-) -> Result<()> {
+pub(super) async fn cmd_desktop_trust(ctx: &mut AppContext, _args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         bail!("Desktop trust check is only available on macOS");
@@ -756,11 +754,7 @@ pub(super) async fn cmd_desktop_trust(
             });
             out!(ctx, "{}", serde_json::to_string_pretty(&obj)?);
         } else {
-            let path = |label: &str| {
-                format!(
-                    "    System Settings → Privacy & Security → {label}"
-                )
-            };
+            let path = |label: &str| format!("    System Settings → Privacy & Security → {label}");
             let lines = format!(
                 "macOS permissions:\n\
                  \n\
@@ -789,10 +783,7 @@ pub(super) async fn cmd_desktop_trust(
     }
 }
 
-pub(super) async fn cmd_desktop_clipboard(
-    ctx: &mut AppContext,
-    args: &[String],
-) -> Result<()> {
+pub(super) async fn cmd_desktop_clipboard(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         bail!("Desktop clipboard is only available on macOS");
@@ -807,9 +798,10 @@ pub(super) async fn cmd_desktop_clipboard(
                 out!(ctx, "{text}");
             }
             "write" | "set" => {
-                let text = args.get(1).cloned().ok_or_else(|| {
-                    anyhow!("Usage: sidekar desktop clipboard write <text>")
-                })?;
+                let text = args
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Usage: sidekar desktop clipboard write <text>"))?;
                 crate::desktop::input::set_clipboard_text(&text)?;
                 out!(
                     ctx,
@@ -857,7 +849,7 @@ pub(super) async fn cmd_desktop_menu(ctx: &mut AppContext, args: &[String]) -> R
             i += 1;
         }
         let pid = pid
-            .or_else(|| crate::desktop::native::frontmost_app_pid())
+            .or_else(crate::desktop::native::frontmost_app_pid)
             .ok_or_else(|| anyhow!("No app specified; pass --app or --pid"))?;
         let entries = crate::desktop::native::list_menu(pid)?;
         if entries.is_empty() {
@@ -898,12 +890,20 @@ pub(super) async fn cmd_desktop_check_bg(ctx: &mut AppContext, _args: &[String])
                 writeln!(
                     w,
                     "  SLEventPostToPid + auth message : {}",
-                    if self.skylight_event_post { "✓" } else { "✗" }
+                    if self.skylight_event_post {
+                        "✓"
+                    } else {
+                        "✗"
+                    }
                 )?;
                 writeln!(
                     w,
                     "  FocusWithoutRaise (SLPSPost)    : {}",
-                    if self.focus_without_raise { "✓" } else { "✗" }
+                    if self.focus_without_raise {
+                        "✓"
+                    } else {
+                        "✗"
+                    }
                 )?;
                 writeln!(
                     w,
@@ -913,7 +913,11 @@ pub(super) async fn cmd_desktop_check_bg(ctx: &mut AppContext, _args: &[String])
                 writeln!(
                     w,
                     "  Background input ready          : {}",
-                    if self.background_input_ready { "✓" } else { "✗" }
+                    if self.background_input_ready {
+                        "✓"
+                    } else {
+                        "✗"
+                    }
                 )?;
                 if !self.background_input_ready {
                     writeln!(
@@ -936,10 +940,7 @@ pub(super) async fn cmd_desktop_check_bg(ctx: &mut AppContext, _args: &[String])
     }
 }
 
-pub(super) async fn cmd_desktop_monitor(
-    ctx: &mut AppContext,
-    args: &[String],
-) -> Result<()> {
+pub(super) async fn cmd_desktop_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         bail!("Desktop monitor is only available on macOS");

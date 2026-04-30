@@ -143,9 +143,18 @@ impl crate::output::CommandOutput for MemorySearchOutput {
             writeln!(w, "0 memories matching '{}'.", self.query)?;
             return Ok(());
         }
-        writeln!(w, "{} memories matching '{}':", self.items.len(), self.query)?;
+        writeln!(
+            w,
+            "{} memories matching '{}':",
+            self.items.len(),
+            self.query
+        )?;
         for item in &self.items {
-            let scope = if item.scope == "global" { " [global]" } else { "" };
+            let scope = if item.scope == "global" {
+                " [global]"
+            } else {
+                ""
+            };
             let tags = if item.tags.is_empty() {
                 String::new()
             } else {
@@ -298,7 +307,11 @@ impl crate::output::CommandOutput for MemoryListOutput {
         }
         writeln!(w, "{} memories:", self.items.len())?;
         for item in &self.items {
-            let scope_label = if item.scope == "global" { " [global]" } else { "" };
+            let scope_label = if item.scope == "global" {
+                " [global]"
+            } else {
+                ""
+            };
             let tags_label = if item.tags.is_empty() {
                 String::new()
             } else {
@@ -435,8 +448,7 @@ fn cmd_memory_context(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let conn = crate::broker::open_db()?;
     let ranked = ranked_recent_events(&conn, scope_view, project.as_deref(), limit * 4)?;
     let deduped = dedupe_rows_by_norm(ranked.into_iter().map(|item| item.row).collect());
-    let ids_to_reinforce: Vec<i64> =
-        deduped.iter().take(limit * 4).map(|row| row.id).collect();
+    let ids_to_reinforce: Vec<i64> = deduped.iter().take(limit * 4).map(|row| row.id).collect();
     reinforce_events(ids_to_reinforce)?;
 
     let mut sections: Vec<MemoryContextSection> = Vec::new();

@@ -137,9 +137,7 @@ fn phase1_clear_old_results(history: &mut [ChatMessage]) -> usize {
                     *content = "[Cleared]".to_string();
                     cleared += 1;
                 }
-                ContentBlock::ToolCall { arguments, .. }
-                    if arguments.to_string().len() > 200 =>
-                {
+                ContentBlock::ToolCall { arguments, .. } if arguments.to_string().len() > 200 => {
                     *arguments = serde_json::Value::Object(serde_json::Map::new());
                     cleared += 1;
                 }

@@ -182,7 +182,12 @@ impl crate::output::CommandOutput for CronListOutput {
             return Ok(());
         }
         if self.running > 0 {
-            writeln!(w, "{} cron jobs ({} running):", self.items.len(), self.running)?;
+            writeln!(
+                w,
+                "{} cron jobs ({} running):",
+                self.items.len(),
+                self.running
+            )?;
         } else {
             writeln!(w, "{} cron jobs:", self.items.len())?;
         }

@@ -47,10 +47,7 @@ async fn bash_tool_cancels_promptly() {
 #[tokio::test]
 async fn bash_cancel_kills_grandchild_process() {
     let tmpdir = std::env::temp_dir();
-    let pidfile = tmpdir.join(format!(
-        "sidekar_cancel_test_{}.pid",
-        std::process::id()
-    ));
+    let pidfile = tmpdir.join(format!("sidekar_cancel_test_{}.pid", std::process::id()));
     let pidfile_str = pidfile.to_string_lossy().to_string();
     // Ensure stale file doesn't confuse the test.
     let _ = std::fs::remove_file(&pidfile);
@@ -59,9 +56,7 @@ async fn bash_cancel_kills_grandchild_process() {
     // grandchild's pid, then waits so bash itself is still alive when we
     // cancel. Use `exec` in a subshell so `$!` points to the real sleep
     // pid rather than an intermediate subshell wrapper.
-    let command = format!(
-        "( exec sleep 30 ) & echo $! > {pidfile_str}; wait"
-    );
+    let command = format!("( exec sleep 30 ) & echo $! > {pidfile_str}; wait");
 
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_setter = cancel.clone();
@@ -81,9 +76,12 @@ async fn bash_cancel_kills_grandchild_process() {
     // Give the tree-kill escalation its 500ms + safety margin.
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
-    let pid_str = std::fs::read_to_string(&pidfile)
-        .expect("pid file should have been written by bash");
-    let pid: i32 = pid_str.trim().parse().expect("pid file contents are a number");
+    let pid_str =
+        std::fs::read_to_string(&pidfile).expect("pid file should have been written by bash");
+    let pid: i32 = pid_str
+        .trim()
+        .parse()
+        .expect("pid file contents are a number");
     let _ = std::fs::remove_file(&pidfile);
 
     // kill(pid, 0) probes existence without sending a signal. Returns
@@ -163,12 +161,7 @@ async fn bash_tool_captures_stderr() {
 #[tokio::test]
 async fn bash_tool_stdin_is_null_not_inherited() {
     let started = Instant::now();
-    let result = execute(
-        "bash",
-        &json!({ "command": "cat", "timeout": 3 }),
-        None,
-    )
-    .await;
+    let result = execute("bash", &json!({ "command": "cat", "timeout": 3 }), None).await;
     // Must complete within the test's patience window —
     // comfortably under the 3s tool timeout.
     assert!(
@@ -205,20 +198,21 @@ async fn bash_tool_stdin_is_null_not_inherited() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_session_spawn_fast_exit_returns_no_session_id() {
-    let raw = execute(
-        "ExecSession",
-        &json!({ "cmd": "echo hello; exit 0" }),
-        None,
-    )
-    .await
-    .expect("spawn ok");
+    let raw = execute("ExecSession", &json!({ "cmd": "echo hello; exit 0" }), None)
+        .await
+        .expect("spawn ok");
     // Result is JSON-encoded.
-    let v: serde_json::Value =
-        serde_json::from_str(&raw).expect("valid json");
-    assert!(v.get("session_id").is_none(), "fast-exit should not return session_id");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("valid json");
+    assert!(
+        v.get("session_id").is_none(),
+        "fast-exit should not return session_id"
+    );
     assert_eq!(v["exit_code"], 0);
     let output = v["output"].as_str().unwrap();
-    assert!(output.contains("hello"), "output must include echo; got: {output}");
+    assert!(
+        output.contains("hello"),
+        "output must include echo; got: {output}"
+    );
 }
 
 #[cfg(unix)]
@@ -258,8 +252,7 @@ async fn exec_session_write_sends_stdin_and_polls() {
     )
     .await
     .expect("spawn ok");
-    let sid = serde_json::from_str::<serde_json::Value>(&raw)
-        .unwrap()["session_id"]
+    let sid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["session_id"]
         .as_i64()
         .expect("session_id present");
 
@@ -305,8 +298,7 @@ async fn exec_session_list_includes_live_session() {
     )
     .await
     .unwrap();
-    let sid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()
-        ["session_id"]
+    let sid = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["session_id"]
         .as_i64()
         .unwrap();
 

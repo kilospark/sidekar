@@ -258,10 +258,7 @@ mod tests {
             "relevant_files",
             "critical_context",
         ] {
-            assert!(
-                out.contains(field),
-                "schema must mention field {field}"
-            );
+            assert!(out.contains(field), "schema must mention field {field}");
         }
     }
 

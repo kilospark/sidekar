@@ -83,7 +83,10 @@ fn table_columns_align_across_rows() {
     // Every pipe column must appear at the same visible offset on every row.
     let visible_lines: Vec<String> = lines.iter().map(|l| visible(l)).collect();
     let pipe_positions = |s: &str| -> Vec<usize> {
-        s.char_indices().filter(|(_, c)| *c == '|').map(|(i, _)| i).collect()
+        s.char_indices()
+            .filter(|(_, c)| *c == '|')
+            .map(|(i, _)| i)
+            .collect()
     };
     let first = pipe_positions(&visible_lines[0]);
     assert!(first.len() >= 4, "expected 4 pipes: {:?}", visible_lines[0]);

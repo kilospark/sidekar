@@ -76,10 +76,7 @@ impl RefMap {
         let ref_id = format!("@e{}", self.counter);
         let pid = entry.pid;
         self.entries.insert(ref_id.clone(), entry);
-        self.pid_scopes
-            .entry(pid)
-            .or_default()
-            .push(ref_id.clone());
+        self.pid_scopes.entry(pid).or_default().push(ref_id.clone());
         ref_id
     }
 
@@ -154,11 +151,11 @@ pub fn save_refs() {
 /// Load refs from disk into the process-global map.
 pub fn load_refs() {
     let path = refs_path();
-    if let Ok(data) = std::fs::read_to_string(&path) {
-        if let Ok(loaded) = serde_json::from_str::<RefMap>(&data) {
-            let mut map = ref_map().lock().unwrap();
-            *map = loaded;
-        }
+    if let Ok(data) = std::fs::read_to_string(&path)
+        && let Ok(loaded) = serde_json::from_str::<RefMap>(&data)
+    {
+        let mut map = ref_map().lock().unwrap();
+        *map = loaded;
     }
 }
 
@@ -166,7 +163,10 @@ pub fn load_refs() {
 /// starts with `@e` followed by digits.
 pub fn parse_ref(query: &str) -> Option<&str> {
     let trimmed = query.trim();
-    if trimmed.starts_with("@e") && trimmed[2..].chars().all(|c| c.is_ascii_digit()) && trimmed.len() > 2 {
+    if trimmed.starts_with("@e")
+        && trimmed[2..].chars().all(|c| c.is_ascii_digit())
+        && trimmed.len() > 2
+    {
         Some(trimmed)
     } else {
         None

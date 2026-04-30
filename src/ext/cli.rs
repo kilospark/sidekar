@@ -187,9 +187,7 @@ fn show_status() -> Result<()> {
                 .get("ext_version")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
-            version_matches_daemon: c
-                .get("version_matches_daemon")
-                .and_then(|v| v.as_bool()),
+            version_matches_daemon: c.get("version_matches_daemon").and_then(|v| v.as_bool()),
         })
         .collect();
     let out = ExtStatusOutput {
@@ -1017,10 +1015,7 @@ fn print_result(command: &str, result: &Value) {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string(),
-                        visit_count: h
-                            .get("visitCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
+                        visit_count: h.get("visitCount").and_then(|v| v.as_u64()).unwrap_or(0),
                         last_visit_ms: ts,
                         last_visit_ago: format_time_ago(ts),
                     }

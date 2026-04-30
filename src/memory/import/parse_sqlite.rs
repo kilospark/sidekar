@@ -81,14 +81,10 @@ fn flatten_cursor_content(content: &Value) -> String {
                     continue;
                 };
                 let kind = obj.get("type").and_then(Value::as_str).unwrap_or("");
-                match kind {
-                    "text" => {
-                        if let Some(t) = obj.get("text").and_then(Value::as_str) {
-                            parts.push(t.to_string());
-                        }
-                    }
-                    // Tool results are mostly noise; skip.
-                    _ => {}
+                if kind == "text"
+                    && let Some(t) = obj.get("text").and_then(Value::as_str)
+                {
+                    parts.push(t.to_string());
                 }
             }
             parts.join("\n")
@@ -164,14 +160,11 @@ fn list_opencode_sessions(conn: &Connection) -> Result<Vec<OpencodeSession>> {
     // Pull every session ordered most-recent first so the
     // --max-sessions cap in the caller keeps the useful ones.
     // Some test fixtures omit time_created — fall back gracefully.
-    let query_ordered =
-        "SELECT id, directory FROM session ORDER BY COALESCE(time_created, 0) DESC";
+    let query_ordered = "SELECT id, directory FROM session ORDER BY COALESCE(time_created, 0) DESC";
     let query_plain = "SELECT id, directory FROM session";
     let mut stmt = match conn.prepare(query_ordered) {
         Ok(s) => s,
-        Err(_) => conn
-            .prepare(query_plain)
-            .context("prepare session query")?,
+        Err(_) => conn.prepare(query_plain).context("prepare session query")?,
     };
     let rows = stmt.query_map([], |r| {
         Ok(OpencodeSession {
@@ -198,10 +191,7 @@ fn load_opencode_turns(conn: &Connection, session_id: &str) -> Result<Vec<Turn>>
         )
         .context("prepare message+part query")?;
     let rows = stmt.query_map(params![session_id], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<String>>(1)?,
-        ))
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
     })?;
 
     let mut turns = Vec::new();
@@ -260,8 +250,7 @@ mod tests {
     use rusqlite::Connection;
 
     fn tmp_db(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("sidekar-sqlite-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sidekar-sqlite-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         dir.join(name)
     }
@@ -271,10 +260,8 @@ mod tests {
         let path = tmp_db("cursor.db");
         let _ = std::fs::remove_file(&path);
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);")
+            .unwrap();
         let user = r#"{"role":"user","content":"<user_info>\nOS Version: darwin\nWorkspace Path: /Users/me/demo\n</user_info>\n\nhi there"}"#;
         let assistant = r#"{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool-result","result":"..."}]}"#;
         let tool = r#"{"role":"tool","content":[]}"#;
@@ -303,10 +290,8 @@ mod tests {
         let path = tmp_db("cursor-nowork.db");
         let _ = std::fs::remove_file(&path);
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);")
+            .unwrap();
         let user = r#"{"role":"user","content":"just a question"}"#;
         conn.execute(
             "INSERT INTO blobs (data) VALUES (?1)",

@@ -53,19 +53,31 @@ pub struct CreatedCache {
 ///   "displayName": "sidekar-session-<fingerprint-prefix>"
 /// }
 /// ```
+pub struct CreateCacheRequest<'a> {
+    pub api_key: &'a str,
+    pub base_url: &'a str,
+    pub model: &'a str,
+    pub contents: &'a [Value],
+    pub tools: &'a [Value],
+    pub system_instruction: Option<&'a Value>,
+    pub ttl_secs: u32,
+    pub display_name: &'a str,
+}
+
 /// Returns `Ok(None)` for 4xx (unretryable, e.g. under min tokens) so
 /// callers can fall back to the uncached path. Returns `Err` for 5xx
 /// and network errors — caller typically still falls back but logs.
-pub async fn create_cache(
-    api_key: &str,
-    base_url: &str,
-    model: &str,
-    contents: &[Value],
-    tools: &[Value],
-    system_instruction: Option<&Value>,
-    ttl_secs: u32,
-    display_name: &str,
-) -> Result<Option<CreatedCache>> {
+pub async fn create_cache(req: CreateCacheRequest<'_>) -> Result<Option<CreatedCache>> {
+    let CreateCacheRequest {
+        api_key,
+        base_url,
+        model,
+        contents,
+        tools,
+        system_instruction,
+        ttl_secs,
+        display_name,
+    } = req;
     let url = format!("{}/cachedContents", base_url.trim_end_matches('/'));
 
     // Gemini's model field on cachedContents must be the full
@@ -117,7 +129,10 @@ pub async fn create_cache(
             );
             return Ok(None);
         }
-        bail!("cachedContents create failed ({status}): {}", truncate_for_log(&text, 500));
+        bail!(
+            "cachedContents create failed ({status}): {}",
+            truncate_for_log(&text, 500)
+        );
     }
 
     let data: Value = resp

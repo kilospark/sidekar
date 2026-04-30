@@ -10,7 +10,8 @@ pub fn print_command_help(command: &str) {
     let command = canonical_command_name(command).unwrap_or(command);
     let help = command_help_text(command).or_else(|| command_spec_fallback(command));
     let Some(help) = help else {
-        let msg = format!("Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands.");
+        let msg =
+            format!("Unknown command: {command}\n\nRun 'sidekar help' for a list of all commands.");
         let _ = crate::output::emit(&crate::output::PlainOutput::new(msg));
         return;
     };

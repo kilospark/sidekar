@@ -210,7 +210,11 @@ pub(crate) async fn cmd_wait_for_nav(ctx: &mut AppContext, timeout_ms: Option<&s
             )
             .await;
             let brief = get_page_brief(&mut cdp).await?;
-            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(brief))?
+            );
             cdp.close().await;
             return Ok(());
         }
@@ -224,7 +228,11 @@ pub(crate) async fn cmd_wait_for_nav(ctx: &mut AppContext, timeout_ms: Option<&s
             )
             .await;
             let brief = get_page_brief(&mut cdp).await?;
-            out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&PlainOutput::new(brief))?
+            );
             cdp.close().await;
             return Ok(());
         }
@@ -285,7 +293,11 @@ pub(crate) async fn cmd_wait_for_nav(ctx: &mut AppContext, timeout_ms: Option<&s
     }
 
     let brief = get_page_brief(&mut cdp).await?;
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(brief))?
+    );
     cdp.close().await;
     Ok(())
 }

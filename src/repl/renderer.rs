@@ -1,5 +1,5 @@
-use super::*;
 use super::spinner::Spinner;
+use super::*;
 
 // ---------------------------------------------------------------------------
 // Stream event rendering
@@ -23,10 +23,9 @@ pub(super) struct EventRenderer {
 /// 50+ tokens/sec doesn't trigger a full markdown reparse on every delta.
 const PREVIEW_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
-/// Emit multiple committed markdown lines in a single editor-mutex acquisition
-/// + ANSI clear + redraw. The per-line `emit_shared_line` path repaints the
-/// prompt after every call — so a 50-line code-block flush would otherwise
-/// trigger 50 redraws back-to-back.
+/// Emit committed markdown lines in one editor-mutex acquisition (ANSI clear
+/// and redraw once). Avoids calling `emit_shared_line` per line, which would
+/// repaint the prompt after each line during large flushes.
 fn emit_lines_batched(lines: &[String]) {
     if lines.is_empty() {
         return;
@@ -217,7 +216,11 @@ impl EventRenderer {
                 if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
                     self.emitln(&format!(
                         "\x1b[2m[{} in / {} out / {} cache read / {} cache write tokens{}]\x1b[0m",
-                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, rl
+                        u.input_tokens,
+                        u.output_tokens,
+                        u.cache_read_tokens,
+                        u.cache_write_tokens,
+                        rl
                     ));
                 } else {
                     self.emitln(&format!(
@@ -283,7 +286,9 @@ pub(super) fn extract_tool_summary(name: &str, args_json: &str) -> String {
                     .find_map(|k| o.get(*k).and_then(|v| v.as_str()))
                     .or_else(|| o.values().find_map(|v| v.as_str()))
             });
-            picked.map(str::to_string).unwrap_or_else(|| args_json.to_string())
+            picked
+                .map(str::to_string)
+                .unwrap_or_else(|| args_json.to_string())
         }
     };
     truncate_display(&raw, 120)

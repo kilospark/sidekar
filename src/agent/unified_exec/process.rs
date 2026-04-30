@@ -238,10 +238,7 @@ impl UnifiedExecProcess {
         // thread — we need the reader blocking-stream on the thread,
         // but we don't otherwise need master in the parent (except
         // for the writer).
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .context("try_clone_reader")?;
+        let reader = pair.master.try_clone_reader().context("try_clone_reader")?;
 
         // Take the writer once. If that fails (some platforms don't
         // implement it), we still proceed; stdin writes will refuse
@@ -466,7 +463,10 @@ impl UnifiedExecProcess {
 pub enum YieldResult {
     /// New output arrived within the deadline. Process is still
     /// running. `position_after` is the caller's new cursor.
-    Output { output: Vec<u8>, position_after: u64 },
+    Output {
+        output: Vec<u8>,
+        position_after: u64,
+    },
 
     /// Child exited during the wait. `output` may contain bytes
     /// that arrived between `since` and exit; if nothing arrived
@@ -514,7 +514,11 @@ impl Drop for UnifiedExecProcess {
 
 /// Pump bytes from `reader` into `state.buffer`, firing `notify` on
 /// every read. Returns when reader EOFs or errors.
-fn reader_loop(mut reader: Box<dyn Read + Send>, state: Arc<Mutex<ProcessState>>, notify: Arc<Notify>) {
+fn reader_loop(
+    mut reader: Box<dyn Read + Send>,
+    state: Arc<Mutex<ProcessState>>,
+    notify: Arc<Notify>,
+) {
     let mut buf = vec![0u8; READ_BUF_BYTES];
     loop {
         match reader.read(&mut buf) {
@@ -784,9 +788,7 @@ mod tests {
                     cursor = position_after;
                 }
                 YieldResult::Exited {
-                    output,
-                    exit_code,
-                    ..
+                    output, exit_code, ..
                 } => {
                     assert_eq!(exit_code, 7, "exit code must propagate");
                     // Either the first yield saw "done" in Output,
@@ -986,8 +988,7 @@ mod tests {
                 // kill -0 PID returns Ok if the process exists and
                 // we have permission to signal it. Errno ESRCH
                 // means "no such process" — our expected outcome.
-                let alive =
-                    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+                let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
                 if !alive {
                     return;
                 }

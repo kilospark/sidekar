@@ -358,13 +358,10 @@ pub fn prompt_accessibility() -> bool {
 
     let key = CFString::new("AXTrustedCheckOptionPrompt");
     let value = CFBoolean::true_value();
-    let dict = CFDictionary::from_CFType_pairs(&[(
-        key.as_CFType(),
-        value.as_CFType(),
-    )]);
+    let dict = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
     unsafe {
         AXIsProcessTrustedWithOptions(
-            dict.as_concrete_TypeRef() as core_foundation_sys::dictionary::CFDictionaryRef,
+            dict.as_concrete_TypeRef() as core_foundation_sys::dictionary::CFDictionaryRef
         )
     }
 }
@@ -684,9 +681,10 @@ pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> 
         refmap.clear_pid(pid);
         for m in &mut matches {
             if super::refs::INTERACTIVE_ROLES.contains(&m.role.as_str()) || !m.actions.is_empty() {
-                let fh = m.frame.as_ref().map(|f| {
-                    super::refs::frame_hash(f.x, f.y, f.width, f.height)
-                });
+                let fh = m
+                    .frame
+                    .as_ref()
+                    .map(|f| super::refs::frame_hash(f.x, f.y, f.width, f.height));
                 let ref_id = refmap.allocate(super::refs::RefEntry {
                     pid,
                     role: m.role.clone(),
@@ -817,7 +815,10 @@ pub fn click_element(pid: i32, query: &str) -> Result<DesktopClickResult> {
             return click_element_by_path(resolved_pid, &path, &role, title.as_deref());
         } else {
             drop(refmap);
-            bail!("Ref {} not found. Run `sidekar desktop find` to refresh refs.", ref_id);
+            bail!(
+                "Ref {} not found. Run `sidekar desktop find` to refresh refs.",
+                ref_id
+            );
         }
     }
 
@@ -1003,10 +1004,10 @@ pub fn launch_app(name: &str) -> Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .status();
-    if let Ok(s) = status {
-        if s.success() {
-            return Ok(());
-        }
+    if let Ok(s) = status
+        && s.success()
+    {
+        return Ok(());
     }
 
     // Fallback: NSWorkspace (activates, but at least launches)

@@ -171,7 +171,10 @@ fn find_safe_commit_end(source: &str, from: usize) -> usize {
 
         if in_fence {
             let trimmed_start = content.trim_start();
-            let count = trimmed_start.chars().take_while(|&c| c == fence_marker).count();
+            let count = trimmed_start
+                .chars()
+                .take_while(|&c| c == fence_marker)
+                .count();
             if count >= fence_len && trimmed_start[count..].trim().is_empty() {
                 in_fence = false;
                 fence_len = 0;

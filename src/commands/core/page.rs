@@ -127,7 +127,11 @@ pub(crate) async fn cmd_navigate(ctx: &mut AppContext, url: &str, dismiss: bool)
     }
 
     let brief = get_page_brief(&mut cdp).await?;
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(brief))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(brief))?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -194,7 +198,11 @@ pub(crate) async fn cmd_dom(
                 sel_list.join(", ")
             );
         }
-        out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(dom_output))?);
+        out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&PlainOutput::new(dom_output))?
+        );
         cdp.close().await;
         return Ok(());
     }
@@ -220,7 +228,11 @@ pub(crate) async fn cmd_dom(
         }
     }
 
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(dom_output))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(dom_output))?
+    );
     cdp.close().await;
     Ok(())
 }
@@ -381,7 +393,11 @@ pub(crate) async fn cmd_axtree_full(
         }
     }
 
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(output))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(output))?
+    );
     cdp.send("Accessibility.disable", json!({})).await?;
     cdp.close().await;
     Ok(())
@@ -448,7 +464,11 @@ pub(crate) async fn cmd_read(
         }
     }
 
-    out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(output))?);
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&PlainOutput::new(output))?
+    );
     cdp.close().await;
     Ok(())
 }

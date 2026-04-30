@@ -207,9 +207,7 @@ where
             Err(e) => {
                 crate::broker::try_log_error(
                     "journal",
-                    &format!(
-                        "promote {event_type}: write_memory_event failed: {e:#}"
-                    ),
+                    &format!("promote {event_type}: write_memory_event failed: {e:#}"),
                     None,
                 );
             }
@@ -289,7 +287,10 @@ mod tests {
 
     #[test]
     fn normalize_collapses_case_and_whitespace() {
-        assert_eq!(normalize("  Use   Cargo TEST --lib  "), "use cargo test --lib");
+        assert_eq!(
+            normalize("  Use   Cargo TEST --lib  "),
+            "use cargo test --lib"
+        );
     }
 
     #[test]
@@ -347,10 +348,8 @@ mod tests {
             .lock()
             .map_err(|_| anyhow::anyhow!("home lock poisoned"))?;
         let old_home = std::env::var_os("HOME");
-        let temp = std::env::temp_dir().join(format!(
-            "sidekar-promote-test-{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("sidekar-promote-test-{}", std::process::id()));
         std::fs::create_dir_all(&temp)?;
         // Safety: test-only, restored on exit.
         unsafe {

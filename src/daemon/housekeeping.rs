@@ -269,10 +269,6 @@ pub(super) async fn discover_heartbeat(port: u16) {
     }
     crate::api_client::deregister_discover_port().await;
     if let Err(e) = crate::api_client::register_discover_port(port).await {
-        crate::broker::try_log_error(
-            "discover",
-            "heartbeat failed",
-            Some(&format!("{e:#}")),
-        );
+        crate::broker::try_log_error("discover", "heartbeat failed", Some(&format!("{e:#}")));
     }
 }

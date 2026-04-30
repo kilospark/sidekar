@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent,
+    ToolDef, Usage,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +80,10 @@ pub async fn stream(
         bail!("Codex API error ({}): {}", status, text);
     }
 
-    let rate_limit = { let snap = RateLimitSnapshot::from_openai_headers(response.headers()); if snap.is_empty() { None } else { Some(snap) } };
+    let rate_limit = {
+        let snap = RateLimitSnapshot::from_openai_headers(response.headers());
+        if snap.is_empty() { None } else { Some(snap) }
+    };
 
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -1232,7 +1236,7 @@ where
                         stop_reason: stop,
                         model: model_id.clone(),
                         response_id: response_id.clone(),
-                            rate_limit: None,
+                        rate_limit: None,
                     },
                 });
                 completed = true;

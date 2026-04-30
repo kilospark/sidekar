@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent,
+    ToolDef, Usage,
 };
 
 /// Streaming call to OpenRouter's OpenAI-compatible chat completions API.
@@ -47,10 +48,10 @@ pub async fn stream_with_provider(
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
     headers.insert("authorization", format!("Bearer {api_key}").parse()?);
-    if let Some(project) = super::vertex::extract_project(base_url) {
-        if let Ok(value) = project.parse() {
-            headers.insert("x-goog-user-project", value);
-        }
+    if let Some(project) = super::vertex::extract_project(base_url)
+        && let Ok(value) = project.parse()
+    {
+        headers.insert("x-goog-user-project", value);
     }
 
     super::log_api_request(&url, &headers, &body);
@@ -443,7 +444,7 @@ async fn parse_sse_stream(
             stop_reason: stop,
             model: model_id,
             response_id: String::new(),
-                            rate_limit: rate_limit.clone(),
+            rate_limit: rate_limit.clone(),
         },
     });
 

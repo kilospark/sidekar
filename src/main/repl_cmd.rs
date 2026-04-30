@@ -64,7 +64,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
     let nickname: String = match args.get(2).map(String::as_str) {
         Some(name) if !name.starts_with('-') => {
             // Avoid double-hyphen: "claude-work work" → "claude-work" not "claude-work-work"
-            let base = provider.trim_end_matches(|c: char| c == '-');
+            let base = provider.trim_end_matches('-');
             format!("{base}-{name}")
         }
         _ => provider.to_string(),
@@ -79,13 +79,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "codex" | "openai" => "codex",
                 "or" | "openrouter" => "openrouter",
                 "oc" | "opencode" => "opencode",
+                "ocg" | "opencode-go" => "opencode-go",
                 "grok" => "grok",
                 "gem" | "gemini" => "gemini",
                 _ => {
                     eprintln!("Unknown provider: '{provider}'.");
-                    eprintln!(
-                        "Use: claude, codex, or, oc, grok, gem, oac"
-                    );
+                    eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
                     std::process::exit(1);
                 }
             }
@@ -125,6 +124,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
                 "Logged in as '{nickname}' (OpenCode)."
             )))?;
         }
+        "opencode-go" => {
+            let _ = sidekar::providers::oauth::login_opencode_go(Some(nickname)).await?;
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+                "Logged in as '{nickname}' (OpenCode Go)."
+            )))?;
+        }
         "grok" => {
             let _ = sidekar::providers::oauth::login_grok(Some(nickname)).await?;
             sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
@@ -139,7 +144,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
         }
         _ => {
             eprintln!("Unknown provider type for '{nickname}'.");
-            eprintln!("Use: claude, codex, or, oc, grok, gem, oac");
+            eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
             std::process::exit(1);
         }
     }
@@ -180,7 +185,10 @@ struct CredentialsListOutput {
 impl sidekar::output::CommandOutput for CredentialsListOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         if self.credentials.is_empty() {
-            writeln!(w, "No stored credentials. Use: sidekar repl login <nickname>")?;
+            writeln!(
+                w,
+                "No stored credentials. Use: sidekar repl login <nickname>"
+            )?;
         } else {
             writeln!(w, "Stored credentials:")?;
             for c in &self.credentials {
@@ -230,6 +238,8 @@ async fn handle_models(args: &[String]) -> Result<()> {
             "openrouter"
         } else if cred == "opencode" {
             "opencode"
+        } else if cred == "opencode-go" {
+            "opencode-go"
         } else if cred == "grok" {
             "grok"
         } else {
@@ -245,6 +255,7 @@ async fn handle_models(args: &[String]) -> Result<()> {
             .map(|(t, _)| t),
         "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
         "opencode" => sidekar::providers::oauth::get_opencode_token(Some(&cred)).await,
+        "opencode-go" => sidekar::providers::oauth::get_opencode_go_token(Some(&cred)).await,
         "grok" => sidekar::providers::oauth::get_grok_token(Some(&cred)).await,
         "oac" => sidekar::providers::oauth::get_openai_compat_credentials(&cred)
             .await
@@ -356,10 +367,7 @@ impl sidekar::output::CommandOutput for ReplSessionsOutput {
         }
         writeln!(w, "Sessions (most recent first):\n")?;
         for s in &self.items {
-            let name = s
-                .name
-                .as_deref()
-                .unwrap_or(&s.id[..s.id.len().min(8)]);
+            let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
             let age = super::format_age(s.updated_at);
             if self.show_cwd {
                 let dir = s.cwd.rsplit('/').next().unwrap_or(&s.cwd);

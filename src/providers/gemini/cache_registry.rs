@@ -145,10 +145,7 @@ pub fn evict_expired() -> Result<usize> {
     let mut removed = 0;
     for e in entries {
         let parsed: Option<CacheEntry> = serde_json::from_str(&e.value).ok();
-        if parsed
-            .map(|p| now >= p.expires_at_unix)
-            .unwrap_or(true)
-        {
+        if parsed.map(|p| now >= p.expires_at_unix).unwrap_or(true) {
             let _ = crate::broker::kv_delete(&e.key);
             removed += 1;
         }

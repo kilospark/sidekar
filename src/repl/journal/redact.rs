@@ -1,45 +1,17 @@
 //! Pattern-based credential redaction for the journaling pipeline.
 //!
-//! Runs on the history slice *before* `prompt::format_prompt` builds
-//! the user-message body that goes to the summarizer LLM. The
-//! summarizer prompt itself already includes a "never include
-//! secrets" instruction, but relying on prompting for security is
-//! how you get secrets in logs. We strip at the input boundary so
-//! the model literally never sees them.
+//! Runs on the history slice *before* `prompt::format_prompt` builds the user
+//! body for the summarizer. Defense at the boundary beats "please don't log
+//! secrets" in the prompt alone.
 //!
-//! What this module scrubs (pattern-based, no context knowledge):
-//!   - OpenAI-style keys              `sk-...` / `sk-proj-...`
-//!   - Anthropic keys                 `sk-ant-...`
-//!   - Google API keys                `AIza...`
-//!   - AWS access key IDs             `AKIA...` (20 chars)
-//!   - AWS secret access keys         (40-char base64-ish, only when
-//!                                     it clearly looks like one in
-//!                                     an AWS context — we don't
-//!                                     blanket-scrub arbitrary 40-
-//!                                     char blobs since those match
-//!                                     legitimate content)
-//!   - GitHub tokens                  `ghp_...` / `ghs_...` / `gho_...` /
-//!                                    `ghu_...` / `ghr_...` / `github_pat_...`
-//!   - Slack tokens                   `xox[abpsr]-...`
-//!   - JWT tokens                     `ey...` three-segment base64url
-//!   - Bearer lines                   `Authorization: Bearer ...`
-//!   - Generic `api_key=` / `token=` values in URLs
-//!   - Common .env-style lines        `PASSWORD=...`, `SECRET=...`, `TOKEN=...`
+//! Covers common token shapes: OpenAI (`sk-`), Anthropic (`sk-ant-`), Google
+//! (`AIza`), AWS (`AKIA…` / contextual 40-char secrets), GitHub PAT variants,
+//! Slack `xox`-prefixed tokens, JWT/Bearer lines, URL `api_key=` / `token=`,
+//! and noisy `.env`-style `PASSWORD=`/`SECRET=`/`TOKEN=` lines.
 //!
-//! What this module does NOT try to scrub:
-//!   - Arbitrary high-entropy strings. Redacting all ~40-char base64-
-//!     ish blobs destroys legitimate content (hashes, commit IDs,
-//!     UUIDs-without-dashes, cached prompt ids, etc.). False positives
-//!     here are worse than false negatives, because the summarizer's
-//!     own prompt also warns against copying secrets — defense in
-//!     depth, not perfection.
-//!   - Secrets the user has explicitly chosen to embed as "the secret
-//!     for this test is XYZ." If that phrasing occurs in session
-//!     history, we're already out of scope.
-//!
-//! The threat-scanner module is the *output*-side counterpart — it
-//! inspects what the LLM gave back before we store and later re-inject
-//! it. This module is input-side only.
+//! Skips indiscriminate high-entropy scrubbing (would mangle hashes, commit
+//! IDs, etc.). Output-side scanning lives in the threat-scanner module; this
+//! file is input-side only.
 
 use std::sync::LazyLock;
 
@@ -142,9 +114,7 @@ pub(super) fn redact(input: &str) -> String {
 /// don't try to redact inside JSON arg values because the structure
 /// varies by tool and a broken arg is worse than a leaked key
 /// (and the tool itself already saw the real args).
-pub(super) fn redact_history_in_place(
-    history: &mut [crate::providers::ChatMessage],
-) {
+pub(super) fn redact_history_in_place(history: &mut [crate::providers::ChatMessage]) {
     use crate::providers::ContentBlock;
     for msg in history.iter_mut() {
         for block in msg.content.iter_mut() {
@@ -327,8 +297,7 @@ mod tests {
             role: Role::User,
             content: vec![
                 ContentBlock::Text {
-                    text: "use token ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ please"
-                        .into(),
+                    text: "use token ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ please".into(),
                 },
                 ContentBlock::Text {
                     text: "plain message".into(),

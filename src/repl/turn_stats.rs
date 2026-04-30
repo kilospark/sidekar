@@ -153,10 +153,7 @@ mod tests {
         // `last` is the most recent only — not the running sum.
         assert_eq!(s.last.as_ref().unwrap().input_tokens, 200);
         assert_eq!(s.last_response_id, "rid-2");
-        assert!(matches!(
-            s.last_stop_reason,
-            Some(StopReason::ToolUse)
-        ));
+        assert!(matches!(s.last_stop_reason, Some(StopReason::ToolUse)));
     }
 
     #[test]

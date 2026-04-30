@@ -318,8 +318,7 @@ mod tests {
         // Marker immediately after head.
         let marker_start = HEAD_CAP;
         let marker_region = &snap[marker_start..];
-        let marker_str =
-            std::str::from_utf8(marker_region).expect("marker region must be utf8");
+        let marker_str = std::str::from_utf8(marker_region).expect("marker region must be utf8");
         assert!(
             marker_str.starts_with("\n[... "),
             "marker must begin after head; got start: {:?}",

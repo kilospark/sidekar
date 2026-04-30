@@ -685,23 +685,20 @@ async fn exec_sidekar(
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sidekar"));
     let mut cmd = tokio::process::Command::new(sidekar_bin);
     cmd.args(&string_args);
-    let output = match run_subprocess_cancellable(
-        cmd,
-        cancel,
-        std::time::Duration::from_secs(timeout_secs),
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(CancellableError::Cancelled) => return Err(super::Cancelled.into()),
-        Err(CancellableError::Timeout) => {
-            bail!("sidekar: command timed out after {timeout_secs}s")
-        }
-        Err(CancellableError::Spawn(e)) => {
-            return Err(e.context("sidekar: failed to spawn (is `sidekar` on PATH?)"));
-        }
-        Err(CancellableError::Io(e)) => return Err(e.context("sidekar: io error")),
-    };
+    let output =
+        match run_subprocess_cancellable(cmd, cancel, std::time::Duration::from_secs(timeout_secs))
+            .await
+        {
+            Ok(o) => o,
+            Err(CancellableError::Cancelled) => return Err(super::Cancelled.into()),
+            Err(CancellableError::Timeout) => {
+                bail!("sidekar: command timed out after {timeout_secs}s")
+            }
+            Err(CancellableError::Spawn(e)) => {
+                return Err(e.context("sidekar: failed to spawn (is `sidekar` on PATH?)"));
+            }
+            Err(CancellableError::Io(e)) => return Err(e.context("sidekar: io error")),
+        };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -949,7 +946,10 @@ async fn exec_exec_session(
     };
 
     let cmd = args.get("cmd").and_then(|v| v.as_str());
-    let session_id = args.get("session_id").and_then(|v| v.as_i64()).map(|n| n as i32);
+    let session_id = args
+        .get("session_id")
+        .and_then(|v| v.as_i64())
+        .map(|n| n as i32);
     let action = args.get("action").and_then(|v| v.as_str());
     let stdin = args.get("stdin").and_then(|v| v.as_str());
     let workdir = args
@@ -996,10 +996,7 @@ async fn exec_exec_session(
             tty,
         };
         let y = yield_ms.unwrap_or(DEFAULT_SPAWN_YIELD_MS);
-        let out = mgr
-            .spawn(opts, y, cancel)
-            .await
-            .map_err(|e| propagate_cancel(e))?;
+        let out = mgr.spawn(opts, y, cancel).await.map_err(propagate_cancel)?;
         return Ok(render_exec_output(&out));
     }
 
@@ -1022,7 +1019,7 @@ async fn exec_exec_session(
             let out = mgr
                 .write_stdin(sid, b"", y, cancel)
                 .await
-                .map_err(|e| propagate_cancel(e))?;
+                .map_err(propagate_cancel)?;
             Ok(render_exec_output(&out))
         }
         "write" => {
@@ -1035,7 +1032,7 @@ async fn exec_exec_session(
             let out = mgr
                 .write_stdin(sid, input.as_bytes(), y, cancel)
                 .await
-                .map_err(|e| propagate_cancel(e))?;
+                .map_err(propagate_cancel)?;
             Ok(render_exec_output(&out))
         }
         "kill" => {
@@ -1045,9 +1042,7 @@ async fn exec_exec_session(
             let out = mgr.kill(sid).await?;
             Ok(render_exec_output(&out))
         }
-        other => bail!(
-            "ExecSession: unknown action '{other}'. Valid: poll, write, kill, list."
-        ),
+        other => bail!("ExecSession: unknown action '{other}'. Valid: poll, write, kill, list."),
     }
 }
 

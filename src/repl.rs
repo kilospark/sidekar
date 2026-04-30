@@ -13,12 +13,12 @@ mod skills;
 // layers. Visibility of individual items is still controlled per-
 // module; the outer walls are the access gate.
 pub(crate) mod journal;
+mod ratelimit;
 pub(crate) mod slash;
 mod spinner;
 mod stats;
 mod status;
 mod system_prompt;
-mod ratelimit;
 mod turn_stats;
 mod user_turn;
 
@@ -261,8 +261,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             anyhow::bail!("Single-prompt mode requires -m <model>");
         };
         let cred_tag = cred_name.as_deref().unwrap_or("");
-        let (session_id, mut history) =
-            resolve_session(&cwd, mdl, cred_tag, opts.resume.as_ref())?;
+        let (session_id, mut history) = resolve_session(&cwd, mdl, cred_tag, opts.resume.as_ref())?;
         let user_msg = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text: input }],
@@ -362,9 +361,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     //
     // On session switch (`/new`, `/session`) we reset this — the
     // switch handlers below replace it via `TurnStats::new()`.
-    let turn_stats = std::sync::Arc::new(std::sync::Mutex::new(
-        self::turn_stats::TurnStats::new(),
-    ));
+    let turn_stats = std::sync::Arc::new(std::sync::Mutex::new(self::turn_stats::TurnStats::new()));
 
     // Idle tracker for the background journaling subsystem.
     // - Armed at StreamEvent::Done in the event callback below.
@@ -377,8 +374,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // cheap (two Options + a mutex), and keeping it present means
     // `/journal on` mid-session starts journaling on the very next
     // idle window without re-threading anything.
-    let idle_tracker =
-        std::sync::Arc::new(self::journal::IdleTracker::new());
+    let idle_tracker = std::sync::Arc::new(self::journal::IdleTracker::new());
 
     // Handle for the background journaling polling task. Lazily
     // spawned on the first turn — at that point we know provider

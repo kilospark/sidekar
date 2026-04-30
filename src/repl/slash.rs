@@ -100,11 +100,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             let non_empty = match session::list_sessions_with_counts(cwd, 20, true) {
                 Ok(v) => v,
                 Err(e) => {
-                    broker::try_log_error(
-                        "session",
-                        &format!("failed to list: {e}"),
-                        None,
-                    );
+                    broker::try_log_error("session", &format!("failed to list: {e}"), None);
                     Vec::new()
                 }
             };
@@ -116,9 +112,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             } else {
                 session::list_sessions_with_counts(cwd, 20, false)
                     .ok()
-                    .and_then(|all| {
-                        all.into_iter().find(|s| s.session.id == *current_session)
-                    })
+                    .and_then(|all| all.into_iter().find(|s| s.session.id == *current_session))
             };
             let mut sessions = non_empty;
             // Truncate display to 10 rows after we know the current
@@ -165,17 +159,13 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     tunnel_println("Pick session to switch:");
                     for (i, sc) in sessions.iter().enumerate() {
                         let s = &sc.session;
-                        let name = s
-                            .name
-                            .as_deref()
-                            .unwrap_or(&s.id[..s.id.len().min(8)]);
+                        let name = s.name.as_deref().unwrap_or(&s.id[..s.id.len().min(8)]);
                         let cred = if s.provider.is_empty() {
                             "?"
                         } else {
                             s.provider.as_str()
                         };
-                        let age =
-                            session::format_relative_age(s.updated_at, now);
+                        let age = session::format_relative_age(s.updated_at, now);
                         tunnel_println(&format!(
                             "  [{i}] {name} — {} msgs, {age} ago, {cred}/{}",
                             sc.messages, s.model
@@ -187,9 +177,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         // tool-result-only session or, for the
                         // current-empty case, nothing has been sent).
                         if let Some(snip) = sc.last_prompt_snippet(30) {
-                            tunnel_println(&format!(
-                                "      \x1b[2m\"{snip}\"\x1b[0m"
-                            ));
+                            tunnel_println(&format!("      \x1b[2m\"{snip}\"\x1b[0m"));
                         }
                     }
                     print!("Enter number or Enter: ");
@@ -394,7 +382,11 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
 
             match sub {
                 "" => {
-                    let state = if crate::runtime::journal() { "on" } else { "off" };
+                    let state = if crate::runtime::journal() {
+                        "on"
+                    } else {
+                        "off"
+                    };
                     tunnel_println(&format!("Journal: {state}"));
                     tunnel_println(
                         "\x1b[2mSubcommands: on|off | list [N] | show <id> | now\x1b[0m",
@@ -423,23 +415,17 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .map(|d| d.as_secs_f64())
                                 .unwrap_or(0.0);
                             for r in rows {
-                                let age =
-                                    crate::session::format_relative_age(r.created_at, now);
+                                let age = crate::session::format_relative_age(r.created_at, now);
                                 let head = if r.headline.is_empty() {
                                     "(no headline)"
                                 } else {
                                     r.headline.as_str()
                                 };
-                                tunnel_println(&format!(
-                                    "  [{id:>4}] {age:>8}  {head}",
-                                    id = r.id
-                                ));
+                                tunnel_println(&format!("  [{id:>4}] {age:>8}  {head}", id = r.id));
                             }
                         }
                         Err(e) => {
-                            tunnel_println(&format!(
-                                "\x1b[31m/journal list failed: {e:#}\x1b[0m"
-                            ));
+                            tunnel_println(&format!("\x1b[31m/journal list failed: {e:#}\x1b[0m"));
                         }
                     }
                 }
@@ -462,9 +448,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                             tunnel_println(&format!("No journal with id {id}."));
                         }
                         Err(e) => {
-                            tunnel_println(&format!(
-                                "\x1b[31m/journal show failed: {e:#}\x1b[0m"
-                            ));
+                            tunnel_println(&format!("\x1b[31m/journal show failed: {e:#}\x1b[0m"));
                         }
                     }
                 }
@@ -489,14 +473,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 other => {
                     if let Some(parsed) = crate::runtime::parse_bool_arg(other) {
                         crate::runtime::set_journal(parsed);
-                        tunnel_println(&format!(
-                            "Journal: {}",
-                            if parsed { "on" } else { "off" }
-                        ));
+                        tunnel_println(&format!("Journal: {}", if parsed { "on" } else { "off" }));
                     } else {
-                        tunnel_println(
-                            "Usage: /journal [on|off | list [N] | show <id> | now]",
-                        );
+                        tunnel_println("Usage: /journal [on|off | list [N] | show <id> | now]");
                     }
                 }
             }
@@ -508,7 +487,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 None => {
                     if ctx.loaded_skills.is_empty() {
                         tunnel_println("No skills loaded this session.");
-                        tunnel_println("\x1b[2mUse /skill list to see available, /skill <name> to load.\x1b[0m");
+                        tunnel_println(
+                            "\x1b[2mUse /skill list to see available, /skill <name> to load.\x1b[0m",
+                        );
                     } else {
                         tunnel_println("Loaded skills (session-only):");
                         for name in ctx.loaded_skills {
@@ -574,10 +555,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             let snap_age;
             let snap_since;
             {
-                let ts = ctx
-                    .turn_stats
-                    .lock()
-                    .expect("turn_stats mutex poisoned");
+                let ts = ctx.turn_stats.lock().expect("turn_stats mutex poisoned");
                 snap_cum = ts.cumulative.clone();
                 snap_last = ts.last.clone();
                 snap_turns = ts.turn_count;
@@ -587,8 +565,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 snap_since = ts.last_turn_at.map(|t| t.elapsed());
             }
             let cw = providers::cached_context_window(model);
-            let tokens_estimate =
-                crate::agent::compaction::estimate_tokens_public(ctx.history);
+            let tokens_estimate = crate::agent::compaction::estimate_tokens_public(ctx.history);
             let view = super::status::StatusView {
                 session_id: current_session,
                 cwd,
@@ -820,8 +797,7 @@ fn render_journal_show(row: &crate::repl::journal::store::JournalRow) -> String 
         .unwrap_or(0.0);
     let age = crate::session::format_relative_age(row.created_at, now);
 
-    let outcome =
-        crate::repl::journal::parse::parse_response(&row.structured_json);
+    let outcome = crate::repl::journal::parse::parse_response(&row.structured_json);
     let j = outcome.journal;
 
     let mut out = String::with_capacity(1024);
@@ -1052,6 +1028,10 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
             let api_key = providers::oauth::get_opencode_token(Some(cred_name)).await?;
             Ok(Provider::opencode(api_key, cred))
         }
+        "opencode-go" => {
+            let api_key = providers::oauth::get_opencode_go_token(Some(cred_name)).await?;
+            Ok(Provider::opencode_go(api_key, cred))
+        }
         "grok" => {
             let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
             Ok(Provider::grok(api_key, cred))
@@ -1072,4 +1052,3 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
         _ => anyhow::bail!("Unknown provider type: {provider_type}"),
     }
 }
-
