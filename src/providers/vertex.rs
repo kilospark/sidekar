@@ -73,10 +73,7 @@ pub async fn fetch_models(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
         }
     };
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    {
+    let client = match super::catalog_http_client(15) {
         Ok(c) => c,
         Err(e) => {
             if verbose {

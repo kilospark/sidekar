@@ -199,15 +199,7 @@ fn build_request_body(
                 }
 
                 // Text output
-                let text = msg
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let text = super::openai_compat_assistant_join_text(&msg.content);
 
                 if !text.is_empty() {
                     input.push(json!({

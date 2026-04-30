@@ -785,12 +785,11 @@ struct AnthropicProfile {
 }
 
 async fn fetch_anthropic_profile(access_token: &str) -> Option<AnthropicProfile> {
-    let client = reqwest::Client::new();
+    let client = super::catalog_http_client(super::MODEL_CATALOG_TIMEOUT_SECS).ok()?;
     let resp = client
         .get("https://api.anthropic.com/api/oauth/profile")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Content-Type", "application/json")
-        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
         .ok()?;

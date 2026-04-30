@@ -439,6 +439,30 @@ pub enum ContentBlock {
     Reasoning { text: String },
 }
 
+/// User-visible assistant `content` fragments for OpenAI Chat Completions (joined with `\n`).
+pub(super) fn openai_compat_assistant_join_text(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Concatenate `Reasoning` blocks for `reasoning_content` / provider-specific replay keys.
+pub(super) fn openai_compat_assistant_concat_reasoning_chunks(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Reasoning { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .concat()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
@@ -1110,29 +1134,7 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, S
         req = req.header("x-api-key", api_key);
     }
 
-    let resp = match req.send().await {
-        Ok(r) => {
-            if !r.status().is_success() {
-                let status = r.status();
-                let text = r.text().await.unwrap_or_default();
-                let detail = format_api_error_body(&text);
-                let msg = format!("Anthropic API error ({status}): {detail}");
-                crate::broker::try_log_error("models", &format!("API {status}"), Some(&text));
-                return Err(msg);
-            }
-            r
-        }
-        Err(e) => {
-            let msg = format!("Anthropic API request failed: {e}");
-            crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
-            return Err(msg);
-        }
-    };
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Anthropic API: invalid JSON response: {e}"))?;
+    let body = catalog_send_json_broker_logged(req, "Anthropic API").await?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1238,39 +1240,97 @@ fn format_api_error_body(body: &str) -> String {
     }
 }
 
-async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
-    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
-
-    let resp = match client
-        .get(url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("originator", "sidekar")
-        .send()
-        .await
-    {
+/// Catalog HTTP request; on failure logs to the broker (`models`) and returns a structured `Err`.
+async fn catalog_send_json_broker_logged(
+    req: reqwest::RequestBuilder,
+    error_label: &'static str,
+) -> Result<serde_json::Value, String> {
+    let resp = match req.send().await {
         Ok(r) => {
             if !r.status().is_success() {
                 let status = r.status();
                 let text = r.text().await.unwrap_or_default();
                 let detail = format_api_error_body(&text);
-                let msg = format!("Codex API error ({status}): {detail}");
+                let msg = format!("{error_label} error ({status}): {detail}");
                 crate::broker::try_log_error("models", &format!("API {status}"), Some(&text));
                 return Err(msg);
             }
             r
         }
         Err(e) => {
-            let msg = format!("Codex API request failed: {e}");
+            let msg = format!("{error_label} request failed: {e}");
             crate::broker::try_log_error("models", "API error", Some(&format!("{e:#}")));
             return Err(msg);
         }
     };
-
-    let body: serde_json::Value = resp
-        .json()
+    resp.json()
         .await
-        .map_err(|e| format!("Codex API: invalid JSON response: {e}"))?;
+        .map_err(|e| format!("{error_label}: invalid JSON response: {e}"))
+}
+
+/// Catalog request without broker logging (OpenCode public lists, Gemini list, etc.).
+async fn catalog_send_json_plain(
+    req: reqwest::RequestBuilder,
+    label_for_errors: &'static str,
+) -> Result<serde_json::Value, String> {
+    let resp = match req.send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let detail = format_api_error_body(&text);
+            return Err(format!("{label_for_errors} API error ({status}): {detail}"));
+        }
+        Err(e) => {
+            return Err(format!("{label_for_errors} API request failed: {e}"));
+        }
+    };
+    resp.json()
+        .await
+        .map_err(|e| format!("{label_for_errors} API: invalid JSON response: {e}"))
+}
+
+/// OpenAI-compat model list: optional verbose stderr on failure; URL appears in error strings.
+async fn catalog_send_openai_compat_model_list_json(
+    req: reqwest::RequestBuilder,
+    url: &str,
+    verbose: bool,
+) -> Result<serde_json::Value, String> {
+    let resp = match req.send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            if verbose {
+                eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
+            }
+            let detail = format_api_error_body(&body);
+            return Err(format!("API error ({status}) at {url}: {detail}"));
+        }
+        Err(e) => {
+            if verbose {
+                eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
+            }
+            return Err(format!("API request to {url} failed: {e}"));
+        }
+    };
+    resp.json()
+        .await
+        .map_err(|e| format!("API at {url}: invalid JSON response: {e}"))
+}
+
+async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
+    let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+
+    let body = catalog_send_json_broker_logged(
+        client
+            .get(url)
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("originator", "sidekar"),
+        "Codex API",
+    )
+    .await?;
 
     let mut models = Vec::new();
     let arr = body
@@ -1317,34 +1377,14 @@ pub async fn fetch_openai_compat_model_list(
     }
     let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
-    let resp = match client
-        .get(&url)
-        .header("authorization", format!("Bearer {api_key}"))
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            if verbose {
-                eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
-            }
-            let detail = format_api_error_body(&body);
-            return Err(format!("API error ({status}) at {url}: {detail}"));
-        }
-        Err(e) => {
-            if verbose {
-                eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
-            }
-            return Err(format!("API request to {url} failed: {e}"));
-        }
-    };
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("API at {url}: invalid JSON response: {e}"))?;
+    let body = catalog_send_openai_compat_model_list_json(
+        client
+            .get(&url)
+            .header("authorization", format!("Bearer {api_key}")),
+        &url,
+        verbose,
+    )
+    .await?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
@@ -1386,21 +1426,7 @@ async fn fetch_opencode_public_model_list(
         req = req.header("anthropic-version", "2023-06-01");
     }
 
-    let resp = match req.send().await {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            let detail = format_api_error_body(&text);
-            return Err(format!("{label} API error ({status}): {detail}"));
-        }
-        Err(e) => return Err(format!("{label} API request failed: {e}")),
-    };
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("{label} API: invalid JSON response: {e}"))?;
+    let body = catalog_send_json_plain(req, label).await?;
 
     let mut models = Vec::new();
     if let Some(data) = body.get("data").and_then(|d| d.as_array()) {

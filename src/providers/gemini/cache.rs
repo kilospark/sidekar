@@ -25,7 +25,6 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::time::Duration;
 
 /// Response metadata from a successful create.
 #[derive(Debug, Clone)]
@@ -102,9 +101,8 @@ pub async fn create_cache(req: CreateCacheRequest<'_>) -> Result<Option<CreatedC
         body["systemInstruction"] = sys.clone();
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
+    let client = super::super::catalog_http_client(30)
+        .map_err(anyhow::Error::msg)
         .context("build http client")?;
 
     let resp = client
@@ -172,9 +170,7 @@ pub async fn create_cache(req: CreateCacheRequest<'_>) -> Result<Option<CreatedC
 #[allow(dead_code)]
 pub async fn delete_cache(api_key: &str, base_url: &str, name: &str) -> Result<()> {
     let url = format!("{}/{name}", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
+    let client = super::super::catalog_http_client(10).map_err(anyhow::Error::msg)?;
     let resp = client
         .delete(&url)
         .header("x-goog-api-key", api_key)

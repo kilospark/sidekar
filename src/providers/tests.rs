@@ -1,5 +1,8 @@
 use super::{
-    Provider, SseDecoder, is_retryable_error, openai_chat_completions_url, openai_models_url,
+    ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, Provider, SseDecoder, catalog_http_client,
+    is_retryable_error, openai_chat_completions_url,
+    openai_compat_assistant_concat_reasoning_chunks, openai_compat_assistant_join_text,
+    openai_models_url, provider_models_list_client,
 };
 
 #[test]
@@ -184,4 +187,24 @@ fn not_retryable_4xx_client_errors() {
     assert!(!is_retryable_error(&err("api error (401): unauthorized")));
     assert!(!is_retryable_error(&err("api error (403): forbidden")));
     assert!(!is_retryable_error(&err("api error (404): not found")));
+}
+
+#[test]
+fn catalog_http_clients_build_successfully() {
+    assert!(catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS).is_ok());
+    assert!(provider_models_list_client(MODEL_CATALOG_TIMEOUT_SECS).is_some());
+}
+
+#[test]
+fn openai_compat_assistant_text_helpers_split_text_and_reasoning() {
+    let blocks = vec![
+        ContentBlock::Text { text: "a".into() },
+        ContentBlock::Reasoning { text: "r".into() },
+        ContentBlock::Text { text: "b".into() },
+    ];
+    assert_eq!(openai_compat_assistant_join_text(&blocks), "a\nb");
+    assert_eq!(
+        openai_compat_assistant_concat_reasoning_chunks(&blocks),
+        "r"
+    );
 }

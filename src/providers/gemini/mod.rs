@@ -453,6 +453,7 @@ pub(crate) fn build_request_body(
                 // documented skip sentinel.
                 let has_thinking = msg.content.iter().any(|b| {
                     matches!(b, ContentBlock::Thinking { thinking, .. } if !thinking.is_empty())
+                        || matches!(b, ContentBlock::Reasoning { text, .. } if !text.is_empty())
                 });
                 // Sentinel value documented by Google for cross-model
                 // history transfer:
@@ -481,6 +482,9 @@ pub(crate) fn build_request_body(
                                 "thought": true,
                                 "thoughtSignature": sig,
                             }));
+                        }
+                        ContentBlock::Reasoning { text } if !text.is_empty() => {
+                            parts.push(json!({ "text": text }));
                         }
                         ContentBlock::ToolCall {
                             id,
@@ -827,29 +831,10 @@ async fn parse_sse_stream(
 /// Fetch Gemini's model list. GET /v1beta/models?pageSize=100.
 pub async fn fetch_gemini_model_list(api_key: &str) -> Result<Vec<super::RemoteModel>, String> {
     let url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-    let resp = match client
-        .get(url)
-        .header("x-goog-api-key", api_key)
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            let detail = super::format_api_error_body(&text);
-            return Err(format!("Gemini API error ({status}): {detail}"));
-        }
-        Err(e) => return Err(format!("Gemini API request failed: {e}")),
-    };
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Gemini API: invalid JSON response: {e}"))?;
+    let client = super::catalog_http_client(super::MODEL_CATALOG_TIMEOUT_SECS)?;
+    let body: Value =
+        super::catalog_send_json_plain(client.get(url).header("x-goog-api-key", api_key), "Gemini")
+            .await?;
     let Some(models) = body.get("models").and_then(|m| m.as_array()) else {
         return Ok(Vec::new());
     };
@@ -898,10 +883,7 @@ pub async fn fetch_gemini_model_limits(
     model: &str,
 ) -> Option<(u32, u32)> {
     let url = format!("{}/models/{}", base_url.trim_end_matches('/'), model);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
+    let client = super::catalog_http_client(super::MODEL_CATALOG_TIMEOUT_SECS).ok()?;
     let resp = client
         .get(&url)
         .header("x-goog-api-key", api_key)
