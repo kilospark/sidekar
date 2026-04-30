@@ -930,11 +930,19 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
     }
 }
 
-fn provider_models_list_client(secs: u64) -> Option<reqwest::Client> {
+/// Default timeout for model-catalog HTTP (list endpoints, `/v1/models` probes).
+const MODEL_CATALOG_TIMEOUT_SECS: u64 = 10;
+
+/// Build a short-timeout client for model catalog / metadata requests.
+fn catalog_http_client(secs: u64) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(secs))
         .build()
-        .ok()
+        .map_err(|e| format!("HTTP client error: {e}"))
+}
+
+fn provider_models_list_client(secs: u64) -> Option<reqwest::Client> {
+    catalog_http_client(secs).ok()
 }
 
 fn model_from_list_by_id<'a>(
@@ -949,7 +957,7 @@ fn model_from_list_by_id<'a>(
 /// Bearer GET `/v1/models` (OpenRouter, generic OpenAI-compatible bases).
 async fn fetch_bearer_models_list_json(api_key: &str, base_url: &str) -> Option<serde_json::Value> {
     let url = openai_models_url(base_url);
-    let client = provider_models_list_client(10)?;
+    let client = provider_models_list_client(MODEL_CATALOG_TIMEOUT_SECS)?;
     let resp = client
         .get(&url)
         .header("authorization", format!("Bearer {api_key}"))
@@ -969,7 +977,7 @@ async fn fetch_anthropic_model_limits(
     model: &str,
 ) -> Option<(u32, u32)> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-    let client = provider_models_list_client(10)?;
+    let client = provider_models_list_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
@@ -1089,10 +1097,7 @@ pub async fn fetch_model_list_for_provider(
 
 async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
     let url = "https://api.anthropic.com/v1/models";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(url).header("anthropic-version", "2023-06-01");
@@ -1235,10 +1240,7 @@ fn format_api_error_body(body: &str) -> String {
 
 async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
     let url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
     let resp = match client
         .get(url)
@@ -1313,10 +1315,7 @@ pub async fn fetch_openai_compat_model_list(
     if verbose {
         eprintln!("\x1b[2m[fetching models from {url}]\x1b[0m");
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
     let resp = match client
         .get(&url)
@@ -1380,10 +1379,7 @@ async fn fetch_opencode_public_model_list(
     label: &'static str,
     with_anthropic_version: bool,
 ) -> Result<Vec<RemoteModel>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
     let mut req = client.get(url);
     if with_anthropic_version {
