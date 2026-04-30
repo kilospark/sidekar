@@ -72,23 +72,12 @@ async fn handle_login(args: &[String]) -> Result<()> {
     let nickname = nickname.as_str();
 
     let provider_type =
-        sidekar::providers::oauth::provider_type_for(nickname).unwrap_or_else(|| {
-            // Fall back on the bare provider keyword
-            match provider {
-                "claude" | "anthropic" => "anthropic",
-                "codex" | "openai" => "codex",
-                "or" | "openrouter" => "openrouter",
-                "oc" | "opencode" => "opencode",
-                "ocg" | "opencode-go" => "opencode-go",
-                "grok" => "grok",
-                "gem" | "gemini" => "gemini",
-                _ => {
-                    eprintln!("Unknown provider: '{provider}'.");
-                    eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
-                    std::process::exit(1);
-                }
-            }
-        });
+        sidekar::providers::oauth::resolve_provider_type_for_login(nickname, provider)
+            .unwrap_or_else(|| {
+                eprintln!("Unknown provider: '{provider}'.");
+                eprintln!("Use: claude, codex, or, oc, ocg, grok, gem, oac");
+                std::process::exit(1);
+            });
 
     // Clear existing creds for this nickname before login
     let kv_key = sidekar::providers::oauth::kv_key_for(nickname);
@@ -229,53 +218,15 @@ async fn handle_models(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     };
-    let provider_type = sidekar::providers::oauth::provider_type_for(&cred).unwrap_or_else(|| {
-        if cred == "anthropic" {
-            "anthropic"
-        } else if cred == "codex" || cred == "openai" {
-            "codex"
-        } else if cred == "openrouter" {
-            "openrouter"
-        } else if cred == "opencode" {
-            "opencode"
-        } else if cred == "opencode-go" {
-            "opencode-go"
-        } else if cred == "grok" {
-            "grok"
-        } else {
-            eprintln!("Unknown provider for '{cred}'.");
-            std::process::exit(1);
-        }
-    });
-    // Get token silently (don't trigger login)
-    let api_key = match provider_type {
-        "anthropic" => sidekar::providers::oauth::get_anthropic_token(Some(&cred)).await,
-        "codex" => sidekar::providers::oauth::get_codex_token(Some(&cred))
-            .await
-            .map(|(t, _)| t),
-        "openrouter" => sidekar::providers::oauth::get_openrouter_token(Some(&cred)).await,
-        "opencode" => sidekar::providers::oauth::get_opencode_token(Some(&cred)).await,
-        "opencode-go" => sidekar::providers::oauth::get_opencode_go_token(Some(&cred)).await,
-        "grok" => sidekar::providers::oauth::get_grok_token(Some(&cred)).await,
-        "oac" => sidekar::providers::oauth::get_openai_compat_credentials(&cred)
-            .await
-            .map(|c| c.api_key),
-        _ => anyhow::bail!("Unknown provider"),
-    };
-    let api_key = match api_key {
-        Ok(k) => k,
+    let prov = match sidekar::repl::provider_from_credential(&cred).await {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("Failed to get credentials for '{cred}': {e}");
             std::process::exit(1);
         }
     };
-    let models = if provider_type == "oac" {
-        let creds = sidekar::providers::oauth::get_openai_compat_credentials(&cred).await?;
-        sidekar::providers::fetch_openai_compat_model_list(&creds.api_key, &creds.base_url).await
-    } else {
-        sidekar::providers::fetch_model_list(provider_type, &api_key).await
-    };
-    let models = match models {
+    let provider_type = prov.provider_type();
+    let models = match sidekar::providers::fetch_model_list_for_provider(&prov).await {
         Ok(m) => m,
         Err(err) => {
             eprintln!("Error listing models for '{cred}' ({provider_type}): {err}");

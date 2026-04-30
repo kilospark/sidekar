@@ -32,6 +32,7 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     } => {
                         encrypted_content.len() * 3 / 4 // base64 → ~75% raw bytes
                     }
+                    ContentBlock::Reasoning { text } => text.len(),
                 })
                 .sum::<usize>()
         })

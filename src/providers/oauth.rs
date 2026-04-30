@@ -99,6 +99,44 @@ fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
     }
 }
 
+/// Default `oauth:<stem>` key stems (no `oauth:` prefix) → wire type.
+fn legacy_kv_credential_type(stem: &str) -> Option<&'static str> {
+    match stem {
+        "anthropic" => Some("anthropic"),
+        "codex" | "openai" => Some("codex"),
+        "openrouter" => Some("openrouter"),
+        "opencode" => Some("opencode"),
+        "opencode-go" => Some("opencode-go"),
+        "grok" => Some("grok"),
+        "gemini" => Some("gemini"),
+        _ => None,
+    }
+}
+
+/// Credential nickname or bare default-KV stem (`anthropic`, `claude-work`, …).
+pub fn resolve_provider_type_for_credential(nick: &str) -> Option<&'static str> {
+    provider_type_for(nick).or_else(|| legacy_kv_credential_type(nick))
+}
+
+/// `sidekar repl login` keyword when convention match on nickname fails.
+pub fn provider_type_from_cli_keyword(keyword: &str) -> Option<&'static str> {
+    match keyword {
+        "claude" | "anthropic" => Some("anthropic"),
+        "codex" | "openai" => Some("codex"),
+        "or" | "openrouter" => Some("openrouter"),
+        "oc" | "opencode" => Some("opencode"),
+        "ocg" | "opencode-go" => Some("opencode-go"),
+        "grok" => Some("grok"),
+        "gem" | "gemini" => Some("gemini"),
+        _ => None,
+    }
+}
+
+/// Login: prefer convention on full nickname, else CLI provider keyword.
+pub fn resolve_provider_type_for_login(nickname: &str, cli_keyword: &str) -> Option<&'static str> {
+    provider_type_for(nickname).or_else(|| provider_type_from_cli_keyword(cli_keyword))
+}
+
 /// Get the email/identity stored in a credential's metadata.
 pub fn credential_email(nickname: &str) -> Option<String> {
     let key = kv_key_for(nickname);
@@ -129,19 +167,7 @@ pub fn list_credentials() -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|e| {
             let name = e.key.strip_prefix("oauth:")?;
-            let provider = provider_type_for(name).unwrap_or(if name == "anthropic" {
-                "anthropic"
-            } else if name == "codex" {
-                "codex"
-            } else if name == "openrouter" {
-                "openrouter"
-            } else if name == "opencode" {
-                "opencode"
-            } else if name == "grok" {
-                "grok"
-            } else {
-                "unknown"
-            });
+            let provider = resolve_provider_type_for_credential(name).unwrap_or("unknown");
             Some((name.to_string(), provider.to_string()))
         })
         .collect()
@@ -181,7 +207,7 @@ type OAuthRefreshFn = fn(&OAuthCredentials) -> PinOAuthFut;
 /// early rotation, or revocation). Anthropic and Codex only; other providers
 /// store static API keys with no refresh path.
 pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
-    let provider_type = provider_type_for(cred_name)
+    let provider_type = resolve_provider_type_for_credential(cred_name)
         .ok_or_else(|| anyhow::anyhow!("unknown credential '{cred_name}'"))?;
 
     let (kv_key, refresh_fn): (String, OAuthRefreshFn) = match provider_type {
@@ -290,46 +316,24 @@ pub async fn login_openrouter(nickname: Option<&str>) -> Result<String> {
 
 async fn get_openrouter_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENROUTER);
-
-    // 1. Stored credentials (skipped on interactive login — caller wants fresh auth).
-    if !interactive && let Some(creds) = load_credentials(&kv_key)? {
-        return Ok(creds.access_token);
-    }
-
-    // 2. Environment variable (skipped on interactive login — would silently
-    // bypass prompt + persistence under oauth:<nickname>).
-    if !interactive
-        && let Ok(key) = std::env::var("OPENROUTER_API_KEY")
-        && !key.is_empty()
-    {
-        return Ok(key);
-    }
-
-    // 3. Interactive prompt
-    eprintln!("No OpenRouter credentials found.");
-    eprintln!("Get an API key from https://openrouter.ai/keys");
-    eprint!("API key: ");
-    let _ = std::io::stderr().flush();
-    let mut key = String::new();
-    std::io::stdin()
-        .read_line(&mut key)
-        .context("failed to read API key")?;
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        bail!("No API key provided");
-    }
-
-    // Store as OAuthCredentials for consistency
-    let creds = OAuthCredentials {
-        access_token: key.clone(),
-        refresh_token: String::new(),
-        expires_at: u64::MAX,
-        metadata: serde_json::json!({}),
-    };
-    save_credentials(&kv_key, &creds)?;
-    eprintln!("OpenRouter API key saved.");
-
-    Ok(key)
+    get_api_key_token(
+        &kv_key,
+        &["OPENROUTER_API_KEY"],
+        "OpenRouter",
+        interactive,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({}),
+            saved_message: "OpenRouter API key saved.",
+            prompt_label: "API key",
+            prelude_lines: &[
+                "No OpenRouter credentials found.",
+                "Get an API key from https://openrouter.ai/keys",
+            ],
+            open_urls: &[],
+            legacy_open_url: None,
+        },
+    )
+    .await
 }
 
 /// Get a valid OpenCode API key. No OAuth — uses stored key or OPENCODE_API_KEY env var.
@@ -343,42 +347,21 @@ pub async fn login_opencode(nickname: Option<&str>) -> Result<String> {
 
 async fn get_opencode_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE);
-
-    if !interactive && let Some(creds) = load_credentials(&kv_key)? {
-        return Ok(creds.access_token);
-    }
-
-    if !interactive
-        && let Ok(key) = std::env::var("OPENCODE_API_KEY")
-        && !key.is_empty()
-    {
-        return Ok(key);
-    }
-
-    // 3. Interactive prompt — open browser to auth page
-    eprintln!("No OpenCode credentials found. Opening https://opencode.ai/auth ...");
-    let _ = open_browser("https://opencode.ai/auth");
-    eprint!("Paste API key: ");
-    let _ = std::io::stderr().flush();
-    let mut key = String::new();
-    std::io::stdin()
-        .read_line(&mut key)
-        .context("failed to read API key")?;
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        bail!("No API key provided");
-    }
-
-    let creds = OAuthCredentials {
-        access_token: key.clone(),
-        refresh_token: String::new(),
-        expires_at: u64::MAX,
-        metadata: serde_json::json!({}),
-    };
-    save_credentials(&kv_key, &creds)?;
-    eprintln!("OpenCode API key saved.");
-
-    Ok(key)
+    get_api_key_token(
+        &kv_key,
+        &["OPENCODE_API_KEY"],
+        "OpenCode",
+        interactive,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({}),
+            saved_message: "OpenCode API key saved.",
+            prompt_label: "Paste API key",
+            prelude_lines: &["No OpenCode credentials found. Opening https://opencode.ai/auth ..."],
+            open_urls: &["https://opencode.ai/auth"],
+            legacy_open_url: None,
+        },
+    )
+    .await
 }
 
 /// Get a valid OpenCode Go API key. Same key as OpenCode Zen, separate KV slot.
@@ -392,43 +375,23 @@ pub async fn login_opencode_go(nickname: Option<&str>) -> Result<String> {
 
 async fn get_opencode_go_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE_GO);
-
-    if !interactive && let Some(creds) = load_credentials(&kv_key)? {
-        return Ok(creds.access_token);
-    }
-
-    // Fall back to OPENCODE_API_KEY env var (same key works for both plans)
-    if !interactive
-        && let Ok(key) = std::env::var("OPENCODE_API_KEY")
-        && !key.is_empty()
-    {
-        return Ok(key);
-    }
-
-    // Interactive prompt — open browser to auth page
-    eprintln!("No OpenCode Go credentials found. Opening https://opencode.ai/auth ...");
-    let _ = open_browser("https://opencode.ai/auth");
-    eprint!("Paste API key: ");
-    let _ = std::io::stderr().flush();
-    let mut key = String::new();
-    std::io::stdin()
-        .read_line(&mut key)
-        .context("failed to read API key")?;
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        bail!("No API key provided");
-    }
-
-    let creds = OAuthCredentials {
-        access_token: key.clone(),
-        refresh_token: String::new(),
-        expires_at: u64::MAX,
-        metadata: serde_json::json!({}),
-    };
-    save_credentials(&kv_key, &creds)?;
-    eprintln!("OpenCode Go API key saved.");
-
-    Ok(key)
+    get_api_key_token(
+        &kv_key,
+        &["OPENCODE_API_KEY"],
+        "OpenCode Go",
+        interactive,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({}),
+            saved_message: "OpenCode Go API key saved.",
+            prompt_label: "Paste API key",
+            prelude_lines: &[
+                "No OpenCode Go credentials found. Opening https://opencode.ai/auth ...",
+            ],
+            open_urls: &["https://opencode.ai/auth"],
+            legacy_open_url: None,
+        },
+    )
+    .await
 }
 
 /// Get a valid Grok API key. No OAuth — uses stored key or XAI_API_KEY env var.
@@ -436,10 +399,19 @@ pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
     get_api_key_token(
         &kv_key,
-        "XAI_API_KEY",
+        &["XAI_API_KEY"],
         "Grok",
-        Some("https://console.x.ai/"),
         false,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({
+                "provider_type": "grok",
+            }),
+            saved_message: "Grok API key saved.",
+            prompt_label: "API key",
+            prelude_lines: &[],
+            open_urls: &[],
+            legacy_open_url: Some("https://console.x.ai/"),
+        },
     )
     .await
 }
@@ -448,10 +420,19 @@ pub async fn login_grok(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
     get_api_key_token(
         &kv_key,
-        "XAI_API_KEY",
+        &["XAI_API_KEY"],
         "Grok",
-        Some("https://console.x.ai/"),
         true,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({
+                "provider_type": "grok",
+            }),
+            saved_message: "Grok API key saved.",
+            prompt_label: "API key",
+            prelude_lines: &[],
+            open_urls: &[],
+            legacy_open_url: Some("https://console.x.ai/"),
+        },
     )
     .await
 }
@@ -463,8 +444,8 @@ pub async fn login_grok(nickname: Option<&str>) -> Result<String> {
 pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_GEMINI);
     // Try the primary env var first; fall back to GOOGLE_API_KEY which
-    // Google's own SDKs default to. `get_api_key_token` only takes one
-    // env name, so check GOOGLE_API_KEY manually before calling it.
+    // Google's own SDKs default to. The env chain in `get_api_key_token`
+    // only covers `GEMINI_API_KEY`; check `GOOGLE_API_KEY` explicitly first.
     if std::env::var("GEMINI_API_KEY").is_err()
         && let Ok(key) = std::env::var("GOOGLE_API_KEY")
     {
@@ -480,10 +461,19 @@ pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
     }
     get_api_key_token(
         &kv_key,
-        "GEMINI_API_KEY",
+        &["GEMINI_API_KEY"],
         "Gemini",
-        Some("https://aistudio.google.com/apikey"),
         false,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({
+                "provider_type": "gemini",
+            }),
+            saved_message: "Gemini API key saved.",
+            prompt_label: "API key",
+            prelude_lines: &[],
+            open_urls: &[],
+            legacy_open_url: Some("https://aistudio.google.com/apikey"),
+        },
     )
     .await
 }
@@ -494,10 +484,19 @@ pub async fn login_gemini(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_GEMINI);
     get_api_key_token(
         &kv_key,
-        "GEMINI_API_KEY",
+        &["GEMINI_API_KEY"],
         "Gemini",
-        Some("https://aistudio.google.com/apikey"),
         true,
+        ApiKeyInteractive {
+            metadata: serde_json::json!({
+                "provider_type": "gemini",
+            }),
+            saved_message: "Gemini API key saved.",
+            prompt_label: "API key",
+            prelude_lines: &[],
+            open_urls: &[],
+            legacy_open_url: Some("https://aistudio.google.com/apikey"),
+        },
     )
     .await
 }
@@ -578,39 +577,69 @@ pub async fn login_openai_compat(
     })
 }
 
+/// Interactive steps after KV/env miss (`get_api_key_token`).
+#[derive(Debug)]
+struct ApiKeyInteractive<'a> {
+    metadata: serde_json::Value,
+    saved_message: &'a str,
+    prompt_label: &'a str,
+    prelude_lines: &'a [&'a str],
+    open_urls: &'a [&'a str],
+    legacy_open_url: Option<&'a str>,
+}
+
+/// Static API key flows: KV → env chain (non-interactive) → prelude + optional URLs → prompt → persist.
+///
+/// Use `legacy_open_url` when the UX is the single banner that also opens one URL (Grok/Gemini).
+/// Use `prelude_lines` / `open_urls` for richer hints (OpenRouter, OpenCode).
 async fn get_api_key_token(
     kv_key: &str,
-    env_var: &str,
+    env_vars: &[&str],
     provider_name: &str,
-    setup_url: Option<&str>,
     interactive: bool,
+    ix: ApiKeyInteractive<'_>,
 ) -> Result<String> {
+    let ApiKeyInteractive {
+        metadata,
+        saved_message,
+        prompt_label,
+        prelude_lines,
+        open_urls,
+        legacy_open_url,
+    } = ix;
+
     if !interactive && let Some(creds) = load_credentials(kv_key)? {
         return Ok(creds.access_token);
     }
 
-    if !interactive
-        && let Ok(key) = std::env::var(env_var)
-        && !key.is_empty()
-    {
-        return Ok(key);
+    if !interactive {
+        for name in env_vars {
+            if let Ok(key) = std::env::var(name)
+                && !key.is_empty()
+            {
+                return Ok(key);
+            }
+        }
     }
 
-    if let Some(url) = setup_url {
+    if !prelude_lines.is_empty() {
+        for line in prelude_lines {
+            eprintln!("{line}");
+        }
+    } else if let Some(url) = legacy_open_url {
         eprintln!("No {provider_name} credentials found. Opening {url} ...");
         let _ = open_browser(url);
     } else {
         eprintln!("No {provider_name} credentials found.");
     }
-    let key = prompt_required("API key", None)?;
-    save_static_token(
-        kv_key,
-        &key,
-        serde_json::json!({
-            "provider_type": provider_name.to_ascii_lowercase(),
-        }),
-    )?;
-    eprintln!("{provider_name} API key saved.");
+
+    for url in open_urls {
+        let _ = open_browser(url);
+    }
+
+    let key = prompt_required(prompt_label, None)?;
+    save_static_token(kv_key, &key, metadata)?;
+    eprintln!("{saved_message}");
 
     Ok(key)
 }
@@ -1343,6 +1372,30 @@ mod tests {
         assert_eq!(provider_type_for("gem"), Some("gemini"));
         assert_eq!(provider_type_for("gem-work"), Some("gemini"));
         assert_eq!(provider_type_for("gem-test"), Some("gemini"));
+    }
+
+    #[test]
+    fn resolve_credential_type_handles_default_kv_stems() {
+        assert_eq!(
+            resolve_provider_type_for_credential("anthropic"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            resolve_provider_type_for_credential("openai"),
+            Some("codex")
+        );
+        assert_eq!(
+            resolve_provider_type_for_credential("gemini"),
+            Some("gemini")
+        );
+    }
+
+    #[test]
+    fn resolve_login_falls_back_to_cli_keyword() {
+        assert_eq!(
+            resolve_provider_type_for_login("weird-nick", "claude"),
+            Some("anthropic")
+        );
     }
 
     // ─── token exchange body shape ─────────────────────────────

@@ -430,6 +430,13 @@ pub enum ContentBlock {
         /// Human-readable summary entries (e.g. `[{"type":"summary_text","text":"..."}]`).
         summary: Vec<serde_json::Value>,
     },
+    /// Plain-text reasoning trace returned by OpenAI-compat reasoning models
+    /// (DeepSeek `reasoning_content`, Kimi `reasoning`). Captured during a
+    /// streamed assistant turn and replayed verbatim on the next request so
+    /// the upstream provider accepts the subsequent tool_result. Stored as a
+    /// sibling of `Text`/`ToolCall` blocks on the same assistant message.
+    #[serde(rename = "reasoning")]
+    Reasoning { text: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -873,47 +880,35 @@ pub fn cached_context_window(model: &str) -> Option<u32> {
         .and_then(|c| c.get(model).map(|(ctx, _)| *ctx))
 }
 
+/// Cache hit → Some; cache miss → network fetch, populate cache → Some.
+/// None when the provider has no usable models endpoint for this probe.
+async fn context_max_output_cached_pair(model: &str, provider: &Provider) -> Option<(u32, u32)> {
+    let cached = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied());
+    if let Some(pair) = cached {
+        return Some(pair);
+    }
+    let fetched = fetch_model_limits(model, provider).await?;
+    if let Ok(mut cache) = MODEL_CACHE.lock() {
+        cache.insert(model.to_string(), fetched);
+    }
+    Some(fetched)
+}
+
 /// Fetch context window for a model from the provider API.
 /// Tries the provider's models endpoint first, falls back to static registry.
 pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
-    if let Some(&(ctx, _)) = MODEL_CACHE
-        .lock()
-        .ok()
-        .and_then(|c| c.get(model).copied())
-        .as_ref()
-    {
-        return ctx;
-    }
-
-    if let Some((ctx, max_out)) = fetch_model_limits(model, provider).await {
-        if let Ok(mut cache) = MODEL_CACHE.lock() {
-            cache.insert(model.to_string(), (ctx, max_out));
-        }
-        return ctx;
-    }
-
-    128_000 // safe default
+    context_max_output_cached_pair(model, provider)
+        .await
+        .map(|(ctx, _)| ctx)
+        .unwrap_or(128_000)
 }
 
 /// Fetch max output tokens for a model from the provider API.
 pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
-    if let Some(&(_, max_out)) = MODEL_CACHE
-        .lock()
-        .ok()
-        .and_then(|c| c.get(model).copied())
-        .as_ref()
-    {
-        return max_out;
-    }
-
-    if let Some((ctx, max_out)) = fetch_model_limits(model, provider).await {
-        if let Ok(mut cache) = MODEL_CACHE.lock() {
-            cache.insert(model.to_string(), (ctx, max_out));
-        }
-        return max_out;
-    }
-
-    16_384 // safe default
+    context_max_output_cached_pair(model, provider)
+        .await
+        .map(|(_, max_out)| max_out)
+        .unwrap_or(16_384)
 }
 
 /// Fetch (context_window, max_output) from the provider's models API.
@@ -935,6 +930,22 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
     }
 }
 
+fn provider_models_list_client(secs: u64) -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(secs))
+        .build()
+        .ok()
+}
+
+fn model_from_list_by_id<'a>(
+    models: &'a [serde_json::Value],
+    model_id: &str,
+) -> Option<&'a serde_json::Value> {
+    models
+        .iter()
+        .find(|m| m.get("id").and_then(|v| v.as_str()).unwrap_or("") == model_id)
+}
+
 /// Anthropic: GET /v1/models → max_input_tokens, max_tokens
 async fn fetch_anthropic_model_limits(
     api_key: &str,
@@ -942,10 +953,7 @@ async fn fetch_anthropic_model_limits(
     model: &str,
 ) -> Option<(u32, u32)> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
+    let client = provider_models_list_client(10)?;
 
     let is_oauth = api_key.contains("sk-ant-oat");
     let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
@@ -961,24 +969,17 @@ async fn fetch_anthropic_model_limits(
     }
 
     let body: serde_json::Value = resp.json().await.ok()?;
-    let models = body.get("data").and_then(|d| d.as_array())?;
-
-    for m in models {
-        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        if id == model {
-            let ctx = m
-                .get("max_input_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(200_000) as u32;
-            let max_out = m
-                .get("max_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(16_000) as u32;
-            return Some((ctx, max_out));
-        }
-    }
-
-    None
+    let models_arr = body.get("data").and_then(|d| d.as_array())?;
+    let m = model_from_list_by_id(models_arr, model)?;
+    let ctx = m
+        .get("max_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(200_000) as u32;
+    let max_out = m
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(16_000) as u32;
+    Some((ctx, max_out))
 }
 
 /// OpenRouter: GET /v1/models → context_length, top_provider.max_completion_tokens
@@ -988,10 +989,7 @@ async fn fetch_openrouter_model_limits(
     model: &str,
 ) -> Option<(u32, u32)> {
     let url = openai_models_url(base_url);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
+    let client = provider_models_list_client(10)?;
 
     let resp = client
         .get(&url)
@@ -1005,25 +1003,18 @@ async fn fetch_openrouter_model_limits(
     }
 
     let body: serde_json::Value = resp.json().await.ok()?;
-    let models = body.get("data").and_then(|d| d.as_array())?;
-
-    for m in models {
-        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        if id == model {
-            let ctx = m
-                .get("context_length")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(128_000) as u32;
-            let max_out = m
-                .get("top_provider")
-                .and_then(|tp| tp.get("max_completion_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(16_384) as u32;
-            return Some((ctx, max_out));
-        }
-    }
-
-    None
+    let models_arr = body.get("data").and_then(|d| d.as_array())?;
+    let m = model_from_list_by_id(models_arr, model)?;
+    let ctx = m
+        .get("context_length")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(128_000) as u32;
+    let max_out = m
+        .get("top_provider")
+        .and_then(|tp| tp.get("max_completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(16_384) as u32;
+    Some((ctx, max_out))
 }
 
 /// Generic OpenAI-compat: GET /v1/models, using common context fields if exposed.
@@ -1033,10 +1024,7 @@ async fn fetch_openai_compat_model_limits(
     model: &str,
 ) -> Option<(u32, u32)> {
     let url = openai_models_url(base_url);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
+    let client = provider_models_list_client(10)?;
 
     let resp = client
         .get(&url)
@@ -1050,27 +1038,20 @@ async fn fetch_openai_compat_model_limits(
     }
 
     let body: serde_json::Value = resp.json().await.ok()?;
-    let models = body.get("data").and_then(|d| d.as_array())?;
-
-    for m in models {
-        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        if id == model {
-            let ctx = m
-                .get("context_length")
-                .or_else(|| m.get("context_window"))
-                .or_else(|| m.get("max_context_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(128_000) as u32;
-            let max_out = m
-                .get("max_output_tokens")
-                .or_else(|| m.get("max_completion_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(16_384) as u32;
-            return Some((ctx, max_out));
-        }
-    }
-
-    None
+    let models_arr = body.get("data").and_then(|d| d.as_array())?;
+    let m = model_from_list_by_id(models_arr, model)?;
+    let ctx = m
+        .get("context_length")
+        .or_else(|| m.get("context_window"))
+        .or_else(|| m.get("max_context_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(128_000) as u32;
+    let max_out = m
+        .get("max_output_tokens")
+        .or_else(|| m.get("max_completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(16_384) as u32;
+    Some((ctx, max_out))
 }
 
 /// A model entry returned by a provider's list endpoint.
@@ -1596,11 +1577,18 @@ impl Provider {
         }
     }
 
-    /// OpenCode Go — budget open-weight models via the same Anthropic API shape.
+    /// OpenCode Go — budget open-weight models routed through OpenCode Zen
+    /// Go's OpenAI-compatible endpoint. Despite exposing an Anthropic-shaped
+    /// `/v1/messages` route, that route silently breaks tool calls for most
+    /// upstreams (DeepSeek, Kimi, GLM, Mimo); only `/v1/chat/completions`
+    /// works end-to-end across the full model list. OpenCode's own client
+    /// uses `@ai-sdk/openai-compatible` for the same reason, so we mirror it.
     pub fn opencode_go(api_key: String, credential: Option<String>) -> Self {
-        Provider::Anthropic {
+        Provider::OpenAiCompat {
             api_key,
-            base_url: "https://opencode.ai/zen/go".to_string(),
+            base_url: "https://opencode.ai/zen/go/v1".to_string(),
+            provider_type: "opencode-go".to_string(),
+            display_name: "opencode-go".to_string(),
             credential,
         }
     }

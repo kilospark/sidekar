@@ -40,6 +40,11 @@ use crate::tunnel::tunnel_println;
 
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
+/// Resolve a credential nickname into a [`Provider`] (shared by REPL and `repl models`).
+pub async fn provider_from_credential(cred_name: &str) -> anyhow::Result<Provider> {
+    build_provider(cred_name).await
+}
+
 fn repl_status_dim(msg: &str) {
     tunnel_println(&format!("\x1b[2m{msg}\x1b[0m"));
 }
@@ -162,11 +167,11 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     // Validate credential name if provided at startup
     if let Some(ref name) = cred_name
-        && providers::oauth::provider_type_for(name).is_none()
+        && providers::oauth::resolve_provider_type_for_credential(name).is_none()
     {
         anyhow::bail!(
-            "Unknown credential: '{name}'. Credential names must start with 'claude', 'codex', 'or', 'oc', 'grok', 'gem', or 'oac'.\n\
-                 Examples: claude, claude-1, codex, codex-work, or, or-personal, oc, oc-work, grok-work, gem-work, oac-lab\n\
+            "Unknown credential: '{name}'. Use a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…).\n\
+                 Examples: claude, claude-1, codex, codex-work, or-personal, anthropic, gem-work, oac-lab\n\
                  Login with: sidekar repl login {name}"
         );
     }

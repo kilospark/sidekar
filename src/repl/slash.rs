@@ -47,6 +47,32 @@ pub(super) struct SlashContext<'a> {
     pub turn_stats: &'a std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
 }
 
+/// Parsed line from a numbered REPL menu (`/session`, `/credential`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StdinMenuIndex {
+    EofOrReadError,
+    Blank,
+    Index(usize),
+    NotANumber,
+}
+
+fn read_stdin_menu_index(prompt: &str) -> StdinMenuIndex {
+    print!("{prompt}");
+    let _ = io::stdout().flush();
+    let mut line = String::new();
+    if io::stdin().lock().read_line(&mut line).is_err() {
+        return StdinMenuIndex::EofOrReadError;
+    }
+    let choice = line.trim();
+    if choice.is_empty() {
+        return StdinMenuIndex::Blank;
+    }
+    match choice.parse::<usize>() {
+        Ok(i) => StdinMenuIndex::Index(i),
+        Err(_) => StdinMenuIndex::NotANumber,
+    }
+}
+
 pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
     let input = ctx.input;
     let cwd = ctx.cwd;
@@ -180,27 +206,24 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                             tunnel_println(&format!("      \x1b[2m\"{snip}\"\x1b[0m"));
                         }
                     }
-                    print!("Enter number or Enter: ");
-                    let _ = io::stdout().flush();
-                    let mut line = String::new();
-                    if io::stdin().lock().read_line(&mut line).is_ok() {
-                        let choice = line.trim();
-                        if choice.is_empty() {
+                    match read_stdin_menu_index("Enter number or Enter: ") {
+                        StdinMenuIndex::Blank => {
                             tunnel_println("\x1b[2mStaying current.\x1b[0m");
                             SlashResult::Continue
-                        } else if let Ok(idx) = choice.parse::<usize>() {
+                        }
+                        StdinMenuIndex::Index(idx) => {
                             if let Some(sc) = sessions.get(idx) {
                                 SlashResult::SwitchSession(sc.session.id.clone())
                             } else {
                                 tunnel_println("Invalid.");
                                 SlashResult::Continue
                             }
-                        } else {
+                        }
+                        StdinMenuIndex::NotANumber => {
                             tunnel_println("Invalid.");
                             SlashResult::Continue
                         }
-                    } else {
-                        SlashResult::Continue
+                        StdinMenuIndex::EofOrReadError => SlashResult::Continue,
                     }
                 }
             }
@@ -241,27 +264,24 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}{marker}"));
                         }
-                        print!("Enter number or Enter: ");
-                        let _ = io::stdout().flush();
-                        let mut line = String::new();
-                        if io::stdin().lock().read_line(&mut line).is_ok() {
-                            let choice = line.trim();
-                            if choice.is_empty() {
+                        match read_stdin_menu_index("Enter number or Enter: ") {
+                            StdinMenuIndex::Blank => {
                                 tunnel_println("\x1b[2mStaying current.\x1b[0m");
                                 SlashResult::Continue
-                            } else if let Ok(idx) = choice.parse::<usize>() {
+                            }
+                            StdinMenuIndex::Index(idx) => {
                                 if let Some((name, _)) = creds.get(idx) {
                                     SlashResult::SetCredential(name.clone())
                                 } else {
                                     tunnel_println("Invalid.");
                                     SlashResult::Continue
                                 }
-                            } else {
+                            }
+                            StdinMenuIndex::NotANumber => {
                                 tunnel_println("Invalid.");
                                 SlashResult::Continue
                             }
-                        } else {
-                            SlashResult::Continue
+                            StdinMenuIndex::EofOrReadError => SlashResult::Continue,
                         }
                     }
                 }
@@ -278,12 +298,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}"));
                         }
-                        print!("Enter number or Enter to cancel: ");
-                        let _ = io::stdout().flush();
-                        let mut line = String::new();
-                        if io::stdin().lock().read_line(&mut line).is_ok() {
-                            let choice = line.trim();
-                            if let Ok(idx) = choice.parse::<usize>() {
+                        match read_stdin_menu_index("Enter number or Enter to cancel: ") {
+                            StdinMenuIndex::Index(idx) => {
                                 if let Some((name, _)) = creds.get(idx) {
                                     let kv_key = providers::oauth::kv_key_for(name);
                                     match crate::broker::kv_delete(&kv_key) {
@@ -297,9 +313,11 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 } else {
                                     tunnel_println("Invalid.");
                                 }
-                            } else if !choice.is_empty() {
+                            }
+                            StdinMenuIndex::NotANumber => {
                                 tunnel_println("Invalid.");
                             }
+                            StdinMenuIndex::Blank | StdinMenuIndex::EofOrReadError => {}
                         }
                         SlashResult::Continue
                     }
@@ -1004,10 +1022,10 @@ pub(super) async fn run_compact(
 }
 
 pub async fn build_provider(cred_name: &str) -> Result<Provider> {
-    let provider_type = providers::oauth::provider_type_for(cred_name)
-        .ok_or_else(|| {
+    let provider_type =
+        providers::oauth::resolve_provider_type_for_credential(cred_name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential: '{cred_name}'. Names must start with 'claude', 'codex', 'or', 'oc', 'grok', 'gem', or 'oac'."
+                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…); see `sidekar repl login --help`."
             )
         })?;
     let cred = Some(cred_name.to_string());
