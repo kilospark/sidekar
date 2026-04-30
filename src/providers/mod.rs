@@ -9,6 +9,8 @@ pub mod vertex;
 
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -23,40 +25,79 @@ pub fn is_verbose() -> bool {
 // ---------------------------------------------------------------------------
 // Shared MITM proxy config for in-process streaming clients.
 //
-// Set once at startup (e.g. `sidekar repl --proxy`) and read by
-// `build_streaming_client` below so per-turn traffic flows through sidekar's
-// MITM proxy and gets captured in the `proxy_log` SQLite table — the same way
-// PTY-wrapped agents are captured. Enables symmetric inspection of REPL vs
-// PTY traffic without needing `--verbose` on either side.
+// Attached at startup (`sidekar repl --proxy`) or via `/proxy on`; cleared
+// via `/proxy off`. `build_streaming_client` reads this so HTTP(S) streams
+// go through sidekar's MITM and into `proxy_log`.
 // ---------------------------------------------------------------------------
 
-pub struct SharedProxyConfig {
-    pub port: u16,
-    pub ca_pem: Vec<u8>,
+struct AttachedMitmProxy {
+    port: u16,
+    ca_pem: Vec<u8>,
+    ca_pem_path: PathBuf,
 }
 
-static PROXY_CONFIG: std::sync::OnceLock<SharedProxyConfig> = std::sync::OnceLock::new();
+static ATTACHED_MITM_PROXY: Mutex<Option<AttachedMitmProxy>> = Mutex::new(None);
 
-pub fn set_shared_proxy(port: u16, ca_pem: Vec<u8>) {
-    let _ = PROXY_CONFIG.set(SharedProxyConfig { port, ca_pem });
+/// Route in-process streaming clients through `127.0.0.1:<port>` and trust `ca_pem`.
+/// Drops any previously attached PEM on disk before saving the new one.
+pub fn attach_shared_mitm_proxy(port: u16, ca_pem: Vec<u8>, ca_pem_path: PathBuf) {
+    let mut g = ATTACHED_MITM_PROXY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(old) = g.take() {
+        crate::proxy::cleanup_ca_file(&old.ca_pem_path);
+    }
+    *g = Some(AttachedMitmProxy {
+        port,
+        ca_pem,
+        ca_pem_path,
+    });
 }
 
-/// Build a reqwest client for streaming provider API calls. When
-/// `set_shared_proxy` has been called (REPL `--proxy` path), the client is
-/// configured to route through sidekar's MITM proxy and trust its ephemeral
-/// CA. Otherwise returns a bare client with just the timeout, preserving
-/// existing behavior for non-proxied runs.
+/// Stop routing API traffic through the MITM helper and delete the PEM on disk.
+pub fn detach_shared_mitm_proxy() {
+    let mut g = ATTACHED_MITM_PROXY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(att) = g.take() {
+        crate::proxy::cleanup_ca_file(&att.ca_pem_path);
+    }
+}
+
+/// Local MITM listener port when attached.
+pub fn shared_mitm_proxy_port() -> Option<u16> {
+    let g = ATTACHED_MITM_PROXY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    g.as_ref().map(|a| a.port)
+}
+
+/// Build a reqwest client for streaming provider API calls. When an MITM
+/// proxy is attached, the client routes through it and trusts its ephemeral CA.
 pub(crate) fn build_streaming_client(
     timeout: std::time::Duration,
 ) -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder().timeout(timeout);
-    if let Some(cfg) = PROXY_CONFIG.get() {
-        let proxy_url = format!("http://127.0.0.1:{}", cfg.port);
+    let snapshot = ATTACHED_MITM_PROXY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(att) = snapshot.as_ref() {
+        let proxy_url = format!("http://127.0.0.1:{}", att.port);
         builder = builder.proxy(reqwest::Proxy::all(&proxy_url)?);
-        let cert = reqwest::Certificate::from_pem(&cfg.ca_pem)?;
+        let cert = reqwest::Certificate::from_pem(&att.ca_pem)?;
         builder = builder.add_root_certificate(cert);
     }
     Ok(builder.build()?)
+}
+
+/// Port + CA PEM clone for transports that do not use `build_streaming_client`
+/// (Codex connects its own TLS stack over CONNECT).
+pub(super) fn attached_mitm_for_custom_tls() -> Option<(u16, Vec<u8>)> {
+    let g = ATTACHED_MITM_PROXY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    g.as_ref()
+        .map(|a| (a.port, a.ca_pem.clone()))
 }
 
 pub(crate) fn openai_chat_completions_url(base_url: &str) -> String {

@@ -132,8 +132,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // Start the MITM proxy for in-process streaming provider calls if requested.
     // Mirrors PTY proxy semantics: explicit --proxy / --no-proxy wins, otherwise
     // falls back to the SIDEKAR_PROXY env var. The CA PEM is loaded and handed
-    // to `providers::set_shared_proxy`, which `build_streaming_client` reads on
-    // every provider request to install the proxy + root cert on the client.
+    // to `providers::attach_shared_mitm_proxy`, which `build_streaming_client`
+    // reads on every provider request.
     let proxy_enabled = match opts.proxy_override {
         Some(v) => v,
         None => std::env::var("SIDEKAR_PROXY").is_ok(),
@@ -142,7 +142,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         match crate::proxy::start(opts.verbose).await {
             Ok((port, ca_path)) => match std::fs::read(&ca_path) {
                 Ok(ca_pem) => {
-                    providers::set_shared_proxy(port, ca_pem);
+                    providers::attach_shared_mitm_proxy(port, ca_pem, ca_path);
                     repl_status_dim(&format!(
                         "MITM proxy attached on 127.0.0.1:{port} (payloads in `sidekar proxy log`)"
                     ));

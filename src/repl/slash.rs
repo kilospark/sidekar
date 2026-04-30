@@ -15,6 +15,9 @@ pub(super) enum SlashResult {
     SetModel(String),
     RelayOn,
     RelayOff,
+    /// Attach local MITM (same path as `--proxy`) for capturing API traffic into `proxy_log`.
+    ProxyOn,
+    ProxyOff,
     LoadSkill(String),
 }
 
@@ -355,6 +358,29 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 }
             }
         }
+        "/proxy" => {
+            let arg = input.split_whitespace().nth(1).unwrap_or("");
+            match arg {
+                "on" | "true" | "1" => SlashResult::ProxyOn,
+                "off" | "false" | "0" => SlashResult::ProxyOff,
+                "" => match providers::shared_mitm_proxy_port() {
+                    Some(p) => {
+                        tunnel_println(&format!(
+                            "MITM proxy: \x1b[32mon\x1b[0m → 127.0.0.1:{p} (`sidekar proxy log`)"
+                        ));
+                        SlashResult::Continue
+                    }
+                    None => {
+                        tunnel_println("MITM proxy: off");
+                        SlashResult::Continue
+                    }
+                },
+                _ => {
+                    tunnel_println("Usage: /proxy [on|off]");
+                    SlashResult::Continue
+                }
+            }
+        }
         "/verbose" => {
             let arg = input.split_whitespace().nth(1).unwrap_or("");
             match arg {
@@ -616,6 +642,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /status      — Show session / model / token usage / context fill");
             tunnel_println("  /stats       — Show process diagnostics (RSS, CPU, threads)");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
+            tunnel_println(
+                "  /proxy       — Toggle MITM capture for streaming API (`sidekar proxy log`)",
+            );
             tunnel_println("  /journal     — Toggle background session journaling (on/off)");
             tunnel_println(
                 "  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)",
@@ -765,6 +794,38 @@ pub(super) async fn apply_slash_result(
                 tunnel_println("Relay: \x1b[31moff\x1b[0m");
             }
         }
+        SlashResult::ProxyOn => {
+            if providers::shared_mitm_proxy_port().is_some() {
+                tunnel_println("MITM proxy is already on.");
+            } else {
+                match crate::proxy::start(crate::runtime::verbose()).await {
+                    Ok((port, ca_path)) => match std::fs::read(&ca_path) {
+                        Ok(ca_pem) => {
+                            providers::attach_shared_mitm_proxy(port, ca_pem, ca_path);
+                            tunnel_println(&format!(
+                                "MITM proxy: \x1b[32mon\x1b[0m → 127.0.0.1:{port} (`sidekar proxy log`)"
+                            ));
+                        }
+                        Err(e) => tunnel_println(&format!(
+                            "\x1b[31mFailed to read ephemeral CA PEM: {e:#}\x1b[0m"
+                        )),
+                    },
+                    Err(e) => tunnel_println(&format!(
+                        "\x1b[31mFailed to start MITM proxy: {e:#}\x1b[0m"
+                    )),
+                }
+            }
+        }
+        SlashResult::ProxyOff => {
+            if providers::shared_mitm_proxy_port().is_none() {
+                tunnel_println("MITM proxy is already off.");
+            } else {
+                providers::detach_shared_mitm_proxy();
+                tunnel_println(
+                    "MITM proxy: \x1b[31moff\x1b[0m (clients built after this use direct TLS)",
+                );
+            }
+        }
         SlashResult::LoadSkill(name) => {
             if loaded_skills.iter().any(|s| s == &name) {
                 tunnel_println(&format!("Skill `{name}` already loaded."));
@@ -896,6 +957,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/status"
             | "/journal"
             | "/relay"
+            | "/proxy"
             | "/verbose"
             | "/skill"
             | "/help"

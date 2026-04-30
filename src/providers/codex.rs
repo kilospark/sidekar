@@ -746,8 +746,8 @@ async fn connect_ws(
     // Build rustls TLS config (explicit ring provider)
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    if let Some(cfg) = super::PROXY_CONFIG.get() {
-        for cert in parse_pem_certs(&cfg.ca_pem) {
+    if let Some((_port, ref ca_pem)) = super::attached_mitm_for_custom_tls() {
+        for cert in parse_pem_certs(ca_pem) {
             let _ = roots.add(cert);
         }
     }
@@ -760,12 +760,12 @@ async fn connect_ws(
     .with_no_client_auth();
     let tls_config = std::sync::Arc::new(tls_config);
 
-    let ws = if let Some(cfg) = super::PROXY_CONFIG.get() {
-        let proxy_addr = format!("127.0.0.1:{}", cfg.port);
+    let ws = if let Some((proxy_port, _)) = super::attached_mitm_for_custom_tls() {
+        let proxy_addr = format!("127.0.0.1:{}", proxy_port);
         if verbose {
             crate::tunnel::tunnel_println(&format!(
                 "\x1b[2m[ws] CONNECT tunnel via proxy :{}\x1b[0m",
-                cfg.port
+                proxy_port
             ));
         }
         let mut tcp = tokio::net::TcpStream::connect(&proxy_addr)
