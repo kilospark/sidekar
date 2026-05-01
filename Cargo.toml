@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "3.2.18"
+version = "3.2.19"
 edition = "2024"
 build = "build.rs"
 license = "MIT"
@@ -66,9 +66,12 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-bedrock = "1"
-aws-sdk-bedrockruntime = "1"
-aws-types = "1"
+aws-credential-types = "1"
+aws-sigv4 = "1"
+aws-smithy-eventstream = "0.60"
+aws-smithy-runtime-api = "1"
+http = "1"
+url = "2"
 bytes = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]

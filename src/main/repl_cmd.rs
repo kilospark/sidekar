@@ -33,7 +33,7 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  oc         OpenCode — API key");
             eprintln!("  grok       Grok (xAI) — API key");
             eprintln!("  gem        Gemini (Google) — API key");
-            eprintln!("  bedrock | brk Amazon Bedrock (Claude) — IAM / AWS credential chain");
+            eprintln!("  bedrock | brk Amazon Bedrock (Claude) — IAM profile / credential chain → HTTPS SigV4");
             eprintln!("  oac <name> <url> [api_key]");
             eprintln!();
             eprintln!("Examples:");

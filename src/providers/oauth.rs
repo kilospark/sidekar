@@ -574,7 +574,8 @@ pub async fn login_bedrock(nickname: Option<&str>) -> Result<()> {
         }),
     )?;
     eprintln!(
-        "Saved Bedrock config to `{kv_key}`. IAM needs `bedrock:InvokeModelWithResponseStream`."
+        "Saved Bedrock config to `{kv_key}`. Uses HTTPS + SigV4 (no aws-sdk-bedrock crates). IAM needs \
+         `bedrock:ListFoundationModels` (for `/model list`) and `bedrock:InvokeModelWithResponseStream`."
     );
     Ok(())
 }
