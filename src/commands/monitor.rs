@@ -67,33 +67,31 @@ pub(crate) fn deliver_notification(delivery: &Delivery, message: &str) -> Result
     }
 }
 
-/// Resolve the delivery transport for monitor notifications.
-/// Uses broker queue for delivery.
+/// Resolve the delivery transport for monitor notifications (broker queue).
+///
+/// Uses [`crate::bus::resolve_registered_agent_bus_name_for_current_process`], then
+/// falls back to the first broker-registered agent (legacy).
 pub(crate) fn resolve_delivery() -> Result<Delivery> {
-    // Deliver via broker queue to our own agent
-    if let Ok(agents) = crate::broker::list_agents(None) {
-        let my_pid = std::process::id().to_string();
-        let my_pane = format!("pty-{my_pid}");
-        for agent in &agents {
-            if agent.pane_unique_id.as_deref() == Some(&my_pane) {
-                return Ok(Delivery {
-                    transport: Box::new(transport::Broker),
-                    target: agent.id.name.clone(),
-                });
-            }
-        }
-        // Fall back to first registered agent
-        if let Some(agent) = agents.first() {
-            return Ok(Delivery {
-                transport: Box::new(transport::Broker),
-                target: agent.id.name.clone(),
-            });
-        }
+    if let Some(target) = crate::bus::resolve_registered_agent_bus_name_for_current_process() {
+        return Ok(Delivery {
+            transport: Box::new(transport::Broker),
+            target,
+        });
+    }
+
+    if let Ok(agents) = crate::broker::list_agents(None)
+        && let Some(agent) = agents.first()
+    {
+        return Ok(Delivery {
+            transport: Box::new(transport::Broker),
+            target: agent.id.name.clone(),
+        });
     }
 
     bail!(
         "monitor: cannot find a delivery target. \
-         Run inside a sidekar PTY wrapper (sidekar claude, sidekar codex, etc.)."
+         Run inside sidekar PTY (e.g. sidekar claude …) or `sidekar repl`, \
+         where SIDEKAR_AGENT_NAME is set and the agent is registered with the broker."
     )
 }
 

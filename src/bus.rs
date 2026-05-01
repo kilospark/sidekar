@@ -71,6 +71,41 @@ pub fn inherit_pty_registration() -> Option<AgentId> {
     None
 }
 
+/// Resolve the broker [`crate::broker::AgentId::name`] row used as `bus_queue.recipient`
+/// for subprocesses (CDP monitor, `sidekar ext watch`) that are not the registering
+/// process themselves.
+///
+/// Order: runtime / `SIDEKAR_AGENT_NAME`, PTY parent-chain
+/// ([`inherit_pty_registration`]), then `pty-` / `repl-` / `cli-` + current PID.
+/// Does not fall back to an arbitrary registered agent (unlike CDP monitor startup).
+pub fn resolve_registered_agent_bus_name_for_current_process() -> Option<String> {
+    let name_hint = crate::runtime::agent_name().or_else(|| {
+        std::env::var("SIDEKAR_AGENT_NAME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    });
+
+    if let Some(ref nm) = name_hint
+        && let Ok(Some(agent)) = broker::find_agent(nm, None)
+    {
+        return Some(agent.id.name);
+    }
+
+    if let Some(agent_id) = inherit_pty_registration() {
+        return Some(agent_id.name);
+    }
+
+    let my_pid = std::process::id();
+    for prefix in ["pty-", "repl-", "cli-"] {
+        let pane = format!("{prefix}{my_pid}");
+        if let Ok(Some(a)) = broker::agent_for_pane_unique(&pane) {
+            return Some(a.id.name);
+        }
+    }
+
+    None
+}
+
 // --- Agent type detection ---
 
 /// Walk process tree to detect agent type (claude, codex, copilot, etc.).

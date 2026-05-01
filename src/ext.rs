@@ -271,7 +271,15 @@ pub async fn deliver_watch_event(
 ) -> Result<()> {
     let (deliver_to, selector) = match find_watch_target(state, watch_id).await {
         Some(v) => v,
-        None => return Ok(()), // watch was removed; drop event
+        None => {
+            crate::broker::try_log_event(
+                "debug",
+                "ext",
+                "watch_event dropped: no WatchRecord for this watchId (unregistered or connection replaced)",
+                Some(watch_id),
+            );
+            return Ok(());
+        }
     };
 
     let mut message = format!("Element changed on {selector}");

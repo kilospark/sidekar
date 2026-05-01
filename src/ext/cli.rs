@@ -61,14 +61,15 @@ pub async fn send_cli_command(
     }
 
     if command == "watch" {
-        if let Some(agent) = crate::bus::inherit_pty_registration() {
-            cmd_json["deliver_to"] = json!(agent.name);
-        } else {
+        let Some(dest) = crate::bus::resolve_registered_agent_bus_name_for_current_process() else {
             bail!(
-                "sidekar ext watch must be run inside a sidekar-wrapped agent session \
-                 (sidekar claude, sidekar codex, etc.) so events can be delivered to the bus."
+                "sidekar ext watch needs a broker-registered agent context: \
+                 run from `sidekar claude` / `sidekar codex` / …, or `sidekar repl`, \
+                 or set SIDEKAR_AGENT_NAME to your agent's bus name. \
+                 (The daemon must know deliver_to to enqueue extension watch events.)"
             );
-        }
+        };
+        cmd_json["deliver_to"] = json!(dest);
     }
 
     let result = crate::daemon::send_command(&cmd_json)?;

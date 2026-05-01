@@ -89,27 +89,33 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
             };
 
             if inner_cmd == "watch" {
-                if let (Some(wid), Some(sel), Some(dest)) = (
-                    final_result
-                        .get("watchId")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                    final_result
-                        .get("selector")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                        .or(inner_selector),
-                    deliver_to,
-                ) {
+                let wid = final_result
+                    .get("watchId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let sel = final_result
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or(inner_selector);
+                if let (Some(wid), Some(sel), Some(ref dest)) = (wid, sel, deliver_to) {
                     crate::ext::register_watch(
                         &ext_state,
                         wid,
                         sel,
-                        dest,
+                        dest.clone(),
                         routed_conn_id,
                         routed_profile.clone(),
                     )
                     .await;
+                } else if final_result.get("watchId").and_then(|v| v.as_str()).is_some() {
+                    crate::broker::try_log_error(
+                        "ext",
+                        "extension returned watchId but WatchRecord was not registered \
+                         (missing top-level deliver_to or selector); DOM watch_event messages will be dropped. \
+                         Run `sidekar ext watch` from a PTY/repl session or set SIDEKAR_AGENT_NAME.",
+                        None,
+                    );
                 }
             } else if inner_cmd == "unwatch" {
                 if let Some(wid) = inner_watch_id {
