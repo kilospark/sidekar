@@ -21,7 +21,9 @@ use aws_config::{
     provider_config::ProviderConfig,
 };
 use aws_credential_types::provider::ProvideCredentials as _;
-use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningParams, SigningSettings, sign};
+use aws_sigv4::http_request::{
+    SignableBody, SignableRequest, SigningParams, SigningSettings, sign,
+};
 use aws_sigv4::sign::v4;
 use aws_smithy_eventstream::frame::{DecodedFrame, MessageFrameDecoder};
 use aws_smithy_eventstream::smithy;
@@ -31,7 +33,7 @@ use base64::prelude::BASE64_STANDARD;
 use bytes::Bytes;
 use futures_util::stream;
 use http::Method;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, TRANSFER_ENCODING};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
@@ -41,13 +43,7 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use super::{
-    ChatMessage,
-    RemoteModel,
-    StreamConfig,
-    StreamEvent,
-    ToolDef,
-    ANTHROPIC_1M_SUFFIX,
-    anthropic,
+    ANTHROPIC_1M_SUFFIX, ChatMessage, RemoteModel, StreamConfig, StreamEvent, ToolDef, anthropic,
     build_streaming_client,
 };
 
@@ -68,7 +64,9 @@ async fn load_sdk_config(region: &str, profile: Option<&str>) -> SdkConfig {
 }
 
 async fn identity_from_cfg(cfg: &SdkConfig) -> Result<Identity> {
-    let provider = cfg.credentials_provider().context("missing AWS credential provider")?;
+    let provider = cfg
+        .credentials_provider()
+        .context("missing AWS credential provider")?;
     let creds = provider
         .provide_credentials()
         .await
@@ -81,17 +79,15 @@ fn signing_params<'a>(
     region: &'a str,
     service_name: &'a str,
 ) -> Result<SigningParams<'a>> {
-    Ok(
-        v4::SigningParams::builder()
-            .identity(identity)
-            .region(region)
-            .name(service_name)
-            .time(SystemTime::now())
-            .settings(SigningSettings::default())
-            .build()
-            .map_err(|e| anyhow::anyhow!("SigV4 build: {e}"))?
-            .into(),
-    )
+    Ok(v4::SigningParams::builder()
+        .identity(identity)
+        .region(region)
+        .name(service_name)
+        .time(SystemTime::now())
+        .settings(SigningSettings::default())
+        .build()
+        .map_err(|e| anyhow::anyhow!("SigV4 build: {e}"))?
+        .into())
 }
 
 fn bedrock_invoke_url(region: &str, model_id: &str) -> Result<Url> {
@@ -246,9 +242,7 @@ fn inference_profile_invoke_refs_by_foundation_model_id(
                 continue;
             }
             for key in foundation_model_catalog_keys_from_arn_tail(fm_tail) {
-                map.entry(key)
-                    .or_default()
-                    .insert(invoke_ref.clone());
+                map.entry(key).or_default().insert(invoke_ref.clone());
             }
         }
     }
@@ -380,11 +374,7 @@ fn bedrock_invoke_model_id_candidates(
         v.push(base_model_id.to_string());
     }
     if !is_inference_profile_model_id(base_model_id) {
-        let geo = format!(
-            "{}.{}",
-            bedrock_geo_inference_prefix(region),
-            base_model_id
-        );
+        let geo = format!("{}.{}", bedrock_geo_inference_prefix(region), base_model_id);
         if !v.iter().any(|x| x == &geo) {
             v.push(geo);
         }
@@ -399,7 +389,8 @@ fn signed_request(
     body: &[u8],
     params: &SigningParams<'_>,
 ) -> Result<http::Request<Bytes>> {
-    let hdr_static: Vec<(&str, &str)> = header_pairs.iter().map(|(k, v)| (*k, v.as_ref())).collect();
+    let hdr_static: Vec<(&str, &str)> =
+        header_pairs.iter().map(|(k, v)| (*k, v.as_ref())).collect();
     let signable = SignableRequest::new(
         method.as_str(),
         url.as_str(),
@@ -408,8 +399,7 @@ fn signed_request(
     )
     .map_err(|e| anyhow::anyhow!("SigV4 SignableRequest: {e}"))?;
 
-    let signing_output =
-        sign(signable, params).map_err(|e| anyhow::anyhow!("SigV4 sign: {e}"))?;
+    let signing_output = sign(signable, params).map_err(|e| anyhow::anyhow!("SigV4 sign: {e}"))?;
     let (instructions, _) = signing_output.into_parts();
 
     let mut builder = http::Request::builder().method(method).uri(url.as_str());
@@ -475,6 +465,100 @@ fn utf8_preview(b: &[u8]) -> String {
         .unwrap_or_else(|_| format!("<binary {} bytes>", b.len()))
 }
 
+fn header_string(headers: &HeaderMap, name: &str) -> String {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[derive(Debug, Clone)]
+struct BedrockStreamMeta {
+    invoke_model_id: String,
+    status: u16,
+    content_type: String,
+    content_encoding: String,
+    transfer_encoding: String,
+    request_id: String,
+}
+
+impl BedrockStreamMeta {
+    fn from_response(resp: &reqwest::Response, invoke_model_id: String) -> Self {
+        Self {
+            invoke_model_id,
+            status: resp.status().as_u16(),
+            content_type: header_string(resp.headers(), CONTENT_TYPE.as_str()),
+            content_encoding: header_string(resp.headers(), CONTENT_ENCODING.as_str()),
+            transfer_encoding: header_string(resp.headers(), TRANSFER_ENCODING.as_str()),
+            request_id: header_string(resp.headers(), "x-amzn-requestid"),
+        }
+    }
+}
+
+fn bedrock_stream_eof_message(
+    meta: &BedrockStreamMeta,
+    total_bytes: usize,
+    frames_decoded: usize,
+    chunk_events_forwarded: usize,
+    pending: &[u8],
+) -> String {
+    let mut msg = format!(
+        "Bedrock invoke_model_with_response_stream ended without decodable content \
+         (HTTP {}, modelId {}, content-type {}, request-id {}, bytes {}, frames {}, chunks {})",
+        meta.status,
+        meta.invoke_model_id,
+        if meta.content_type.is_empty() {
+            "<missing>"
+        } else {
+            meta.content_type.as_str()
+        },
+        if meta.request_id.is_empty() {
+            "<missing>"
+        } else {
+            meta.request_id.as_str()
+        },
+        total_bytes,
+        frames_decoded,
+        chunk_events_forwarded
+    );
+
+    if !meta.transfer_encoding.is_empty() {
+        msg.push_str(&format!(", transfer-encoding {}", meta.transfer_encoding));
+    }
+    if !meta.content_encoding.is_empty() {
+        msg.push_str(&format!(", content-encoding {}", meta.content_encoding));
+    }
+    if !pending.is_empty() {
+        msg.push_str(&format!(
+            ", trailing-buffer {}",
+            utf8_preview(&pending[..pending.len().min(256)])
+        ));
+    }
+
+    msg
+}
+
+fn unexpected_stream_content_type_message(meta: &BedrockStreamMeta, body: &[u8]) -> String {
+    format!(
+        "Bedrock invoke_model_with_response_stream unexpected success response \
+         (HTTP {}, modelId {}, content-type {}, request-id {}): {}",
+        meta.status,
+        meta.invoke_model_id,
+        if meta.content_type.is_empty() {
+            "<missing>"
+        } else {
+            meta.content_type.as_str()
+        },
+        if meta.request_id.is_empty() {
+            "<missing>"
+        } else {
+            meta.request_id.as_str()
+        },
+        utf8_preview(body)
+    )
+}
+
 /// Geographic prefix for Bedrock system inference profiles, from the configured invoke region.
 /// See: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-7.html>
 fn bedrock_geo_inference_prefix(region: &str) -> &'static str {
@@ -509,13 +593,12 @@ pub async fn fetch_bedrock_model_list(
     let identity = identity_from_cfg(&cfg)
         .await
         .map_err(|e| format!("Bedrock IAM: {e}"))?;
-    let params =
-        signing_params(&identity, region, "bedrock").map_err(|e| format!("SigV4: {e}"))?;
+    let params = signing_params(&identity, region, "bedrock").map_err(|e| format!("SigV4: {e}"))?;
     let url = bedrock_control_plane_models_url(region).map_err(|e| e.to_string())?;
 
     let headers = [("accept", Cow::Borrowed("application/json"))];
-    let http_req = signed_request(&Method::GET, &url, &headers, &[], &params)
-        .map_err(|e| e.to_string())?;
+    let http_req =
+        signed_request(&Method::GET, &url, &headers, &[], &params).map_err(|e| e.to_string())?;
 
     let client = crate::providers::catalog_http_client(120)?;
     let reqwest_req =
@@ -538,12 +621,16 @@ pub async fn fetch_bedrock_model_list(
         return Err(format_list_error(&body_txt, line));
     }
 
-    let parsed: ListFoundationModelsResponse = serde_json::from_slice(&resp_bytes).map_err(|e| {
-        format!(
-            "Bedrock ListFoundationModels: invalid JSON ({e}); body {}",
-            utf8_preview(&resp_bytes).chars().take(256).collect::<String>()
-        )
-    })?;
+    let parsed: ListFoundationModelsResponse =
+        serde_json::from_slice(&resp_bytes).map_err(|e| {
+            format!(
+                "Bedrock ListFoundationModels: invalid JSON ({e}); body {}",
+                utf8_preview(&resp_bytes)
+                    .chars()
+                    .take(256)
+                    .collect::<String>()
+            )
+        })?;
 
     let profile_summaries =
         fetch_system_defined_inference_profile_summaries(&identity, region).await;
@@ -573,11 +660,8 @@ pub async fn fetch_bedrock_model_list(
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .map(std::string::ToString::to_string);
-        let mut row = RemoteModel::catalog(
-            id.clone(),
-            m.model_name.unwrap_or_else(|| id.clone()),
-            0,
-        );
+        let mut row =
+            RemoteModel::catalog(id.clone(), m.model_name.unwrap_or_else(|| id.clone()), 0);
         row.bedrock_foundation_model_arn = fm_arn;
         row.bedrock_inference_profile_refs = invoke_refs;
         models.push(row);
@@ -589,6 +673,7 @@ pub async fn fetch_bedrock_model_list(
 
 async fn relay_event_stream_to_channel(
     mut resp: reqwest::Response,
+    meta: BedrockStreamMeta,
     fwd_tx: mpsc::UnboundedSender<Result<Bytes, anyhow::Error>>,
 ) {
     fn send_fatal(
@@ -600,25 +685,47 @@ async fn relay_event_stream_to_channel(
 
     let mut decoder = MessageFrameDecoder::new();
     let mut pending = Vec::<u8>::with_capacity(16 * 1024);
+    let mut total_bytes = 0usize;
+    let mut frames_decoded = 0usize;
+    let mut chunk_events_forwarded = 0usize;
 
     loop {
         if pending.len() > 256 * 1024 * 1024 {
-            let _ =
-                fwd_tx.send(Err(anyhow::anyhow!("Bedrock stream decode buffer exceeds limit")));
+            let _ = fwd_tx.send(Err(anyhow::anyhow!(
+                "Bedrock stream decode buffer exceeds limit"
+            )));
             return;
         }
         let chunk = match resp.chunk().await {
             Ok(c) => c,
             Err(e) => {
-                let _ = send_fatal(&fwd_tx, anyhow::Error::msg(format!(
-                    "reading Bedrock invoke stream TCP: {e}"
-                )));
+                let _ = send_fatal(
+                    &fwd_tx,
+                    anyhow::Error::msg(format!("reading Bedrock invoke stream TCP: {e}")),
+                );
                 return;
             }
         };
         match chunk {
-            Some(b) => pending.extend_from_slice(&b),
-            None => break,
+            Some(b) => {
+                total_bytes += b.len();
+                pending.extend_from_slice(&b);
+            }
+            None => {
+                if chunk_events_forwarded == 0 || !pending.is_empty() {
+                    let _ = send_fatal(
+                        &fwd_tx,
+                        anyhow::Error::msg(bedrock_stream_eof_message(
+                            &meta,
+                            total_bytes,
+                            frames_decoded,
+                            chunk_events_forwarded,
+                            &pending,
+                        )),
+                    );
+                }
+                return;
+            }
         }
 
         loop {
@@ -631,6 +738,7 @@ async fn relay_event_stream_to_channel(
                 }
                 Ok(DecodedFrame::Complete(msg)) => {
                     let consumed = cursor.position() as usize;
+                    frames_decoded += 1;
 
                     match smithy::parse_response_headers(&msg) {
                         Ok(hdr) => {
@@ -645,9 +753,8 @@ async fn relay_event_stream_to_channel(
                                     .get("message")
                                     .and_then(|mm| mm.as_str())
                                     .unwrap_or(evt);
-                                let full = anyhow::format_err!(
-                                    "Bedrock InvokeModel stream: [{evt}] {m}"
-                                );
+                                let full =
+                                    anyhow::format_err!("Bedrock InvokeModel stream: [{evt}] {m}");
                                 let _ = fwd_tx.send(Err(full));
                                 pending.drain(..consumed);
                                 return;
@@ -659,22 +766,21 @@ async fn relay_event_stream_to_channel(
                                 && let Some(bytes) = chunk_payload_bytes(payload.as_ref())
                                 && !bytes.is_empty()
                             {
+                                chunk_events_forwarded += 1;
                                 let _ = fwd_tx.send(Ok(Bytes::from(bytes)));
                             }
                         }
-                        Err(_) => {
-                            /* ignore frames we cannot interpret */
-                        }
+                        Err(_) => { /* ignore frames we cannot interpret */ }
                     }
 
                     pending.drain(..consumed);
                     continue;
                 }
                 Err(e) => {
-                    let _ =
-                        send_fatal(&fwd_tx, anyhow::Error::msg(format!(
-                            "Bedrock event-stream frame: {e}"
-                        )));
+                    let _ = send_fatal(
+                        &fwd_tx,
+                        anyhow::Error::msg(format!("Bedrock event-stream frame: {e}")),
+                    );
                     return;
                 }
             };
@@ -733,6 +839,7 @@ pub async fn stream(
 
     let mut last_failure: Option<(u16, String, String)> = None;
     let mut http_resp = None;
+    let mut selected_path_model_id = None;
     for path_model_id in candidates {
         let signing = signing_params(&identity, region, "bedrock")?;
         let url = bedrock_invoke_url(region, &path_model_id)?;
@@ -744,6 +851,7 @@ pub async fn stream(
         let status = resp.status();
 
         if status.is_success() {
+            selected_path_model_id = Some(path_model_id.clone());
             http_resp = Some(resp);
             break;
         }
@@ -772,11 +880,25 @@ pub async fn stream(
             ),
         },
     };
+    let selected_path_model_id = selected_path_model_id.unwrap_or_else(|| base_model_id.clone());
+    let resp_meta = BedrockStreamMeta::from_response(&http_resp, selected_path_model_id);
+    if !resp_meta.content_type.is_empty()
+        && !resp_meta
+            .content_type
+            .to_ascii_lowercase()
+            .contains("application/vnd.amazon.eventstream")
+    {
+        let body = http_resp.bytes().await.unwrap_or_default();
+        anyhow::bail!(
+            "{}",
+            unexpected_stream_content_type_message(&resp_meta, &body)
+        );
+    }
 
     let (fwd_tx, fwd_rx) = mpsc::unbounded_channel::<Result<Bytes, anyhow::Error>>();
 
     tokio::spawn(async move {
-        relay_event_stream_to_channel(http_resp, fwd_tx).await;
+        relay_event_stream_to_channel(http_resp, resp_meta, fwd_tx).await;
         // fwd_tx drops here → receiver sees None after relay returns.
     });
 
@@ -800,4 +922,51 @@ pub async fn stream(
     });
 
     Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BedrockStreamMeta, bedrock_stream_eof_message, unexpected_stream_content_type_message,
+    };
+
+    fn meta() -> BedrockStreamMeta {
+        BedrockStreamMeta {
+            invoke_model_id: "us.anthropic.claude-opus-4-7-20250514-v1:0".to_string(),
+            status: 200,
+            content_type: "application/json".to_string(),
+            content_encoding: String::new(),
+            transfer_encoding: "chunked".to_string(),
+            request_id: "req-123".to_string(),
+        }
+    }
+
+    #[test]
+    fn eof_message_includes_http_and_model_context() {
+        let msg = bedrock_stream_eof_message(&meta(), 0, 0, 0, &[]);
+        assert!(msg.contains("HTTP 200"), "{msg}");
+        assert!(
+            msg.contains("modelId us.anthropic.claude-opus-4-7-20250514-v1:0"),
+            "{msg}"
+        );
+        assert!(msg.contains("content-type application/json"), "{msg}");
+        assert!(msg.contains("request-id req-123"), "{msg}");
+        assert!(msg.contains("chunks 0"), "{msg}");
+    }
+
+    #[test]
+    fn eof_message_previews_trailing_utf8() {
+        let msg = bedrock_stream_eof_message(&meta(), 17, 0, 0, br#"{"message":"bad"}"#);
+        assert!(
+            msg.contains(r#"trailing-buffer {"message":"bad"}"#),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn unexpected_content_type_message_includes_body_preview() {
+        let msg = unexpected_stream_content_type_message(&meta(), br#"{"message":"oops"}"#);
+        assert!(msg.contains(r#"unexpected success response"#), "{msg}");
+        assert!(msg.contains(r#"{"message":"oops"}"#), "{msg}");
+    }
 }
