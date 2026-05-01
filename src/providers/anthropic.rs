@@ -519,7 +519,7 @@ fn compute_cch(body: &str) -> String {
     format!("{hash:05x}")
 }
 
-pub(super) fn bedrock_request_body_bytes(
+pub(super) fn build_bedrock_anthropic_messages_request_body(
     bedrock_model_id: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
@@ -555,6 +555,224 @@ async fn parse_sse_stream(
     parse_sse_bytes_stream(stream, rate_limit, tx).await
 }
 
+struct AnthropicStreamState {
+    content_blocks: Vec<ContentBlock>,
+    usage: Usage,
+    stop_reason: StopReason,
+    model_id: String,
+    current_block_type: Option<BlockType>,
+    text_accum: String,
+    thinking_accum: String,
+    thinking_signature: String,
+    tool_json_accum: String,
+    tool_id: String,
+    tool_name: String,
+}
+
+impl AnthropicStreamState {
+    fn new() -> Self {
+        Self {
+            content_blocks: Vec::new(),
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            model_id: String::new(),
+            current_block_type: None,
+            text_accum: String::new(),
+            thinking_accum: String::new(),
+            thinking_signature: String::new(),
+            tool_json_accum: String::new(),
+            tool_id: String::new(),
+            tool_name: String::new(),
+        }
+    }
+}
+
+fn handle_anthropic_event(
+    event_type: &str,
+    data: &Value,
+    rate_limit: &Option<RateLimitSnapshot>,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+    state: &mut AnthropicStreamState,
+) {
+    match event_type {
+        "message_start" => {
+            if let Some(msg) = data.get("message") {
+                state.model_id = msg
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(u) = msg.get("usage") {
+                    state.usage.input_tokens =
+                        u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    state.usage.cache_read_tokens = u
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                    state.usage.cache_write_tokens = u
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                }
+            }
+        }
+
+        "content_block_start" => {
+            let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            if let Some(block) = data.get("content_block") {
+                match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "text" => {
+                        state.current_block_type = Some(BlockType::Text);
+                        state.text_accum.clear();
+                    }
+                    "thinking" => {
+                        state.current_block_type = Some(BlockType::Thinking);
+                        state.thinking_accum.clear();
+                        state.thinking_signature.clear();
+                    }
+                    "tool_use" => {
+                        state.current_block_type = Some(BlockType::ToolUse);
+                        state.tool_json_accum.clear();
+                        state.tool_id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        state.tool_name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let _ = tx.send(StreamEvent::ToolCallStart {
+                            index,
+                            id: state.tool_id.clone(),
+                            name: state.tool_name.clone(),
+                        });
+                    }
+                    _ => {
+                        state.current_block_type = None;
+                    }
+                }
+            }
+        }
+
+        "content_block_delta" => {
+            let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            if let Some(delta) = data.get("delta") {
+                match delta.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "text_delta" => {
+                        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+                            state.text_accum.push_str(text);
+                            let _ = tx.send(StreamEvent::TextDelta {
+                                delta: text.to_string(),
+                            });
+                        }
+                    }
+                    "thinking_delta" => {
+                        if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
+                            state.thinking_accum.push_str(text);
+                            let _ = tx.send(StreamEvent::ThinkingDelta {
+                                delta: text.to_string(),
+                            });
+                        }
+                    }
+                    "input_json_delta" => {
+                        if let Some(json_str) = delta.get("partial_json").and_then(|v| v.as_str()) {
+                            state.tool_json_accum.push_str(json_str);
+                            let _ = tx.send(StreamEvent::ToolCallDelta {
+                                index,
+                                delta: json_str.to_string(),
+                            });
+                        }
+                    }
+                    "signature_delta" => {
+                        if let Some(sig) = delta.get("signature").and_then(|v| v.as_str()) {
+                            state.thinking_signature.push_str(sig);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        "content_block_stop" => {
+            let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            match state.current_block_type {
+                Some(BlockType::Text) => {
+                    state.content_blocks.push(ContentBlock::Text {
+                        text: std::mem::take(&mut state.text_accum),
+                    });
+                }
+                Some(BlockType::Thinking) => {
+                    state.content_blocks.push(ContentBlock::Thinking {
+                        thinking: std::mem::take(&mut state.thinking_accum),
+                        signature: std::mem::take(&mut state.thinking_signature),
+                    });
+                }
+                Some(BlockType::ToolUse) => {
+                    let arguments =
+                        serde_json::from_str(&state.tool_json_accum).unwrap_or(json!({}));
+                    state.content_blocks.push(ContentBlock::ToolCall {
+                        id: std::mem::take(&mut state.tool_id),
+                        name: std::mem::take(&mut state.tool_name),
+                        arguments,
+                        thought_signature: None,
+                    });
+                    let _ = tx.send(StreamEvent::ToolCallEnd { index });
+                }
+                None => {}
+            }
+            state.current_block_type = None;
+        }
+
+        "message_delta" => {
+            if let Some(delta) = data.get("delta") {
+                state.stop_reason = match delta
+                    .get("stop_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("end_turn")
+                {
+                    "end_turn" | "pause_turn" | "stop_sequence" => StopReason::Stop,
+                    "max_tokens" => StopReason::Length,
+                    "tool_use" => StopReason::ToolUse,
+                    _ => StopReason::Error,
+                };
+            }
+            if let Some(u) = data.get("usage")
+                && let Some(v) = u.get("output_tokens").and_then(|v| v.as_u64())
+            {
+                state.usage.output_tokens = v as u32;
+            }
+        }
+
+        "message_stop" => {
+            let _ = tx.send(StreamEvent::Done {
+                message: AssistantResponse {
+                    content: std::mem::take(&mut state.content_blocks),
+                    usage: state.usage.clone(),
+                    stop_reason: state.stop_reason.clone(),
+                    model: state.model_id.clone(),
+                    response_id: String::new(),
+                    rate_limit: rate_limit.clone(),
+                },
+            });
+        }
+
+        "error" => {
+            let msg = data
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown API error");
+            let _ = tx.send(StreamEvent::Error {
+                message: msg.to_string(),
+            });
+        }
+
+        _ => {}
+    }
+}
+
 pub(super) async fn parse_sse_bytes_stream<S>(
     stream: S,
     rate_limit: Option<RateLimitSnapshot>,
@@ -565,210 +783,71 @@ where
 {
     pin_mut!(stream);
     let mut decoder = super::SseDecoder::new();
-
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
-    let mut usage = Usage::default();
-    let mut stop_reason = StopReason::Stop;
-    let mut model_id = String::new();
-
-    let mut current_block_type: Option<BlockType> = None;
-    let mut text_accum = String::new();
-    let mut thinking_accum = String::new();
-    let mut thinking_signature = String::new();
-    let mut tool_json_accum = String::new();
-    let mut tool_id = String::new();
-    let mut tool_name = String::new();
+    let mut total_sse_bytes = 0usize;
+    let mut parsed_events = 0usize;
+    let mut state = AnthropicStreamState::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("error reading SSE chunk")?;
+        total_sse_bytes += chunk.len();
         decoder.push_chunk(&chunk);
 
         while let Some(event) = decoder.next_event() {
+            parsed_events += 1;
             let data: Value = match super::parse_sse_json(&event) {
                 Some(v) => v,
                 None => continue,
             };
-
-            match event.event_type.as_deref().unwrap_or("") {
-                "message_start" => {
-                    if let Some(msg) = data.get("message") {
-                        model_id = msg
-                            .get("model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if let Some(u) = msg.get("usage") {
-                            usage.input_tokens =
-                                u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                            usage.cache_read_tokens =
-                                u.get("cache_read_input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
-                            usage.cache_write_tokens =
-                                u.get("cache_creation_input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
-                        }
-                    }
-                }
-
-                "content_block_start" => {
-                    let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    if let Some(block) = data.get("content_block") {
-                        match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                            "text" => {
-                                current_block_type = Some(BlockType::Text);
-                                text_accum.clear();
-                            }
-                            "thinking" => {
-                                current_block_type = Some(BlockType::Thinking);
-                                thinking_accum.clear();
-                                thinking_signature.clear();
-                            }
-                            "tool_use" => {
-                                current_block_type = Some(BlockType::ToolUse);
-                                tool_json_accum.clear();
-                                tool_id = block
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                tool_name = block
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let _ = tx.send(StreamEvent::ToolCallStart {
-                                    index,
-                                    id: tool_id.clone(),
-                                    name: tool_name.clone(),
-                                });
-                            }
-                            _ => {
-                                current_block_type = None;
-                            }
-                        }
-                    }
-                }
-
-                "content_block_delta" => {
-                    let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    if let Some(delta) = data.get("delta") {
-                        match delta.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                            "text_delta" => {
-                                if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                    text_accum.push_str(text);
-                                    let _ = tx.send(StreamEvent::TextDelta {
-                                        delta: text.to_string(),
-                                    });
-                                }
-                            }
-                            "thinking_delta" => {
-                                if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
-                                    thinking_accum.push_str(text);
-                                    let _ = tx.send(StreamEvent::ThinkingDelta {
-                                        delta: text.to_string(),
-                                    });
-                                }
-                            }
-                            "input_json_delta" => {
-                                if let Some(json_str) =
-                                    delta.get("partial_json").and_then(|v| v.as_str())
-                                {
-                                    tool_json_accum.push_str(json_str);
-                                    let _ = tx.send(StreamEvent::ToolCallDelta {
-                                        index,
-                                        delta: json_str.to_string(),
-                                    });
-                                }
-                            }
-                            "signature_delta" => {
-                                if let Some(sig) = delta.get("signature").and_then(|v| v.as_str()) {
-                                    thinking_signature.push_str(sig);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                "content_block_stop" => {
-                    let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    match current_block_type {
-                        Some(BlockType::Text) => {
-                            content_blocks.push(ContentBlock::Text {
-                                text: std::mem::take(&mut text_accum),
-                            });
-                        }
-                        Some(BlockType::Thinking) => {
-                            content_blocks.push(ContentBlock::Thinking {
-                                thinking: std::mem::take(&mut thinking_accum),
-                                signature: std::mem::take(&mut thinking_signature),
-                            });
-                        }
-                        Some(BlockType::ToolUse) => {
-                            let arguments =
-                                serde_json::from_str(&tool_json_accum).unwrap_or(json!({}));
-                            content_blocks.push(ContentBlock::ToolCall {
-                                id: std::mem::take(&mut tool_id),
-                                name: std::mem::take(&mut tool_name),
-                                arguments,
-                                thought_signature: None,
-                            });
-                            let _ = tx.send(StreamEvent::ToolCallEnd { index });
-                        }
-                        None => {}
-                    }
-                    current_block_type = None;
-                }
-
-                "message_delta" => {
-                    if let Some(delta) = data.get("delta") {
-                        stop_reason = match delta
-                            .get("stop_reason")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("end_turn")
-                        {
-                            "end_turn" | "pause_turn" | "stop_sequence" => StopReason::Stop,
-                            "max_tokens" => StopReason::Length,
-                            "tool_use" => StopReason::ToolUse,
-                            _ => StopReason::Error,
-                        };
-                    }
-                    if let Some(u) = data.get("usage")
-                        && let Some(v) = u.get("output_tokens").and_then(|v| v.as_u64())
-                    {
-                        usage.output_tokens = v as u32;
-                    }
-                }
-
-                "message_stop" => {
-                    let _ = tx.send(StreamEvent::Done {
-                        message: AssistantResponse {
-                            content: std::mem::take(&mut content_blocks),
-                            usage: usage.clone(),
-                            stop_reason: stop_reason.clone(),
-                            model: model_id.clone(),
-                            response_id: String::new(),
-                            rate_limit: rate_limit.clone(),
-                        },
-                    });
-                }
-
-                "error" => {
-                    let msg = data
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown API error");
-                    let _ = tx.send(StreamEvent::Error {
-                        message: msg.to_string(),
-                    });
-                }
-
-                _ => {}
-            }
+            handle_anthropic_event(
+                event.event_type.as_deref().unwrap_or(""),
+                &data,
+                &rate_limit,
+                tx,
+                &mut state,
+            );
         }
+    }
+
+    if decoder.unread_len() > 0 {
+        bail!(
+            "SSE stream ended with unread trailing bytes (bytes {}, events {}, trailing {} bytes): {}",
+            total_sse_bytes,
+            parsed_events,
+            decoder.unread_len(),
+            decoder.unread_preview(256)
+        );
+    }
+
+    Ok(())
+}
+
+pub(super) async fn parse_json_event_bytes_stream<S>(
+    stream: S,
+    rate_limit: Option<RateLimitSnapshot>,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = std::result::Result<bytes::Bytes, anyhow::Error>> + Send,
+{
+    pin_mut!(stream);
+    let mut total_bytes = 0usize;
+    let mut parsed_events = 0usize;
+    let mut state = AnthropicStreamState::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("error reading Bedrock JSON event chunk")?;
+        total_bytes += chunk.len();
+        let data: Value = serde_json::from_slice(&chunk).with_context(|| {
+            format!(
+                "invalid Bedrock JSON event after {} bytes / {} events: {}",
+                total_bytes,
+                parsed_events,
+                String::from_utf8_lossy(&chunk)
+            )
+        })?;
+        let event_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        parsed_events += 1;
+        handle_anthropic_event(event_type, &data, &rate_limit, tx, &mut state);
     }
 
     Ok(())

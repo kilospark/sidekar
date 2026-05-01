@@ -1,9 +1,63 @@
 use super::{
-    ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, Provider, SseDecoder, catalog_http_client,
-    is_retryable_error, openai_chat_completions_url,
+    ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, Provider, SseDecoder, StreamEvent,
+    catalog_http_client, is_retryable_error, openai_chat_completions_url,
     openai_compat_assistant_concat_reasoning_chunks, openai_compat_assistant_join_text,
     openai_models_url, openai_plain_text_before_first_tool_call, provider_models_list_client,
 };
+use bytes::Bytes;
+
+#[tokio::test]
+async fn bedrock_anthropic_json_events_produce_done_message() {
+    let chunks = vec![
+        Ok(Bytes::from_static(
+            br#"{"type":"message_start","message":{"model":"anthropic.claude-opus-4-7","usage":{"input_tokens":12}}}"#,
+        )),
+        Ok(Bytes::from_static(
+            br#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        )),
+        Ok(Bytes::from_static(
+            br#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        )),
+        Ok(Bytes::from_static(
+            br#"{"type":"content_block_stop","index":0}"#,
+        )),
+        Ok(Bytes::from_static(
+            br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}"#,
+        )),
+        Ok(Bytes::from_static(br#"{"type":"message_stop"}"#)),
+    ];
+    let stream = futures_util::stream::iter(chunks);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    super::anthropic::parse_json_event_bytes_stream(stream, None, &tx)
+        .await
+        .expect("Bedrock JSON event stream should parse");
+    drop(tx);
+
+    let mut saw_done = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::Done { message } => {
+                saw_done = true;
+                assert_eq!(message.model, "anthropic.claude-opus-4-7");
+                assert_eq!(message.usage.input_tokens, 12);
+                assert_eq!(message.usage.output_tokens, 3);
+                assert_eq!(message.content.len(), 1);
+                assert!(matches!(
+                    &message.content[0],
+                    ContentBlock::Text { text } if text == "hi"
+                ));
+            }
+            StreamEvent::TextDelta { delta } => assert_eq!(delta, "hi"),
+            other => panic!("unexpected stream event: {other:?}"),
+        }
+    }
+
+    assert!(
+        saw_done,
+        "expected StreamEvent::Done from Bedrock JSON events"
+    );
+}
 
 #[test]
 fn sse_decoder_parses_named_events_with_crlf_chunks() {
@@ -71,6 +125,15 @@ fn sse_decoder_handles_frame_split_across_chunks() {
     decoder.push_chunk(b"\n");
     let ev = decoder.next_event().expect("now complete");
     assert_eq!(ev.data, "{\"part\":1}");
+}
+
+#[test]
+fn sse_decoder_exposes_unread_trailing_fragment() {
+    let mut decoder = SseDecoder::new();
+    decoder.push_chunk(b"data: {\"partial\":1}");
+    assert!(decoder.next_event().is_none());
+    assert_eq!(decoder.unread_len(), 19);
+    assert_eq!(decoder.unread_preview(64), "data: {\"partial\":1}");
 }
 
 #[test]

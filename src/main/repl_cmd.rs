@@ -33,7 +33,9 @@ async fn handle_login(args: &[String]) -> Result<()> {
             eprintln!("  oc         OpenCode — API key");
             eprintln!("  grok       Grok (xAI) — API key");
             eprintln!("  gem        Gemini (Google) — API key");
-            eprintln!("  bedrock | brk Amazon Bedrock (Claude) — IAM profile / credential chain → HTTPS SigV4");
+            eprintln!(
+                "  bedrock | brk Amazon Bedrock — IAM profile / credential chain → HTTPS SigV4"
+            );
             eprintln!("  oac <name> <url> [api_key]");
             eprintln!();
             eprintln!("Examples:");
@@ -301,17 +303,10 @@ impl sidekar::output::CommandOutput for ModelsListOutput {
                 m.id, m.display_name, ctx
             )?;
             if let Some(ref fm) = m.bedrock_foundation_model_arn {
-                writeln!(
-                    w,
-                    "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m"
-                )?;
+                writeln!(w, "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m")?;
             }
             for (i, pr) in m.bedrock_inference_profile_refs.iter().enumerate() {
-                writeln!(
-                    w,
-                    "      \x1b[2minference profile [{}]: {pr}\x1b[0m",
-                    i + 1
-                )?;
+                writeln!(w, "      \x1b[2minference profile [{}]: {pr}\x1b[0m", i + 1)?;
             }
         }
         writeln!(w, "\n\x1b[2m{} models\x1b[0m", self.count)?;

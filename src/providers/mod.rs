@@ -96,8 +96,7 @@ pub(super) fn attached_mitm_for_custom_tls() -> Option<(u16, Vec<u8>)> {
     let g = ATTACHED_MITM_PROXY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    g.as_ref()
-        .map(|a| (a.port, a.ca_pem.clone()))
+    g.as_ref().map(|a| (a.port, a.ca_pem.clone()))
 }
 
 pub(crate) fn openai_chat_completions_url(base_url: &str) -> String {
@@ -405,6 +404,17 @@ impl SseDecoder {
             self.buffer.drain(..self.read_pos);
             self.read_pos = 0;
         }
+    }
+
+    pub fn unread_len(&self) -> usize {
+        self.buffer.len().saturating_sub(self.read_pos)
+    }
+
+    pub fn unread_preview(&self, max_chars: usize) -> String {
+        self.buffer[self.read_pos..]
+            .chars()
+            .take(max_chars)
+            .collect()
     }
 }
 
@@ -1155,7 +1165,11 @@ pub struct RemoteModel {
 
 impl RemoteModel {
     #[must_use]
-    pub fn catalog(id: impl Into<String>, display_name: impl Into<String>, context_window: u32) -> Self {
+    pub fn catalog(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        context_window: u32,
+    ) -> Self {
         Self {
             id: id.into(),
             display_name: display_name.into(),
@@ -1266,11 +1280,7 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, S
                     1_000_000,
                 ));
             } else {
-                models.push(RemoteModel::catalog(
-                    id.to_string(),
-                    name.to_string(),
-                    ctx,
-                ));
+                models.push(RemoteModel::catalog(id.to_string(), name.to_string(), ctx));
             }
         }
     }
@@ -1437,11 +1447,7 @@ async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, Strin
             let name = m.get("display_name").and_then(|v| v.as_str()).unwrap_or(id);
             let hidden = m.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
             if !id.is_empty() && !hidden {
-                models.push(RemoteModel::catalog(
-                    id.to_string(),
-                    name.to_string(),
-                    0,
-                ));
+                models.push(RemoteModel::catalog(id.to_string(), name.to_string(), 0));
             }
         }
     }
@@ -1491,11 +1497,7 @@ pub async fn fetch_openai_compat_model_list(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
             if !id.is_empty() {
-                models.push(RemoteModel::catalog(
-                    id.to_string(),
-                    name.to_string(),
-                    ctx,
-                ));
+                models.push(RemoteModel::catalog(id.to_string(), name.to_string(), ctx));
             }
         }
     }
@@ -1584,7 +1586,7 @@ pub enum Provider {
         base_url: String,
         credential: Option<String>,
     },
-    /// Claude via Amazon Bedrock — IAM credentials (AWS SDK default chain).
+    /// Amazon Bedrock — IAM credentials (AWS SDK default chain).
     Bedrock {
         region: String,
         aws_profile: Option<String>,
