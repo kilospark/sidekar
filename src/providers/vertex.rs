@@ -160,11 +160,7 @@ fn parse_publisher_models(publisher: &str, body: &Value) -> Vec<RemoteModel> {
             .and_then(|v| v.as_str())
             .map(|v| format!("{chat_id} ({v})"))
             .unwrap_or_else(|| chat_id.clone());
-        out.push(RemoteModel {
-            id: chat_id,
-            display_name: display,
-            context_window: 0,
-        });
+        out.push(RemoteModel::catalog(chat_id, display, 0));
     }
     out
 }

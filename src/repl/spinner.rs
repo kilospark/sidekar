@@ -1,30 +1,37 @@
 //! Shared spinner format used by the REPL renderer (tool exec, model status)
-//! and the `! cmd` shell-escape runner. Owns the frames, color, tick rate,
+//! and the `! cmd` shell-escape runner. Owns the braille tick set, color, tick rate,
 //! and frame-string format so neither caller re-implements them.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use rand::Rng as _;
+
 use super::editor::{clear_transient_status, emit_transient_status};
 
-pub(super) const FRAMES: &[&str] = &[
-    "[    ]", "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]", "[    ]",
+/// One-column Braille-pattern symbols ( Unicode U+28xx ). Randomized each tick.
+const BRAILLE_TICKS: &[char] = &[
+    '⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', '⠉', '⠊', '⠋', '⠌', '⠍', '⠎', '⠏',
+    '⠐', '⠑', '⠒', '⠓', '⠔', '⠕', '⠖', '⠗', '⠘', '⠙', '⠚', '⠛', '⠜', '⠝', '⠞', '⠟',
+    '⠠', '⠡', '⠢', '⠣', '⠤', '⠥', '⠦', '⠧', '⠨', '⠩', '⠪', '⠫', '⠬', '⠭', '⠮', '⠯',
+    '⠰', '⠱', '⠲', '⠳', '⠴', '⠵', '⠶', '⠷', '⠸', '⠹', '⠺', '⠻', '⠼', '⠽', '⠾', '⠿',
 ];
 pub(super) const COLOR: &str = "\x1b[36m";
 pub(super) const TICK: Duration = Duration::from_millis(80);
 
-/// Build one spinner frame string. Format: `[####] X.Xs label`.
+/// Build one spinner frame string. Format: `⠿ X.Xs label` (one random braille cell).
+/// `idx` is kept for call-site compatibility; each frame picks a fresh random tick.
 /// Caller is responsible for emitting it (raw write, transient status, etc).
-pub(super) fn frame(idx: usize, elapsed: Duration, label: &str) -> String {
+pub(super) fn frame(_idx: usize, elapsed: Duration, label: &str) -> String {
     let label_part = if label.is_empty() {
         String::new()
     } else {
         format!(" {label}")
     };
+    let tick = BRAILLE_TICKS[rand::rng().random_range(..BRAILLE_TICKS.len())];
     format!(
-        "{COLOR}{} {:.1}s{label_part}\x1b[0m",
-        FRAMES[idx % FRAMES.len()],
+        "{COLOR}{tick} {:.1}s{label_part}\x1b[0m",
         elapsed.as_secs_f32(),
     )
 }

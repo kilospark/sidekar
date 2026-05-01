@@ -246,6 +246,8 @@ async fn handle_models(args: &[String]) -> Result<()> {
             id: m.id.clone(),
             display_name: m.display_name.clone(),
             context_window: m.context_window,
+            bedrock_foundation_model_arn: m.bedrock_foundation_model_arn.clone(),
+            bedrock_inference_profile_refs: m.bedrock_inference_profile_refs.clone(),
         })
         .collect();
     sidekar::output::emit(&ModelsListOutput {
@@ -262,6 +264,10 @@ struct ModelEntry {
     id: String,
     display_name: String,
     context_window: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bedrock_foundation_model_arn: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bedrock_inference_profile_refs: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -294,6 +300,19 @@ impl sidekar::output::CommandOutput for ModelsListOutput {
                 "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
                 m.id, m.display_name, ctx
             )?;
+            if let Some(ref fm) = m.bedrock_foundation_model_arn {
+                writeln!(
+                    w,
+                    "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m"
+                )?;
+            }
+            for (i, pr) in m.bedrock_inference_profile_refs.iter().enumerate() {
+                writeln!(
+                    w,
+                    "      \x1b[2minference profile [{}]: {pr}\x1b[0m",
+                    i + 1
+                )?;
+            }
         }
         writeln!(w, "\n\x1b[2m{} models\x1b[0m", self.count)?;
         Ok(())

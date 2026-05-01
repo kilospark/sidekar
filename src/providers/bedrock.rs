@@ -5,6 +5,16 @@
 //! requests via **`aws-sigv4`** and reads streaming responses as AWS **`application/vnd.amazon.eventstream`**
 //! frames. `:event-type` **`chunk`** JSON carries base64 **`bytes`** that concatenate into
 //! Anthropic-style SSE, parsed by [`anthropic::parse_sse_bytes_stream`].
+//!
+//! **HTTP parity** (clone and read `~/src/oss/aws-sdk-rust`): `InvokeModelWithResponseStream` is
+//! defined in **`aws-models/bedrock-runtime.json`** — the `accept` input maps to HTTP header
+//! **`X-Amzn-Bedrock-Accept`** only (not `Accept`). The model documents default response body type
+//! **`application/json`** for the inference payload inside the stream. Request path and SigV4 knobs
+//! (`double_uri_encode`, normalized path) match **`sdk/bedrockruntime/src/operation/invoke_model_with_response_stream.rs`**.
+//!
+//! Inference **`modelId`**: URI label only (`/model/{modelId}/invoke-with-response-stream`). Smithy documents
+//! foundation-model id/ARN **or** inference-profile id/ARN; **`ListInferenceProfiles`** is in **`sdk/bedrock/`**
+//! (**`~/src/oss/aws-sdk-rust/aws-models/bedrock.json`**).
 
 use anyhow::{Context as _, Result};
 use aws_config::{
@@ -105,6 +115,284 @@ fn bedrock_control_plane_models_url(region: &str) -> Result<Url> {
     Ok(url)
 }
 
+/// Bedrock control plane `ListInferenceProfiles` path (Rust SDK parity:
+/// `/inference-profiles` + `GET` query `type=SYSTEM_DEFINED`).
+const BEDROCK_INFERENCE_PROFILES_PATH: &str = "inference-profiles";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListInferenceProfilesResponse {
+    inference_profile_summaries: Option<Vec<InferenceProfileSummaryJson>>,
+    next_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InferenceProfileSummaryJson {
+    #[serde(default)]
+    inference_profile_arn: Option<String>,
+    inference_profile_id: String,
+    status: Option<String>,
+    models: Option<Vec<InferenceProfileModelJson>>,
+}
+
+fn bedrock_inference_profile_invoke_ref(s: &InferenceProfileSummaryJson) -> String {
+    s.inference_profile_arn
+        .as_deref()
+        .filter(|a| !a.trim().is_empty())
+        .map(std::string::ToString::to_string)
+        .unwrap_or_else(|| format!("id:{}", s.inference_profile_id.trim()))
+}
+
+/// Paginated `ListInferenceProfiles` (`SYSTEM_DEFINED`). Returns empty on IAM/network/parse failure.
+async fn fetch_system_defined_inference_profile_summaries(
+    identity: &Identity,
+    region: &str,
+) -> Vec<InferenceProfileSummaryJson> {
+    let Ok(client) = crate::providers::catalog_http_client(120) else {
+        return Vec::new();
+    };
+
+    let mut next_token = Option::<String>::None;
+    let mut out = Vec::<InferenceProfileSummaryJson>::new();
+
+    loop {
+        let Ok(mut url) = Url::parse(&format!(
+            "https://bedrock.{region}.amazonaws.com/{path}",
+            path = BEDROCK_INFERENCE_PROFILES_PATH
+        )) else {
+            break;
+        };
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("type", "SYSTEM_DEFINED");
+            q.append_pair("maxResults", "100");
+            if let Some(nt) = next_token.as_ref().filter(|s| !s.is_empty()) {
+                q.append_pair("nextToken", nt.as_str());
+            }
+        }
+
+        let Ok(params) = signing_params(identity, region, "bedrock") else {
+            break;
+        };
+        let headers = [("accept", Cow::Borrowed("application/json"))];
+        let Ok(http_req) = signed_request(&Method::GET, &url, &headers, &[], &params) else {
+            break;
+        };
+        let Ok(reqwest_req) = reqwest::Request::try_from(http_req) else {
+            break;
+        };
+
+        let Ok(resp) = client.execute(reqwest_req).await else {
+            break;
+        };
+        if !resp.status().is_success() {
+            break;
+        }
+        let body = resp.bytes().await.unwrap_or_default();
+        let Ok(parsed) = serde_json::from_slice::<ListInferenceProfilesResponse>(&body) else {
+            break;
+        };
+
+        if let Some(sums) = parsed.inference_profile_summaries {
+            out.extend(sums);
+        }
+
+        match parsed.next_token.filter(|nt| !nt.is_empty()) {
+            Some(nt) => next_token = Some(nt),
+            None => break,
+        }
+    }
+
+    out
+}
+
+/// Map inference-profile membership foundation-model ARN tails to **`ListFoundationModels` `modelId`**
+/// keys (handles `anthropic.foo:version` tails vs bare `anthropic.foo` ids).
+fn foundation_model_catalog_keys_from_arn_tail(fm_tail: &str) -> Vec<String> {
+    let fm_tail = fm_tail.trim();
+    if fm_tail.is_empty() {
+        return Vec::new();
+    }
+    let mut ks = Vec::new();
+    ks.push(fm_tail.to_string());
+    if let Some((base, _)) = fm_tail.split_once(':') {
+        let base = base.trim();
+        if !base.is_empty() && base != fm_tail {
+            ks.push(base.to_string());
+        }
+    }
+    ks
+}
+
+fn inference_profile_invoke_refs_by_foundation_model_id(
+    summaries: &[InferenceProfileSummaryJson],
+) -> std::collections::HashMap<String, Vec<String>> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+    for s in summaries {
+        if !inference_profile_status_usable(s.status.as_deref()) {
+            continue;
+        }
+        let invoke_ref = bedrock_inference_profile_invoke_ref(s);
+        for m in s.models.iter().flatten() {
+            let Some(ma) = m.model_arn.as_deref().filter(|a| !a.is_empty()) else {
+                continue;
+            };
+            let Some((_, fm_tail)) = ma.rsplit_once('/') else {
+                continue;
+            };
+            if fm_tail.is_empty() {
+                continue;
+            }
+            for key in foundation_model_catalog_keys_from_arn_tail(fm_tail) {
+                map.entry(key)
+                    .or_default()
+                    .insert(invoke_ref.clone());
+            }
+        }
+    }
+
+    map.into_iter()
+        .map(|(k, vs)| {
+            let mut refs: Vec<String> = vs.into_iter().collect();
+            refs.sort();
+            (k, refs)
+        })
+        .collect()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InferenceProfileModelJson {
+    model_arn: Option<String>,
+}
+
+fn inference_profile_arn_covers_foundation_id(arn: &str, foundation_id: &str) -> bool {
+    // Typical profile membership: …/foundation-model/anthropic.claude-opus-4-7 (optional :version suffix)
+    let tail = arn.rsplit_once('/').map(|(_, t)| t).unwrap_or("");
+    tail == foundation_id
+        || tail.starts_with(&format!("{foundation_id}:"))
+        || tail.starts_with(&format!("{foundation_id}-"))
+}
+
+fn inference_profile_summary_covers_foundation(
+    summary: &InferenceProfileSummaryJson,
+    foundation_id: &str,
+) -> bool {
+    summary.models.as_ref().is_some_and(|models| {
+        models.iter().any(|m| {
+            m.model_arn
+                .as_ref()
+                .is_some_and(|arn| inference_profile_arn_covers_foundation_id(arn, foundation_id))
+        })
+    })
+}
+
+fn inference_profile_status_usable(status: Option<&str>) -> bool {
+    match status.map(|s| s.trim()) {
+        None | Some("") => true,
+        Some(st) => {
+            let u = st.to_ascii_uppercase();
+            !matches!(u.as_str(), "DEPRECATED" | "DELETED" | "INACTIVE" | "FAILED")
+        }
+    }
+}
+
+/// Resolves **`ListInferenceProfiles`** to a **`modelId` /path segment** value.
+///
+/// AWS often returns **`inferenceProfileArn`**; for cross-region/system profiles the docs lean on
+/// using that ARN as `InvokeModelWithResponseStream` `modelId` (path segment, URL-encoded).
+/// Prefer **ARN** when present, then **geo-prefixed `inferenceProfileId`**, then any other match.
+async fn resolve_bedrock_invoke_model_identifier(
+    identity: &Identity,
+    region: &str,
+    foundation_model_id: &str,
+) -> Option<String> {
+    let summaries = fetch_system_defined_inference_profile_summaries(identity, region).await;
+    if summaries.is_empty() {
+        return None;
+    }
+    let geo_prefix = format!("{}.", bedrock_geo_inference_prefix(region));
+
+    let mut geo_arn: Option<String> = None;
+    let mut geo_id: Option<String> = None;
+    let mut any_arn: Option<String> = None;
+    let mut any_id: Option<String> = None;
+
+    for s in &summaries {
+        if !inference_profile_status_usable(s.status.as_deref()) {
+            continue;
+        }
+        if !inference_profile_summary_covers_foundation(s, foundation_model_id) {
+            continue;
+        }
+
+        let arn = s
+            .inference_profile_arn
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(std::string::ToString::to_string);
+        let id = Some(s.inference_profile_id.clone());
+        let geo_match = s.inference_profile_id.starts_with(&geo_prefix);
+
+        if geo_match {
+            if geo_arn.is_none() {
+                geo_arn.clone_from(&arn);
+            }
+            if geo_id.is_none() {
+                geo_id.clone_from(&id);
+            }
+        }
+        if any_arn.is_none() {
+            any_arn.clone_from(&arn);
+        }
+        if any_id.is_none() {
+            any_id.clone_from(&id);
+        }
+    }
+
+    geo_arn.or(geo_id).or(any_arn).or(any_id)
+}
+
+fn is_inference_profile_model_id(id: &str) -> bool {
+    let id = id.trim();
+    id.starts_with("us.")
+        || id.starts_with("eu.")
+        || id.starts_with("jp.")
+        || id.starts_with("global.")
+        || id.starts_with("arn:aws:bedrock:")
+}
+
+fn bedrock_invoke_model_id_candidates(
+    base_model_id: &str,
+    region: &str,
+    resolved_from_listing: Option<String>,
+) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(ref id) = resolved_from_listing
+        && !id.is_empty()
+    {
+        v.push(id.clone());
+    }
+    if !v.iter().any(|x| x == base_model_id) {
+        v.push(base_model_id.to_string());
+    }
+    if !is_inference_profile_model_id(base_model_id) {
+        let geo = format!(
+            "{}.{}",
+            bedrock_geo_inference_prefix(region),
+            base_model_id
+        );
+        if !v.iter().any(|x| x == &geo) {
+            v.push(geo);
+        }
+    }
+    v
+}
+
 fn signed_request(
     method: &Method,
     url: &Url,
@@ -146,6 +434,8 @@ struct ListFoundationModelsResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FoundationModelSummary {
+    #[serde(default)]
+    model_arn: Option<String>,
     model_id: String,
     model_name: Option<String>,
     provider_name: Option<String>,
@@ -184,6 +474,21 @@ fn utf8_preview(b: &[u8]) -> String {
     std::str::from_utf8(b)
         .map(|s| s.to_string())
         .unwrap_or_else(|_| format!("<binary {} bytes>", b.len()))
+}
+
+/// Geographic prefix for Bedrock system inference profiles, from the configured invoke region.
+/// See: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-7.html>
+fn bedrock_geo_inference_prefix(region: &str) -> &'static str {
+    let r = region.trim();
+    if r.starts_with("us-") || r.starts_with("ca-") {
+        "us"
+    } else if r.starts_with("eu-") {
+        "eu"
+    } else if r == "ap-northeast-1" || r == "ap-northeast-3" {
+        "jp"
+    } else {
+        "global"
+    }
 }
 
 fn chunk_payload_bytes(payload_json: &[u8]) -> Option<Vec<u8>> {
@@ -241,6 +546,11 @@ pub async fn fetch_bedrock_model_list(
         )
     })?;
 
+    let profile_summaries =
+        fetch_system_defined_inference_profile_summaries(&identity, region).await;
+    let profile_invoke_refs =
+        inference_profile_invoke_refs_by_foundation_model_id(&profile_summaries);
+
     let mut models: Vec<RemoteModel> = Vec::new();
     for m in parsed.model_summaries {
         let id = &m.model_id;
@@ -255,11 +565,23 @@ pub async fn fetch_bedrock_model_list(
             continue;
         }
 
-        models.push(RemoteModel {
-            id: id.clone(),
-            display_name: m.model_name.unwrap_or_else(|| id.clone()),
-            context_window: 0,
-        });
+        let invoke_refs = profile_invoke_refs
+            .get(id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let fm_arn = m
+            .model_arn
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::string::ToString::to_string);
+        let mut row = RemoteModel::catalog(
+            id.clone(),
+            m.model_name.unwrap_or_else(|| id.clone()),
+            0,
+        );
+        row.bedrock_foundation_model_arn = fm_arn;
+        row.bedrock_inference_profile_refs = invoke_refs;
+        models.push(row);
     }
 
     models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -376,54 +698,77 @@ pub async fn stream(
     // Host is bedrock-runtime.*; SigV4 credential scope MUST use signing name `bedrock`
     // (same as aws-sdk-bedrockruntime). Using `bedrock-runtime` yields 403:
     // "Credential should be scoped to correct service: 'bedrock'."
-    let signing = signing_params(&identity, region, "bedrock")?;
 
-    let model_id = model
+    let base_model_id = model
         .strip_suffix(ANTHROPIC_1M_SUFFIX)
         .unwrap_or(model)
         .to_string();
 
     let body_vec = anthropic::bedrock_request_body_bytes(
-        model_id.as_str(),
+        base_model_id.as_str(),
         system_prompt,
         messages,
         tools,
         cfg,
     )?;
 
-    let url = bedrock_invoke_url(region, &model_id)?;
-
+    // InvokeModelWithResponseStream request headers (Smithy `bedrock-runtime.json` —
+    // `accept` → `X-Amzn-Bedrock-Accept`; do not send a separate `Accept:` for this operation).
     let header_pairs = [
-        (
-            "accept",
-            Cow::Borrowed("application/vnd.amazon.eventstream"),
-        ),
         ("content-type", Cow::Borrowed("application/json")),
-        ("x-amzn-bedrock-accept", Cow::Borrowed("*/*")),
+        ("x-amzn-bedrock-accept", Cow::Borrowed("application/json")),
     ];
 
-    let http_req = signed_request(&Method::POST, &url, &header_pairs, &body_vec, &signing)?;
-
     let client = build_streaming_client(Duration::from_secs(300))?;
-    let reqwest_req = reqwest::Request::try_from(http_req).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let http_resp = client.execute(reqwest_req).await?;
-    let status = http_resp.status();
-    let ct_hint = http_resp
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let resolved = if is_inference_profile_model_id(&base_model_id) {
+        None
+    } else {
+        resolve_bedrock_invoke_model_identifier(&identity, region, &base_model_id).await
+    };
+    let candidates = bedrock_invoke_model_id_candidates(&base_model_id, region, resolved);
 
-    if !status.is_success() {
-        let err_body = http_resp.bytes().await.unwrap_or_default();
-        anyhow::bail!(
-            "Bedrock invoke_model_with_response_stream HTTP {} ({ct_hint}): {}",
-            status.as_u16(),
-            utf8_preview(&err_body),
-        );
+    let mut last_failure: Option<(u16, String, String)> = None;
+    let mut http_resp = None;
+    for path_model_id in candidates {
+        let signing = signing_params(&identity, region, "bedrock")?;
+        let url = bedrock_invoke_url(region, &path_model_id)?;
+        let http_req = signed_request(&Method::POST, &url, &header_pairs, &body_vec, &signing)?;
+        let reqwest_req =
+            reqwest::Request::try_from(http_req).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let resp = client.execute(reqwest_req).await?;
+        let status = resp.status();
+
+        if status.is_success() {
+            http_resp = Some(resp);
+            break;
+        }
+
+        let ct_hint = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let err_body = resp.bytes().await.unwrap_or_default();
+        last_failure = Some((status.as_u16(), ct_hint, utf8_preview(&err_body)));
     }
+
+    let http_resp = match http_resp {
+        Some(r) => r,
+        None => match last_failure {
+            Some((code, ct_hint, body)) => anyhow::bail!(
+                "Bedrock invoke_model_with_response_stream HTTP {} ({}): {}",
+                code,
+                ct_hint,
+                body
+            ),
+            None => anyhow::bail!(
+                "Bedrock invoke_model_with_response_stream: no response and no error detail"
+            ),
+        },
+    };
 
     let (fwd_tx, fwd_rx) = mpsc::unbounded_channel::<Result<Bytes, anyhow::Error>>();
 

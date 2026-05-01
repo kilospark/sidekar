@@ -867,11 +867,7 @@ pub async fn fetch_gemini_model_list(api_key: &str) -> Result<Vec<super::RemoteM
                 .and_then(|v| v.as_str())
                 .unwrap_or(&id)
                 .to_string();
-            Some(super::RemoteModel {
-                id,
-                display_name,
-                context_window,
-            })
+            Some(super::RemoteModel::catalog(id, display_name, context_window))
         })
         .collect())
 }

@@ -1146,6 +1146,24 @@ pub struct RemoteModel {
     pub id: String,
     pub display_name: String,
     pub context_window: u32,
+    /// AWS Bedrock: foundation model ARN from `ListFoundationModels` (`modelArn`).
+    pub bedrock_foundation_model_arn: Option<String>,
+    /// AWS Bedrock: system inference profile ARN or `id:<inferenceProfileId>` when the API omitted ARN.
+    /// Use these with `InvokeModelWithResponseStream` when the bare foundation-model id rejects on-demand.
+    pub bedrock_inference_profile_refs: Vec<String>,
+}
+
+impl RemoteModel {
+    #[must_use]
+    pub fn catalog(id: impl Into<String>, display_name: impl Into<String>, context_window: u32) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            context_window,
+            bedrock_foundation_model_arn: None,
+            bedrock_inference_profile_refs: Vec::new(),
+        }
+    }
 }
 
 /// Fetch available models from a provider's API.
@@ -1236,23 +1254,23 @@ async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, S
             let native_1m = !gated && ctx >= 1_000_000;
             if gated || native_1m {
                 // Base row: 200k context (no beta header)
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: 200_000,
-                });
+                models.push(RemoteModel::catalog(
+                    id.to_string(),
+                    name.to_string(),
+                    200_000,
+                ));
                 // 1M variant: adds beta header at runtime
-                models.push(RemoteModel {
-                    id: format!("{id}{ANTHROPIC_1M_SUFFIX}"),
-                    display_name: format!("{name} (1M ctx)"),
-                    context_window: 1_000_000,
-                });
+                models.push(RemoteModel::catalog(
+                    format!("{id}{ANTHROPIC_1M_SUFFIX}"),
+                    format!("{name} (1M ctx)"),
+                    1_000_000,
+                ));
             } else {
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: ctx,
-                });
+                models.push(RemoteModel::catalog(
+                    id.to_string(),
+                    name.to_string(),
+                    ctx,
+                ));
             }
         }
     }
@@ -1419,11 +1437,11 @@ async fn fetch_codex_model_list(api_key: &str) -> Result<Vec<RemoteModel>, Strin
             let name = m.get("display_name").and_then(|v| v.as_str()).unwrap_or(id);
             let hidden = m.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
             if !id.is_empty() && !hidden {
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: 0,
-                });
+                models.push(RemoteModel::catalog(
+                    id.to_string(),
+                    name.to_string(),
+                    0,
+                ));
             }
         }
     }
@@ -1473,11 +1491,11 @@ pub async fn fetch_openai_compat_model_list(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
             if !id.is_empty() {
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: name.to_string(),
-                    context_window: ctx,
-                });
+                models.push(RemoteModel::catalog(
+                    id.to_string(),
+                    name.to_string(),
+                    ctx,
+                ));
             }
         }
     }
@@ -1504,11 +1522,7 @@ async fn fetch_opencode_public_model_list(
         for m in data {
             let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
             if !id.is_empty() {
-                models.push(RemoteModel {
-                    id: id.to_string(),
-                    display_name: String::new(),
-                    context_window: 0,
-                });
+                models.push(RemoteModel::catalog(id.to_string(), String::new(), 0));
             }
         }
     }
