@@ -6,11 +6,10 @@
 //! frames. `:event-type` **`chunk`** JSON carries base64 **`bytes`** that concatenate into
 //! Anthropic-style SSE, parsed by [`anthropic::parse_sse_bytes_stream`].
 //!
-//! **HTTP parity** (clone and read `~/src/oss/aws-sdk-rust`): `InvokeModelWithResponseStream` is
-//! defined in **`aws-models/bedrock-runtime.json`** — the `accept` input maps to HTTP header
-//! **`X-Amzn-Bedrock-Accept`** only (not `Accept`). The model documents default response body type
-//! **`application/json`** for the inference payload inside the stream. Request path and SigV4 knobs
-//! (`double_uri_encode`, normalized path) match **`sdk/bedrockruntime/src/operation/invoke_model_with_response_stream.rs`**.
+//! **HTTP parity**: Smithy binds only `accept`→`X-Amzn-Bedrock-Accept`, but the **REST** examples in
+//! the Amazon Bedrock API Reference also send **`Accept: application/vnd.amazon.eventstream`** so the
+//! HTTP response uses the AWS event-stream wrapper; **`X-Amzn-Bedrock-Accept`** selects the MIME type
+//! of the inference payloads **inside** that stream (`*/*` or `application/json` per docs).
 //!
 //! Inference **`modelId`**: URI label only (`/model/{modelId}/invoke-with-response-stream`). Smithy documents
 //! foundation-model id/ARN **or** inference-profile id/ARN; **`ListInferenceProfiles`** is in **`sdk/bedrock/`**
@@ -712,11 +711,15 @@ pub async fn stream(
         cfg,
     )?;
 
-    // InvokeModelWithResponseStream request headers (Smithy `bedrock-runtime.json` —
-    // `accept` → `X-Amzn-Bedrock-Accept`; do not send a separate `Accept:` for this operation).
+    // REST sample: `-H accept: application/vnd.amazon.eventstream` + `-H x-amzn-bedrock-accept: */*`
+    // (`InvokeModelWithResponseStream` AWS API Reference streaming example).
     let header_pairs = [
+        (
+            "accept",
+            Cow::Borrowed("application/vnd.amazon.eventstream"),
+        ),
         ("content-type", Cow::Borrowed("application/json")),
-        ("x-amzn-bedrock-accept", Cow::Borrowed("application/json")),
+        ("x-amzn-bedrock-accept", Cow::Borrowed("*/*")),
     ];
 
     let client = build_streaming_client(Duration::from_secs(300))?;
