@@ -131,7 +131,7 @@ sidekar kv <subcommand> [args...]
   Subcommands:
     set <key> <value> [--tag=a,b]   Store a value (optionally tagged)
     get <key>                       Retrieve a value
-    list [--tag=TAG]                List entries (optionally filter by tag)
+    list [--tag=TAG]                List keys only (optional tag filter); use `get` for values
     delete <key>                    Delete a key and its history
     tag <add|remove> <key> <tags>   Add or remove tags on an entry
     history <key>                   Show version history

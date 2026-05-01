@@ -3,8 +3,8 @@
 //!
 //! Backed by sidekar's KV store (`sidekar kv`) under the
 //! `gemini_cache:<fingerprint_hex>` key, so cache associations
-//! persist across REPL restarts and can be inspected with
-//! `sidekar kv list gemini_cache`.
+//! persist across REPL restarts; list keys with `sidekar kv list --tag=gemini_cache`
+//! and read entries with `sidekar kv get <key>`.
 //!
 //! The fingerprint is a deterministic hash of
 //! `(model, system_prompt, tools_json, messages_prefix_json)`. Same
@@ -30,7 +30,7 @@ pub struct CacheEntry {
     /// Model the cache was created for. Caches are model-scoped on
     /// the server (Flash caches can't be reused on Pro); we mirror
     /// that by including the model in the fingerprint, but we store
-    /// it redundantly here so `sidekar kv list` output is
+    /// it redundantly here so `sidekar kv get` on a cache key is
     /// human-debuggable.
     pub model: String,
     /// Raw fingerprint hex (redundant with the KV key suffix; kept

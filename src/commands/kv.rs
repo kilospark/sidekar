@@ -83,15 +83,14 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 #[derive(serde::Serialize)]
-struct KvEntryOut {
+struct KvListItemOut {
     key: String,
-    value: String,
     tags: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
 struct KvListOutput {
-    items: Vec<KvEntryOut>,
+    items: Vec<KvListItemOut>,
 }
 
 impl crate::output::CommandOutput for KvListOutput {
@@ -102,15 +101,15 @@ impl crate::output::CommandOutput for KvListOutput {
         }
         let tagged = self.items.iter().filter(|e| !e.tags.is_empty()).count();
         if tagged > 0 {
-            writeln!(w, "{} entries ({} tagged):", self.items.len(), tagged)?;
+            writeln!(w, "{} keys ({} tagged):", self.items.len(), tagged)?;
         } else {
-            writeln!(w, "{} entries:", self.items.len())?;
+            writeln!(w, "{} keys:", self.items.len())?;
         }
         for e in &self.items {
             if e.tags.is_empty() {
-                writeln!(w, "  {} = {}", e.key, e.value)?;
+                writeln!(w, "  {}", e.key)?;
             } else {
-                writeln!(w, "  {} = {}  [{}]", e.key, e.value, e.tags.join(","))?;
+                writeln!(w, "  {}  [{}]", e.key, e.tags.join(","))?;
             }
         }
         Ok(())
@@ -131,9 +130,8 @@ async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let output = KvListOutput {
         items: entries
             .into_iter()
-            .map(|e| KvEntryOut {
+            .map(|e| KvListItemOut {
                 key: e.key,
-                value: e.value,
                 tags: e.tags,
             })
             .collect(),
