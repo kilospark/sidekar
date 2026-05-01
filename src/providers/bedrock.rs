@@ -20,7 +20,7 @@ use aws_config::{
     BehaviorVersion, Region, SdkConfig, profile::ProfileFileCredentialsProvider,
     provider_config::ProviderConfig,
 };
-use aws_credential_types::provider::ProvideCredentials as _;
+use aws_credential_types::{Credentials, provider::ProvideCredentials as _};
 use aws_sigv4::http_request::{
     SignableBody, SignableRequest, SigningParams, SigningSettings, sign,
 };
@@ -37,8 +37,10 @@ use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, TRANSFER_ENCODI
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::time::{Duration, SystemTime};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -46,6 +48,42 @@ use super::{
     ANTHROPIC_1M_SUFFIX, ChatMessage, RemoteModel, StreamConfig, StreamEvent, ToolDef, anthropic,
     build_streaming_client,
 };
+
+const BEDROCK_CREDENTIAL_EXPIRY_SKEW: Duration = Duration::from_secs(300);
+const BEDROCK_MODEL_ID_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BedrockCredentialCacheKey {
+    region: String,
+    profile: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BedrockCredentialCacheEntry {
+    identity: Identity,
+    expires_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BedrockModelIdCacheKey {
+    region: String,
+    profile: Option<String>,
+    foundation_model_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct BedrockModelIdCacheEntry {
+    resolved_model_id: String,
+    cached_at: Instant,
+}
+
+static BEDROCK_CREDENTIAL_CACHE: LazyLock<
+    Mutex<HashMap<BedrockCredentialCacheKey, BedrockCredentialCacheEntry>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static BEDROCK_MODEL_ID_CACHE: LazyLock<
+    Mutex<HashMap<BedrockModelIdCacheKey, BedrockModelIdCacheEntry>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BedrockRuntimeFamily {
@@ -147,15 +185,110 @@ async fn load_sdk_config(region: &str, profile: Option<&str>) -> SdkConfig {
     loader.load().await
 }
 
-async fn identity_from_cfg(cfg: &SdkConfig) -> Result<Identity> {
+async fn credentials_from_cfg(cfg: &SdkConfig) -> Result<Credentials> {
     let provider = cfg
         .credentials_provider()
         .context("missing AWS credential provider")?;
-    let creds = provider
+    provider
         .provide_credentials()
         .await
-        .map_err(|e| anyhow::anyhow!("AWS credentials: {e}"))?;
-    Ok(Identity::new(creds.clone(), creds.expiry()))
+        .map_err(|e| anyhow::anyhow!("AWS credentials: {e}"))
+}
+
+fn credential_cache_key(region: &str, profile: Option<&str>) -> BedrockCredentialCacheKey {
+    BedrockCredentialCacheKey {
+        region: region.trim().to_string(),
+        profile: profile
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    }
+}
+
+fn model_id_cache_key(
+    region: &str,
+    profile: Option<&str>,
+    foundation_model_id: &str,
+) -> BedrockModelIdCacheKey {
+    BedrockModelIdCacheKey {
+        region: region.trim().to_string(),
+        profile: profile
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        foundation_model_id: foundation_model_id.trim().to_string(),
+    }
+}
+
+fn identity_cache_entry_fresh(entry: &BedrockCredentialCacheEntry) -> bool {
+    match entry.expires_at {
+        Some(expiry) => expiry
+            .duration_since(SystemTime::now())
+            .ok()
+            .is_some_and(|remaining| remaining > BEDROCK_CREDENTIAL_EXPIRY_SKEW),
+        None => true,
+    }
+}
+
+async fn cached_identity(region: &str, profile: Option<&str>) -> Result<(Identity, bool)> {
+    let key = credential_cache_key(region, profile);
+    if let Some(entry) = BEDROCK_CREDENTIAL_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned()
+        && identity_cache_entry_fresh(&entry)
+    {
+        return Ok((entry.identity, true));
+    }
+
+    let sdk = load_sdk_config(region, profile).await;
+    let creds = credentials_from_cfg(&sdk).await?;
+    let expires_at = creds.expiry();
+    let identity = Identity::new(creds.clone(), expires_at);
+    let entry = BedrockCredentialCacheEntry {
+        identity: identity.clone(),
+        expires_at,
+    };
+    BEDROCK_CREDENTIAL_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, entry);
+    Ok((identity, false))
+}
+
+async fn cached_resolve_bedrock_invoke_model_identifier(
+    identity: &Identity,
+    region: &str,
+    profile: Option<&str>,
+    foundation_model_id: &str,
+) -> (Option<String>, bool) {
+    let key = model_id_cache_key(region, profile, foundation_model_id);
+    if let Some(entry) = BEDROCK_MODEL_ID_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned()
+        && entry.cached_at.elapsed() < BEDROCK_MODEL_ID_CACHE_TTL
+    {
+        return (Some(entry.resolved_model_id), true);
+    }
+
+    let resolved =
+        resolve_bedrock_invoke_model_identifier(identity, region, foundation_model_id).await;
+    if let Some(ref resolved_model_id) = resolved {
+        BEDROCK_MODEL_ID_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                key,
+                BedrockModelIdCacheEntry {
+                    resolved_model_id: resolved_model_id.clone(),
+                    cached_at: Instant::now(),
+                },
+            );
+    }
+    (resolved, false)
 }
 
 fn signing_params<'a>(
@@ -673,8 +806,7 @@ pub async fn fetch_bedrock_model_list(
     region: &str,
     profile: Option<&str>,
 ) -> Result<Vec<RemoteModel>, String> {
-    let cfg = load_sdk_config(region, profile).await;
-    let identity = identity_from_cfg(&cfg)
+    let (identity, _) = cached_identity(region, profile)
         .await
         .map_err(|e| format!("Bedrock IAM: {e}"))?;
     let params = signing_params(&identity, region, "bedrock").map_err(|e| format!("SigV4: {e}"))?;
@@ -879,8 +1011,10 @@ pub async fn stream(
     tools: &[ToolDef],
     cfg: &StreamConfig,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-    let sdk = load_sdk_config(region, profile).await;
-    let identity = identity_from_cfg(&sdk).await?;
+    let setup_started = Instant::now();
+    let identity_started = Instant::now();
+    let (identity, identity_cache_hit) = cached_identity(region, profile).await?;
+    let identity_elapsed = identity_started.elapsed();
     // Host is bedrock-runtime.*; SigV4 credential scope MUST use signing name `bedrock`
     // (same as aws-sdk-bedrockruntime). Using `bedrock-runtime` yields 403:
     // "Credential should be scoped to correct service: 'bedrock'."
@@ -917,16 +1051,20 @@ pub async fn stream(
 
     let client = build_streaming_client(Duration::from_secs(300))?;
 
-    let resolved = if is_inference_profile_model_id(&base_model_id) {
-        None
+    let resolve_started = Instant::now();
+    let (resolved, resolve_cache_hit) = if is_inference_profile_model_id(&base_model_id) {
+        (None, true)
     } else {
-        resolve_bedrock_invoke_model_identifier(&identity, region, &base_model_id).await
+        cached_resolve_bedrock_invoke_model_identifier(&identity, region, profile, &base_model_id)
+            .await
     };
+    let resolve_elapsed = resolve_started.elapsed();
     let candidates = bedrock_invoke_model_id_candidates(&base_model_id, region, resolved);
 
     let mut last_failure: Option<(u16, String, String)> = None;
     let mut http_resp = None;
     let mut selected_path_model_id = None;
+    let invoke_started = Instant::now();
     for path_model_id in candidates {
         let signing = signing_params(&identity, region, "bedrock")?;
         let url = bedrock_invoke_url(region, &path_model_id)?;
@@ -968,7 +1106,21 @@ pub async fn stream(
         },
     };
     let selected_path_model_id = selected_path_model_id.unwrap_or_else(|| base_model_id.clone());
+    let invoke_elapsed = invoke_started.elapsed();
     let resp_meta = BedrockStreamMeta::from_response(&http_resp, selected_path_model_id);
+    if super::is_verbose() {
+        super::print_verbose_line(&format!(
+            "\x1b[2mBedrock setup: creds={}ms ({}) profile-resolve={}ms ({}) invoke={}ms total={}ms model={} target={}\x1b[0m",
+            identity_elapsed.as_millis(),
+            if identity_cache_hit { "cache" } else { "fresh" },
+            resolve_elapsed.as_millis(),
+            if resolve_cache_hit { "cache" } else { "fresh" },
+            invoke_elapsed.as_millis(),
+            setup_started.elapsed().as_millis(),
+            base_model_id,
+            resp_meta.invoke_model_id,
+        ));
+    }
     if !resp_meta.content_type.is_empty()
         && !resp_meta
             .content_type
