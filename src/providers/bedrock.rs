@@ -373,7 +373,10 @@ pub async fn stream(
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     let sdk = load_sdk_config(region, profile).await;
     let identity = identity_from_cfg(&sdk).await?;
-    let signing = signing_params(&identity, region, "bedrock-runtime")?;
+    // Host is bedrock-runtime.*; SigV4 credential scope MUST use signing name `bedrock`
+    // (same as aws-sdk-bedrockruntime). Using `bedrock-runtime` yields 403:
+    // "Credential should be scoped to correct service: 'bedrock'."
+    let signing = signing_params(&identity, region, "bedrock")?;
 
     let model_id = model
         .strip_suffix(ANTHROPIC_1M_SUFFIX)
