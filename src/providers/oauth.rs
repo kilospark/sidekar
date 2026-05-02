@@ -37,6 +37,33 @@ pub fn kv_key_for(nickname: &str) -> String {
     format!("oauth:{nickname}")
 }
 
+/// Subcommands of `/credential` — must not be used as a stored credential nickname.
+const RESERVED_CREDENTIAL_NICKNAMES: &[&str] = &["list", "delete", "add", "login", "update"];
+
+/// Reject nicknames that collide with REPL `/credential` subcommands (ASCII case-insensitive).
+pub fn validate_credential_nickname_for_storage(nickname: &str) -> Result<()> {
+    let n = nickname.trim();
+    if n.is_empty() {
+        bail!("Credential nickname cannot be empty");
+    }
+    if let Some(&reserved) = RESERVED_CREDENTIAL_NICKNAMES
+        .iter()
+        .find(|r| r.eq_ignore_ascii_case(n))
+    {
+        bail!(
+            "Credential nickname '{n}' is reserved — same as `/credential {reserved}`. Choose another name."
+        );
+    }
+    Ok(())
+}
+
+fn validate_named_credential_nickname(nickname: Option<&str>) -> Result<()> {
+    if let Some(n) = nickname {
+        validate_credential_nickname_for_storage(n)?;
+    }
+    Ok(())
+}
+
 /// Resolve which KV key to use.
 fn resolve_kv_key(nickname: Option<&str>, default_key: &str) -> String {
     match nickname {
@@ -258,6 +285,7 @@ pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
 
 /// Get a valid Anthropic API token, with interactive login if needed.
 pub async fn login_anthropic(nickname: Option<&str>) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
     get_token(
         &kv_key,
@@ -298,6 +326,7 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
 
 /// Get a valid Codex API token, with interactive login if needed.
 pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
+    validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
     let token = get_token(
         &kv_key,
@@ -317,6 +346,7 @@ pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
 }
 
 pub async fn login_openrouter(nickname: Option<&str>) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
     get_openrouter_token_inner(nickname, true).await
 }
 
@@ -348,6 +378,7 @@ pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
 }
 
 pub async fn login_opencode(nickname: Option<&str>) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
     get_opencode_token_inner(nickname, true).await
 }
 
@@ -376,6 +407,7 @@ pub async fn get_opencode_go_token(nickname: Option<&str>) -> Result<String> {
 }
 
 pub async fn login_opencode_go(nickname: Option<&str>) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
     get_opencode_go_token_inner(nickname, true).await
 }
 
@@ -423,6 +455,7 @@ pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
 }
 
 pub async fn login_grok(nickname: Option<&str>) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
     get_api_key_token(
         &kv_key,
@@ -487,6 +520,7 @@ pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
 /// Interactive login for Gemini. Prompts for an API key and stores it
 /// under the given nickname (or the default `oauth:gemini` key).
 pub async fn login_gemini(nickname: Option<&str>) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_GEMINI);
     get_api_key_token(
         &kv_key,
@@ -545,6 +579,7 @@ pub fn load_bedrock_stored(nickname: &str) -> Result<BedrockStored> {
 }
 
 pub async fn login_bedrock(nickname: Option<&str>) -> Result<()> {
+    validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_BEDROCK);
     eprintln!(
         "Bedrock uses IAM via the AWS SDK default chain (environment, ~/.aws/credentials, SSO, …)."
@@ -626,6 +661,7 @@ pub async fn login_openai_compat(
     base_url: Option<&str>,
     api_key: Option<&str>,
 ) -> Result<OpenAiCompatCredentials> {
+    validate_credential_nickname_for_storage(nickname)?;
     let name = match display_name {
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
         _ => prompt_required("Provider name", Some(nickname))?,
@@ -1467,6 +1503,18 @@ mod tests {
             resolve_provider_type_for_credential("gemini"),
             Some("gemini")
         );
+    }
+
+    #[test]
+    fn credential_nickname_reserved_for_repl_slash_commands() {
+        for nick in ["list", "LIST", "delete", "add", "login", "update"] {
+            assert!(
+                validate_credential_nickname_for_storage(nick).is_err(),
+                "expected reserved: {nick}"
+            );
+        }
+        assert!(validate_credential_nickname_for_storage("claude-work").is_ok());
+        assert!(validate_credential_nickname_for_storage("adder").is_ok());
     }
 
     #[test]

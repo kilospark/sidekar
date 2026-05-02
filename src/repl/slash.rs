@@ -11,6 +11,8 @@ pub(super) enum SlashResult {
     SwitchSession(String),
     /// Requires provider + model.
     NeedProvider(SlashAsync),
+    /// Same tokens as CLI after `sidekar repl login` (without the `login` word).
+    CredentialLogin(Vec<String>),
     SetCredential(String),
     SetModel(String),
     RelayOn,
@@ -255,7 +257,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 Some("list") => {
                     let creds = providers::oauth::list_credentials();
                     if creds.is_empty() {
-                        tunnel_println("No credentials stored. Use: sidekar repl login <nickname>");
+                        tunnel_println(
+                            "No credentials stored. Use /credential add … or sidekar repl login …",
+                        );
                         SlashResult::Continue
                     } else {
                         let current = cred_name.to_string();
@@ -286,6 +290,18 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                             }
                             StdinMenuIndex::EofOrReadError => SlashResult::Continue,
                         }
+                    }
+                }
+                Some("add") | Some("login") | Some("update") => {
+                    let tokens: Vec<String> = parts.iter().skip(2).map(|s| s.to_string()).collect();
+                    if tokens.is_empty() {
+                        tunnel_println(&format!(
+                            "\x1b[2m{}\x1b[0m",
+                            crate::repl::credential_login::login_usage_message()
+                        ));
+                        SlashResult::Continue
+                    } else {
+                        SlashResult::CredentialLogin(tokens)
                     }
                 }
                 Some("delete") => {
@@ -332,7 +348,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     } else {
                         tunnel_println("No credential set.");
                     }
-                    tunnel_println("\x1b[2mUse /credential list | delete to select.\x1b[0m");
+                    tunnel_println(
+                        "\x1b[2mUse /credential list | add … | update … | delete · or set a nickname: /credential <name>\x1b[0m",
+                    );
                     SlashResult::Continue
                 }
             }
@@ -633,7 +651,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
         }
         "/help" => {
             tunnel_println("Slash commands:");
-            tunnel_println("  /credential  — Show/set/list & select stored credentials");
+            tunnel_println("  /credential  — list / add / update / delete · or /credential <name>");
             tunnel_println("  /model       — Show/set/list & select available models");
             tunnel_println("  /new         — Start fresh session");
             tunnel_println("  /session     — List and switch sessions");
@@ -655,9 +673,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("Shell:");
             tunnel_println("  ! <command>  — Run a shell command without leaving the REPL");
             tunnel_println("");
-            tunnel_println("Auth (run outside REPL):");
-            tunnel_println("  sidekar repl login   — OAuth login");
-            tunnel_println("  sidekar repl logout  — Remove credentials");
+            tunnel_println(
+                "Auth: /credential add …  or  sidekar repl login …  ·  sidekar repl logout",
+            );
             SlashResult::Continue
         }
         _ => unreachable!("checked by is_known_slash_command"),
@@ -736,6 +754,15 @@ pub(super) async fn apply_slash_result(
                         *model = Some(selected);
                     }
                 }
+            }
+        }
+        SlashResult::CredentialLogin(tokens) => {
+            repl_status_dim("Credential login…");
+            let mut args = vec!["login".to_string()];
+            args.extend(tokens);
+            match crate::repl::credential_login::perform_login(&args).await {
+                Ok(msg) => tunnel_println(&msg),
+                Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
             }
         }
         SlashResult::SetCredential(name) => {

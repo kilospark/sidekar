@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::collections::hash_map::Entry;
 use std::io::{self, BufRead, Write};
 
+pub mod credential_login;
 mod editor;
 mod event_forward;
 mod relay;
@@ -36,17 +37,11 @@ use crate::broker;
 use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
-use crate::tunnel::tunnel_println;
-
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
 /// Resolve a credential nickname into a [`Provider`] (shared by REPL and `repl models`).
 pub async fn provider_from_credential(cred_name: &str) -> anyhow::Result<Provider> {
     build_provider(cred_name).await
-}
-
-fn repl_status_dim(msg: &str) {
-    tunnel_println(&format!("\x1b[2m{msg}\x1b[0m"));
 }
 
 async fn maybe_run_final_journal(ctx: Option<&self::journal::task::Context>) {
@@ -167,9 +162,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             Ok((port, ca_path)) => match std::fs::read(&ca_path) {
                 Ok(ca_pem) => {
                     providers::attach_shared_mitm_proxy(port, ca_pem, ca_path);
-                    repl_status_dim(&format!(
-                        "MITM proxy attached on 127.0.0.1:{port} (payloads in `sidekar proxy log`)"
-                    ));
+                    crate::broker::try_log_event(
+                        "debug",
+                        "proxy",
+                        "attached",
+                        Some(&format!("127.0.0.1:{port} sidekar proxy log")),
+                    );
                 }
                 Err(e) => {
                     crate::broker::try_log_error(
@@ -202,10 +200,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     // Build provider if credential is available
     let mut provider: Option<Provider> = match cred_name.as_deref() {
-        Some(name) => {
-            repl_status_dim(&format!("Loading credential `{name}`…"));
-            Some(build_provider(name).await?)
-        }
+        Some(name) => Some(build_provider(name).await?),
         None => None,
     };
 
@@ -352,7 +347,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
 
         if crate::runtime::verbose() && run_result.is_ok() {
-            repl_status_dim("[turn complete]");
+            crate::broker::try_log_event("debug", "repl", "turn-complete", None);
         }
 
         let run_ok = run_result.is_ok();
@@ -733,7 +728,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
 
         if crate::runtime::verbose() && run_ok {
-            repl_status_dim("[turn complete]");
+            crate::broker::try_log_event("debug", "repl", "turn-complete", None);
         }
 
         let did_compact = match run_result {

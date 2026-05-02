@@ -10,6 +10,7 @@
 6. bus messages no longer print into live REPL transcript
 7. shell escape success footer removed; failures and non-zero exits still print
 8. core retry/auth/model-list debug chatter moved from stderr to broker log
+9. low-signal REPL status lines moved off screen (`turn complete`, relay connect, MITM attach)
 
 ## Queue
 
@@ -22,9 +23,7 @@
    - push detail to `/status`
 
 3. Verbose/status cleanup
-   - review `[turn complete]`
-   - review MITM attach line
-   - review other dim status lines that still commit into transcript
+   - review remaining startup/status lines that still commit into transcript
 
 4. Provider-specific debug surfaces
    - review verbose WS traces in Codex provider

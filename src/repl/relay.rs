@@ -17,7 +17,7 @@ pub(super) async fn start_relay(
             return (None, None);
         }
     };
-    repl_status_dim("Connecting web relay…");
+    broker::try_log_event("debug", "relay", "connecting", None);
     let (cols, rows) = terminal_size().unwrap_or((80, 24));
     let (tx, rx) =
         match crate::tunnel::connect(&token, bus_name, "sidekar-repl", cwd, nick, cols, rows).await

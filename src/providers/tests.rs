@@ -11,7 +11,10 @@ async fn fallback_context_window_is_cached_for_unsupported_provider() {
     if let Ok(mut cache) = super::MODEL_CACHE.lock() {
         cache.remove("anthropic.claude-opus-4-7");
     }
-    assert_eq!(super::cached_context_window("anthropic.claude-opus-4-7"), None);
+    assert_eq!(
+        super::cached_context_window("anthropic.claude-opus-4-7"),
+        None
+    );
 
     let provider = Provider::Bedrock {
         region: "us-east-1".to_string(),
