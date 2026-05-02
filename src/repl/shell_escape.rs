@@ -9,6 +9,15 @@
 //! so colored output / progress bars from the subprocess are typically
 //! suppressed. Interactive shells (`vim`, `python` REPL, `top`) won't
 //! render correctly under `!` — use a separate terminal for those.
+//!
+//! **Ctrl+C (SIGINT)**: With ISIG on in cooked mode, the tty driver sends
+//! SIGINT to every process in the **foreground process group**. The child
+//! `sh` shares that group with Sidecar, so a naive `wait()` would also hit
+//! the parent — interrupting reads, leaving the terminal/line discipline in
+//! a bad state, and making the REPL feel sluggish after the subprocess exits.
+//! On Unix we ignore SIGINT in the parent for the duration of the subshell
+//! and reset SIGINT to default in the child before `exec`, so only the shell
+//! receives the interactive interrupt.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,18 +28,66 @@ use super::editor::RawModeGuard;
 use super::spinner;
 use crate::tunnel::tunnel_println;
 
+#[cfg(unix)]
+struct BlockParentSigint {
+    old: libc::sigaction,
+}
+
+#[cfg(unix)]
+impl BlockParentSigint {
+    fn install() -> Option<Self> {
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        let mut new: libc::sigaction = unsafe { std::mem::zeroed() };
+        new.sa_sigaction = libc::SIG_IGN;
+        unsafe {
+            if libc::sigemptyset(&mut new.sa_mask) != 0 {
+                return None;
+            }
+            if libc::sigaction(libc::SIGINT, &new, &mut old) != 0 {
+                return None;
+            }
+        }
+        Some(Self { old })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for BlockParentSigint {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = libc::sigaction(libc::SIGINT, &self.old, std::ptr::null_mut());
+        }
+    }
+}
+
 pub(super) fn run(cmd: &str) {
     let _guard = RawModeGuard::enter_cooked();
+    #[cfg(unix)]
+    let _sigint_parent = BlockParentSigint::install();
     let started = Instant::now();
 
-    let mut child = match std::process::Command::new("sh")
+    let mut cmd_builder = std::process::Command::new("sh");
+    cmd_builder
         .arg("-c")
         .arg(cmd)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd_builder.pre_exec(|| {
+                // Fork copied parent's SIG_IGN; restore default so ^C from the
+                // tty reaches `sh` / the command, not the Rust runtime.
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+    }
+
+    let mut child = match cmd_builder.spawn() {
         Ok(c) => c,
         Err(e) => {
             tunnel_println(&format!("\x1b[31mFailed to run command: {e}\x1b[0m"));
@@ -142,6 +199,7 @@ fn spawn_reader<R: Read + Send + 'static>(
                     let _ = std::io::stdout().write_all(&buf[..n]);
                     let _ = std::io::stdout().flush();
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }

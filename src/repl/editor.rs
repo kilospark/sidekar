@@ -549,12 +549,23 @@ impl ActivePromptSession {
         if let Ok(mut guard) = editor_arc.lock() {
             guard.follow_up_mode = false;
             guard.clear_rendered_prompt_inner();
+            guard.reset_aux_input_state_after_agent_turn();
         }
 
-        Arc::try_unwrap(editor_arc)
-            .ok()
-            .and_then(|mutex| mutex.into_inner().ok())
-            .unwrap_or_default()
+        let mutex = Arc::try_unwrap(editor_arc).unwrap_or_else(|arc| {
+            panic!(
+                "internal bug: {} unexpected strong refs to active-prompt LineEditor after join",
+                Arc::strong_count(&arc)
+            );
+        });
+        mutex.into_inner().unwrap_or_else(|poisoned| {
+            crate::broker::try_log_error(
+                "repl",
+                "LineEditor mutex poisoned while finishing active prompt; using recovered inner state",
+                None,
+            );
+            poisoned.into_inner()
+        })
     }
 }
 
@@ -1013,8 +1024,19 @@ impl LineEditor {
         emit_raw(&out);
     }
 
-    fn build_clear_string(&self) -> String {
-        if self.rendered_rows == 0 && self.rendered_pending_rows == 0 && !self.status_visible {
+    /// ANSI sequence to erase the last painted prompt frame.
+    ///
+    /// `include_transient_status_row` must match whether the transient
+    /// spinner/status row (see `emit_transient_status`) was counted in
+    /// `rendered_*` geometry for that frame. Callers that only want to clear
+    /// the prompt + continuation + pending bar pass `false` even when
+    /// `self.status_visible` is true — the status row is redrawn separately
+    /// on the next `emit_transient_status` / `redraw_inner` cycle.
+    fn build_clear_string(&self, include_transient_status_row: bool) -> String {
+        if self.rendered_rows == 0
+            && self.rendered_pending_rows == 0
+            && !include_transient_status_row
+        {
             return String::new();
         }
         let mut clear = String::new();
@@ -1023,12 +1045,13 @@ impl LineEditor {
             clear.push_str(&format!("\x1b[{}A", cursor_up));
         }
         clear.push('\r');
-        if self.status_visible {
+        if include_transient_status_row {
             clear.push_str("\x1b[1A\r");
         }
 
-        let total_rows =
-            self.rendered_pending_rows + self.rendered_rows + usize::from(self.status_visible);
+        let total_rows = self.rendered_pending_rows
+            + self.rendered_rows
+            + usize::from(include_transient_status_row);
         for row in 0..total_rows {
             clear.push_str("\x1b[2K");
             if row + 1 < total_rows {
@@ -1043,7 +1066,7 @@ impl LineEditor {
     }
 
     fn clear_prompt_and_status_inner(&mut self) {
-        let clear = self.build_clear_string();
+        let clear = self.build_clear_string(self.status_visible);
         if clear.is_empty() {
             return;
         }
@@ -1054,10 +1077,16 @@ impl LineEditor {
     }
 
     fn clear_rendered_prompt_inner(&mut self) {
-        let had_status = self.status_visible;
-        self.status_visible = false;
-        self.clear_prompt_and_status_inner();
-        self.status_visible = had_status;
+        // Omit the transient status row from clear geometry: it is erased
+        // by `clear_transient_status` / the next full redraw, not here.
+        let clear = self.build_clear_string(false);
+        if clear.is_empty() {
+            return;
+        }
+        emit_raw(&clear);
+        self.rendered_rows = 0;
+        self.rendered_pending_rows = 0;
+        self.rendered_cursor = CursorPos::default();
     }
 
     fn redraw_inner(&mut self) {
@@ -1067,10 +1096,7 @@ impl LineEditor {
         // frame. Emitting clear and paint as separate writes let some
         // terminals (Terminal.app during rapid bracketed-paste processing)
         // drop intermediate frames entirely.
-        let had_status = self.status_visible;
-        self.status_visible = false;
-        let mut out = self.build_clear_string();
-        self.status_visible = had_status;
+        let mut out = self.build_clear_string(false);
         self.rendered_rows = 0;
         self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
@@ -1700,6 +1726,18 @@ impl LineEditor {
         self.paste_burst.is_active()
     }
 
+    /// Clears paste-burst detection, partial CSI/escape buffers, and UTF-8
+    /// leftovers. `read_input_or_bus` and `ActivePromptSession` use a 10ms
+    /// poll interval while `paste_burst_is_active()` is true; Esc-cancel
+    /// mid-tool never runs `cancel_line()` (unlike Ctrl+C), so without this
+    /// reset the REPL can stay on the fast poll cadence and feel sluggish.
+    pub(super) fn reset_aux_input_state_after_agent_turn(&mut self) {
+        self.paste_burst.clear_after_explicit_paste();
+        self.escape.clear();
+        self.escape_started_at = None;
+        self.utf8.clear();
+    }
+
     /// Test-only: force the paste-burst detector to flush immediately,
     /// bypassing the idle-time wait. Used by tests that synchronously feed
     /// bytes without natural time spacing.
@@ -2170,7 +2208,7 @@ pub(super) fn read_input_or_bus(
     // poll_timeout_ms (100ms idle), which matches the previous behavior.
     let mut check_bus_now = true;
 
-    loop {
+    'input: loop {
         editor.flush_paste_burst_if_due(|ed, line| {
             ed.pending_submits.push_back(line);
         });
@@ -2245,6 +2283,9 @@ pub(super) fn read_input_or_bus(
                                 if let Some(line) = editor.take_next_pending_submit() {
                                     return InputEvent::User(line);
                                 }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                                continue 'input;
                             }
                             Err(_) => return InputEvent::Eof,
                         }
