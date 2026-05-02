@@ -1,6 +1,7 @@
 //! Shared credential flows for `sidekar repl credential add` and `/credential add|update`.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use std::io::Write;
 
 const CREDENTIAL_ADD_USAGE: &str = "\
 Usage: sidekar repl credential add <provider> [name]
@@ -28,6 +29,70 @@ pub fn credential_add_usage_message() -> &'static str {
     CREDENTIAL_ADD_USAGE
 }
 
+fn output_line(output: crate::providers::oauth::InteractiveOutput, text: &str) {
+    match output {
+        crate::providers::oauth::InteractiveOutput::Cli => eprintln!("{text}"),
+        crate::providers::oauth::InteractiveOutput::Repl => crate::tunnel::tunnel_println(text),
+    }
+}
+
+fn output_prompt(output: crate::providers::oauth::InteractiveOutput, text: &str) {
+    match output {
+        crate::providers::oauth::InteractiveOutput::Cli => {
+            eprint!("{text}");
+            let _ = std::io::stderr().flush();
+        }
+        crate::providers::oauth::InteractiveOutput::Repl => {
+            print!("{text}");
+            let _ = std::io::stdout().flush();
+            crate::tunnel::tunnel_send(text.as_bytes().to_vec());
+        }
+    }
+}
+
+fn prompt_required(
+    output: crate::providers::oauth::InteractiveOutput,
+    label: &str,
+    default: Option<&str>,
+) -> Result<String> {
+    match default {
+        Some(default) => output_prompt(output, &format!("{label} [{default}]: ")),
+        None => output_prompt(output, &format!("{label}: ")),
+    }
+    let mut value = String::new();
+    std::io::stdin()
+        .read_line(&mut value)
+        .with_context(|| format!("failed to read {label}"))?;
+    let value = value.trim();
+    let value = if value.is_empty() {
+        default.unwrap_or("")
+    } else {
+        value
+    };
+    if value.is_empty() {
+        bail!("No {label} provided");
+    }
+    Ok(value.to_string())
+}
+
+fn prompt_optional(output: crate::providers::oauth::InteractiveOutput, label: &str) -> Result<Option<String>> {
+    output_prompt(output, &format!("{label}: "));
+    let mut value = String::new();
+    std::io::stdin()
+        .read_line(&mut value)
+        .with_context(|| format!("failed to read {label}"))?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value.to_string()))
+    }
+}
+
+fn open_browser_hint(url: &str) {
+    let _ = crate::providers::oauth::open_browser_url(url);
+}
+
 pub async fn perform_credential_add(
     tokens: &[String],
     output: crate::providers::oauth::InteractiveOutput,
@@ -40,16 +105,22 @@ pub async fn perform_credential_add(
     // oac is positional: oac <nickname> <url> [api_key]
     if provider == "oac" {
         let name = tokens.get(1).map(|s| s.as_str()).unwrap_or("oac");
-        let base_url = tokens.get(2).map(|s| s.as_str());
-        let api_key = tokens.get(3).map(|s| s.as_str());
-        let creds = crate::providers::oauth::login_openai_compat_with_output(
+        let display_name = name.to_string();
+        let base_url = match tokens.get(2).map(|s| s.as_str()) {
+            Some(url) if !url.trim().is_empty() => url.trim().to_string(),
+            _ => prompt_required(output, "Base URL", None)?,
+        };
+        let api_key = match tokens.get(3).map(|s| s.as_str()) {
+            Some(key) if !key.trim().is_empty() => key.trim().to_string(),
+            _ => prompt_required(output, "API key", None)?,
+        };
+        let creds = crate::providers::oauth::save_openai_compat_credential(
             name,
-            Some(name),
-            base_url,
-            api_key,
-            output,
-        )
-        .await?;
+            &display_name,
+            &base_url,
+            &api_key,
+        )?;
+        output_line(output, &format!("OpenAI-compat API key saved for '{name}'."));
         return Ok(format!(
             "Logged in as '{name}' ({} at {}).",
             creds.name, creds.base_url
@@ -98,33 +169,97 @@ pub async fn perform_credential_add(
             ))
         }
         "openrouter" => {
-            let _ =
-                crate::providers::oauth::login_openrouter_with_output(Some(nickname), output)
-                    .await?;
+            output_line(output, "No OpenRouter credentials found.");
+            output_line(output, "Get an API key from https://openrouter.ai/keys");
+            let key = prompt_required(output, "API key", None)?;
+            crate::providers::oauth::save_api_key_credential(
+                &kv_key,
+                "openrouter",
+                &key,
+                serde_json::json!({}),
+            )?;
+            output_line(output, "OpenRouter API key saved.");
             Ok(format!("Logged in as '{nickname}' (OpenRouter)."))
         }
         "opencode" => {
-            let _ = crate::providers::oauth::login_opencode_with_output(Some(nickname), output)
-                .await?;
+            output_line(output, "No OpenCode credentials found. Opening https://opencode.ai/auth ...");
+            open_browser_hint("https://opencode.ai/auth");
+            let key = prompt_required(output, "Paste API key", None)?;
+            crate::providers::oauth::save_api_key_credential(
+                &kv_key,
+                "opencode",
+                &key,
+                serde_json::json!({}),
+            )?;
+            output_line(output, "OpenCode API key saved.");
             Ok(format!("Logged in as '{nickname}' (OpenCode)."))
         }
         "opencode-go" => {
-            let _ = crate::providers::oauth::login_opencode_go_with_output(Some(nickname), output)
-                .await?;
+            output_line(
+                output,
+                "No OpenCode Go credentials found. Opening https://opencode.ai/auth ...",
+            );
+            open_browser_hint("https://opencode.ai/auth");
+            let key = prompt_required(output, "Paste API key", None)?;
+            crate::providers::oauth::save_api_key_credential(
+                &kv_key,
+                "opencode-go",
+                &key,
+                serde_json::json!({}),
+            )?;
+            output_line(output, "OpenCode Go API key saved.");
             Ok(format!("Logged in as '{nickname}' (OpenCode Go)."))
         }
         "grok" => {
-            let _ = crate::providers::oauth::login_grok_with_output(Some(nickname), output)
-                .await?;
+            output_line(output, "No Grok credentials found. Opening https://console.x.ai/ ...");
+            open_browser_hint("https://console.x.ai/");
+            let key = prompt_required(output, "API key", None)?;
+            crate::providers::oauth::save_api_key_credential(
+                &kv_key,
+                "grok",
+                &key,
+                serde_json::json!({}),
+            )?;
+            output_line(output, "Grok API key saved.");
             Ok(format!("Logged in as '{nickname}' (Grok)."))
         }
         "gemini" => {
-            let _ = crate::providers::oauth::login_gemini_with_output(Some(nickname), output)
-                .await?;
+            output_line(
+                output,
+                "No Gemini credentials found. Opening https://aistudio.google.com/apikey ...",
+            );
+            open_browser_hint("https://aistudio.google.com/apikey");
+            let key = prompt_required(output, "API key", None)?;
+            crate::providers::oauth::save_api_key_credential(
+                &kv_key,
+                "gemini",
+                &key,
+                serde_json::json!({}),
+            )?;
+            output_line(output, "Gemini API key saved.");
             Ok(format!("Logged in as '{nickname}' (Gemini)."))
         }
         "bedrock" => {
-            crate::providers::oauth::login_bedrock_with_output(Some(nickname), output).await?;
+            output_line(
+                output,
+                "Bedrock uses IAM via AWS SDK default chain (environment, ~/.aws/credentials, SSO, …).",
+            );
+            let region = prompt_required(output, "AWS region", Some("us-east-1"))?;
+            let profile = prompt_optional(
+                output,
+                "AWS named profile (optional, Enter → default credential chain)",
+            )?;
+            crate::providers::oauth::save_bedrock_credential(
+                nickname,
+                &region,
+                profile.as_deref(),
+            )?;
+            output_line(
+                output,
+                &format!(
+                    "Saved Bedrock config to `{kv_key}`. Uses HTTPS + SigV4 (no aws-sdk-bedrock crates). IAM needs `bedrock:ListFoundationModels` (for `/model list`), `bedrock:ListInferenceProfiles` (recommended: resolve system inference profiles for Claude 4.x), and `bedrock:InvokeModelWithResponseStream`."
+                ),
+            );
             Ok(format!("Logged in as '{nickname}' (Amazon Bedrock)."))
         }
         _ => Err(anyhow!(
