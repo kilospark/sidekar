@@ -149,36 +149,48 @@ Paths may be absolute or relative to the current working directory."
         },
         ToolDef {
             name: "Edit".into(),
-            description: "Edit a file by replacing an exact string with a new string. \
-Requires `old_string` to appear exactly once in the file (otherwise the edit \
-is rejected). For multiple occurrences, include enough surrounding context to \
-make `old_string` unique, or set `replace_all: true` to replace every \
-occurrence. Copy `old_string` verbatim from Read output (including indentation \
-and newline style); CRLF vs LF is normalized only when the mismatch is obvious. \
-Duplicate-match errors list source line numbers. Use this for targeted changes \
-instead of rewriting the whole file with Write."
+            description: "Two modes — pick exactly one:\n\
+1) **Replace** (`path`, `old_string`, `new_string`): swap one span for another. \
+Requires `old_string` to appear exactly once unless `replace_all` is true OR \
+you pass `occurrence_index` (1-based) to edit that specific duplicate without \
+embedding huge unique context. CRLF vs LF is normalized when the mismatch is \
+obvious; duplicate-match errors list source line numbers.\n\
+2) **Unified diff** (`path`, `patch`): apply a single-file `git diff`-style patch \
+(`---`/`+++`/@@ hunks). Token-efficient for multi-line edits; multi-file patches \
+are rejected — use separate Edit calls per file.\n\
+Prefer replace mode for tiny edits; prefer patch mode when describing several \
+nearby changes at once. Use Write for creating new files."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path of the file to edit. Relative paths resolve from the current working directory."
+                        "description": "Path of the file to edit (both modes)."
+                    },
+                    "patch": {
+                        "type": "string",
+                        "description": "Unified diff body (`---`, `+++`, `@@` hunks). Mutually exclusive with old_string/new_string/replace_all/occurrence_index — only path + patch allowed."
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "The exact text to find and replace. Must match byte-for-byte including whitespace."
+                        "description": "Exact text to find (replace mode only)."
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "The text to replace `old_string` with. Must differ from `old_string`."
+                        "description": "Replacement text (replace mode only). Use \"\" to delete old_string."
                     },
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Replace every occurrence instead of requiring exactly one match (default: false)."
+                        "description": "Replace every occurrence (replace mode). Cannot combine with occurrence_index."
+                    },
+                    "occurrence_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "When old_string matches multiple times and replace_all is false, replace only this 1-based occurrence (replace mode)."
                     }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path"]
             }),
         },
         ToolDef {
@@ -526,23 +538,108 @@ fn resolve_edit_needle<'a>(original: &str, old_string: &'a str) -> std::borrow::
     std::borrow::Cow::Borrowed(old_string)
 }
 
+fn exec_edit_patch(path: &str, patch_text: &str) -> Result<String> {
+    let original =
+        std::fs::read_to_string(path).with_context(|| format!("edit: cannot read {path}"))?;
+    let updated = super::edit_patch::apply_unified_patch(&original, patch_text).with_context(
+        || {
+            format!(
+                "edit: unified patch failed for {path} — re-read the file and align `@@` hunks/context"
+            )
+        },
+    )?;
+    std::fs::write(path, &updated).with_context(|| format!("edit: cannot write {path}"))?;
+    Ok(format!(
+        "Applied unified diff to {path} ({} bytes)",
+        updated.len()
+    ))
+}
+
+fn replace_nth_occurrence(
+    original: &str,
+    needle: &str,
+    replacement: &str,
+    one_based: usize,
+) -> Result<String> {
+    let spans: Vec<(usize, usize)> = original
+        .match_indices(needle)
+        .map(|(start, mat)| (start, start + mat.len()))
+        .collect();
+    let idx = one_based
+        .checked_sub(1)
+        .with_context(|| format!("edit: occurrence_index must be >= 1 (got {one_based})"))?;
+    let &(start, end) = spans.get(idx).with_context(|| {
+        format!(
+            "edit: occurrence_index {one_based} but old_string appears only {} time(s)",
+            spans.len()
+        )
+    })?;
+    let mut out =
+        String::with_capacity(original.len().saturating_sub(end - start) + replacement.len());
+    out.push_str(&original[..start]);
+    out.push_str(replacement);
+    out.push_str(&original[end..]);
+    Ok(out)
+}
+
 fn exec_edit(args: &Value) -> Result<String> {
     let path = args
         .get("path")
         .and_then(|v| v.as_str())
         .context("edit: missing 'path'")?;
+
+    let patch_nonempty = args
+        .get("patch")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+
+    if patch_nonempty {
+        if let Some(obj) = args.as_object() {
+            for key in obj.keys() {
+                if key != "path" && key != "patch" {
+                    bail!(
+                        "edit: unified-diff mode accepts only `path` and `patch` (unexpected key `{key}`)"
+                    );
+                }
+            }
+        }
+        let patch_text = args.get("patch").and_then(|v| v.as_str()).unwrap();
+        return exec_edit_patch(path, patch_text);
+    }
+
     let old_string = args
         .get("old_string")
         .and_then(|v| v.as_str())
-        .context("edit: missing 'old_string'")?;
+        .context(
+            "edit: replace mode requires `old_string`, or pass non-empty `patch` for unified-diff mode",
+        )?;
     let new_string = args
         .get("new_string")
         .and_then(|v| v.as_str())
-        .context("edit: missing 'new_string'")?;
+        .context("edit: replace mode requires `new_string`")?;
+
     let replace_all = args
         .get("replace_all")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    let occurrence_index: Option<usize> = match args.get("occurrence_index") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let n = v.as_u64().with_context(|| {
+                format!("edit: occurrence_index must be a positive integer (got {v})")
+            })?;
+            let n = usize::try_from(n).unwrap_or(usize::MAX);
+            if n < 1 {
+                bail!("edit: occurrence_index must be >= 1");
+            }
+            Some(n)
+        }
+    };
+
+    if replace_all && occurrence_index.is_some() {
+        bail!("edit: cannot combine replace_all with occurrence_index");
+    }
 
     if old_string.is_empty() {
         bail!("edit: old_string must not be empty");
@@ -571,29 +668,36 @@ fn exec_edit(args: &Value) -> Result<String> {
         }
         bail!("edit: old_string not found in {path}.{hint}");
     }
-    if !replace_all && count > 1 {
-        let lines = match_start_line_numbers(&original, needle_s);
-        let lines_fmt = format_match_lines(&lines);
-        bail!(
-            "edit: old_string appears {count} times in {path} (lines {lines_fmt}); add more context to old_string so the match is unique, or set replace_all=true"
-        );
-    }
 
     let updated = if replace_all {
         original.replace(needle_s, new_string)
-    } else {
-        original.replacen(needle_s, new_string, 1)
-    };
-    std::fs::write(path, &updated).with_context(|| format!("edit: cannot write {path}"))?;
-    Ok(format!(
-        "Replaced {} occurrence{} in {path}",
-        if replace_all { count } else { 1 },
-        if (if replace_all { count } else { 1 }) == 1 {
-            ""
-        } else {
-            "s"
+    } else if count == 1 {
+        if let Some(k) = occurrence_index {
+            if k != 1 {
+                bail!("edit: occurrence_index must be 1 when old_string matches exactly once");
+            }
         }
-    ))
+        original.replacen(needle_s, new_string, 1)
+    } else if let Some(k) = occurrence_index {
+        replace_nth_occurrence(&original, needle_s, new_string, k)?
+    } else {
+        let lines = match_start_line_numbers(&original, needle_s);
+        let lines_fmt = format_match_lines(&lines);
+        bail!(
+            "edit: old_string appears {count} times in {path} (lines {lines_fmt}); add more context so the match is unique, set replace_all=true, or pass occurrence_index (1-based)"
+        );
+    };
+
+    std::fs::write(path, &updated).with_context(|| format!("edit: cannot write {path}"))?;
+    let summary = if replace_all {
+        format!(
+            "Replaced {count} occurrence{} in {path}",
+            if count == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("Replaced 1 occurrence in {path}")
+    };
+    Ok(summary)
 }
 
 fn exec_glob(args: &Value) -> Result<String> {

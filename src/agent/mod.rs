@@ -1,5 +1,6 @@
 pub mod compaction;
 pub mod context;
+pub(crate) mod edit_patch;
 pub mod images;
 pub mod tools;
 #[cfg(unix)]

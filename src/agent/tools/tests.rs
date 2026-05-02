@@ -519,3 +519,78 @@ async fn edit_not_found_suggests_trim_when_trim_matches() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[tokio::test]
+async fn edit_occurrence_index_targets_nth_match() {
+    let path = edit_test_path("nth");
+    std::fs::write(&path, "foo\nfoo\nfoo\n").unwrap();
+    let out = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "foo",
+            "new_string": "BAR",
+            "occurrence_index": 2,
+        }),
+        None,
+    )
+    .await
+    .expect("occurrence_index edit");
+    assert!(out.contains("Replaced"), "{out}");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(body, "foo\nBAR\nfoo\n");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn edit_patch_mode_applies_unified_diff() {
+    let path = edit_test_path("patch");
+    std::fs::write(&path, "alpha\nbeta\n").unwrap();
+    let patch = format!(
+        "\
+--- a/x.txt
++++ b/x.txt
+@@ -1,2 +1,2 @@
+ alpha
+-beta
++gamma
+",
+    );
+    let out = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "patch": patch,
+        }),
+        None,
+    )
+    .await
+    .expect("patch edit");
+    assert!(out.contains("unified diff"), "{out}");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("gamma"), "{body:?}");
+    assert!(!body.contains("beta"), "{body:?}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn edit_patch_mode_rejects_extra_keys() {
+    let path = edit_test_path("patchbad");
+    std::fs::write(&path, "x\n").unwrap();
+    let err = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "patch": "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-x\n+y\n",
+            "old_string": "x",
+        }),
+        None,
+    )
+    .await
+    .expect_err("patch + old_string");
+    assert!(
+        format!("{err:#}").contains("only `path` and `patch`"),
+        "{err:#}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
