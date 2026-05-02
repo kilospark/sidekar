@@ -1865,7 +1865,7 @@ impl Provider {
                                 "provider",
                                 "credential-refresh-remediation",
                                 Some(&format!(
-                                    "credential={cred} hint=/credential {cred} or sidekar repl login {cred}"
+                                    "credential={cred} hint=/credential update or sidekar repl credential add (see sidekar repl --help)"
                                 )),
                             );
                             return result;

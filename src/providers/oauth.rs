@@ -38,7 +38,7 @@ pub fn kv_key_for(nickname: &str) -> String {
 }
 
 /// Subcommands of `/credential` — must not be used as a stored credential nickname.
-const RESERVED_CREDENTIAL_NICKNAMES: &[&str] = &["list", "delete", "add", "login", "update"];
+const RESERVED_CREDENTIAL_NICKNAMES: &[&str] = &["list", "delete", "add", "update"];
 
 /// Reject nicknames that collide with REPL `/credential` subcommands (ASCII case-insensitive).
 pub fn validate_credential_nickname_for_storage(nickname: &str) -> Result<()> {
@@ -150,7 +150,7 @@ pub fn resolve_provider_type_for_credential(nick: &str) -> Option<&'static str> 
     provider_type_for(nick).or_else(|| legacy_kv_credential_type(nick))
 }
 
-/// `sidekar repl login` keyword when convention match on nickname fails.
+/// `sidekar repl credential add` keyword when convention match on nickname fails.
 pub fn provider_type_from_cli_keyword(keyword: &str) -> Option<&'static str> {
     match keyword {
         "claude" | "anthropic" => Some("anthropic"),
@@ -253,7 +253,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
             refresh_token_codex,
         ),
         other => anyhow::bail!(
-            "provider '{other}' has no refresh flow — re-authenticate via `sidekar repl login {cred_name}`"
+            "provider '{other}' has no refresh flow — re-authenticate via `sidekar repl credential add <provider> [name]`"
         ),
     };
 
@@ -261,7 +261,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("no stored credentials for '{cred_name}'"))?;
     if creds.refresh_token.is_empty() {
         anyhow::bail!(
-            "credential '{cred_name}' has no refresh token — re-authenticate via `sidekar repl login {cred_name}`"
+            "credential '{cred_name}' has no refresh token — re-authenticate via `sidekar repl credential add <provider> [name]`"
         );
     }
     let new_creds = refresh_fn(&creds).await?;
@@ -552,7 +552,7 @@ pub fn load_bedrock_stored(nickname: &str) -> Result<BedrockStored> {
     let creds = load_credentials(&kv_key)?.with_context(|| {
         format!(
             "No Bedrock credential for '{nickname}'.\n\
-             Run: sidekar repl login bedrock [nickname]"
+             Run: sidekar repl credential add bedrock [nickname]"
         )
     })?;
     if creds.metadata.get("provider_type").and_then(|v| v.as_str()) != Some("bedrock") {
@@ -628,7 +628,7 @@ pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompa
     let creds = load_credentials(&kv_key)?.with_context(|| {
         format!(
             "No OpenAI-compat credentials found for '{nickname}'.\n\
-             Run: sidekar repl login oac {nickname} <base_url>"
+             Run: sidekar repl credential add oac {nickname} <base_url>"
         )
     })?;
     let base_url = creds
@@ -831,7 +831,7 @@ async fn get_token(
     }
 
     // 2. Environment variable fallback — only for non-interactive usage.
-    //    During `repl login`, the user expects OAuth to run and a credential
+    //    During `credential add`, the user expects OAuth to run and a credential
     //    row to be persisted; env-var shortcut would silently skip both.
     if !interactive
         && let Ok(key) = std::env::var(env_var)
@@ -840,7 +840,7 @@ async fn get_token(
         return Ok(key);
     }
 
-    // 3. Interactive login (only during `repl login`) or fail
+    // 3. Interactive login (during `credential add`) or fail
     if interactive {
         eprintln!("No {provider_name} credentials found. Starting OAuth login...");
         let creds = login_fn().await?;
@@ -849,7 +849,7 @@ async fn get_token(
     } else {
         bail!(
             "No {provider_name} credentials found for '{}'.\n\
-             Run: sidekar repl login <credential>",
+             Run: sidekar repl credential add <provider> [name]",
             kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
         )
     }
@@ -1507,12 +1507,13 @@ mod tests {
 
     #[test]
     fn credential_nickname_reserved_for_repl_slash_commands() {
-        for nick in ["list", "LIST", "delete", "add", "login", "update"] {
+        for nick in ["list", "LIST", "delete", "add", "update"] {
             assert!(
                 validate_credential_nickname_for_storage(nick).is_err(),
                 "expected reserved: {nick}"
             );
         }
+        assert!(validate_credential_nickname_for_storage("login").is_ok());
         assert!(validate_credential_nickname_for_storage("claude-work").is_ok());
         assert!(validate_credential_nickname_for_storage("adder").is_ok());
     }

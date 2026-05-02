@@ -48,9 +48,9 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]] [--v
 Current subcommands documented in `src/lib.rs`:
 
 ```bash
-sidekar repl login <provider>
+sidekar repl credential add <provider> [name]
 sidekar repl logout [name|all]
-sidekar repl credential list
+sidekar repl credentials
 sidekar repl models -c <credential>
 
 ```

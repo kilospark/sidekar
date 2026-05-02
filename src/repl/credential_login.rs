@@ -1,9 +1,11 @@
-//! Shared credential login for `sidekar repl login` and `/credential add|login|update`.
+//! Shared credential flows for `sidekar repl credential add` and `/credential add|update`.
 
 use anyhow::{Result, anyhow, bail};
 
-const LOGIN_USAGE: &str = "\
-Usage: sidekar repl login <provider> [name]
+const CREDENTIAL_ADD_USAGE: &str = "\
+Usage: sidekar repl credential add <provider> [name]
+
+  Second token is an optional nickname suffix: claude + work → stored credential 'claude-work'.
 
 Providers:
   claude     Claude (Anthropic) — OAuth
@@ -13,31 +15,30 @@ Providers:
   grok       Grok (xAI) — API key
   gem        Gemini (Google) — API key
   bedrock | brk Amazon Bedrock — IAM profile / credential chain → HTTPS SigV4
-  oac <name> <url> [api_key]
+  oac <nickname> <url> [api_key]
 
 Examples:
-  sidekar repl login claude            → stored as 'claude'
-  sidekar repl login claude work       → stored as 'claude-work'
-  sidekar repl login or personal       → stored as 'or-personal'
-  sidekar repl login oac local http://localhost:11434/v1";
+  sidekar repl credential add claude
+  sidekar repl credential add claude work       → stored as 'claude-work'
+  sidekar repl credential add or personal       → stored as 'or-personal'
+  sidekar repl credential add oac local http://localhost:11434/v1";
 
-/// Same text as missing-arg help for CLI and REPL `/credential add`.
-pub fn login_usage_message() -> &'static str {
-    LOGIN_USAGE
+/// CLI missing-arg help and REPL `/credential add` (no tokens).
+pub fn credential_add_usage_message() -> &'static str {
+    CREDENTIAL_ADD_USAGE
 }
 
-/// Arguments match CLI `sidekar repl login …`: `args[0]` must be `"login"`.
-pub async fn perform_login(args: &[String]) -> Result<String> {
-    let provider = match args.get(1).map(|s| s.as_str()) {
+pub async fn perform_credential_add(tokens: &[String]) -> Result<String> {
+    let provider = match tokens.first().map(|s| s.as_str()) {
         Some(n) => n,
-        None => bail!("{}", LOGIN_USAGE),
+        None => bail!("{}", CREDENTIAL_ADD_USAGE),
     };
 
-    // oac is positional: oac <name> <url> [api_key]
+    // oac is positional: oac <nickname> <url> [api_key]
     if provider == "oac" {
-        let name = args.get(2).map(String::as_str).unwrap_or("oac");
-        let base_url = args.get(3).map(String::as_str);
-        let api_key = args.get(4).map(String::as_str);
+        let name = tokens.get(1).map(|s| s.as_str()).unwrap_or("oac");
+        let base_url = tokens.get(2).map(|s| s.as_str());
+        let api_key = tokens.get(3).map(|s| s.as_str());
         let creds =
             crate::providers::oauth::login_openai_compat(name, Some(name), base_url, api_key)
                 .await?;
@@ -47,8 +48,8 @@ pub async fn perform_login(args: &[String]) -> Result<String> {
         ));
     }
 
-    // Optional name: `sidekar repl login claude work` → nickname = "claude-work"
-    let nickname: String = match args.get(2).map(String::as_str) {
+    // Optional suffix: `credential add claude work` → nickname = "claude-work"
+    let nickname: String = match tokens.get(1).map(|s| s.as_str()) {
         Some(name) if !name.starts_with('-') => {
             let base = provider.trim_end_matches('-');
             format!("{base}-{name}")

@@ -199,7 +199,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         anyhow::bail!(
             "Unknown credential: '{name}'. Use a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…).\n\
                  Examples: claude, claude-1, codex, codex-work, or-personal, anthropic, gem-work, oac-lab\n\
-                 Login with: sidekar repl login {name}"
+                 Add credentials: sidekar repl credential add <provider> [name]  (see sidekar repl --help)"
         );
     }
 

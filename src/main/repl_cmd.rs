@@ -10,7 +10,13 @@ pub async fn handle(
 ) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
-        "login" => handle_login(args).await,
+        "login" => {
+            anyhow::bail!(
+                "`sidekar repl login` was removed. Use:\n  sidekar repl credential add <provider> [name]\n\n{}",
+                sidekar::repl::credential_login::credential_add_usage_message()
+            );
+        }
+        "credential" => handle_credential(args).await,
         "logout" => handle_logout(args),
         "credentials" => handle_credentials(),
         "models" => handle_models(args).await,
@@ -20,10 +26,32 @@ pub async fn handle(
     }
 }
 
-async fn handle_login(args: &[String]) -> Result<()> {
-    let msg = sidekar::repl::credential_login::perform_login(args).await?;
+async fn run_repl_credential_add(provider_and_suffix: &[String]) -> Result<()> {
+    let msg = sidekar::repl::credential_login::perform_credential_add(provider_and_suffix).await?;
     sidekar::output::emit(&sidekar::output::PlainOutput::new(msg))?;
     Ok(())
+}
+
+async fn handle_credential(args: &[String]) -> Result<()> {
+    match args.get(1).map(|s| s.as_str()) {
+        None | Some("-h") | Some("--help") | Some("help") => {
+            eprintln!(
+                "{}",
+                sidekar::repl::credential_login::credential_add_usage_message()
+            );
+            Ok(())
+        }
+        Some("add") => {
+            let tokens: Vec<String> = args.iter().skip(2).cloned().collect();
+            run_repl_credential_add(&tokens).await
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "Unknown subcommand '{other}'.\n{}",
+                sidekar::repl::credential_login::credential_add_usage_message()
+            );
+        }
+    }
 }
 
 fn handle_logout(args: &[String]) -> Result<()> {
@@ -62,7 +90,7 @@ impl sidekar::output::CommandOutput for CredentialsListOutput {
         if self.credentials.is_empty() {
             writeln!(
                 w,
-                "No stored credentials. Use: sidekar repl login <nickname>"
+                "No stored credentials. Use: sidekar repl credential add <provider> [name]"
             )?;
         } else {
             writeln!(w, "Stored credentials:")?;
