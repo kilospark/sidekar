@@ -249,11 +249,11 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
             // happened.
             match sr {
                 StopReason::Stop | StopReason::ToolUse => {
-                    out.push_str(&format!("  stop          {}\n", fmt_stop_reason(sr)));
+                    out.push_str(&format!("  end reason    {}\n", fmt_stop_reason(sr)));
                 }
                 _ => {
                     out.push_str(&format!(
-                        "  stop          \x1b[33m{}\x1b[0m\n",
+                        "  end reason    \x1b[33m{}\x1b[0m\n",
                         fmt_stop_reason(sr)
                     ));
                 }
