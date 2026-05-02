@@ -37,11 +37,16 @@ use crate::broker;
 use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
+use crate::tunnel::tunnel_println;
 const REPL_INPUT_HISTORY_LIMIT: usize = 500;
 
 /// Resolve a credential nickname into a [`Provider`] (shared by REPL and `repl models`).
 pub async fn provider_from_credential(cred_name: &str) -> anyhow::Result<Provider> {
     build_provider(cred_name).await
+}
+
+fn repl_status_dim(msg: &str) {
+    tunnel_println(&format!("\x1b[2m{msg}\x1b[0m"));
 }
 
 async fn maybe_run_final_journal(ctx: Option<&self::journal::task::Context>) {
