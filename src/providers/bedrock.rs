@@ -3,8 +3,8 @@
 //! Keeps **`aws-config`** for IAM / SSO / named-profile credential resolution (including the
 //! `ProfileFileCredentialsProvider` workaround for env-vs-profile precedence), then signs
 //! requests via **`aws-sigv4`** and reads streaming responses as AWS **`application/vnd.amazon.eventstream`**
-//! frames. `:event-type` **`chunk`** JSON carries base64 **`bytes`** whose payload format is
-//! model-family specific, so Bedrock transport and model-family decoding are kept separate here.
+//! frames. `:event-type` **`chunk`** JSON carries base64 **`bytes`** — inner payload depends on
+//! vendor inference family (`AnthropicMessages`, `OpenAiChatCompletions`, `DeepSeekTextCompletion`).
 //!
 //! **HTTP parity**: Smithy binds only `accept`→`X-Amzn-Bedrock-Accept`, but the **REST** examples in
 //! the Amazon Bedrock API Reference also send **`Accept: application/vnd.amazon.eventstream`** so the
@@ -45,8 +45,8 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use super::{
-    ANTHROPIC_1M_SUFFIX, ChatMessage, RemoteModel, StreamConfig, StreamEvent, ToolDef, anthropic,
-    build_streaming_client,
+    ANTHROPIC_1M_SUFFIX, ChatMessage, RemoteModel, StreamConfig, StreamEvent, ToolDef,
+    bedrock_inference, build_streaming_client,
 };
 
 const BEDROCK_CREDENTIAL_EXPIRY_SKEW: Duration = Duration::from_secs(300);
@@ -84,90 +84,6 @@ static BEDROCK_CREDENTIAL_CACHE: LazyLock<
 static BEDROCK_MODEL_ID_CACHE: LazyLock<
     Mutex<HashMap<BedrockModelIdCacheKey, BedrockModelIdCacheEntry>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BedrockRuntimeFamily {
-    AnthropicMessages,
-    Unknown,
-}
-
-impl BedrockRuntimeFamily {
-    fn detect(model_id: &str, provider_name: Option<&str>) -> Self {
-        let provider = provider_name.unwrap_or("").trim().to_ascii_lowercase();
-        if provider == "anthropic" {
-            return Self::AnthropicMessages;
-        }
-
-        let model = model_id.trim().to_ascii_lowercase();
-        if model.contains("anthropic.") {
-            return Self::AnthropicMessages;
-        }
-
-        Self::Unknown
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::AnthropicMessages => "anthropic-messages",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    fn supports_sidekar_chat_streaming(self) -> bool {
-        matches!(self, Self::AnthropicMessages)
-    }
-}
-
-fn unsupported_bedrock_model_message(
-    model_id: &str,
-    family: BedrockRuntimeFamily,
-) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Bedrock model `{}` uses runtime family `{}`; sidekar Bedrock chat streaming currently supports `anthropic-messages` only",
-        model_id,
-        family.label()
-    )
-}
-
-fn build_bedrock_request_body(
-    family: BedrockRuntimeFamily,
-    model_id: &str,
-    system_prompt: &str,
-    messages: &[ChatMessage],
-    tools: &[ToolDef],
-    cfg: &StreamConfig,
-) -> Result<Vec<u8>> {
-    match family {
-        BedrockRuntimeFamily::AnthropicMessages => {
-            anthropic::build_bedrock_anthropic_messages_request_body(
-                model_id,
-                system_prompt,
-                messages,
-                tools,
-                cfg,
-            )
-        }
-        BedrockRuntimeFamily::Unknown => Err(unsupported_bedrock_model_message(model_id, family)),
-    }
-}
-
-async fn parse_bedrock_chunk_stream<S>(
-    family: BedrockRuntimeFamily,
-    stream: S,
-    tx: &mpsc::UnboundedSender<StreamEvent>,
-) -> Result<()>
-where
-    S: futures_util::Stream<Item = std::result::Result<Bytes, anyhow::Error>> + Send,
-{
-    match family {
-        BedrockRuntimeFamily::AnthropicMessages => {
-            anthropic::parse_json_event_bytes_stream(stream, None, tx).await
-        }
-        BedrockRuntimeFamily::Unknown => Err(anyhow::anyhow!(
-            "Bedrock stream parser missing for runtime family `unknown`"
-        )),
-    }
-}
 
 async fn load_sdk_config(region: &str, profile: Option<&str>) -> SdkConfig {
     let region = Region::new(region.to_string());
@@ -644,6 +560,7 @@ struct FoundationModelSummary {
     model_arn: Option<String>,
     model_id: String,
     model_name: Option<String>,
+    #[allow(dead_code)]
     provider_name: Option<String>,
     input_modalities: Option<Vec<String>>,
     output_modalities: Option<Vec<String>>,
@@ -856,11 +773,10 @@ pub async fn fetch_bedrock_model_list(
     let mut models: Vec<RemoteModel> = Vec::new();
     for m in parsed.model_summaries {
         let id = &m.model_id;
-        let family = BedrockRuntimeFamily::detect(id, m.provider_name.as_deref());
         let text_in = modality_contains_text(m.input_modalities.as_ref());
         let text_out = modality_contains_text(m.output_modalities.as_ref());
         let streams = m.response_streaming_supported.unwrap_or(false);
-        if !(family.supports_sidekar_chat_streaming() && text_in && text_out && streams) {
+        if !(text_in && text_out && streams) {
             continue;
         }
 
@@ -1024,12 +940,8 @@ pub async fn stream(
         .unwrap_or(model)
         .to_string();
 
-    let family = BedrockRuntimeFamily::detect(&base_model_id, None);
-    if !family.supports_sidekar_chat_streaming() {
-        return Err(unsupported_bedrock_model_message(&base_model_id, family));
-    }
-
-    let body_vec = build_bedrock_request_body(
+    let family = bedrock_inference::infer_bedrock_inference_family(&base_model_id, None);
+    let body_vec = bedrock_inference::build_bedrock_invoke_stream_body(
         family,
         base_model_id.as_str(),
         system_prompt,
@@ -1153,7 +1065,9 @@ pub async fn stream(
 
     tokio::spawn(async move {
         futures_util::pin_mut!(byte_stream);
-        if let Err(e) = parse_bedrock_chunk_stream(family, byte_stream, &tx).await {
+        if let Err(e) =
+            bedrock_inference::parse_bedrock_inference_stream(family, byte_stream, &tx).await
+        {
             let _ = tx.send(StreamEvent::Error {
                 message: format!("{e:#}"),
             });
@@ -1166,24 +1080,8 @@ pub async fn stream(
 #[cfg(test)]
 mod tests {
     use super::{
-        BedrockRuntimeFamily, BedrockStreamMeta, bedrock_stream_eof_message,
-        unexpected_stream_content_type_message,
+        BedrockStreamMeta, bedrock_stream_eof_message, unexpected_stream_content_type_message,
     };
-
-    #[test]
-    fn detects_anthropic_bedrock_runtime_family_from_model_id() {
-        assert_eq!(
-            BedrockRuntimeFamily::detect("anthropic.claude-opus-4-7-20250514-v1:0", None),
-            BedrockRuntimeFamily::AnthropicMessages
-        );
-        assert_eq!(
-            BedrockRuntimeFamily::detect(
-                "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-4-7-20250514-v1:0",
-                None
-            ),
-            BedrockRuntimeFamily::AnthropicMessages
-        );
-    }
 
     fn meta() -> BedrockStreamMeta {
         BedrockStreamMeta {

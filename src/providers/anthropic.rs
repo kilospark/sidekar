@@ -538,6 +538,7 @@ pub(super) fn build_bedrock_anthropic_messages_request_body(
     let mut v = serde_json::to_value(&req)?;
     if let Some(obj) = v.as_object_mut() {
         obj.remove("model");
+        obj.remove("stream"); // InvokeModelWithResponseStream — streaming via route, not body
         obj.insert("anthropic_version".to_string(), json!("bedrock-2023-05-31"));
     }
     Ok(serde_json::to_vec(&v)?)

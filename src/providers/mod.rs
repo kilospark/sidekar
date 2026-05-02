@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod bedrock;
+mod bedrock_inference;
 pub mod codex;
 pub mod gemini;
 pub mod oauth;
@@ -958,6 +959,9 @@ static MODEL_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, (u32, u32)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+const DEFAULT_CONTEXT_WINDOW: u32 = 128_000;
+const DEFAULT_MAX_OUTPUT: u32 = 16_384;
+
 /// Non-blocking, cache-only context window lookup for display
 /// surfaces like `/status`.
 ///
@@ -979,35 +983,32 @@ pub fn cached_context_window(model: &str) -> Option<u32> {
         .and_then(|c| c.get(model).map(|(ctx, _)| *ctx))
 }
 
-/// Cache hit → Some; cache miss → network fetch, populate cache → Some.
-/// None when the provider has no usable models endpoint for this probe.
-async fn context_max_output_cached_pair(model: &str, provider: &Provider) -> Option<(u32, u32)> {
+/// Cache hit → pair; cache miss → resolve once, cache result, return pair.
+/// Even fallback/default values are cached so providers without a metadata
+/// endpoint (e.g. Bedrock, Codex) don't miss every turn.
+async fn context_max_output_cached_pair(model: &str, provider: &Provider) -> (u32, u32) {
     let cached = MODEL_CACHE.lock().ok().and_then(|c| c.get(model).copied());
     if let Some(pair) = cached {
-        return Some(pair);
+        return pair;
     }
-    let fetched = fetch_model_limits(model, provider).await?;
+    let fetched = fetch_model_limits(model, provider)
+        .await
+        .unwrap_or((DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT));
     if let Ok(mut cache) = MODEL_CACHE.lock() {
         cache.insert(model.to_string(), fetched);
     }
-    Some(fetched)
+    fetched
 }
 
 /// Fetch context window for a model from the provider API.
 /// Tries the provider's models endpoint first, falls back to static registry.
 pub async fn fetch_context_window(model: &str, provider: &Provider) -> u32 {
-    context_max_output_cached_pair(model, provider)
-        .await
-        .map(|(ctx, _)| ctx)
-        .unwrap_or(128_000)
+    context_max_output_cached_pair(model, provider).await.0
 }
 
 /// Fetch max output tokens for a model from the provider API.
 pub async fn fetch_max_output(model: &str, provider: &Provider) -> u32 {
-    context_max_output_cached_pair(model, provider)
-        .await
-        .map(|(_, max_out)| max_out)
-        .unwrap_or(16_384)
+    context_max_output_cached_pair(model, provider).await.1
 }
 
 /// Fetch (context_window, max_output) from the provider's models API.

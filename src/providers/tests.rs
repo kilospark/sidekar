@@ -7,6 +7,25 @@ use super::{
 use bytes::Bytes;
 
 #[tokio::test]
+async fn fallback_context_window_is_cached_for_unsupported_provider() {
+    if let Ok(mut cache) = super::MODEL_CACHE.lock() {
+        cache.remove("anthropic.claude-opus-4-7");
+    }
+    assert_eq!(super::cached_context_window("anthropic.claude-opus-4-7"), None);
+
+    let provider = Provider::Bedrock {
+        region: "us-east-1".to_string(),
+        aws_profile: None,
+    };
+    let ctx = super::fetch_context_window("anthropic.claude-opus-4-7", &provider).await;
+    assert_eq!(ctx, 128_000);
+    assert_eq!(
+        super::cached_context_window("anthropic.claude-opus-4-7"),
+        Some(128_000)
+    );
+}
+
+#[tokio::test]
 async fn bedrock_anthropic_json_events_produce_done_message() {
     let chunks = vec![
         Ok(Bytes::from_static(

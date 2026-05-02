@@ -302,11 +302,13 @@ impl sidekar::output::CommandOutput for ModelsListOutput {
                 "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
                 m.id, m.display_name, ctx
             )?;
-            if let Some(ref fm) = m.bedrock_foundation_model_arn {
-                writeln!(w, "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m")?;
-            }
-            for (i, pr) in m.bedrock_inference_profile_refs.iter().enumerate() {
-                writeln!(w, "      \x1b[2minference profile [{}]: {pr}\x1b[0m", i + 1)?;
+            if sidekar::providers::is_verbose() {
+                if let Some(ref fm) = m.bedrock_foundation_model_arn {
+                    writeln!(w, "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m")?;
+                }
+                for (i, pr) in m.bedrock_inference_profile_refs.iter().enumerate() {
+                    writeln!(w, "      \x1b[2minference profile [{}]: {pr}\x1b[0m", i + 1)?;
+                }
             }
         }
         writeln!(w, "\n\x1b[2m{} models\x1b[0m", self.count)?;

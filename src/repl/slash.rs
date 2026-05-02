@@ -810,9 +810,9 @@ pub(super) async fn apply_slash_result(
                             "\x1b[31mFailed to read ephemeral CA PEM: {e:#}\x1b[0m"
                         )),
                     },
-                    Err(e) => tunnel_println(&format!(
-                        "\x1b[31mFailed to start MITM proxy: {e:#}\x1b[0m"
-                    )),
+                    Err(e) => {
+                        tunnel_println(&format!("\x1b[31mFailed to start MITM proxy: {e:#}\x1b[0m"))
+                    }
                 }
             }
         }
@@ -1026,16 +1026,16 @@ pub(super) async fn interactive_select_model(
                 format!(", {ctx}")
             }
         ));
-        if let Some(ref fm) = m.bedrock_foundation_model_arn {
-            tunnel_println(&format!(
-                "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m"
-            ));
-        }
-        for (pi, pr) in m.bedrock_inference_profile_refs.iter().enumerate() {
-            tunnel_println(&format!(
-                "      \x1b[2minference profile [{}]: {pr}\x1b[0m",
-                pi + 1
-            ));
+        if crate::providers::is_verbose() {
+            if let Some(ref fm) = m.bedrock_foundation_model_arn {
+                tunnel_println(&format!("      \x1b[2mfoundation-model ARN: {fm}\x1b[0m"));
+            }
+            for (pi, pr) in m.bedrock_inference_profile_refs.iter().enumerate() {
+                tunnel_println(&format!(
+                    "      \x1b[2minference profile [{}]: {pr}\x1b[0m",
+                    pi + 1
+                ));
+            }
         }
     }
     print!("Enter number (or Enter to keep current): ");

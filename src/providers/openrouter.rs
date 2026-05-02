@@ -97,6 +97,15 @@ fn build_request_body(
     messages: &[ChatMessage],
     tools: &[ToolDef],
 ) -> Value {
+    openai_compat_chat_completion_body(model, system_prompt, messages, tools)
+}
+
+pub(super) fn openai_compat_chat_completion_body(
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+) -> Value {
     let mut api_messages: Vec<Value> = Vec::new();
 
     // System prompt
@@ -219,8 +228,8 @@ fn build_request_body(
                     msg_obj["tool_calls"] = json!(tool_calls);
                 }
 
-                let need_reasoning_keys = !reasoning_wire.is_empty()
-                    || (is_deepseek && !tool_calls.is_empty());
+                let need_reasoning_keys =
+                    !reasoning_wire.is_empty() || (is_deepseek && !tool_calls.is_empty());
                 if need_reasoning_keys {
                     msg_obj["reasoning_content"] = json!(reasoning_wire);
                     msg_obj["reasoning"] = json!(reasoning_wire);
@@ -328,188 +337,171 @@ struct PendingToolCall {
     index: usize,
 }
 
-async fn parse_sse_stream(
-    response: reqwest::Response,
-    rate_limit: Option<RateLimitSnapshot>,
+struct OpenAiCompletionAccum {
+    text_buf: String,
+    reasoning_buf: String,
+    usage: Usage,
+    model_id: String,
+    finish_reason: Option<String>,
+    pending_tool_calls: Vec<PendingToolCall>,
+}
+
+impl Default for OpenAiCompletionAccum {
+    fn default() -> Self {
+        Self {
+            text_buf: String::new(),
+            reasoning_buf: String::new(),
+            usage: Usage::default(),
+            model_id: String::new(),
+            finish_reason: None,
+            pending_tool_calls: Vec::new(),
+        }
+    }
+}
+
+fn ingest_openai_completion_chunk_payload(
+    data: &Value,
+    accum: &mut OpenAiCompletionAccum,
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    let mut stream = response.bytes_stream();
-    let mut decoder = super::SseDecoder::new();
+    if let Some(msg) = openai_compat_stream_error_message(data) {
+        bail!("{msg}");
+    }
+    if accum.model_id.is_empty()
+        && let Some(m) = data.get("model").and_then(|v| v.as_str())
+    {
+        accum.model_id = m.to_string();
+    }
+    if let Some(u) = data.get("usage") {
+        apply_usage(u, &mut accum.usage);
+    }
+    let choices = match data.get("choices").and_then(|v| v.as_array()) {
+        Some(c) => c,
+        None => return Ok(()),
+    };
 
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
-    let mut text_buf = String::new();
-    let mut reasoning_buf = String::new();
-    let mut usage = Usage::default();
-    let mut model_id = String::new();
-    let mut finish_reason: Option<String> = None;
-    let mut pending_tool_calls: Vec<PendingToolCall> = Vec::new();
+    for choice in choices {
+        if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str()) {
+            accum.finish_reason = Some(fr.to_string());
+        }
 
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("error reading SSE chunk")?;
-        decoder.push_chunk(&chunk);
+        let delta = match choice.get("delta") {
+            Some(d) => d,
+            None => continue,
+        };
 
-        while let Some(event) = decoder.next_event() {
-            let data: Value = match super::parse_sse_json(&event) {
-                Some(v) => v,
-                None => continue,
-            };
+        if let Some(content) = delta.get("content").and_then(|v| v.as_str())
+            && !content.is_empty()
+        {
+            accum.text_buf.push_str(content);
+            let _ = tx.send(StreamEvent::TextDelta {
+                delta: content.to_string(),
+            });
+        }
 
-            // OpenCode Zen/Go (and strict OpenAI-compat proxies) may emit error JSON in
-            // the SSE stream without a `choices` array. Older code skipped those frames
-            // and surfaced an empty assistant turn instead of the real error.
-            if let Some(msg) = openai_compat_stream_error_message(&data) {
-                bail!("{msg}");
+        ingest_openai_sse_reasoning_from_delta(&mut accum.reasoning_buf, delta);
+        if let Some(msg) = choice.get("message") {
+            let mut snap = String::new();
+            ingest_openai_sse_reasoning_from_message(&mut snap, msg);
+            if snap.len() > accum.reasoning_buf.len() {
+                accum.reasoning_buf.clear();
+                accum.reasoning_buf.push_str(&snap);
             }
+        }
 
-            // Extract model from first chunk
-            if model_id.is_empty()
-                && let Some(m) = data.get("model").and_then(|v| v.as_str())
-            {
-                model_id = m.to_string();
-            }
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            for tc in tool_calls {
+                let tc_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-            // Usage (present in final chunk when stream_options.include_usage is set)
-            if let Some(u) = data.get("usage") {
-                apply_usage(u, &mut usage);
-            }
+                if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                    let name = tc
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let initial_args = tc
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
 
-            let choices = match data.get("choices").and_then(|v| v.as_array()) {
-                Some(c) => c,
-                None => continue,
-            };
+                    while accum.pending_tool_calls.len() <= tc_index {
+                        accum.pending_tool_calls.push(PendingToolCall {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                            index: accum.pending_tool_calls.len(),
+                        });
+                    }
+                    let prior_args =
+                        std::mem::take(&mut accum.pending_tool_calls[tc_index].arguments);
+                    let merged_args = format!("{prior_args}{initial_args}");
+                    accum.pending_tool_calls[tc_index] = PendingToolCall {
+                        id: id.to_string(),
+                        name: name.clone(),
+                        arguments: merged_args,
+                        index: tc_index,
+                    };
 
-            for choice in choices {
-                // Check finish_reason
-                if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-                    finish_reason = Some(fr.to_string());
-                }
-
-                let delta = match choice.get("delta") {
-                    Some(d) => d,
-                    None => continue,
-                };
-
-                // Text content delta
-                if let Some(content) = delta.get("content").and_then(|v| v.as_str())
-                    && !content.is_empty()
-                {
-                    text_buf.push_str(content);
-                    let _ = tx.send(StreamEvent::TextDelta {
-                        delta: content.to_string(),
+                    let _ = tx.send(StreamEvent::ToolCallStart {
+                        index: tc_index,
+                        id: id.to_string(),
+                        name,
                     });
-                }
-
-                // Reasoning deltas — gateways may stringify, nest objects,
-                // duplicate into `choice.message`, or use alternate keys (`thinking`).
-                ingest_openai_sse_reasoning_from_delta(&mut reasoning_buf, delta);
-                if let Some(msg) = choice.get("message") {
-                    let mut snap = String::new();
-                    ingest_openai_sse_reasoning_from_message(&mut snap, msg);
-                    // Some proxies omit per-chunk `delta.reasoning_content` until a final snapshot
-                    // on `choices[].message` — replacing only when strictly longer avoids duplicating
-                    // identical prefixes every SSE frame.
-                    if snap.len() > reasoning_buf.len() {
-                        reasoning_buf.clear();
-                        reasoning_buf.push_str(&snap);
+                    if !initial_args.is_empty() {
+                        let _ = tx.send(StreamEvent::ToolCallDelta {
+                            index: tc_index,
+                            delta: initial_args,
+                        });
                     }
-                }
-
-                // Tool call deltas
-                if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                    for tc in tool_calls {
-                        let tc_index =
-                            tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-
-                        // New tool call (has id and function.name)
-                        if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                            let name = tc
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let initial_args = tc
-                                .get("function")
-                                .and_then(|f| f.get("arguments"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-
-                            // Ensure vec is large enough
-                            while pending_tool_calls.len() <= tc_index {
-                                pending_tool_calls.push(PendingToolCall {
-                                    id: String::new(),
-                                    name: String::new(),
-                                    arguments: String::new(),
-                                    index: pending_tool_calls.len(),
-                                });
-                            }
-                            let prior_args =
-                                std::mem::take(&mut pending_tool_calls[tc_index].arguments);
-                            let merged_args = format!("{prior_args}{initial_args}");
-                            pending_tool_calls[tc_index] = PendingToolCall {
-                                id: id.to_string(),
-                                name: name.clone(),
-                                arguments: merged_args,
-                                index: tc_index,
-                            };
-
-                            let _ = tx.send(StreamEvent::ToolCallStart {
-                                index: tc_index,
-                                id: id.to_string(),
-                                name,
-                            });
-                            // OpenAI-style chunks often include the first slice of `arguments` on the
-                            // same frame as `id`; without a ToolCallDelta the REPL never accumulates args
-                            // for the ToolCallEnd summary line.
-                            if !initial_args.is_empty() {
-                                let _ = tx.send(StreamEvent::ToolCallDelta {
-                                    index: tc_index,
-                                    delta: initial_args,
-                                });
-                            }
-                        } else if let Some(args_delta) = tc
-                            .get("function")
-                            .and_then(|f| f.get("arguments"))
-                            .and_then(|v| v.as_str())
-                        {
-                            // Argument deltas may arrive before the chunk that includes id (OpenAI-style).
-                            while pending_tool_calls.len() <= tc_index {
-                                pending_tool_calls.push(PendingToolCall {
-                                    id: String::new(),
-                                    name: String::new(),
-                                    arguments: String::new(),
-                                    index: pending_tool_calls.len(),
-                                });
-                            }
-                            pending_tool_calls[tc_index].index = tc_index;
-                            pending_tool_calls[tc_index].arguments.push_str(args_delta);
-                            let _ = tx.send(StreamEvent::ToolCallDelta {
-                                index: tc_index,
-                                delta: args_delta.to_string(),
-                            });
-                        }
+                } else if let Some(args_delta) = tc
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|v| v.as_str())
+                {
+                    while accum.pending_tool_calls.len() <= tc_index {
+                        accum.pending_tool_calls.push(PendingToolCall {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                            index: accum.pending_tool_calls.len(),
+                        });
                     }
+                    accum.pending_tool_calls[tc_index].index = tc_index;
+                    accum.pending_tool_calls[tc_index]
+                        .arguments
+                        .push_str(args_delta);
+                    let _ = tx.send(StreamEvent::ToolCallDelta {
+                        index: tc_index,
+                        delta: args_delta.to_string(),
+                    });
                 }
             }
         }
     }
+    Ok(())
+}
 
-    // Finalize: build content blocks from accumulated state.
-    // Reasoning is emitted first so it serializes ahead of text/tool_calls on
-    // the next request (DeepSeek requires this on the same assistant message
-    // that produced tool_calls).
-    if !reasoning_buf.is_empty() {
+fn finalize_openai_completion_accum(
+    accum: OpenAiCompletionAccum,
+    rate_limit: Option<RateLimitSnapshot>,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) {
+    let mut content_blocks: Vec<ContentBlock> = Vec::new();
+    if !accum.reasoning_buf.is_empty() {
         content_blocks.push(ContentBlock::Reasoning {
-            text: reasoning_buf,
+            text: accum.reasoning_buf,
         });
     }
-    if !text_buf.is_empty() {
-        content_blocks.push(ContentBlock::Text { text: text_buf });
+    if !accum.text_buf.is_empty() {
+        content_blocks.push(ContentBlock::Text {
+            text: accum.text_buf,
+        });
     }
 
-    for tc in &pending_tool_calls {
+    for tc in &accum.pending_tool_calls {
         if tc.id.is_empty() {
             continue;
         }
@@ -523,11 +515,11 @@ async fn parse_sse_stream(
         });
     }
 
-    let stop = match finish_reason.as_deref() {
+    let stop = match accum.finish_reason.as_deref() {
         Some("tool_calls") => StopReason::ToolUse,
         Some("length") => StopReason::Length,
         _ => {
-            if pending_tool_calls.iter().any(|tc| !tc.id.is_empty()) {
+            if accum.pending_tool_calls.iter().any(|tc| !tc.id.is_empty()) {
                 StopReason::ToolUse
             } else {
                 StopReason::Stop
@@ -538,19 +530,73 @@ async fn parse_sse_stream(
     let _ = tx.send(StreamEvent::Done {
         message: AssistantResponse {
             content: content_blocks,
-            usage,
+            usage: accum.usage,
             stop_reason: stop,
-            model: model_id,
+            model: accum.model_id,
             response_id: String::new(),
-            rate_limit: rate_limit.clone(),
+            rate_limit,
         },
     });
+}
 
+pub(super) async fn parse_openai_completion_chunk_byte_stream<S>(
+    stream: S,
+    rate_limit: Option<RateLimitSnapshot>,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) -> Result<()>
+where
+    S: futures_util::Stream<Item = std::result::Result<bytes::Bytes, anyhow::Error>> + Send,
+{
+    use futures_util::{StreamExt, pin_mut};
+
+    pin_mut!(stream);
+    let mut accum = OpenAiCompletionAccum::default();
+    let mut total_bytes = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("error reading Bedrock OpenAI-compat chunk stream")?;
+        total_bytes += chunk.len();
+        let data: Value = serde_json::from_slice(chunk.as_ref()).with_context(|| {
+            format!(
+                "invalid Bedrock OpenAI chunk JSON after {} bytes: {}",
+                total_bytes,
+                String::from_utf8_lossy(chunk.as_ref())
+            )
+        })?;
+        ingest_openai_completion_chunk_payload(&data, &mut accum, tx)?;
+    }
+    finalize_openai_completion_accum(accum, rate_limit, tx);
+    Ok(())
+}
+
+async fn parse_sse_stream(
+    response: reqwest::Response,
+    rate_limit: Option<RateLimitSnapshot>,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) -> Result<()> {
+    let mut stream = response.bytes_stream();
+    let mut decoder = super::SseDecoder::new();
+    let mut accum = OpenAiCompletionAccum::default();
+
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("error reading SSE chunk")?;
+        decoder.push_chunk(&chunk);
+
+        while let Some(event) = decoder.next_event() {
+            let data: Value = match super::parse_sse_json(&event) {
+                Some(v) => v,
+                None => continue,
+            };
+            ingest_openai_completion_chunk_payload(&data, &mut accum, tx)?;
+        }
+    }
+
+    finalize_openai_completion_accum(accum, rate_limit, tx);
     Ok(())
 }
 
 /// Best-effort error text from OpenAI-style or OpenCode-shaped stream payloads.
-fn openai_compat_stream_error_message(v: &Value) -> Option<String> {
+pub(super) fn openai_compat_stream_error_message(v: &Value) -> Option<String> {
     // OpenCode: `{"type":"error","error":{"type":"AuthError","message":"..."}}`
     if v.get("type").and_then(|t| t.as_str()) == Some("error") {
         return v
@@ -667,7 +713,7 @@ fn maybe_add_anthropic_cache_control(model: &str, body: &mut Value) {
     }
 }
 
-fn apply_usage(u: &Value, usage: &mut Usage) {
+pub(super) fn apply_usage(u: &Value, usage: &mut Usage) {
     let prompt_total = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     usage.output_tokens = u
         .get("completion_tokens")

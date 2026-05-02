@@ -248,3 +248,31 @@ fn supports_1m_context_beta_gates_only_sonnet_4_and_4_5() {
     assert!(!supports_1m_context_beta("claude-haiku-4-5-20251001"));
     assert!(!supports_1m_context_beta("claude-3-5-sonnet-20241022"));
 }
+
+#[test]
+fn bedrock_invoke_body_strips_stream_field() {
+    let bytes = super::build_bedrock_anthropic_messages_request_body(
+        "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        "system prompt",
+        &[ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        &[],
+        &test_config(),
+    )
+    .expect("serialize bedrock body");
+
+    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("parse JSON");
+    assert!(
+        v.get("stream").is_none(),
+        "Bedrock InvokeModelWithResponseStream rejects body.stream"
+    );
+    assert!(v.get("model").is_none());
+    assert_eq!(
+        v.get("anthropic_version"),
+        Some(&json!("bedrock-2023-05-31"))
+    );
+}
