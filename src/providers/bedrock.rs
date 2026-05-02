@@ -51,6 +51,8 @@ use super::{
 
 const BEDROCK_CREDENTIAL_EXPIRY_SKEW: Duration = Duration::from_secs(300);
 const BEDROCK_MODEL_ID_CACHE_TTL: Duration = Duration::from_secs(3600);
+/// Bump when inference-profile resolution logic changes so stale IDs are not reused from cache.
+const BEDROCK_MODEL_ID_CACHE_SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BedrockCredentialCacheKey {
@@ -66,6 +68,7 @@ struct BedrockCredentialCacheEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BedrockModelIdCacheKey {
+    schema: u32,
     region: String,
     profile: Option<String>,
     foundation_model_id: String,
@@ -127,6 +130,7 @@ fn model_id_cache_key(
     foundation_model_id: &str,
 ) -> BedrockModelIdCacheKey {
     BedrockModelIdCacheKey {
+        schema: BEDROCK_MODEL_ID_CACHE_SCHEMA,
         region: region.trim().to_string(),
         profile: profile
             .map(str::trim)
@@ -694,7 +698,13 @@ fn unexpected_stream_content_type_message(meta: &BedrockStreamMeta, body: &[u8])
 }
 
 /// Geographic prefix for Bedrock system inference profiles, from the configured invoke region.
-/// See: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-7.html>
+///
+/// Cross-region inference profile IDs use geography prefixes **`us.`**, **`eu.`**, **`apac.`**, and
+/// (for Tokyo/Osaka) **`jp.`** — not `global.` ([AWS geographic cross-Region inference][geo]).
+/// Mapping everything under `ap-*` except the JP Regions to **`apac`** fixes stale candidates like
+/// `global.anthropic…` that Bedrock rejects as “invalid model identifier”.
+///
+/// [geo]: https://docs.aws.amazon.com/bedrock/latest/userguide/geographic-cross-region-inference.html
 fn bedrock_geo_inference_prefix(region: &str) -> &'static str {
     let r = region.trim();
     if r.starts_with("us-") || r.starts_with("ca-") {
@@ -703,6 +713,8 @@ fn bedrock_geo_inference_prefix(region: &str) -> &'static str {
         "eu"
     } else if r == "ap-northeast-1" || r == "ap-northeast-3" {
         "jp"
+    } else if r.starts_with("ap-") {
+        "apac"
     } else {
         "global"
     }
@@ -1080,7 +1092,8 @@ pub async fn stream(
 #[cfg(test)]
 mod tests {
     use super::{
-        BedrockStreamMeta, bedrock_stream_eof_message, unexpected_stream_content_type_message,
+        BedrockStreamMeta, bedrock_invoke_url, bedrock_stream_eof_message,
+        unexpected_stream_content_type_message,
     };
 
     fn meta() -> BedrockStreamMeta {
@@ -1121,5 +1134,56 @@ mod tests {
         let msg = unexpected_stream_content_type_message(&meta(), br#"{"message":"oops"}"#);
         assert!(msg.contains(r#"unexpected success response"#), "{msg}");
         assert!(msg.contains(r#"{"message":"oops"}"#), "{msg}");
+    }
+
+    /// Regression: model IDs include `:0`-style suffixes; `http::Uri` must not treat `:0` as a port.
+    #[test]
+    fn invoke_url_http_uri_path_preserves_colon_in_model_segment() {
+        let url = bedrock_invoke_url(
+            "us-east-1",
+            "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        )
+        .expect("invoke URL");
+        let full = url.as_str();
+        let uri: http::Uri = full.parse().expect("parse bedrock runtime URL");
+        assert_eq!(
+            uri.path(),
+            "/model/anthropic.claude-3-5-sonnet-20240620-v1:0/invoke-with-response-stream",
+            "unexpected path parsing for {full}"
+        );
+    }
+
+    /// If `%2F` is decoded into `/` inside `Uri::path()`, ARNs split across segments and Bedrock returns "invalid model identifier".
+    #[test]
+    fn invoke_url_arn_segment_path_must_not_decode_percent_encoded_slashes() {
+        let mid = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.fake-v1:0";
+        let url = bedrock_invoke_url("us-east-1", mid).expect("invoke URL with ARN model id");
+        let full = url.as_str();
+        let uri: http::Uri = full.parse().expect("parse URL");
+        assert!(
+            uri.path().contains("%2F"),
+            "expected %2F to remain encoded in serialized path for ARN-based model ids; got path={:?} url={full}",
+            uri.path()
+        );
+    }
+
+    #[test]
+    fn geo_inference_prefix_maps_most_ap_regions_to_apac() {
+        assert_eq!(super::bedrock_geo_inference_prefix("ap-southeast-2"), "apac");
+        assert_eq!(super::bedrock_geo_inference_prefix("ap-south-1"), "apac");
+        assert_eq!(super::bedrock_geo_inference_prefix("ap-southeast-1"), "apac");
+    }
+
+    #[test]
+    fn geo_inference_prefix_keeps_japan_regions_as_jp() {
+        assert_eq!(super::bedrock_geo_inference_prefix("ap-northeast-1"), "jp");
+        assert_eq!(super::bedrock_geo_inference_prefix("ap-northeast-3"), "jp");
+    }
+
+    #[test]
+    fn geo_inference_prefix_us_ca_eu() {
+        assert_eq!(super::bedrock_geo_inference_prefix("us-east-1"), "us");
+        assert_eq!(super::bedrock_geo_inference_prefix("ca-central-1"), "us");
+        assert_eq!(super::bedrock_geo_inference_prefix("eu-west-1"), "eu");
     }
 }
