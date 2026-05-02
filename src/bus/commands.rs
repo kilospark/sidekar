@@ -3,10 +3,22 @@ use super::*;
 // --- Delivery helpers ---
 
 #[derive(Debug, Clone)]
+enum BusDeliveryRoute {
+    SameChannel,
+    CrossChannelBroker {
+        recipient_session: Option<String>,
+    },
+    Relay {
+        hostname: String,
+    },
+}
+
+#[derive(Debug, Clone)]
 struct DeliveryTarget {
     transport_name: &'static str,
     transport_target: String,
     output_label: String,
+    route: BusDeliveryRoute,
 }
 
 fn find_agent_on_channel(name_or_nick: &str, channel: &str) -> Option<BrokerAgent> {
@@ -121,28 +133,64 @@ fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
             transport_name: BROKER_TRANSPORT,
             transport_target: agent.id.name.clone(),
             output_label: format!("via broker (channel {})", channel),
+            route: BusDeliveryRoute::SameChannel,
         });
     }
 
-    // Cross-channel fallback
+    // Cross-channel fallback (still local broker queue)
     if let Ok(Some(agent)) = broker::find_agent(to, None) {
+        let recipient_session = agent.id.session.clone();
+        let route = if recipient_session.as_deref() == Some(channel) {
+            BusDeliveryRoute::SameChannel
+        } else {
+            BusDeliveryRoute::CrossChannelBroker { recipient_session }
+        };
         return Some(DeliveryTarget {
             transport_name: BROKER_TRANSPORT,
             transport_target: agent.id.name.clone(),
             output_label: format!("via broker ({})", agent.id.pane.as_deref().unwrap_or("?")),
+            route,
         });
     }
 
     // Remote relay: another machine / session for this user (device token + live tunnel on relay)
     if let Some(sess) = relay_session_for_target(to) {
+        let hostname = sess.hostname.clone();
         return Some(DeliveryTarget {
             transport_name: RELAY_HTTP_TRANSPORT,
             transport_target: sess.id.clone(),
-            output_label: format!("via relay ({})", sess.hostname),
+            output_label: format!("via relay ({hostname})"),
+            route: BusDeliveryRoute::Relay { hostname },
         });
     }
 
     None
+}
+
+fn format_delivered_bus_body(
+    envelope: &Envelope,
+    sender_channel: &str,
+    route: &BusDeliveryRoute,
+) -> String {
+    let mut body = envelope.format_for_paste();
+    match route {
+        BusDeliveryRoute::SameChannel => {}
+        BusDeliveryRoute::CrossChannelBroker { recipient_session } => {
+            let yours = recipient_session
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("(unknown channel)");
+            body.push_str(&format!(
+                "\n[cross-channel: sender session \"{sender_channel}\", yours \"{yours}\" — reply with the command above from this Sidekar terminal.]"
+            ));
+        }
+        BusDeliveryRoute::Relay { hostname } => {
+            body.push_str(&format!(
+                "\n[relay: delivered through Sidekar relay (peer host \"{hostname}\"). Run the reply command from Sidekar on that machine.]"
+            ));
+        }
+    }
+    body
 }
 
 fn send_directed_envelope(
@@ -163,7 +211,6 @@ fn send_directed_envelope(
         );
     }
 
-    let full_message = envelope.format_for_paste();
     let delivery = find_delivery_target(&envelope.to, &channel).ok_or_else(|| {
         let available = available_agents_str(&channel, &envelope.from.name);
         anyhow!(
@@ -172,10 +219,17 @@ fn send_directed_envelope(
         )
     })?;
 
+    let full_message = format_delivered_bus_body(&envelope, &channel, &delivery.route);
+
     maybe_track_request(state, &envelope, &delivery);
 
     let delivery_result: Result<()> = if delivery.transport_name == RELAY_HTTP_TRANSPORT {
-        crate::transport::deliver_relay_envelope(&delivery.transport_target, &envelope).map(|_| ())
+        crate::transport::deliver_relay_envelope(
+            &delivery.transport_target,
+            &envelope,
+            &full_message,
+        )
+        .map(|_| ())
     } else {
         deliver_via(
             delivery.transport_name,

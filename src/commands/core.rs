@@ -6,8 +6,22 @@ mod page;
 pub(crate) use browser::*;
 pub(crate) use page::*;
 
-pub(super) async fn cmd_setup(_ctx: &mut AppContext) -> Result<()> {
+pub(super) async fn cmd_setup(ctx: &mut AppContext) -> Result<()> {
     crate::skill::install_skill();
+    match crate::ext::extract_embedded_extension_message() {
+        Ok(msg) => out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+        ),
+        Err(e) => out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(format!(
+                "Warning: could not extract Chrome extension (same as `sidekar ext dev-extract`): {e:#}"
+            )))?
+        ),
+    }
     Ok(())
 }
 

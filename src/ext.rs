@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::Cursor;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -25,6 +26,62 @@ mod verify;
 
 pub use cli::send_cli_command;
 pub use verify::{VerifyResult, is_ext_available, verify_ext_token};
+
+fn unzip_embedded_extension_to_dev_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("No home directory found"))?;
+    let target_dir = home.join(".sidekar/extension");
+
+    fs::create_dir_all(&target_dir).context("Failed to create .sidekar directory")?;
+
+    let reader = Cursor::new(EXTENSION_ZIP);
+    let mut archive = ZipArchive::new(reader).context("Failed to read embedded ZIP")?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).context("Failed to access ZIP entry")?;
+        let outpath = target_dir.join(file.name());
+
+        if file.name().ends_with('/') {
+            fs::create_dir_all(&outpath).context("Failed to create directory in extraction")?;
+        } else {
+            if let Some(parent) = outpath.parent() {
+                fs::create_dir_all(parent).context("Failed to create parent directory")?;
+            }
+            let mut outfile = fs::File::create(&outpath).context("Failed to create output file")?;
+            std::io::copy(&mut file, &mut outfile).context("Failed to copy file contents")?;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = file.unix_mode() {
+                fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
+                    .context("Failed to set file permissions")?;
+            }
+        }
+    }
+
+    Ok(target_dir)
+}
+
+/// Human-readable result text after extracting `assets/extension.zip` (same paths as dev-extract).
+pub fn extract_embedded_extension_message() -> Result<String> {
+    let target_dir = unzip_embedded_extension_to_dev_dir()?;
+    Ok(format!(
+        "Chrome extension extracted/updated to {}\nTo load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}",
+        target_dir.display(),
+        target_dir.display()
+    ))
+}
+
+/// Extract embedded Chrome extension ZIP to `~/.sidekar/extension`.
+///
+/// Same as `sidekar ext dev-extract`: unpacked tree for Chrome “Load unpacked”, kept in sync with
+/// the binary’s embedded `assets/extension.zip`.
+pub fn extract_embedded_extension() -> Result<()> {
+    let msg = extract_embedded_extension_message()?;
+    crate::output::emit(&crate::output::PlainOutput::new(msg))?;
+    Ok(())
+}
 
 /// Paste / cli_exec can exceed 30s (CDP attach, Google Docs focus path).
 const TIMEOUT_SECS: u64 = 180;

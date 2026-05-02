@@ -200,45 +200,7 @@ fn show_status() -> Result<()> {
 }
 
 fn extract_extension() -> Result<()> {
-    let home = dirs::home_dir().ok_or(anyhow!("No home directory found"))?;
-    let target_dir = home.join(".sidekar/extension");
-
-    fs::create_dir_all(&target_dir).context("Failed to create .sidekar directory")?;
-
-    let reader = Cursor::new(EXTENSION_ZIP);
-    let mut archive = ZipArchive::new(reader).context("Failed to read embedded ZIP")?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).context("Failed to access ZIP entry")?;
-        let outpath = target_dir.join(file.name());
-
-        if file.name().ends_with('/') {
-            fs::create_dir_all(&outpath).context("Failed to create directory in extraction")?;
-        } else {
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent).context("Failed to create parent directory")?;
-            }
-            let mut outfile = fs::File::create(&outpath).context("Failed to create output file")?;
-            std::io::copy(&mut file, &mut outfile).context("Failed to copy file contents")?;
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Some(mode) = file.unix_mode() {
-                fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
-                    .context("Failed to set file permissions")?;
-            }
-        }
-    }
-
-    let msg = format!(
-        "Chrome extension extracted/updated to {}\nTo load: Chrome > Extensions > Enable Developer mode > Load unpacked > Select {}",
-        target_dir.display(),
-        target_dir.display()
-    );
-    crate::output::emit(&crate::output::PlainOutput::new(msg))?;
-    Ok(())
+    super::extract_embedded_extension()
 }
 
 fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Result<Value> {

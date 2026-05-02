@@ -404,6 +404,20 @@ async fn cmd_update(ctx: &mut AppContext) -> Result<()> {
         Err(e) => bail!("Failed to check for updates: {e}"),
     };
     out!(ctx, "{}", crate::output::to_string(&output)?);
+    match crate::ext::extract_embedded_extension_message() {
+        Ok(msg) => out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+        ),
+        Err(e) => out!(
+            ctx,
+            "{}",
+            crate::output::to_string(&crate::output::PlainOutput::new(format!(
+                "Warning: could not extract Chrome extension (same as `sidekar ext dev-extract`): {e:#}"
+            )))?
+        ),
+    }
     Ok(())
 }
 

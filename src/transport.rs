@@ -144,15 +144,20 @@ impl Transport for RelayHttp {
     }
 }
 
-pub fn deliver_relay_envelope(target: &str, envelope: &Envelope) -> Result<DeliveryResult> {
+pub fn deliver_relay_envelope(
+    target: &str,
+    envelope: &Envelope,
+    paste_body: &str,
+) -> Result<DeliveryResult> {
     let token = crate::auth::auth_token()
         .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar device login"))?;
     let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));
     let target = target.to_string();
+    let paste_body = paste_body.to_string();
     let payload = serde_json::json!({
         "recipient_session_id": target,
         "sender": envelope.from.name,
-        "body": envelope.format_for_paste(),
+        "body": paste_body,
         "envelope_json": serde_json::to_string(envelope).context("serialize relay envelope")?,
     });
 

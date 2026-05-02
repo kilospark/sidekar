@@ -181,7 +181,12 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     if command == "install" {
-        sidekar::skill::install_skill();
+        let mut ctx = AppContext::new()?;
+        commands::dispatch(&mut ctx, "install", &args).await?;
+        let buffered = ctx.drain_output();
+        if !buffered.is_empty() {
+            print!("{buffered}");
+        }
         return Ok(());
     }
 

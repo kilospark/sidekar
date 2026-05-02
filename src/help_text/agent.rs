@@ -50,6 +50,10 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
   Use --file to avoid shell quoting issues — write the message to a temp file
   and pass the path instead.
 
+  Cross-channel messages (recipient registered on another Sidekar channel than
+  you, or delivered via relay) append a short note to the pasted body so the
+  recipient knows which terminal or machine should run `bus send` / `bus done`.
+
   `cancel` stops any pending nudges for one or more of your own outbound
   requests. Pass explicit msg_ids or --all to close every open request
   owned by the current agent in one shot. The recipient is not notified.
