@@ -153,8 +153,10 @@ Paths may be absolute or relative to the current working directory."
 Requires `old_string` to appear exactly once in the file (otherwise the edit \
 is rejected). For multiple occurrences, include enough surrounding context to \
 make `old_string` unique, or set `replace_all: true` to replace every \
-occurrence. Use this for targeted changes instead of rewriting the whole file \
-with Write."
+occurrence. Copy `old_string` verbatim from Read output (including indentation \
+and newline style); CRLF vs LF is normalized only when the mismatch is obvious. \
+Duplicate-match errors list source line numbers. Use this for targeted changes \
+instead of rewriting the whole file with Write."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -473,6 +475,57 @@ fn exec_write(args: &Value) -> Result<String> {
     Ok(format!("Wrote {} bytes to {path}", content.len()))
 }
 
+fn line_number_at_byte(s: &str, byte_idx: usize) -> usize {
+    s.get(..byte_idx)
+        .map(|prefix| prefix.bytes().filter(|&b| b == b'\n').count() + 1)
+        .unwrap_or(1)
+}
+
+fn match_start_line_numbers(haystack: &str, needle: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while search_from <= haystack.len() {
+        let Some(rel) = haystack.get(search_from..).and_then(|h| h.find(needle)) else {
+            break;
+        };
+        let abs = search_from + rel;
+        out.push(line_number_at_byte(haystack, abs));
+        search_from = abs + needle.len().max(1);
+    }
+    out
+}
+
+fn format_match_lines(lines: &[usize]) -> String {
+    const MAX: usize = 12;
+    if lines.len() <= MAX {
+        lines
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        let head: Vec<_> = lines[..MAX].iter().map(|n| n.to_string()).collect();
+        format!("{}, … (+{} more)", head.join(", "), lines.len() - MAX)
+    }
+}
+
+/// Resolve `old_string` when the model's snippet disagrees with the file only on
+/// `\n` vs `\r\n` (common after copy/paste across tools).
+fn resolve_edit_needle<'a>(original: &str, old_string: &'a str) -> std::borrow::Cow<'a, str> {
+    if original.contains(old_string) {
+        return std::borrow::Cow::Borrowed(old_string);
+    }
+    let lf = old_string.replace("\r\n", "\n");
+    if lf.as_str() != old_string && original.contains(lf.as_str()) {
+        return std::borrow::Cow::Owned(lf);
+    }
+    let crlf = old_string.replace('\n', "\r\n");
+    if crlf.as_str() != old_string && original.contains(crlf.as_str()) {
+        return std::borrow::Cow::Owned(crlf);
+    }
+    std::borrow::Cow::Borrowed(old_string)
+}
+
 fn exec_edit(args: &Value) -> Result<String> {
     let path = args
         .get("path")
@@ -491,26 +544,45 @@ fn exec_edit(args: &Value) -> Result<String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    if old_string.is_empty() {
+        bail!("edit: old_string must not be empty");
+    }
     if old_string == new_string {
         bail!("edit: old_string and new_string must differ");
     }
 
     let original =
         std::fs::read_to_string(path).with_context(|| format!("edit: cannot read {path}"))?;
-    let count = original.matches(old_string).count();
+    let needle = resolve_edit_needle(&original, old_string);
+    let needle_s = needle.as_ref();
+    let count = original.matches(needle_s).count();
     if count == 0 {
-        bail!("edit: old_string not found in {path}");
+        let mut hint = String::new();
+        let trim = old_string.trim();
+        if trim != old_string && !trim.is_empty() {
+            let tc = original.matches(trim).count();
+            if tc > 0 {
+                let lines = match_start_line_numbers(&original, trim);
+                let lines_fmt = format_match_lines(&lines);
+                hint.push_str(&format!(
+                    " Leading/trailing whitespace differs: trimmed old_string appears {tc} time(s) (lines {lines_fmt}). Copy the exact span from Read."
+                ));
+            }
+        }
+        bail!("edit: old_string not found in {path}.{hint}");
     }
     if !replace_all && count > 1 {
+        let lines = match_start_line_numbers(&original, needle_s);
+        let lines_fmt = format_match_lines(&lines);
         bail!(
-            "edit: old_string appears {count} times in {path}; add more context or set replace_all=true"
+            "edit: old_string appears {count} times in {path} (lines {lines_fmt}); add more context to old_string so the match is unique, or set replace_all=true"
         );
     }
 
     let updated = if replace_all {
-        original.replace(old_string, new_string)
+        original.replace(needle_s, new_string)
     } else {
-        original.replacen(old_string, new_string, 1)
+        original.replacen(needle_s, new_string, 1)
     };
     std::fs::write(path, &updated).with_context(|| format!("edit: cannot write {path}"))?;
     Ok(format!(

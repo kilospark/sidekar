@@ -414,3 +414,108 @@ fn exec_session_is_registered_in_definitions() {
         "ExecSession schema must not pin required fields; handler validates: {schema}"
     );
 }
+
+// -----------------------------------------------------------------
+// Edit tool
+// -----------------------------------------------------------------
+
+fn edit_test_path(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "sidekar_edit_{}_{}_{}",
+        label,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ))
+}
+
+#[tokio::test]
+async fn edit_duplicate_match_lists_line_numbers() {
+    let path = edit_test_path("dup");
+    std::fs::write(&path, "a\nfoo\nb\nfoo\nc\n").unwrap();
+    let err = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "foo",
+            "new_string": "bar",
+        }),
+        None,
+    )
+    .await
+    .expect_err("ambiguous match");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("2") && msg.contains("4"),
+        "expected line numbers in error: {msg}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn edit_normalizes_lf_snippet_against_crlf_file() {
+    let path = edit_test_path("crlf");
+    std::fs::write(&path, "line1\r\nTARGET\r\nline3\r\n").unwrap();
+    let out = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "TARGET\n",
+            "new_string": "DONE\n",
+        }),
+        None,
+    )
+    .await
+    .expect("LF needle should match CRLF span");
+    assert!(out.contains("Replaced"), "{out}");
+    let body = std::fs::read_to_string(&path).expect("read back");
+    assert!(body.contains("DONE"), "{body:?}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn edit_rejects_empty_old_string() {
+    let path = edit_test_path("empty");
+    std::fs::write(&path, "x").unwrap();
+    let err = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "old_string": "",
+            "new_string": "y",
+        }),
+        None,
+    )
+    .await
+    .expect_err("empty old_string");
+    assert!(
+        format!("{err:#}").contains("must not be empty"),
+        "{err:#}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn edit_not_found_suggests_trim_when_trim_matches() {
+    let path = edit_test_path("trimhint");
+    std::fs::write(&path, "hello\n").unwrap();
+    let err = execute(
+        "edit",
+        &json!({
+            "path": path.to_str().unwrap(),
+            "old_string": " hello",
+            "new_string": "z",
+        }),
+        None,
+    )
+    .await
+    .expect_err("exact mismatch");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("whitespace") || msg.contains("trimmed"),
+        "{msg}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
