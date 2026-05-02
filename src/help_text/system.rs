@@ -195,7 +195,8 @@ sidekar ext <subcommand> [args...]
     unwatch [watchId]                 Remove watcher(s)
     watchers                          List active watchers
 
-  Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands)
+  Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands),
+         --focus (raise Chrome + activate tab for navigate | new-tab | screenshot | paste | set-value)
   Management: status, stop
 
   Examples:

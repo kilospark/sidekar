@@ -440,9 +440,10 @@ async function cmdRead(msg) {
 
 async function cmdScreenshot(msg) {
   const tabId = msg.tabId || (await getActiveTabId());
+  const raiseChrome = msg.focus === true;
   try {
     const tab = await chrome.tabs.get(tabId);
-    await chrome.tabs.update(tabId, { active: true });
+    await prepareExtensionTab(tabId, raiseChrome, { activateTab: true });
     await sleep(200);
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: "jpeg",
@@ -522,17 +523,20 @@ async function cmdType(msg) {
     }, [selector, text, refNum]);
 }
 
-async function focusTabWindow(tabId) {
+/** Raise Chrome only when raiseChrome is true. Optionally activate the tab (needed for screenshots / debugger paths) without raising the window when raiseChrome is false. */
+async function prepareExtensionTab(tabId, raiseChrome, { activateTab = false } = {}) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (tab.windowId != null) {
+    if (raiseChrome && tab.windowId != null) {
       try {
         await chrome.windows.update(tab.windowId, { focused: true });
       } catch {}
     }
-    try {
-      await chrome.tabs.update(tabId, { active: true });
-    } catch {}
+    if (activateTab) {
+      try {
+        await chrome.tabs.update(tabId, { active: true });
+      } catch {}
+    }
   } catch {}
 }
 
@@ -558,7 +562,7 @@ function htmlToPlainText(html) {
     .trim();
 }
 
-async function trustedPasteViaDebugger(tabId) {
+async function trustedPasteViaDebugger(tabId, raiseChrome) {
   const target = { tabId };
   const version = "1.3";
   const isMac = /Mac/i.test(navigator.userAgent || "");
@@ -568,7 +572,7 @@ async function trustedPasteViaDebugger(tabId) {
     return await chrome.debugger.sendCommand(target, method, params);
   }
 
-  await focusTabWindow(tabId);
+  await prepareExtensionTab(tabId, raiseChrome, { activateTab: true });
 
   try {
     await chrome.debugger.attach(target, version);
@@ -669,7 +673,7 @@ async function typeViaCliExec(tabId, text) {
   return { ok: false, error: result.error || "cli_exec keyboard failed" };
 }
 
-async function clickGoogleDocsEditorViaDebugger(tabId) {
+async function clickGoogleDocsEditorViaDebugger(tabId, raiseChrome) {
   const rect = await executeScriptResult(tabId, () => {
     const page =
       document.querySelector(".kix-page") ||
@@ -695,7 +699,7 @@ async function clickGoogleDocsEditorViaDebugger(tabId) {
   const target = { tabId };
   const version = "1.3";
 
-  await focusTabWindow(tabId);
+  await prepareExtensionTab(tabId, raiseChrome, { activateTab: true });
 
   try {
     await chrome.debugger.attach(target, version);
@@ -1113,9 +1117,9 @@ function buildDocsResult(mode, plainText, clipboardWrite, beforeText, afterText,
   return result;
 }
 
-async function pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite) {
+async function pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite, raiseChrome) {
   console.log("[sidekar] pasteIntoGoogleDocs called", { html: !!html, plainTextLength: plainText?.length });
-  await clickGoogleDocsEditorViaDebugger(tabId);
+  await clickGoogleDocsEditorViaDebugger(tabId, raiseChrome);
   console.log("[sidekar] clickGoogleDocsEditorViaDebugger done");
   await delay(120);
   const before = await getDocsSnapshot(tabId);
@@ -1140,7 +1144,7 @@ async function pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite) {
       };
     }
     await focusGoogleDocsTextSink(tabId);
-    const trusted = await trustedPasteViaDebugger(tabId);
+    const trusted = await trustedPasteViaDebugger(tabId, raiseChrome);
     await delay(150);
     const after = await getDocsSnapshot(tabId);
     if (trusted.ok) {
@@ -1208,7 +1212,8 @@ async function cmdPaste(msg) {
     return { error: "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]" };
   }
 
-  await focusTabWindow(tabId);
+  const raiseChrome = msg.focus === true;
+  await prepareExtensionTab(tabId, raiseChrome, { activateTab: true });
 
   const isGoogleDocs = await shouldPreferInsertText(tabId);
   // Google Docs plain-text path uses cli_exec inserttext, not the real clipboard — skip
@@ -1219,7 +1224,7 @@ async function cmdPaste(msg) {
       : { ok: false, stage: "clipboard", mode: "skipped-google-docs-plain" };
 
   if (isGoogleDocs) {
-    return await pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite);
+    return await pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite, raiseChrome);
   }
 
   const inserted = await executeScriptResult(
@@ -1460,7 +1465,7 @@ async function cmdPaste(msg) {
       (typeof inserted.mode === "string" && inserted.mode.startsWith("synthetic")));
 
   if (shouldTryTrustedPaste) {
-    const trusted = await trustedPasteViaDebugger(tabId);
+    const trusted = await trustedPasteViaDebugger(tabId, raiseChrome);
     if (trusted.ok) {
       return {
         ok: true,
@@ -1509,8 +1514,8 @@ async function cmdSetValue(msg) {
 
   const isGoogleDocs = await shouldPreferInsertText(tabId);
   if (isGoogleDocs) {
-    await focusTabWindow(tabId);
-    await clickGoogleDocsEditorViaDebugger(tabId);
+    const raiseChrome = msg.focus === true;
+    await clickGoogleDocsEditorViaDebugger(tabId, raiseChrome);
     await delay(120);
     await focusGoogleDocsTextSink(tabId);
     const before = await getDocsSnapshot(tabId);
@@ -1720,12 +1725,15 @@ async function cmdNavigate(msg) {
   await sleep(500);
 
   const tab = await chrome.tabs.get(tabId);
+  if (msg.focus === true) {
+    await prepareExtensionTab(tabId, true, { activateTab: true });
+  }
   return { url: tab.url, title: tab.title };
 }
 
 async function cmdNewTab(msg) {
   const url = msg.url || "about:blank";
-  const tab = await chrome.tabs.create({ url, active: true });
+  const tab = await chrome.tabs.create({ url, active: msg.focus === true });
   // Wait for load
   if (url !== "about:blank") {
     await new Promise((resolve) => {

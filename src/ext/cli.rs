@@ -18,6 +18,7 @@ pub async fn send_cli_command(
     let mut filtered_args = Vec::new();
     let mut target_conn: Option<u64> = None;
     let mut target_profile: Option<String> = None;
+    let mut focus_requested = false;
     let mut skip_next = false;
     for (i, arg) in args.iter().enumerate() {
         if skip_next {
@@ -37,12 +38,14 @@ pub async fn send_cli_command(
                 target_profile = Some(val.clone());
                 skip_next = true;
             }
+        } else if arg == "--focus" {
+            focus_requested = true;
         } else {
             filtered_args.push(arg.clone());
         }
     }
 
-    let msg = build_command(command, &filtered_args, default_tab)?;
+    let msg = build_command(command, &filtered_args, default_tab, focus_requested)?;
     crate::daemon::ensure_running()?;
 
     let agent_id = std::env::var("SIDEKAR_AGENT_ID").ok();
@@ -203,7 +206,20 @@ fn extract_extension() -> Result<()> {
     super::extract_embedded_extension()
 }
 
-fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Result<Value> {
+fn apply_focus(cmd: &mut Value, focus: bool) {
+    if focus {
+        if let Some(obj) = cmd.as_object_mut() {
+            obj.insert("focus".into(), json!(true));
+        }
+    }
+}
+
+fn build_command(
+    command: &str,
+    args: &[String],
+    default_tab: Option<u64>,
+    focus: bool,
+) -> Result<Value> {
     fn require_tab(command: &str, explicit: Option<u64>, default_tab: Option<u64>) -> Result<u64> {
         explicit.or(default_tab).ok_or_else(|| {
             anyhow!(
@@ -236,6 +252,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             cmd.as_object_mut()
                 .unwrap()
                 .insert("tabId".into(), json!(tab_id));
+            apply_focus(&mut cmd, focus);
             Ok(cmd)
         }
         "click" => {
@@ -319,6 +336,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             cmd.as_object_mut()
                 .unwrap()
                 .insert("tabId".into(), json!(tab_id));
+            apply_focus(&mut cmd, focus);
             Ok(cmd)
         }
         "set-value" => {
@@ -331,6 +349,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             cmd.as_object_mut()
                 .unwrap()
                 .insert("tabId".into(), json!(tab_id));
+            apply_focus(&mut cmd, focus);
             Ok(cmd)
         }
         "ax-tree" => {
@@ -383,6 +402,7 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
             cmd.as_object_mut()
                 .unwrap()
                 .insert("tabId".into(), json!(tab_id));
+            apply_focus(&mut cmd, focus);
             Ok(cmd)
         }
         "new-tab" => {
@@ -390,7 +410,9 @@ fn build_command(command: &str, args: &[String], default_tab: Option<u64>) -> Re
                 .first()
                 .cloned()
                 .unwrap_or_else(|| "about:blank".to_string());
-            Ok(json!({"command": "newtab", "url": url}))
+            let mut cmd = json!({"command": "newtab", "url": url});
+            apply_focus(&mut cmd, focus);
+            Ok(cmd)
         }
         "close" => {
             let tab_id = require_tab(
