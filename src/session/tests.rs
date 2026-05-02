@@ -314,3 +314,129 @@ fn repl_input_history_is_scoped_deduped_and_bounded() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn transcript_undo_drops_last_user_turn() -> Result<()> {
+    use crate::providers::{ChatMessage, ContentBlock, Role};
+    with_test_home(|| {
+        let cwd = "/proj/transcript-undo";
+        let sid = create_session(cwd, "m", "c")?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "first prompt".into(),
+                }],
+            },
+        )?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "first reply".into(),
+                }],
+            },
+        )?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "second prompt".into(),
+                }],
+            },
+        )?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "second reply".into(),
+                }],
+            },
+        )?;
+
+        assert_eq!(list_message_entries(&sid)?.len(), 4);
+        let deleted = undo_message_turns(&sid, 1)?;
+        assert_eq!(deleted, 2);
+
+        let hist = load_history(&sid)?;
+        assert_eq!(hist.len(), 2);
+        let ContentBlock::Text { text } = &hist[1].content[0] else {
+            panic!("expected text block");
+        };
+        assert!(text.contains("first reply"));
+
+        let deleted2 = undo_message_turns(&sid, 1)?;
+        assert_eq!(deleted2, 2);
+        assert!(load_history(&sid)?.is_empty());
+
+        Ok(())
+    })
+}
+
+#[test]
+fn transcript_prune_after_deletes_suffix() -> Result<()> {
+    use crate::providers::{ChatMessage, ContentBlock, Role};
+    with_test_home(|| {
+        let cwd = "/proj/transcript-prune";
+        let sid = create_session(cwd, "m", "c")?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "a".into() }],
+            },
+        )?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "b".into() }],
+            },
+        )?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "c".into() }],
+            },
+        )?;
+
+        let rows = list_message_entries(&sid)?;
+        assert_eq!(rows.len(), 3);
+        let keep = rows[1].id.clone();
+        let n = truncate_messages_after_entry(&sid, &keep)?;
+        assert_eq!(n, 1);
+
+        let hist = load_history(&sid)?;
+        assert_eq!(hist.len(), 2);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn transcript_resolve_entry_prefix_requires_unique_match() -> Result<()> {
+    use crate::providers::{ChatMessage, ContentBlock, Role};
+    with_test_home(|| {
+        let sid = create_session("/proj/pfx", "m", "c")?;
+        append_message(
+            &sid,
+            &ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "x".into() }],
+            },
+        )?;
+
+        let rows = list_message_entries(&sid)?;
+        let full = rows[0].id.clone();
+        let prefix = &full[..4];
+        assert_eq!(resolve_message_entry_id_prefix(&sid, prefix)?, full);
+
+        assert!(resolve_message_entry_id_prefix(&sid, "nosuchprefix").is_err());
+        Ok(())
+    })
+}

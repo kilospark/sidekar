@@ -21,6 +21,10 @@ pub(super) enum SlashResult {
     ProxyOn,
     ProxyOff,
     LoadSkill(String),
+    /// Drop the last N user-anchored transcript turns (`/undo`).
+    TranscriptUndo(usize),
+    /// Delete messages after this entry id (`/prune after …`).
+    TranscriptPruneThrough(String),
 }
 
 /// Async slash commands that require an active provider.
@@ -50,6 +54,88 @@ pub(super) struct SlashContext<'a> {
     /// The mutex is intentionally separate from the renderer's mutex
     /// — see src/repl/turn_stats.rs for why.
     pub turn_stats: &'a std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
+}
+
+/// Default tail window when `/history` is run without `full` or `N`.
+const HISTORY_DISPLAY_CAP: usize = 250;
+
+fn format_entry_content_for_history_show(content_json: &str) -> String {
+    const CAP: usize = 24_000;
+    let blocks: Vec<providers::ContentBlock> = match serde_json::from_str(content_json) {
+        Ok(b) => b,
+        Err(_) => return truncate_inline(content_json, CAP),
+    };
+    let mut out = String::new();
+    for b in blocks {
+        if !out.is_empty() {
+            out.push_str("\n---\n");
+        }
+        let piece = match b {
+            providers::ContentBlock::Text { text } => format!("[text]\n{}", text.trim_end()),
+            providers::ContentBlock::Thinking { thinking, .. } => {
+                format!("[thinking]\n{}", truncate_inline(&thinking, 12_000))
+            }
+            providers::ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
+                let args = serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".into());
+                format!(
+                    "[tool_use] {name} id={id}\n{}",
+                    truncate_inline(&args, 8000)
+                )
+            }
+            providers::ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                format!(
+                    "[tool_result] id={tool_use_id} error={is_error}\n{}",
+                    truncate_inline(&content, 8000)
+                )
+            }
+            providers::ContentBlock::Image {
+                media_type,
+                source_path,
+                ..
+            } => format!(
+                "[image] type={media_type} path={}",
+                source_path.as_deref().unwrap_or("(inline)")
+            ),
+            providers::ContentBlock::EncryptedReasoning { .. } => {
+                "[encrypted_reasoning] …".into()
+            }
+            providers::ContentBlock::Reasoning { text } => {
+                format!("[reasoning]\n{}", truncate_inline(&text, 12_000))
+            }
+        };
+        out.push_str(&piece);
+        if out.len() >= CAP {
+            out.truncate(CAP);
+            out.push_str("\n…");
+            break;
+        }
+    }
+    if out.is_empty() {
+        "(empty message)".into()
+    } else {
+        out
+    }
+}
+
+fn print_transcript_slice(slice: &[session::MessageEntrySummary], global_start_idx: usize, banner: &str) {
+    tunnel_println(banner);
+    tunnel_println(
+        "\x1b[2m/prune after @idx · /prune after <id_prefix> · /history show <idx>\x1b[0m",
+    );
+    for (j, r) in slice.iter().enumerate() {
+        let i = global_start_idx + j;
+        tunnel_println(&format!("  [{i}] {:9} {}", r.role, r.id));
+        tunnel_println(&format!("      {}", r.preview));
+    }
 }
 
 /// Parsed line from a numbered REPL menu (`/session`, `/credential`).
@@ -374,6 +460,170 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             }
         }
         "/compact" => SlashResult::NeedProvider(SlashAsync::Compact),
+        "/history" => {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            match parts.as_slice() {
+                [_, "show"] => {
+                    tunnel_println("Usage: /history show <index>");
+                }
+                [_, "show", idx_raw] => match idx_raw.parse::<usize>() {
+                    Ok(idx) => match session::list_message_entries(current_session) {
+                        Ok(rows) => match rows.get(idx) {
+                            Some(summary) => {
+                                match session::fetch_message_content_json(
+                                    current_session,
+                                    &summary.id,
+                                ) {
+                                    Ok(Some((role, json))) => {
+                                        tunnel_println(&format!(
+                                            "[{idx}] {role} id={}",
+                                            summary.id
+                                        ));
+                                        tunnel_println(&format_entry_content_for_history_show(&json));
+                                    }
+                                    Ok(None) => tunnel_println("That entry no longer exists."),
+                                    Err(e) => tunnel_println(&format!(
+                                        "\x1b[31mFailed to load entry: {e:#}\x1b[0m"
+                                    )),
+                                }
+                            }
+                            None => tunnel_println(&format!(
+                                "No message at index [{idx}]. Run /history for valid indices."
+                            )),
+                        },
+                        Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
+                    },
+                    Err(_) => tunnel_println(
+                        "Usage: /history show <index>  — index matches [/history] listings.",
+                    ),
+                },
+                [_, "full"] => match session::list_message_entries(current_session) {
+                    Ok(rows) => {
+                        if rows.is_empty() {
+                            tunnel_println("No transcript messages in this session.");
+                        } else {
+                            let banner = format!(
+                                "Transcript (\x1b[1m{}\x1b[0m messages, full):",
+                                rows.len()
+                            );
+                            print_transcript_slice(&rows, 0, &banner);
+                        }
+                    }
+                    Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
+                },
+                [_, tail_n] => match tail_n.parse::<usize>() {
+                    Ok(n) if n >= 1 => match session::list_message_entries(current_session) {
+                        Ok(rows_full) => {
+                            if rows_full.is_empty() {
+                                tunnel_println("No transcript messages in this session.");
+                            } else {
+                                let take = n.min(rows_full.len());
+                                let start = rows_full.len() - take;
+                                let slice = &rows_full[start..];
+                                let banner = format!(
+                                    "Transcript (\x1b[1m{}\x1b[0m messages, last {take}):",
+                                    rows_full.len()
+                                );
+                                print_transcript_slice(slice, start, &banner);
+                            }
+                        }
+                        Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
+                    },
+                    _ => tunnel_println(
+                        "Usage: /history | /history full | /history N | /history show <index>",
+                    ),
+                },
+                [_] => match session::list_message_entries(current_session) {
+                    Ok(rows_full) => {
+                        if rows_full.is_empty() {
+                            tunnel_println("No transcript messages in this session.");
+                        } else if rows_full.len() <= HISTORY_DISPLAY_CAP {
+                            let banner = format!(
+                                "Transcript (\x1b[1m{}\x1b[0m messages):",
+                                rows_full.len()
+                            );
+                            print_transcript_slice(&rows_full, 0, &banner);
+                        } else {
+                            let take = HISTORY_DISPLAY_CAP;
+                            let start = rows_full.len() - take;
+                            let slice = &rows_full[start..];
+                            tunnel_println(&format!(
+                                "\x1b[2mShowing last {take} of {} messages (/history full for all).\x1b[0m",
+                                rows_full.len()
+                            ));
+                            let banner = format!(
+                                "Transcript (\x1b[1m{}\x1b[0m messages):",
+                                rows_full.len()
+                            );
+                            print_transcript_slice(slice, start, &banner);
+                        }
+                    }
+                    Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
+                },
+                _ => tunnel_println(
+                    "Usage: /history | /history full | /history N | /history show <index>",
+                ),
+            }
+            SlashResult::Continue
+        }
+        "/undo" => {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            let n = parts.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+            if n < 1 {
+                tunnel_println("Usage: /undo [N]  — drop last N user turns (default 1; N ≥ 1)");
+                SlashResult::Continue
+            } else {
+                SlashResult::TranscriptUndo(n)
+            }
+        }
+        "/prune" => {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            match parts.as_slice() {
+                [_, "after", tok] if !tok.is_empty() => {
+                    let keep_id = if let Some(rest) = tok.strip_prefix('@') {
+                        match rest.parse::<usize>() {
+                            Ok(idx) => match session::list_message_entries(current_session) {
+                                Ok(rows) => match rows.get(idx) {
+                                    Some(r) => r.id.clone(),
+                                    None => {
+                                        tunnel_println(&format!(
+                                            "No message at index [{idx}]. Run /history for indices."
+                                        ));
+                                        return Some(SlashResult::Continue);
+                                    }
+                                },
+                                Err(e) => {
+                                    tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m"));
+                                    return Some(SlashResult::Continue);
+                                }
+                            },
+                            Err(_) => {
+                                tunnel_println(
+                                    "\x1b[31mInvalid index after @ — use e.g. /prune after @12\x1b[0m",
+                                );
+                                return Some(SlashResult::Continue);
+                            }
+                        }
+                    } else {
+                        match session::resolve_message_entry_id_prefix(current_session, tok) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m"));
+                                return Some(SlashResult::Continue);
+                            }
+                        }
+                    };
+                    SlashResult::TranscriptPruneThrough(keep_id)
+                }
+                _ => {
+                    tunnel_println("Usage: /prune after <entry_id_prefix|@index>");
+                    tunnel_println(
+                        "\x1b[2m@index matches [/history] brackets · id_prefix must be unique\x1b[0m",
+                    );
+                    SlashResult::Continue
+                }
+            }
+        }
         "/relay" => {
             let arg = input.split_whitespace().nth(1).unwrap_or("");
             match arg {
@@ -743,6 +993,11 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /model       — Show/set/list & select available models");
             tunnel_println("  /new         — Start fresh session");
             tunnel_println("  /session     — List and switch sessions");
+            tunnel_println("  /history     — Transcript (/history full | N | show idx)");
+            tunnel_println("  /undo [N]    — Drop last N user turns (+ refresh journals / usage stats)");
+            tunnel_println(
+                "  /prune after … — Drop newer rows after id prefix or @index from listing",
+            );
             tunnel_println("  /skill       — Load a skill into the session system prompt");
             tunnel_println("  /compact     — Compact older session context now");
             tunnel_println("  /status      — Show session / model / token usage / context fill");
@@ -833,7 +1088,7 @@ pub(super) async fn apply_slash_result(
                         tunnel_println("\x1b[33mSet a model first: /model <name>\x1b[0m");
                         return Ok(SlashAction::Continue);
                     };
-                    run_compact(prov, mdl, history, session_id).await;
+                    run_compact(prov, mdl, history, session_id, Some(turn_stats)).await;
                 }
                 SlashAsync::InteractiveSelectModel => {
                     let cn = cred_name.as_deref().unwrap_or("?");
@@ -975,6 +1230,56 @@ pub(super) async fn apply_slash_result(
                         "\x1b[31mFailed to read skill `{name}`: {e}\x1b[0m"
                     ));
                 }
+            }
+        }
+        SlashResult::TranscriptUndo(turns) => {
+            match session::undo_message_turns(session_id, turns) {
+                Ok(deleted) => {
+                    if deleted == 0 {
+                        tunnel_println("Nothing to undo (transcript unchanged).");
+                    } else {
+                        let _ = super::sync_transcript_mutation_side_effects(session_id);
+                        tunnel_println(&format!(
+                            "\x1b[2mUndo: removed {deleted} message row(s) (~{turns} user turn(s)); transcript reloaded.\x1b[0m"
+                        ));
+                        if let Ok(mut ts) = turn_stats.lock() {
+                            *ts = super::turn_stats::TurnStats::new();
+                        }
+                    }
+                    match session::load_history(session_id) {
+                        Ok(h) => *history = h,
+                        Err(e) => tunnel_println(&format!(
+                            "\x1b[31mFailed to reload transcript: {e:#}\x1b[0m"
+                        )),
+                    }
+                }
+                Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
+            }
+        }
+        SlashResult::TranscriptPruneThrough(keep_id) => {
+            match session::truncate_messages_after_entry(session_id, &keep_id) {
+                Ok(deleted) => {
+                    if deleted == 0 {
+                        tunnel_println(
+                            "Nothing pruned — no newer transcript rows after that entry.",
+                        );
+                    } else {
+                        let _ = super::sync_transcript_mutation_side_effects(session_id);
+                        tunnel_println(&format!(
+                            "\x1b[2mPruned after `{keep_id}`: deleted {deleted} message row(s).\x1b[0m"
+                        ));
+                        if let Ok(mut ts) = turn_stats.lock() {
+                            *ts = super::turn_stats::TurnStats::new();
+                        }
+                    }
+                    match session::load_history(session_id) {
+                        Ok(h) => *history = h,
+                        Err(e) => tunnel_println(&format!(
+                            "\x1b[31mFailed to reload transcript: {e:#}\x1b[0m"
+                        )),
+                    }
+                }
+                Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
             }
         }
     }
@@ -1154,6 +1459,9 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/stats"
             | "/status"
             | "/journal"
+            | "/history"
+            | "/undo"
+            | "/prune"
             | "/inbox"
             | "/relay"
             | "/proxy"
@@ -1271,6 +1579,7 @@ pub(super) async fn run_compact(
     mdl: &str,
     history: &mut Vec<ChatMessage>,
     session_id: &str,
+    turn_stats: Option<&std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>>,
 ) {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
@@ -1286,6 +1595,12 @@ pub(super) async fn run_compact(
     }
     if changed {
         let _ = session::replace_history(session_id, history);
+        let _ = super::sync_transcript_mutation_side_effects(session_id);
+        if let Some(ts_arc) = turn_stats {
+            if let Ok(mut ts) = ts_arc.lock() {
+                *ts = super::turn_stats::TurnStats::new();
+            }
+        }
         tunnel_println("\x1b[2m[session compacted]\x1b[0m");
     } else {
         tunnel_println("\x1b[2m[nothing to compact]\x1b[0m");

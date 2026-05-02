@@ -286,6 +286,9 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
   Interactive LLM agent with streaming, tool calling, and session persistence.
   Credential and model may be supplied up front or selected interactively.
 
+  Slash transcript: /history (full | tail N | show idx), /undo [N], /prune after <id_prefix|@idx>.
+  Undo/prune/compact reset usage counters for /status and clear session journals whose entry pointers
+  would be stale. Non-interactive: sidekar repl transcript list|undo|prune-after [--session=P].
   Options:
     -c <credential>  Named credential (claude, codex, or-personal, grok, gem, etc.)
     -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
@@ -328,6 +331,9 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     sidekar repl credentials                            List stored credentials
     sidekar repl models -c <credential>                   List available models for a provider
     sidekar repl sessions                                List sessions in this directory
+    sidekar repl transcript list [--session=P] [--full] [--limit N]
+    sidekar repl transcript undo [--session=P] [N]
+    sidekar repl transcript prune-after [--session=P] <id_prefix|@index>
 
   Examples:
     sidekar repl credential add claude

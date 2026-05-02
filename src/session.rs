@@ -1,6 +1,6 @@
 //! Session persistence — SQLite-backed conversation history with tree structure.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,40 @@ pub struct SessionEntry {
     pub role: Option<String>, // "user", "assistant"
     pub content: String,      // JSON blob
     pub created_at: f64,
+}
+
+/// One persisted transcript row for `/history` listings and prune targets.
+#[derive(Debug, Clone)]
+pub struct MessageEntrySummary {
+    pub id: String,
+    pub role: String,
+    pub created_at: f64,
+    pub preview: String,
+}
+
+fn preview_text_first_block(content_json: &str, max_chars: usize) -> Option<String> {
+    let blocks: Vec<ContentBlock> = serde_json::from_str(content_json).ok()?;
+    let text = blocks.iter().find_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    })?;
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flattened.is_empty() {
+        return None;
+    }
+    let char_count = flattened.chars().count();
+    if char_count <= max_chars {
+        Some(flattened)
+    } else {
+        let end = flattened
+            .char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(flattened.len());
+        let mut truncated = flattened[..end].to_string();
+        truncated.push('…');
+        Some(truncated)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,31 +166,7 @@ impl SessionWithCount {
     /// collapsed to single spaces so the preview stays on one line.
     pub fn last_prompt_snippet(&self, max_chars: usize) -> Option<String> {
         let json = self.last_user_content_json.as_ref()?;
-        let blocks: Vec<ContentBlock> = serde_json::from_str(json).ok()?;
-        let text = blocks.iter().find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })?;
-        let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if flattened.is_empty() {
-            return None;
-        }
-        // char_indices gives us UTF-8-safe truncation boundaries.
-        // Counting chars, not bytes, matches the caller's intent
-        // ("first 30 chars").
-        let char_count = flattened.chars().count();
-        if char_count <= max_chars {
-            Some(flattened)
-        } else {
-            let end = flattened
-                .char_indices()
-                .nth(max_chars)
-                .map(|(i, _)| i)
-                .unwrap_or(flattened.len());
-            let mut truncated = flattened[..end].to_string();
-            truncated.push('…');
-            Some(truncated)
-        }
+        preview_text_first_block(json, max_chars)
     }
 }
 
@@ -384,6 +394,151 @@ pub fn replace_history(session_id: &str, messages: &[ChatMessage]) -> Result<()>
     )?;
     tx.commit()?;
     Ok(())
+}
+
+const HISTORY_LIST_PREVIEW_CHARS: usize = 72;
+
+/// List transcript messages for `session_id` in conversation order (for `/history`).
+pub fn list_message_entries(session_id: &str) -> Result<Vec<MessageEntrySummary>> {
+    let conn = crate::broker::open()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, role, content, created_at FROM repl_entries
+         WHERE session_id = ?1 AND entry_type = 'message'
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        let id: String = row.get(0)?;
+        let role: Option<String> = row.get(1)?;
+        let content: String = row.get(2)?;
+        let created_at: f64 = row.get(3)?;
+        Ok((id, role, content, created_at))
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, role, content, created_at) = row?;
+        let role_str = role.unwrap_or_else(|| "?".into());
+        let preview = preview_text_first_block(&content, HISTORY_LIST_PREVIEW_CHARS)
+            .unwrap_or_else(|| "(no text preview — tools/media only)".into());
+        out.push(MessageEntrySummary {
+            id,
+            role: role_str,
+            created_at,
+            preview,
+        });
+    }
+    Ok(out)
+}
+
+/// Raw `content` JSON for one transcript row (`role` + payload).
+pub fn fetch_message_content_json(
+    session_id: &str,
+    entry_id: &str,
+) -> Result<Option<(String, String)>> {
+    let conn = crate::broker::open()?;
+    Ok(conn
+        .query_row(
+            "SELECT role, content FROM repl_entries
+             WHERE session_id = ?1 AND entry_type = 'message' AND id = ?2",
+            rusqlite::params![session_id, entry_id],
+            |row| {
+                let role: Option<String> = row.get(0)?;
+                let content: String = row.get(1)?;
+                Ok((role.unwrap_or_else(|| "?".into()), content))
+            },
+        )
+        .optional()?)
+}
+
+/// Resolve a unique `repl_entries.id` prefix within the session transcript.
+pub fn resolve_message_entry_id_prefix(session_id: &str, prefix: &str) -> Result<String> {
+    if prefix.is_empty() {
+        bail!("Entry id prefix must not be empty.");
+    }
+    let conn = crate::broker::open()?;
+    let pattern = format!("{prefix}%");
+    let mut stmt = conn.prepare(
+        "SELECT id FROM repl_entries
+         WHERE session_id = ?1 AND entry_type = 'message' AND id LIKE ?2
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params![session_id, pattern], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    match ids.len() {
+        0 => bail!("No message entry matches id prefix `{prefix}`."),
+        1 => Ok(ids[0].clone()),
+        _ => bail!("Ambiguous id prefix `{prefix}` — paste more hex digits from `/history`."),
+    }
+}
+
+fn delete_message_entries_by_ids(session_id: &str, ids: &[String]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let conn = crate::broker::open()?;
+    let mut deleted = 0usize;
+    for id in ids {
+        deleted += conn.execute(
+            "DELETE FROM repl_entries
+             WHERE session_id = ?1 AND entry_type = 'message' AND id = ?2",
+            rusqlite::params![session_id, id],
+        )?;
+    }
+    update_session_time(session_id)?;
+    Ok(deleted)
+}
+
+/// Delete every transcript message strictly after `keep_entry_id` in session order.
+pub fn truncate_messages_after_entry(session_id: &str, keep_entry_id: &str) -> Result<usize> {
+    let conn = crate::broker::open()?;
+    let cutoff: Option<(f64, String)> = conn
+        .query_row(
+            "SELECT created_at, id FROM repl_entries
+             WHERE session_id = ?1 AND entry_type = 'message' AND id = ?2",
+            rusqlite::params![session_id, keep_entry_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((cut_at, cut_id)) = cutoff else {
+        bail!("No message entry `{keep_entry_id}` in this session.");
+    };
+    let deleted = conn.execute(
+        "DELETE FROM repl_entries
+         WHERE session_id = ?1 AND entry_type = 'message'
+           AND (created_at > ?2 OR (created_at = ?2 AND id > ?3))",
+        rusqlite::params![session_id, cut_at, cut_id],
+    )?;
+    update_session_time(session_id)?;
+    Ok(deleted)
+}
+
+/// Drop the last `turns` user-anchored segments (user row + following non-user rows).
+///
+/// Returns the number of **rows** deleted.
+pub fn undo_message_turns(session_id: &str, turns: usize) -> Result<usize> {
+    if turns == 0 {
+        return Ok(0);
+    }
+    let entries = list_message_entries(session_id)?;
+    let mut buckets: Vec<Vec<String>> = Vec::new();
+    for e in entries {
+        if e.role == "user" {
+            buckets.push(vec![e.id]);
+        } else if let Some(last) = buckets.last_mut() {
+            last.push(e.id);
+        } else {
+            buckets.push(vec![e.id]);
+        }
+    }
+    if buckets.is_empty() {
+        return Ok(0);
+    }
+    let remove_n = turns.min(buckets.len());
+    let start = buckets.len() - remove_n;
+    let ids: Vec<String> = buckets[start..].iter().flatten().cloned().collect();
+    delete_message_entries_by_ids(session_id, &ids)
 }
 
 /// Count messages in a session.

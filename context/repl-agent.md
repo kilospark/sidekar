@@ -114,6 +114,19 @@ The input-history store is separate from the chat transcript. It exists only to 
 
 Sessions scoped to cwd. Auto-resumes latest session. `/new` creates fresh session.
 
+## Transcript listing, undo, and journals
+
+Persisted turns live in SQLite (`repl_entries`). **Slash:** `/history` (tail listing with indices), `/history full`, `/history N`, `/history show <idx>`, `/undo [N]`, `/prune after <id_prefix|@idx>`. **`@idx`** matches the bracket index from `/history`.
+
+**CLI (non-interactive):** `sidekar repl transcript list|undo|prune-after` with optional `--session=<id_prefix>` (default: latest session for cwd). See `sidekar repl transcript help`.
+
+After **`/undo`**, **`/prune`**, or **`/compact`**:
+
+- **`TurnStats`** is reset so `/status` token totals match the shortened transcript (same reset behavior as **`/session`** switch).
+- **`session_journals`** rows for that session are **removed** (`memory_journal_support` / `memory_candidates` links cleared first). Journal pointers (`from_entry_id` / `to_entry_id`) only made sense for the old row ids; the next journaling pass starts fresh from remaining transcript rows.
+
+This is intentional **loss of recall text** until new journals accumulate — preferable to silently referencing deleted entry ids.
+
 ## Bus Integration
 
 - Registers as `sidekar-repl-<pid>` with nick `self` on the bus
@@ -135,8 +148,11 @@ Assembled from:
 | Command | Action |
 |---------|--------|
 | `/new` | Start fresh session |
-
 | `/session` | List and switch sessions |
+| `/history` | Transcript ids/previews (`full`, tail `N`, `show idx`) |
+| `/undo [N]` | Drop last N user turns from SQLite (+ journals / TurnStats sync) |
+| `/prune after …` | Drop newer rows after id prefix or `@idx` |
+| `/compact` | Compact older context (rewrites transcript; clears journals + resets TurnStats) |
 | `/model` | Show/set/list models + auth status |
 | `/quit` | Exit REPL |
 | `/help` | Show help |

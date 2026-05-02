@@ -22,10 +22,9 @@
 //!   - `link_memory_to_journal` — insert into `memory_journal_
 //!     support`; used by the promoter to record the evidence chain.
 //!
-//! What *doesn't* live here: update/delete. Journals are append-only
-//! by design; a bad row is rare enough that raw `sqlite3 broker.db
-//! DELETE …` is an acceptable escape hatch. Keeping the surface
-//! minimal reduces the chance that a later refactor breaks recall.
+//! What *doesn't* live here: update/delete on the happy path — journals are append-only
+//! by default; **`delete_all_journals_for_session`** is the escape hatch when transcript
+//! rows are deleted (`/undo`, `/prune`, `/compact`, `sidekar repl transcript …`).
 
 // Suppressed until the consumer modules (idle trigger, background
 // task, promoter, inject) land in follow-up commits — those are the
@@ -132,6 +131,43 @@ pub fn insert_journal(entry: &JournalInsert<'_>) -> Result<i64> {
         ],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Remove all journals for a REPL session and dependent rows.
+///
+/// Call after transcript rows are deleted or replaced (`/undo`, `/prune`,
+/// `/compact`) so `from_entry_id` / `to_entry_id` pointers never reference
+/// missing `repl_entries` ids.
+pub fn delete_all_journals_for_session(session_id: &str) -> Result<usize> {
+    let conn = broker::open()?;
+    let tx = conn.unchecked_transaction()?;
+    let ids: Vec<i64> = {
+        let mut stmt =
+            tx.prepare("SELECT id FROM session_journals WHERE session_id = ?1")?;
+        stmt.query_map(params![session_id], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    for jid in &ids {
+        tx.execute(
+            "DELETE FROM memory_journal_support WHERE journal_id = ?1",
+            params![jid],
+        )?;
+        tx.execute(
+            "DELETE FROM memory_candidates WHERE journal_id = ?1",
+            params![jid],
+        )?;
+        tx.execute(
+            "UPDATE memory_events_usage SET journal_id = NULL WHERE journal_id = ?1",
+            params![jid],
+        )?;
+    }
+    let deleted = tx.execute(
+        "DELETE FROM session_journals WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    tx.commit()?;
+    Ok(deleted)
 }
 
 /// Return up to `limit` most recent journals for a session, newest

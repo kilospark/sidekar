@@ -16,6 +16,7 @@ mod skills;
 pub(crate) mod journal;
 mod ratelimit;
 pub(crate) mod slash;
+mod transcript_hooks;
 mod spinner;
 mod stats;
 mod status;
@@ -115,6 +116,12 @@ fn resolve_session(
             Ok((id, Vec::new()))
         }
     }
+}
+
+/// Clears session journals whose `repl_entries` bounds may be stale after a
+/// transcript edit (`/undo`, `/prune`, `/compact`, or `sidekar repl transcript …`).
+pub fn sync_transcript_mutation_side_effects(session_id: &str) -> Result<()> {
+    transcript_hooks::on_transcript_mutation(session_id)
 }
 
 /// REPL options parsed from CLI flags.

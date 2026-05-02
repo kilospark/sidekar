@@ -21,6 +21,7 @@ pub async fn handle(
         "credentials" => handle_credentials(),
         "models" => handle_models(args).await,
         "sessions" => handle_sessions(args),
+        "transcript" => handle_transcript(&args[1..]),
         "ws-test" => handle_ws_test(args).await,
         _ => handle_run(args, relay_override, proxy_override).await,
     }
@@ -315,6 +316,207 @@ fn handle_sessions(args: &[String]) -> Result<()> {
         show_cwd: all,
         items,
     })?;
+    Ok(())
+}
+
+const TRANSCRIPT_CLI_HELP: &str = "\
+Usage: sidekar repl transcript <list|undo|prune-after> … [options]
+
+  list [--session=<prefix>] [--full] [--limit N]
+      Print persisted transcript rows (default: last 250 messages unless --full).
+  undo [--session=<prefix>] [N]
+      Drop last N user turns (default 1). Clears matching session journals.
+  prune-after [--session=<prefix>] <id_prefix|@index>
+      Delete messages strictly after the entry (@index matches transcript list).
+
+  --session=<prefix>   Session id prefix (default: latest session for cwd)
+";
+
+fn transcript_parse_session_flag(args: &[String]) -> Result<(Option<String>, Vec<String>)> {
+    let mut session = None::<String>;
+    let mut rest = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some(p) = a.strip_prefix("--session=") {
+            session = Some(p.to_string());
+            i += 1;
+        } else if a == "--session" && i + 1 < args.len() {
+            session = Some(args[i + 1].clone());
+            i += 2;
+        } else {
+            rest.push(a.clone());
+            i += 1;
+        }
+    }
+    Ok((session, rest))
+}
+
+fn transcript_resolve_session_id(prefix: Option<&str>) -> Result<String> {
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    match prefix {
+        Some(p) => sidekar::session::find_session_by_prefix(p)?
+            .map(|s| s.id)
+            .ok_or_else(|| anyhow::anyhow!("No repl session matches prefix `{p}`")),
+        None => sidekar::session::latest_session(&cwd)?
+            .map(|s| s.id)
+            .ok_or_else(|| anyhow::anyhow!(
+                "No repl session for this directory. Pass --session=<id_prefix> or run `sidekar repl` here first."
+            )),
+    }
+}
+
+fn repl_sid_short(id: &str) -> &str {
+    &id[..id.len().min(8)]
+}
+
+fn handle_transcript(args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("help");
+    let tail = args.get(1..).unwrap_or(&[]);
+    match sub {
+        "help" | "-h" | "--help" | "" => {
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(
+                TRANSCRIPT_CLI_HELP.to_string(),
+            ))?;
+            Ok(())
+        }
+        "list" => transcript_cli_list(tail),
+        "undo" => transcript_cli_undo(tail),
+        "prune-after" => transcript_cli_prune_after(tail),
+        other => bail!(
+            "Unknown transcript subcommand `{other}`.\n{}",
+            TRANSCRIPT_CLI_HELP
+        ),
+    }
+}
+
+fn transcript_cli_list(tail: &[String]) -> Result<()> {
+    const CAP: usize = 250;
+    let (sess_pfx, rest) = transcript_parse_session_flag(tail)?;
+    let sid = transcript_resolve_session_id(sess_pfx.as_deref())?;
+    let mut full = false;
+    let mut limit: Option<usize> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--full" => {
+                full = true;
+                i += 1;
+            }
+            "--limit" => {
+                let n = rest
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--limit requires a number"))?
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("--limit must be a positive integer"))?;
+                if n == 0 {
+                    bail!("--limit must be at least 1");
+                }
+                limit = Some(n);
+                i += 2;
+            }
+            flag => bail!("Unknown flag `{flag}` for transcript list"),
+        }
+    }
+
+    let rows_full = sidekar::session::list_message_entries(&sid)?;
+    let (slice, start_idx, note): (&[sidekar::session::MessageEntrySummary], usize, Option<String>) =
+        if full {
+            (&rows_full, 0, None)
+        } else if let Some(n) = limit {
+            let take = n.min(rows_full.len());
+            let start = rows_full.len().saturating_sub(take);
+            (
+                &rows_full[start..],
+                start,
+                Some(format!("Last {take} of {} messages.", rows_full.len())),
+            )
+        } else if rows_full.len() <= CAP {
+            (&rows_full, 0, None)
+        } else {
+            let start = rows_full.len() - CAP;
+            (
+                &rows_full[start..],
+                start,
+                Some(format!(
+                    "Showing last {CAP} of {} messages (use --full for all).",
+                    rows_full.len()
+                )),
+            )
+        };
+
+    let mut lines = Vec::<String>::new();
+    lines.push(format!(
+        "Transcript session={} ({} messages total):",
+        repl_sid_short(&sid),
+        rows_full.len()
+    ));
+    if let Some(ref n) = note {
+        lines.push(format!("({n})"));
+    }
+    for (j, r) in slice.iter().enumerate() {
+        let idx = start_idx + j;
+        lines.push(format!("  [{idx}] {:9} {}", r.role, r.id));
+        lines.push(format!("      {}", r.preview));
+    }
+    sidekar::output::emit(&sidekar::output::PlainOutput::new(lines.join("\n")))?;
+    Ok(())
+}
+
+fn transcript_cli_undo(tail: &[String]) -> Result<()> {
+    let (sess_pfx, rest) = transcript_parse_session_flag(tail)?;
+    let sid = transcript_resolve_session_id(sess_pfx.as_deref())?;
+    let n = match rest.len() {
+        0 => 1usize,
+        1 => rest[0]
+            .parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("undo count must be an integer"))?,
+        _ => bail!("extra arguments — usage: transcript undo [--session=…] [N]"),
+    };
+    if n < 1 {
+        bail!("N must be at least 1");
+    }
+    let deleted = sidekar::session::undo_message_turns(&sid, n)?;
+    if deleted > 0 {
+        sidekar::repl::sync_transcript_mutation_side_effects(&sid)?;
+    }
+    sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+        "Undo session={}: removed {deleted} message row(s) (~{n} user turn(s)).",
+        repl_sid_short(&sid)
+    )))?;
+    Ok(())
+}
+
+fn transcript_cli_prune_after(tail: &[String]) -> Result<()> {
+    let (sess_pfx, rest) = transcript_parse_session_flag(tail)?;
+    let sid = transcript_resolve_session_id(sess_pfx.as_deref())?;
+    let tok = rest
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing target — pass id_prefix or @index"))?;
+    if rest.len() > 1 {
+        bail!("extra arguments — usage: transcript prune-after [--session=…] <id_prefix|@index>");
+    }
+    let keep_id = if let Some(restidx) = tok.strip_prefix('@') {
+        let idx = restidx
+            .parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("invalid index after @"))?;
+        let rows = sidekar::session::list_message_entries(&sid)?;
+        rows.get(idx)
+            .map(|r| r.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("no message at index [{idx}]"))?
+    } else {
+        sidekar::session::resolve_message_entry_id_prefix(&sid, tok)?
+    };
+    let deleted = sidekar::session::truncate_messages_after_entry(&sid, &keep_id)?;
+    if deleted > 0 {
+        sidekar::repl::sync_transcript_mutation_side_effects(&sid)?;
+    }
+    sidekar::output::emit(&sidekar::output::PlainOutput::new(format!(
+        "Prune-after session={}: deleted {deleted} newer row(s); kept through `{keep_id}`.",
+        repl_sid_short(&sid)
+    )))?;
     Ok(())
 }
 
