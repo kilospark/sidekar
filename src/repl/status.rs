@@ -62,6 +62,8 @@ pub(super) struct StatusView<'a> {
     /// function stays pure and unit-testable without touching any
     /// global state.
     pub journal_on: bool,
+    /// Remaining local lockout duration for current credential, if any.
+    pub credential_lock_remaining: Option<std::time::Duration>,
 }
 
 /// Same 90% rule as `agent::compaction::maybe_compact`. Mirrored here
@@ -173,6 +175,12 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
         "  journal   {}\n",
         if v.journal_on { "on" } else { "off" }
     ));
+    if let Some(remaining) = v.credential_lock_remaining {
+        out.push_str(&format!(
+            "  warning   \x1b[31mrate-limited; resets in {}\x1b[0m\n",
+            fmt_duration(remaining)
+        ));
+    }
 
     // ----- Usage (cumulative) --------------------------------------
     out.push_str("\n\x1b[1mUsage (this session)\x1b[0m\n");
@@ -315,6 +323,7 @@ mod tests {
             session_age: std::time::Duration::from_secs(125),
             since_last_turn: last.map(|_| std::time::Duration::from_secs(5)),
             journal_on: true,
+            credential_lock_remaining: None,
         }
     }
 
@@ -425,6 +434,7 @@ mod tests {
             session_age: std::time::Duration::from_secs(2 * 3600 + 14 * 60),
             since_last_turn: Some(std::time::Duration::from_secs(12)),
             journal_on: true,
+            credential_lock_remaining: None,
         };
         let s = format_status(&v);
         // Eye-visible only when --nocapture is set.
@@ -449,5 +459,15 @@ mod tests {
         v.last_stop_reason = Some(&StopReason::Stop);
         let s2 = format_status(&v);
         assert!(!s2.contains("\x1b[33mStop"));
+    }
+
+    #[test]
+    fn rate_limited_credential_renders_warning() {
+        let cum = Usage::default();
+        let mut v = view_defaults(&cum, 0, None);
+        v.credential_lock_remaining = Some(std::time::Duration::from_secs(95));
+        let s = format_status(&v);
+        assert!(s.contains("rate-limited"));
+        assert!(s.contains("1m 35s"));
     }
 }

@@ -28,7 +28,10 @@ pub fn credential_add_usage_message() -> &'static str {
     CREDENTIAL_ADD_USAGE
 }
 
-pub async fn perform_credential_add(tokens: &[String]) -> Result<String> {
+pub async fn perform_credential_add(
+    tokens: &[String],
+    output: crate::providers::oauth::InteractiveOutput,
+) -> Result<String> {
     let provider = match tokens.first().map(|s| s.as_str()) {
         Some(n) => n,
         None => bail!("{}", CREDENTIAL_ADD_USAGE),
@@ -39,9 +42,14 @@ pub async fn perform_credential_add(tokens: &[String]) -> Result<String> {
         let name = tokens.get(1).map(|s| s.as_str()).unwrap_or("oac");
         let base_url = tokens.get(2).map(|s| s.as_str());
         let api_key = tokens.get(3).map(|s| s.as_str());
-        let creds =
-            crate::providers::oauth::login_openai_compat(name, Some(name), base_url, api_key)
-                .await?;
+        let creds = crate::providers::oauth::login_openai_compat_with_output(
+            name,
+            Some(name),
+            base_url,
+            api_key,
+            output,
+        )
+        .await?;
         return Ok(format!(
             "Logged in as '{name}' ({} at {}).",
             creds.name, creds.base_url
@@ -72,11 +80,14 @@ pub async fn perform_credential_add(tokens: &[String]) -> Result<String> {
 
     match provider_type {
         "anthropic" => {
-            let _ = crate::providers::oauth::login_anthropic(Some(nickname)).await?;
+            let _ =
+                crate::providers::oauth::login_anthropic_with_output(Some(nickname), output)
+                    .await?;
             Ok(format!("Logged in as '{nickname}' (Claude OAuth)."))
         }
         "codex" => {
-            let (_, account_id) = crate::providers::oauth::login_codex(Some(nickname)).await?;
+            let (_, account_id) =
+                crate::providers::oauth::login_codex_with_output(Some(nickname), output).await?;
             Ok(format!(
                 "Logged in as '{nickname}' (Codex, account: {}).",
                 if account_id.is_empty() {
@@ -87,27 +98,33 @@ pub async fn perform_credential_add(tokens: &[String]) -> Result<String> {
             ))
         }
         "openrouter" => {
-            let _ = crate::providers::oauth::login_openrouter(Some(nickname)).await?;
+            let _ =
+                crate::providers::oauth::login_openrouter_with_output(Some(nickname), output)
+                    .await?;
             Ok(format!("Logged in as '{nickname}' (OpenRouter)."))
         }
         "opencode" => {
-            let _ = crate::providers::oauth::login_opencode(Some(nickname)).await?;
+            let _ = crate::providers::oauth::login_opencode_with_output(Some(nickname), output)
+                .await?;
             Ok(format!("Logged in as '{nickname}' (OpenCode)."))
         }
         "opencode-go" => {
-            let _ = crate::providers::oauth::login_opencode_go(Some(nickname)).await?;
+            let _ = crate::providers::oauth::login_opencode_go_with_output(Some(nickname), output)
+                .await?;
             Ok(format!("Logged in as '{nickname}' (OpenCode Go)."))
         }
         "grok" => {
-            let _ = crate::providers::oauth::login_grok(Some(nickname)).await?;
+            let _ = crate::providers::oauth::login_grok_with_output(Some(nickname), output)
+                .await?;
             Ok(format!("Logged in as '{nickname}' (Grok)."))
         }
         "gemini" => {
-            let _ = crate::providers::oauth::login_gemini(Some(nickname)).await?;
+            let _ = crate::providers::oauth::login_gemini_with_output(Some(nickname), output)
+                .await?;
             Ok(format!("Logged in as '{nickname}' (Gemini)."))
         }
         "bedrock" => {
-            crate::providers::oauth::login_bedrock(Some(nickname)).await?;
+            crate::providers::oauth::login_bedrock_with_output(Some(nickname), output).await?;
             Ok(format!("Logged in as '{nickname}' (Amazon Bedrock)."))
         }
         _ => Err(anyhow!(

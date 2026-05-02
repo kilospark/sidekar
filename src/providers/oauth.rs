@@ -32,6 +32,35 @@ pub const KV_KEY_GEMINI: &str = "oauth:gemini";
 pub const KV_KEY_BEDROCK: &str = "oauth:bedrock";
 pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InteractiveOutput {
+    Cli,
+    Repl,
+}
+
+impl InteractiveOutput {
+    fn println(self, text: &str) {
+        match self {
+            Self::Cli => eprintln!("{text}"),
+            Self::Repl => crate::tunnel::tunnel_println(text),
+        }
+    }
+
+    fn prompt(self, text: &str) {
+        match self {
+            Self::Cli => {
+                eprint!("{text}");
+                let _ = std::io::stderr().flush();
+            }
+            Self::Repl => {
+                print!("{text}");
+                let _ = std::io::stdout().flush();
+                crate::tunnel::tunnel_send(text.as_bytes().to_vec());
+            }
+        }
+    }
+}
+
 /// KV key for a named credential. e.g., "claude-1" → "oauth:claude-1"
 pub fn kv_key_for(nickname: &str) -> String {
     format!("oauth:{nickname}")
@@ -278,13 +307,20 @@ pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
         "Anthropic",
         anthropic_login,
         refresh_token_anthropic,
-        false,
+        None,
     )
     .await
 }
 
 /// Get a valid Anthropic API token, with interactive login if needed.
 pub async fn login_anthropic(nickname: Option<&str>) -> Result<String> {
+    login_anthropic_with_output(nickname, InteractiveOutput::Cli).await
+}
+
+pub async fn login_anthropic_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<String> {
     validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
     get_token(
@@ -293,7 +329,7 @@ pub async fn login_anthropic(nickname: Option<&str>) -> Result<String> {
         "Anthropic",
         anthropic_login,
         refresh_token_anthropic,
-        true,
+        Some(output),
     )
     .await
 }
@@ -318,7 +354,7 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
         "Codex",
         codex_login,
         refresh_token_codex,
-        false,
+        None,
     )
     .await?;
     Ok((token, codex_account_id_from_kv(&kv_key)?))
@@ -326,6 +362,13 @@ pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)>
 
 /// Get a valid Codex API token, with interactive login if needed.
 pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
+    login_codex_with_output(nickname, InteractiveOutput::Cli).await
+}
+
+pub async fn login_codex_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<(String, String)> {
     validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
     let token = get_token(
@@ -334,7 +377,7 @@ pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
         "Codex",
         codex_login,
         refresh_token_codex,
-        true,
+        Some(output),
     )
     .await?;
     Ok((token, codex_account_id_from_kv(&kv_key)?))
@@ -342,15 +385,25 @@ pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
 
 /// Get a valid OpenRouter API key. No OAuth — uses stored key or OPENROUTER_API_KEY env var.
 pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
-    get_openrouter_token_inner(nickname, false).await
+    get_openrouter_token_inner(nickname, None).await
 }
 
 pub async fn login_openrouter(nickname: Option<&str>) -> Result<String> {
-    validate_named_credential_nickname(nickname)?;
-    get_openrouter_token_inner(nickname, true).await
+    login_openrouter_with_output(nickname, InteractiveOutput::Cli).await
 }
 
-async fn get_openrouter_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
+pub async fn login_openrouter_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
+    get_openrouter_token_inner(nickname, Some(output)).await
+}
+
+async fn get_openrouter_token_inner(
+    nickname: Option<&str>,
+    interactive: Option<InteractiveOutput>,
+) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENROUTER);
     get_api_key_token(
         &kv_key,
@@ -374,15 +427,25 @@ async fn get_openrouter_token_inner(nickname: Option<&str>, interactive: bool) -
 
 /// Get a valid OpenCode API key. No OAuth — uses stored key or OPENCODE_API_KEY env var.
 pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
-    get_opencode_token_inner(nickname, false).await
+    get_opencode_token_inner(nickname, None).await
 }
 
 pub async fn login_opencode(nickname: Option<&str>) -> Result<String> {
-    validate_named_credential_nickname(nickname)?;
-    get_opencode_token_inner(nickname, true).await
+    login_opencode_with_output(nickname, InteractiveOutput::Cli).await
 }
 
-async fn get_opencode_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
+pub async fn login_opencode_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
+    get_opencode_token_inner(nickname, Some(output)).await
+}
+
+async fn get_opencode_token_inner(
+    nickname: Option<&str>,
+    interactive: Option<InteractiveOutput>,
+) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE);
     get_api_key_token(
         &kv_key,
@@ -403,15 +466,25 @@ async fn get_opencode_token_inner(nickname: Option<&str>, interactive: bool) -> 
 
 /// Get a valid OpenCode Go API key. Same key as OpenCode Zen, separate KV slot.
 pub async fn get_opencode_go_token(nickname: Option<&str>) -> Result<String> {
-    get_opencode_go_token_inner(nickname, false).await
+    get_opencode_go_token_inner(nickname, None).await
 }
 
 pub async fn login_opencode_go(nickname: Option<&str>) -> Result<String> {
-    validate_named_credential_nickname(nickname)?;
-    get_opencode_go_token_inner(nickname, true).await
+    login_opencode_go_with_output(nickname, InteractiveOutput::Cli).await
 }
 
-async fn get_opencode_go_token_inner(nickname: Option<&str>, interactive: bool) -> Result<String> {
+pub async fn login_opencode_go_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<String> {
+    validate_named_credential_nickname(nickname)?;
+    get_opencode_go_token_inner(nickname, Some(output)).await
+}
+
+async fn get_opencode_go_token_inner(
+    nickname: Option<&str>,
+    interactive: Option<InteractiveOutput>,
+) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE_GO);
     get_api_key_token(
         &kv_key,
@@ -439,7 +512,7 @@ pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
         &kv_key,
         &["XAI_API_KEY"],
         "Grok",
-        false,
+        None,
         ApiKeyInteractive {
             metadata: serde_json::json!({
                 "provider_type": "grok",
@@ -455,13 +528,20 @@ pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
 }
 
 pub async fn login_grok(nickname: Option<&str>) -> Result<String> {
+    login_grok_with_output(nickname, InteractiveOutput::Cli).await
+}
+
+pub async fn login_grok_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<String> {
     validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
     get_api_key_token(
         &kv_key,
         &["XAI_API_KEY"],
         "Grok",
-        true,
+        Some(output),
         ApiKeyInteractive {
             metadata: serde_json::json!({
                 "provider_type": "grok",
@@ -502,7 +582,7 @@ pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
         &kv_key,
         &["GEMINI_API_KEY"],
         "Gemini",
-        false,
+        None,
         ApiKeyInteractive {
             metadata: serde_json::json!({
                 "provider_type": "gemini",
@@ -520,13 +600,20 @@ pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
 /// Interactive login for Gemini. Prompts for an API key and stores it
 /// under the given nickname (or the default `oauth:gemini` key).
 pub async fn login_gemini(nickname: Option<&str>) -> Result<String> {
+    login_gemini_with_output(nickname, InteractiveOutput::Cli).await
+}
+
+pub async fn login_gemini_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<String> {
     validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_GEMINI);
     get_api_key_token(
         &kv_key,
         &["GEMINI_API_KEY"],
         "Gemini",
-        true,
+        Some(output),
         ApiKeyInteractive {
             metadata: serde_json::json!({
                 "provider_type": "gemini",
@@ -579,14 +666,20 @@ pub fn load_bedrock_stored(nickname: &str) -> Result<BedrockStored> {
 }
 
 pub async fn login_bedrock(nickname: Option<&str>) -> Result<()> {
+    login_bedrock_with_output(nickname, InteractiveOutput::Cli).await
+}
+
+pub async fn login_bedrock_with_output(
+    nickname: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<()> {
     validate_named_credential_nickname(nickname)?;
     let kv_key = resolve_kv_key(nickname, KV_KEY_BEDROCK);
-    eprintln!(
+    output.println(
         "Bedrock uses IAM via the AWS SDK default chain (environment, ~/.aws/credentials, SSO, …)."
     );
-    let region = prompt_required("AWS region", Some("us-east-1"))?;
-    eprint!("AWS named profile (optional, Enter → default credential chain): ");
-    let _ = std::io::stderr().flush();
+    let region = prompt_required(output, "AWS region", Some("us-east-1"))?;
+    output.prompt("AWS named profile (optional, Enter → default credential chain): ");
     let mut line = String::new();
     std::io::stdin()
         .lock()
@@ -608,11 +701,11 @@ pub async fn login_bedrock(nickname: Option<&str>) -> Result<()> {
             "profile": profile_val,
         }),
     )?;
-    eprintln!(
+    output.println(&format!(
         "Saved Bedrock config to `{kv_key}`. Uses HTTPS + SigV4 (no aws-sdk-bedrock crates). IAM needs \
          `bedrock:ListFoundationModels` (for `/model list`), `bedrock:ListInferenceProfiles` (recommended: resolve system inference profiles for Claude 4.x), \
          and `bedrock:InvokeModelWithResponseStream`."
-    );
+    ));
     Ok(())
 }
 
@@ -661,18 +754,35 @@ pub async fn login_openai_compat(
     base_url: Option<&str>,
     api_key: Option<&str>,
 ) -> Result<OpenAiCompatCredentials> {
+    login_openai_compat_with_output(
+        nickname,
+        display_name,
+        base_url,
+        api_key,
+        InteractiveOutput::Cli,
+    )
+    .await
+}
+
+pub async fn login_openai_compat_with_output(
+    nickname: &str,
+    display_name: Option<&str>,
+    base_url: Option<&str>,
+    api_key: Option<&str>,
+    output: InteractiveOutput,
+) -> Result<OpenAiCompatCredentials> {
     validate_credential_nickname_for_storage(nickname)?;
     let name = match display_name {
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
-        _ => prompt_required("Provider name", Some(nickname))?,
+        _ => prompt_required(output, "Provider name", Some(nickname))?,
     };
     let base_url = match base_url {
         Some(url) if !url.trim().is_empty() => url.trim().trim_end_matches('/').to_string(),
-        _ => prompt_required("Base URL", None)?,
+        _ => prompt_required(output, "Base URL", None)?,
     };
     let api_key = match api_key {
         Some(key) if !key.trim().is_empty() => key.trim().to_string(),
-        _ => prompt_required("API key", None)?,
+        _ => prompt_required(output, "API key", None)?,
     };
 
     save_static_token(
@@ -684,7 +794,7 @@ pub async fn login_openai_compat(
             "base_url": base_url,
         }),
     )?;
-    eprintln!("OpenAI-compat API key saved for '{nickname}'.");
+    output.println(&format!("OpenAI-compat API key saved for '{nickname}'."));
 
     Ok(OpenAiCompatCredentials {
         api_key,
@@ -712,7 +822,7 @@ async fn get_api_key_token(
     kv_key: &str,
     env_vars: &[&str],
     provider_name: &str,
-    interactive: bool,
+    interactive: Option<InteractiveOutput>,
     ix: ApiKeyInteractive<'_>,
 ) -> Result<String> {
     let ApiKeyInteractive {
@@ -724,11 +834,11 @@ async fn get_api_key_token(
         legacy_open_url,
     } = ix;
 
-    if !interactive && let Some(creds) = load_credentials(kv_key)? {
+    if interactive.is_none() && let Some(creds) = load_credentials(kv_key)? {
         return Ok(creds.access_token);
     }
 
-    if !interactive {
+    if interactive.is_none() {
         for name in env_vars {
             if let Ok(key) = std::env::var(name)
                 && !key.is_empty()
@@ -738,26 +848,34 @@ async fn get_api_key_token(
         }
     }
 
-    if !prelude_lines.is_empty() {
-        for line in prelude_lines {
-            eprintln!("{line}");
+    if let Some(output) = interactive {
+        if !prelude_lines.is_empty() {
+            for line in prelude_lines {
+                output.println(line);
+            }
+        } else if let Some(url) = legacy_open_url {
+            output.println(&format!("No {provider_name} credentials found. Opening {url} ..."));
+            let _ = open_browser(url);
+        } else {
+            output.println(&format!("No {provider_name} credentials found."));
         }
-    } else if let Some(url) = legacy_open_url {
-        eprintln!("No {provider_name} credentials found. Opening {url} ...");
-        let _ = open_browser(url);
+
+        for url in open_urls {
+            let _ = open_browser(url);
+        }
+
+        let key = prompt_required(output, prompt_label, None)?;
+        save_static_token(kv_key, &key, metadata)?;
+        output.println(saved_message);
+
+        Ok(key)
     } else {
-        eprintln!("No {provider_name} credentials found.");
+        bail!(
+            "No {provider_name} credentials found for '{}'.\n\
+             Run: sidekar repl credential add <provider> [name]",
+            kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
+        )
     }
-
-    for url in open_urls {
-        let _ = open_browser(url);
-    }
-
-    let key = prompt_required(prompt_label, None)?;
-    save_static_token(kv_key, &key, metadata)?;
-    eprintln!("{saved_message}");
-
-    Ok(key)
 }
 
 fn save_static_token(kv_key: &str, api_key: &str, metadata: serde_json::Value) -> Result<()> {
@@ -770,12 +888,11 @@ fn save_static_token(kv_key: &str, api_key: &str, metadata: serde_json::Value) -
     save_credentials(kv_key, &creds)
 }
 
-fn prompt_required(label: &str, default: Option<&str>) -> Result<String> {
+fn prompt_required(output: InteractiveOutput, label: &str, default: Option<&str>) -> Result<String> {
     match default {
-        Some(default) => eprint!("{label} [{default}]: "),
-        None => eprint!("{label}: "),
+        Some(default) => output.prompt(&format!("{label} [{default}]: ")),
+        None => output.prompt(&format!("{label}: ")),
     }
-    let _ = std::io::stderr().flush();
     let mut value = String::new();
     std::io::stdin()
         .read_line(&mut value)
@@ -798,7 +915,7 @@ async fn get_token(
     kv_key: &str,
     env_var: &str,
     provider_name: &str,
-    login_fn: fn() -> std::pin::Pin<
+    login_fn: fn(InteractiveOutput) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
     >,
     refresh_fn: fn(
@@ -806,13 +923,13 @@ async fn get_token(
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
     >,
-    interactive: bool,
+    interactive: Option<InteractiveOutput>,
 ) -> Result<String> {
     // 1. Stored OAuth credentials.
     //    Skip during interactive login — the caller has explicitly asked to
     //    (re)authenticate this credential, so stale/existing tokens must not
     //    short-circuit the flow.
-    if !interactive && let Some(creds) = load_credentials(kv_key)? {
+    if interactive.is_none() && let Some(creds) = load_credentials(kv_key)? {
         if creds.is_expired() {
             match refresh_fn(&creds).await {
                 Ok(new_creds) => {
@@ -841,7 +958,7 @@ async fn get_token(
     // 2. Environment variable fallback — only for non-interactive usage.
     //    During `credential add`, the user expects OAuth to run and a credential
     //    row to be persisted; env-var shortcut would silently skip both.
-    if !interactive
+    if interactive.is_none()
         && let Ok(key) = std::env::var(env_var)
         && !key.is_empty()
     {
@@ -849,9 +966,9 @@ async fn get_token(
     }
 
     // 3. Interactive login (during `credential add`) or fail
-    if interactive {
-        eprintln!("No {provider_name} credentials found. Starting OAuth login...");
-        let creds = login_fn().await?;
+    if let Some(output) = interactive {
+        output.println(&format!("No {provider_name} credentials found. Starting OAuth login..."));
+        let creds = login_fn(output).await?;
         save_credentials(kv_key, &creds)?;
         Ok(creds.access_token)
     } else {
@@ -867,9 +984,11 @@ async fn get_token(
 // Anthropic OAuth
 // ---------------------------------------------------------------------------
 
-fn anthropic_login()
+fn anthropic_login(
+    output: InteractiveOutput,
+)
 -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
-    Box::pin(async {
+    Box::pin(async move {
         let mut creds = pkce_login(
             ANTHROPIC_CLIENT_ID,
             ANTHROPIC_AUTHORIZE_URL,
@@ -879,6 +998,7 @@ fn anthropic_login()
             ANTHROPIC_SCOPES,
             "Anthropic",
             &[],
+            output,
             // Anthropic's token endpoint requires `state` — omitting
             // it returns 400 "Invalid request format". See pkce_login
             // docs. If this breaks again, first check whether
@@ -989,9 +1109,11 @@ fn refresh_token_anthropic(
 // Codex OAuth
 // ---------------------------------------------------------------------------
 
-fn codex_login()
+fn codex_login(
+    output: InteractiveOutput,
+)
 -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
-    Box::pin(async {
+    Box::pin(async move {
         let extra_params = &[
             ("id_token_add_organizations", "true"),
             ("codex_cli_simplified_flow", "true"),
@@ -1006,6 +1128,7 @@ fn codex_login()
             CODEX_SCOPES,
             "Codex",
             extra_params,
+            output,
             // OpenAI's token endpoint is RFC 6749 strict and rejects
             // `state` with 400 "Unknown parameter: 'state'". Must be
             // false. See pkce_login docs. If this breaks again, it
@@ -1092,6 +1215,7 @@ async fn pkce_login(
     scopes: &str,
     provider_name: &str,
     extra_params: &[(&str, &str)],
+    output: InteractiveOutput,
     // Whether to include `state` in the token-exchange body.
     //
     // Per RFC 6749 §4.1.3 the token request does NOT include `state`
@@ -1135,8 +1259,9 @@ async fn pkce_login(
     let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
     let server = start_callback_server(callback_port, state.clone(), code_tx).await?;
 
-    eprintln!("\nOpening browser for {provider_name} login...");
-    eprintln!("If the browser doesn't open, visit:\n{auth_url}\n");
+    output.println("");
+    output.println(&format!("Opening browser for {provider_name} login..."));
+    output.println(&format!("If the browser doesn't open, visit:\n{auth_url}\n"));
     let _ = open_browser(&auth_url);
 
     let code = tokio::time::timeout(std::time::Duration::from_secs(120), code_rx)
@@ -1175,7 +1300,7 @@ async fn pkce_login(
                 if status.is_success() {
                     let token_resp: TokenResponse =
                         resp.json().await.context("Invalid token response")?;
-                    eprintln!("Logged in to {provider_name}.");
+                    output.println(&format!("Logged in to {provider_name}."));
                     return Ok(OAuthCredentials {
                         access_token: token_resp.access_token,
                         refresh_token: token_resp.refresh_token,

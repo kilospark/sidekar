@@ -704,6 +704,17 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             }
             let cw = providers::cached_context_window(model);
             let tokens_estimate = crate::agent::compaction::estimate_tokens_public(ctx.history);
+            let credential_lock_remaining = if cred_name.is_empty() {
+                None
+            } else {
+                providers::session_lock::read_locked(&providers::oauth::kv_key_for(cred_name))
+                    .map(|until| {
+                        std::time::Duration::from_secs(
+                            until.saturating_sub(providers::session_lock::current_epoch()),
+                        )
+                    })
+                    .filter(|d| !d.is_zero())
+            };
             let view = super::status::StatusView {
                 session_id: current_session,
                 cwd,
@@ -720,6 +731,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 session_age: snap_age,
                 since_last_turn: snap_since,
                 journal_on: crate::runtime::journal(),
+                credential_lock_remaining,
             };
             let text = super::status::format_status(&view);
             tunnel_println(&text);
@@ -835,7 +847,12 @@ pub(super) async fn apply_slash_result(
         }
         SlashResult::CredentialLogin(tokens) => {
             repl_status_dim("Adding credential…");
-            match crate::repl::credential_login::perform_credential_add(&tokens).await {
+            match crate::repl::credential_login::perform_credential_add(
+                &tokens,
+                crate::providers::oauth::InteractiveOutput::Repl,
+            )
+            .await
+            {
                 Ok(msg) => tunnel_println(&msg),
                 Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
             }
