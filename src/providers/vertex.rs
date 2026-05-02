@@ -66,7 +66,7 @@ pub fn is_vertex_anthropic_partner_models_base(base_url: &str) -> bool {
     lower.contains("aiplatform.googleapis.com") && lower.contains("/publishers/anthropic/models/")
 }
 
-/// Model id segment from the URL path (`claude-opus-4-6` from `…/models/claude-opus-4-6:rawPredict`).
+/// Model id segment from the URL path (`claude-opus-4` from `…/models/claude-opus-4:rawPredict`).
 pub fn anthropic_partner_model_id(base_url: &str) -> Option<String> {
     let trimmed = base_url.trim_end_matches('/');
     let lower = trimmed.to_ascii_lowercase();
@@ -87,7 +87,7 @@ pub fn anthropic_partner_model_id(base_url: &str) -> Option<String> {
 /// Vertex `openapi` Chat Completions does not serve Claude ([Google docs](https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview)).
 /// Map to publisher-model base (`…/publishers/anthropic/models/<id>`) using the same scheme/host/project/location.
 ///
-/// Accepts catalog IDs (`anthropic/claude-…`) or bare Vertex Claude IDs (`claude-opus-4-6`, …).
+/// Accepts catalog IDs (`anthropic/claude-…`) or bare Vertex Claude IDs (`claude-opus-4`, …).
 pub fn openapi_base_to_anthropic_partner_base(base_url: &str, model: &str) -> Option<String> {
     if !is_vertex_openapi_base(base_url) {
         return None;
@@ -107,7 +107,7 @@ pub fn openapi_base_to_anthropic_partner_base(base_url: &str, model: &str) -> Op
     ))
 }
 
-/// Bare publisher model segment for Claude (`claude-opus-4-6`) or full `anthropic/<id>` from catalog.
+/// Bare publisher model segment for Claude (`claude-haiku-4-5`) or full `anthropic/<id>` from catalog.
 fn anthropic_partner_bare_model_id(model_clean: &str) -> Option<&str> {
     if let Some((pub_id, bare)) = model_clean.split_once('/') {
         if pub_id == "anthropic" && !bare.is_empty() {
@@ -325,9 +325,9 @@ mod tests {
     fn extracts_project_from_base_url() {
         assert_eq!(
             extract_project(
-                "https://aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/global/endpoints/openapi"
+                "https://aiplatform.googleapis.com/v1/projects/vertex-test-project/locations/global/endpoints/openapi"
             ),
-            Some("sf-internal-tooling".to_string())
+            Some("vertex-test-project".to_string())
         );
         assert_eq!(
             extract_project(
@@ -337,26 +337,26 @@ mod tests {
         );
         assert_eq!(
             extract_project(
-                "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6:rawPredict"
+                "https://us-west1-aiplatform.googleapis.com/v1/projects/vertex-test-project/locations/us-west1/publishers/anthropic/models/claude-mock-model:rawPredict"
             ),
-            Some("sf-internal-tooling".to_string())
+            Some("vertex-test-project".to_string())
         );
         assert_eq!(extract_project("https://api.openai.com/v1"), None);
     }
 
     #[test]
     fn openapi_base_maps_to_anthropic_partner_for_claude_models() {
-        let openapi = "https://us-east5-aiplatform.googleapis.com/v1beta1/projects/sf-internal-tooling/locations/us-east5/endpoints/openapi";
+        let openapi = "https://us-west1-aiplatform.googleapis.com/v1beta1/projects/vertex-test-project/locations/us-west1/endpoints/openapi";
         assert_eq!(
-            openapi_base_to_anthropic_partner_base(openapi, "anthropic/claude-opus-4-6"),
+            openapi_base_to_anthropic_partner_base(openapi, "anthropic/claude-mock-model"),
             Some(
-                "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6".to_string()
+                "https://us-west1-aiplatform.googleapis.com/v1/projects/vertex-test-project/locations/us-west1/publishers/anthropic/models/claude-mock-model".to_string()
             )
         );
         assert_eq!(
-            openapi_base_to_anthropic_partner_base(openapi, "claude-opus-4-6"),
+            openapi_base_to_anthropic_partner_base(openapi, "claude-mock-model"),
             Some(
-                "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6".to_string()
+                "https://us-west1-aiplatform.googleapis.com/v1/projects/vertex-test-project/locations/us-west1/publishers/anthropic/models/claude-mock-model".to_string()
             )
         );
         assert!(
@@ -366,7 +366,7 @@ mod tests {
         assert!(
             openapi_base_to_anthropic_partner_base(
                 "https://api.openai.com/v1",
-                "anthropic/claude-opus-4-6"
+                "anthropic/claude-mock-model"
             )
             .is_none()
         );
@@ -374,16 +374,16 @@ mod tests {
 
     #[test]
     fn anthropic_partner_urls_normalize_stream_raw_predict() {
-        let raw = "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6:rawPredict";
+        let raw = "https://us-west1-aiplatform.googleapis.com/v1/projects/vertex-test-project/locations/us-west1/publishers/anthropic/models/claude-mock-model:rawPredict";
         assert_eq!(
             anthropic_partner_stream_url(raw),
-            "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6:streamRawPredict"
+            "https://us-west1-aiplatform.googleapis.com/v1/projects/vertex-test-project/locations/us-west1/publishers/anthropic/models/claude-mock-model:streamRawPredict"
         );
         assert_eq!(
             anthropic_partner_model_id(raw),
-            Some("claude-opus-4-6".to_string())
+            Some("claude-mock-model".to_string())
         );
-        let bare = "https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-6";
+        let bare = "https://us-west1-aiplatform.googleapis.com/v1/projects/p-demo/locations/us-west1/publishers/anthropic/models/claude-mock-model";
         assert_eq!(
             anthropic_partner_stream_url(bare),
             format!("{bare}:streamRawPredict")
