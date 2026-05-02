@@ -40,6 +40,11 @@ pub(crate) fn infer_bedrock_inference_family(
     if prov_lc == "nvidia" || m.starts_with("nvidia.") {
         return BedrockInferenceFamily::OpenAiChatCompletions;
     }
+    // Qwen on Bedrock validates requests like OpenAI Chat Completions (e.g. each tool needs
+    // top-level `"type": "function"`). Anthropic Messages-shaped tools trigger validation_error.
+    if prov_lc == "qwen" || m.starts_with("qwen.") {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
     BedrockInferenceFamily::AnthropicMessages
 }
 
@@ -275,6 +280,10 @@ mod tests {
         );
         assert_eq!(
             infer_bedrock_inference_family("nvidia.nemotron-super-3-120b", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("qwen.qwen3-coder-next", None),
             BedrockInferenceFamily::OpenAiChatCompletions
         );
         assert_eq!(
