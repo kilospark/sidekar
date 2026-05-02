@@ -14,6 +14,7 @@
 10. Gemini / Vertex provider debug stderr moved to broker log
 11. Codex WS verbose traces moved off screen into broker log
 12. REPL startup banner condensed from two lines to one
+13. OAuth refresh/profile/JWT debug chatter moved to broker log
 
 ## Queue
 

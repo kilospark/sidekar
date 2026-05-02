@@ -820,8 +820,16 @@ async fn get_token(
                     return Ok(new_creds.access_token);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "sidekar: {provider_name} OAuth refresh failed ({e}), re-authenticating..."
+                    crate::broker::try_log_error(
+                        "oauth",
+                        &format!("{provider_name} OAuth refresh failed"),
+                        Some(&format!("{e:#}")),
+                    );
+                    crate::broker::try_log_event(
+                        "debug",
+                        "oauth",
+                        "refresh-failed-reauthenticating",
+                        Some(provider_name),
                     );
                 }
             }
@@ -916,7 +924,12 @@ async fn fetch_anthropic_profile(access_token: &str) -> Option<AnthropicProfile>
 
     let data: serde_json::Value = resp.json().await.ok()?;
     if crate::runtime::verbose() {
-        eprintln!("[verbose] Anthropic profile response: {data}");
+        crate::broker::try_log_event(
+            "debug",
+            "oauth",
+            "anthropic-profile-response",
+            Some(&data.to_string()),
+        );
     }
     let account = data.get("account");
     let account_uuid = account
@@ -1060,7 +1073,7 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
         .ok()?;
     let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
     if crate::runtime::verbose() {
-        eprintln!("[verbose] JWT payload: {json}");
+        crate::broker::try_log_event("debug", "oauth", "jwt-payload", Some(&json.to_string()));
     }
     Some(json)
 }
