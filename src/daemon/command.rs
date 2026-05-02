@@ -108,7 +108,11 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                         routed_profile.clone(),
                     )
                     .await;
-                } else if final_result.get("watchId").and_then(|v| v.as_str()).is_some() {
+                } else if final_result
+                    .get("watchId")
+                    .and_then(|v| v.as_str())
+                    .is_some()
+                {
                     crate::broker::try_log_error(
                         "ext",
                         "extension returned watchId but WatchRecord was not registered \
