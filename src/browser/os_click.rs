@@ -146,7 +146,7 @@ pub async fn os_click_css(
     #[cfg(not(target_os = "macos"))]
     {
         return Err(anyhow!(
-            "--os click not yet supported on this platform (macOS only); see TODO.md"
+            "--os click not yet supported on this platform (macOS only); see context/todo.md"
         ));
     }
     Ok((zx, zy, metrics))
