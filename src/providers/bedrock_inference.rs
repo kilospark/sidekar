@@ -35,6 +35,11 @@ pub(crate) fn infer_bedrock_inference_family(
     if prov_lc == "openai" || m.starts_with("openai.") {
         return BedrockInferenceFamily::OpenAiChatCompletions;
     }
+    // NVIDIA Nemotron on Bedrock uses InvokeModel + OpenAI-shaped JSON (`messages`,
+    // `max_tokens`, …), not Anthropic Messages — see AWS blog “Run NVIDIA Nemotron 3 Super”.
+    if prov_lc == "nvidia" || m.starts_with("nvidia.") {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
     BedrockInferenceFamily::AnthropicMessages
 }
 
@@ -66,9 +71,15 @@ pub(crate) fn build_bedrock_invoke_stream_body(
             let obj = body
                 .as_object_mut()
                 .ok_or_else(|| anyhow::anyhow!("Bedrock OpenAI body must be JSON object"))?;
+            // Model id is only in the InvokeModel path segment; duplicate `model` in JSON
+            // confuses some Bedrock vendors (AWS Nemotron samples omit it).
+            obj.remove("model");
             obj.insert("stream".into(), json!(true));
             obj.remove("stream_options");
-            obj.insert("max_completion_tokens".into(), json!(cfg.max_tokens));
+            let max = cfg.max_tokens;
+            obj.insert("max_completion_tokens".into(), json!(max));
+            // NVIDIA / legacy Bedrock samples use `max_tokens` (AWS CLI Nemotron guides).
+            obj.insert("max_tokens".into(), json!(max));
             if let Some(t) = cfg.temperature {
                 obj.insert("temperature".into(), json!(t));
             }
@@ -260,6 +271,10 @@ mod tests {
         );
         assert_eq!(
             infer_bedrock_inference_family("openai.gpt-oss-20b-1:0", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("nvidia.nemotron-super-3-120b", None),
             BedrockInferenceFamily::OpenAiChatCompletions
         );
         assert_eq!(
