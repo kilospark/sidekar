@@ -153,6 +153,136 @@ pub async fn stream(
     Ok(rx)
 }
 
+/// Stream Claude via Vertex AI partner REST `:streamRawPredict` (Anthropic Messages JSON body).
+///
+/// `base_url` should look like:
+/// `https://REGION-aiplatform.googleapis.com/v1/projects/PROJECT/locations/REGION/publishers/anthropic/models/MODEL`
+/// optionally ending in `:rawPredict` or `:streamRawPredict`.
+///
+/// Auth: GCP OAuth bearer token (`Authorization: Bearer`) plus `x-goog-user-project`.
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_vertex_anthropic_partner(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    config: &StreamConfig,
+) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    let url = super::vertex::anthropic_partner_stream_url(base_url);
+
+    let (picker_clean, enable_1m_beta) = match model.strip_suffix(super::ANTHROPIC_1M_SUFFIX) {
+        Some(clean) => (clean, true),
+        None => (model, false),
+    };
+    let phantom_model = super::vertex::anthropic_partner_model_id(base_url).unwrap_or_else(|| {
+        strip_vertex_partner_model_id(picker_clean).unwrap_or_else(|| picker_clean.to_string())
+    });
+
+    let mut cfg = config.clone();
+    cfg.suppress_anthropic_cache_markers = true;
+
+    let body = build_request_body(
+        "",
+        &phantom_model,
+        system_prompt,
+        messages,
+        tools,
+        &cfg,
+        false,
+    );
+    let mut body_val = serde_json::to_value(&body)?;
+    if let Some(obj) = body_val.as_object_mut() {
+        obj.remove("model");
+        obj.insert(
+            "anthropic_version".to_string(),
+            json!("vertex-2023-10-16"),
+        );
+    }
+    let body_json = serde_json::to_string(&body_val)?;
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("content-type", "application/json".parse()?);
+    headers.insert("authorization", format!("Bearer {api_key}").parse()?);
+
+    let mut beta_parts: Vec<&'static str> = Vec::new();
+    if !tools.is_empty() {
+        beta_parts.push("fine-grained-tool-streaming-2025-05-14");
+    }
+    if enable_1m_beta {
+        beta_parts.push("context-1m-2025-08-07");
+    }
+    if !beta_parts.is_empty() {
+        headers.insert("anthropic-beta", beta_parts.join(",").parse()?);
+    }
+
+    if let Some(project) = super::vertex::extract_project(base_url)
+        && let Ok(value) = project.parse()
+    {
+        headers.insert("x-goog-user-project", value);
+    }
+
+    if let Ok(log_body) = serde_json::from_str::<Value>(&body_json) {
+        super::log_api_request(&url, &headers, &log_body);
+    }
+
+    let client = super::build_streaming_client(std::time::Duration::from_secs(300))?;
+
+    let response = client
+        .post(&url)
+        .headers(headers)
+        .body(body_json)
+        .send()
+        .await
+        .context("failed to connect to Vertex Claude API")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let text = response.text().await.unwrap_or_default();
+        super::log_api_error(status, &text);
+        if status.as_u16() == 429
+            && let Some(kv_key) = config.credential_kv_key.as_deref()
+            && let Some(until) =
+                super::session_lock::parse_anthropic_lock(retry_after.as_deref(), &text)
+        {
+            let _ = super::session_lock::mark_locked(kv_key, until, &text);
+        }
+        bail!("Vertex Claude API error ({}): {}", status, text);
+    }
+
+    let rate_limit = RateLimitSnapshot::from_anthropic_headers(response.headers()).into_option();
+    if let Some(kv_key) = config.credential_kv_key.as_deref() {
+        let _ = super::session_lock::clear_locked(kv_key);
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        if let Err(e) = parse_sse_stream(response, rate_limit, &tx).await {
+            let _ = tx.send(StreamEvent::Error {
+                message: format!("{e:#}"),
+            });
+        }
+    });
+
+    Ok(rx)
+}
+
+fn strip_vertex_partner_model_id(model: &str) -> Option<String> {
+    let id = model.rsplit_once('/').map(|(_, id)| id).unwrap_or(model);
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request body construction
 // ---------------------------------------------------------------------------

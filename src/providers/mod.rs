@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod bedrock;
 mod bedrock_inference;
 pub mod codex;
+pub mod gcp_adc;
 pub mod gemini;
 pub mod oauth;
 pub mod openrouter;
@@ -1134,7 +1135,8 @@ async fn fetch_openai_compat_model_limits(
     base_url: &str,
     model: &str,
 ) -> Option<(u32, u32)> {
-    let body = fetch_bearer_models_list_json(api_key, base_url).await?;
+    let api_key = oauth::resolve_openai_compat_api_key(api_key).await.ok()?;
+    let body = fetch_bearer_models_list_json(&api_key, base_url).await?;
     let models_arr = body.get("data").and_then(|d| d.as_array())?;
     let m = model_from_list_by_id(models_arr, model)?;
     let ctx = m
@@ -1472,8 +1474,13 @@ pub async fn fetch_openai_compat_model_list(
     api_key: &str,
     base_url: &str,
 ) -> Result<Vec<RemoteModel>, String> {
-    if vertex::is_vertex_openapi_base(base_url) {
-        return Ok(vertex::fetch_models(api_key, base_url).await);
+    let api_key = oauth::resolve_openai_compat_api_key(api_key)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    if vertex::is_vertex_openapi_base(base_url)
+        || vertex::is_vertex_anthropic_partner_models_base(base_url)
+    {
+        return Ok(vertex::fetch_models(&api_key, base_url).await);
     }
     let url = openai_models_url(base_url);
     let verbose = is_verbose();
@@ -1724,14 +1731,13 @@ impl Provider {
         }
     }
 
-    /// Only Anthropic OAuth and Codex use refreshable bearer tokens stored per
-    /// credential. Static-key providers (`openrouter`, `opencode-*`, Gemini,
-    /// …) attach a nickname for UX but must not invoke `force_refresh_token`
-    /// on 401 — that path only exists for Claude/Codex OAuth.
+    /// Anthropic OAuth, Codex, and OpenAI-compat credentials using GCP ADC
+    /// (`OPENAI_COMPAT_GCP_ADC`) may recover from 401 via [`oauth::force_refresh_token`].
     pub(crate) fn supports_oauth_refresh_on_401(&self) -> bool {
         match self {
             Provider::Codex { .. } => true,
             Provider::Anthropic { api_key, .. } => api_key.contains("sk-ant-oat"),
+            Provider::OpenAiCompat { api_key, .. } => api_key == oauth::OPENAI_COMPAT_GCP_ADC,
             _ => false,
         }
     }
@@ -1996,21 +2002,41 @@ impl Provider {
                 api_key,
                 base_url,
                 display_name,
+                credential,
                 ..
             } => {
-                let key = api_key_override.unwrap_or(api_key);
-                let rx = openrouter::stream_with_provider(
-                    display_name,
-                    key,
-                    base_url,
-                    model,
-                    system_prompt,
-                    messages,
-                    tools,
-                    prompt_cache_key,
-                )
-                .await?;
-                Ok(no_ws_reclaim(rx))
+                let key_raw = api_key_override.unwrap_or(api_key);
+                let key = oauth::resolve_openai_compat_api_key(key_raw).await?;
+                if vertex::is_vertex_anthropic_partner_models_base(base_url) {
+                    let mut cfg = stream_config.clone();
+                    cfg.credential_kv_key = credential
+                        .as_ref()
+                        .map(|n| crate::providers::oauth::kv_key_for(n));
+                    let rx = anthropic::stream_vertex_anthropic_partner(
+                        &key,
+                        base_url,
+                        model,
+                        system_prompt,
+                        messages,
+                        tools,
+                        &cfg,
+                    )
+                    .await?;
+                    Ok(no_ws_reclaim(rx))
+                } else {
+                    let rx = openrouter::stream_with_provider(
+                        display_name,
+                        &key,
+                        base_url,
+                        model,
+                        system_prompt,
+                        messages,
+                        tools,
+                        prompt_cache_key,
+                    )
+                    .await?;
+                    Ok(no_ws_reclaim(rx))
+                }
             }
             Provider::Gemini {
                 api_key, base_url, ..

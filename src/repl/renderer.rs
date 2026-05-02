@@ -1,9 +1,35 @@
 use super::spinner::Spinner;
 use super::*;
+use crate::providers::ContentBlock;
 
 // ---------------------------------------------------------------------------
 // Stream event rendering
 // ---------------------------------------------------------------------------
+
+/// Emit one line of model reasoning — dim + italic so it reads softer than answer text.
+fn emit_dim_thinking_line(line: &str) {
+    let sanitized: String = line.chars().map(|c| if c == '\r' { ' ' } else { c }).collect();
+    let styled = format!("\x1b[2m\x1b[3m{sanitized}\x1b[0m\r\n");
+    emit_shared_output(&styled);
+}
+
+fn emit_thinking_blocks_from_message(content: &[ContentBlock]) {
+    for block in content {
+        match block {
+            ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty() => {
+                for line in thinking.lines() {
+                    emit_dim_thinking_line(line);
+                }
+            }
+            ContentBlock::Reasoning { text } if !text.trim().is_empty() => {
+                for line in text.lines() {
+                    emit_dim_thinking_line(line);
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Stateful renderer with streaming markdown support, tool call display, and spinner.
 pub(super) struct EventRenderer {
@@ -16,6 +42,11 @@ pub(super) struct EventRenderer {
     /// paragraph length. Capping refresh rate keeps long outputs responsive
     /// without losing the trailing-line preview.
     last_preview_at: Option<std::time::Instant>,
+    /// Pending extended-thinking characters until the next `\n`.
+    thinking_line_buf: String,
+    /// True once any `ThinkingDelta` arrived this provider round — skips duplicating
+    /// thinking blocks from `Done.message.content`.
+    thinking_streamed: bool,
 }
 
 /// Minimum interval between partial-preview rerenders. ~30 Hz — fast enough
@@ -48,6 +79,8 @@ impl EventRenderer {
             spinner: None,
             partial_visible: false,
             last_preview_at: None,
+            thinking_line_buf: String::new(),
+            thinking_streamed: false,
         }
     }
 
@@ -119,9 +152,37 @@ impl EventRenderer {
         self.last_preview_at = None;
     }
 
+    fn reset_thinking_for_new_provider_round(&mut self) {
+        self.thinking_line_buf.clear();
+        self.thinking_streamed = false;
+    }
+
+    fn flush_thinking_complete_lines(&mut self) {
+        while let Some(pos) = self.thinking_line_buf.find('\n') {
+            let line = self.thinking_line_buf[..pos].to_string();
+            self.thinking_line_buf.drain(..=pos);
+            emit_dim_thinking_line(&line);
+        }
+    }
+
+    /// Any in-progress thinking text before assistant markdown or tools.
+    fn flush_thinking_remainder_as_line(&mut self) {
+        if self.thinking_line_buf.is_empty() {
+            return;
+        }
+        let line = std::mem::take(&mut self.thinking_line_buf);
+        emit_dim_thinking_line(&line);
+    }
+
+    fn flush_thinking_before_assistant_body(&mut self) {
+        self.flush_thinking_complete_lines();
+        self.flush_thinking_remainder_as_line();
+    }
+
     pub(super) fn render(&mut self, event: &StreamEvent) {
         match event {
             StreamEvent::Waiting => {
+                self.reset_thinking_for_new_provider_round();
                 self.set_status_spinner("waiting for response");
             }
             StreamEvent::ResolvingContext => {
@@ -151,19 +212,23 @@ impl EventRenderer {
             }
             StreamEvent::TextDelta { delta } => {
                 self.stop_spinner();
+                self.clear_partial_preview();
+                self.flush_thinking_before_assistant_body();
                 self.md.push(delta);
                 self.flush_md_lines();
                 self.update_partial_preview(false);
             }
-            StreamEvent::ThinkingDelta { .. } => {
-                // Stream has started — replace any earlier status label
-                // ("connecting to model", "resolving context", "working")
-                // with "thinking" so the spinner reflects reality.
-                self.set_status_spinner("thinking");
+            StreamEvent::ThinkingDelta { delta } => {
+                self.clear_partial_preview();
+                self.stop_spinner();
+                self.thinking_streamed = true;
+                self.thinking_line_buf.push_str(delta);
+                self.flush_thinking_complete_lines();
             }
             StreamEvent::ToolCallStart { index, name, .. } => {
                 self.stop_spinner();
                 self.clear_partial_preview();
+                self.flush_thinking_before_assistant_body();
                 let lines = self.md.finalize();
                 emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
@@ -209,6 +274,11 @@ impl EventRenderer {
             StreamEvent::Done { message } => {
                 self.stop_spinner();
                 self.clear_partial_preview();
+                self.flush_thinking_complete_lines();
+                self.flush_thinking_remainder_as_line();
+                if !self.thinking_streamed {
+                    emit_thinking_blocks_from_message(&message.content);
+                }
                 let lines = self.md.finalize();
                 emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
@@ -236,6 +306,8 @@ impl EventRenderer {
             StreamEvent::Error { message } => {
                 self.stop_spinner();
                 self.clear_partial_preview();
+                self.flush_thinking_complete_lines();
+                self.flush_thinking_remainder_as_line();
                 self.emitln(&format!("\n\x1b[31mError: {message}\x1b[0m"));
                 let _ = io::stdout().flush();
             }

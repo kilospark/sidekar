@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "4.0.0"
+version = "4.1.0"
 edition = "2024"
 build = "build.rs"
 license = "MIT"
@@ -73,6 +73,7 @@ aws-smithy-runtime-api = "1"
 http = "1"
 url = "2"
 bytes = "1"
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["async"] }

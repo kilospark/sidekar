@@ -16,7 +16,7 @@ Providers:
   grok       Grok (xAI) — API key
   gem        Gemini (Google) — API key
   bedrock | brk Amazon Bedrock — IAM profile / credential chain → HTTPS SigV4
-  oac <nickname> <url> [api_key]
+  oac <nickname> <url> [api_key|adc]
 
 Examples:
   sidekar repl credential add claude
@@ -118,15 +118,24 @@ pub async fn perform_credential_add(
         };
         let api_key = match tokens.get(3).map(|s| s.as_str()) {
             Some(key) if !key.trim().is_empty() => key.trim().to_string(),
-            _ => prompt_required(output, "API key", None)?,
+            _ => prompt_required(
+                output,
+                "API key (adc = GCP Application Default Credentials)",
+                None,
+            )?,
         };
-        let creds = crate::providers::oauth::save_openai_compat_credential(
-            name,
-            &display_name,
-            &base_url,
-            &api_key,
-        )?;
-        output_line(output, &format!("OpenAI-compat API key saved for '{name}'."));
+        let creds =
+            if api_key.eq_ignore_ascii_case("adc") || api_key.eq_ignore_ascii_case("gcp-adc") {
+                crate::providers::oauth::save_openai_compat_adc(name, &display_name, &base_url)?
+            } else {
+                crate::providers::oauth::save_openai_compat_credential(
+                    name,
+                    &display_name,
+                    &base_url,
+                    &api_key,
+                )?
+            };
+        output_line(output, &format!("OpenAI-compat credential saved for '{name}'."));
         return Ok(format!(
             "Logged in as '{name}' ({} at {}).",
             creds.name, creds.base_url

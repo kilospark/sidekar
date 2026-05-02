@@ -153,6 +153,7 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
 
     // ----- Session --------------------------------------------------
     out.push_str("\x1b[1mSession\x1b[0m\n");
+    out.push_str(&format!("  sidekar   {}\n", env!("CARGO_PKG_VERSION")));
     out.push_str(&format!("  id        {}\n", v.session_id));
     out.push_str(&format!("  cwd       {}\n", v.cwd));
     out.push_str(&format!("  up        {}\n", fmt_duration(v.session_age)));
@@ -353,6 +354,7 @@ mod tests {
         let v = view_defaults(&cum, 0, None);
         let s = format_status(&v);
         assert!(s.contains("No turns completed yet"));
+        assert!(s.contains(env!("CARGO_PKG_VERSION")));
         // Last turn section absent when turn_count is 0.
         assert!(!s.contains("Last turn"));
         // Still shows the session/model blocks.

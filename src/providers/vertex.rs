@@ -3,6 +3,9 @@
 //! Vertex's OpenAI-compat surface lives at:
 //!   `https://aiplatform.googleapis.com/v1/projects/<PROJECT>/locations/<LOC>/endpoints/openapi`
 //!
+//! Partner Claude on Vertex also exposes `:rawPredict` / `:streamRawPredict` on publisher model paths;
+//! see [`is_vertex_anthropic_partner_models_base`] and [`anthropic_partner_stream_url`].
+//!
 //! Quirks vs. plain OpenAI-compat that this module handles centrally:
 //!
 //! 1. `/models` is **not** implemented at the openapi base (returns 404 HTML).
@@ -16,9 +19,11 @@
 //!    The publisher-models response uses `publishers/<pub>/models/<id>` —
 //!    we transform to the `<pub>/<id>` form expected by the chat endpoint.
 //!
-//! 3. Auth is a gcloud OAuth access token (`ya29.*`) sent as
-//!    `Authorization: Bearer <token>`. The `x-goog-user-project` header is
-//!    required on the model-listing endpoint to attribute quota/billing.
+//! 3. Auth uses `Authorization: Bearer <token>` where `<token>` is a GCP OAuth2 access token (`ya29.*`).
+//!    Store **`adc`** on the OpenAI-compat credential to resolve tokens via Application Default Credentials
+//!    ([`crate::providers::gcp_adc`]): `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`,
+//!    or GCE metadata. Alternatively paste a token from `gcloud auth print-access-token`.
+//!    The `x-goog-user-project` header is required on the model-listing endpoint to attribute quota/billing.
 
 use serde_json::Value;
 
@@ -44,6 +49,49 @@ const KNOWN_PUBLISHERS: &[&str] = &[
 pub fn is_vertex_openapi_base(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
     lower.contains("aiplatform.googleapis.com") && lower.contains("/endpoints/openapi")
+}
+
+/// Publisher-model Claude on Vertex
+/// (`…/publishers/anthropic/models/<MODEL>`, optional `:rawPredict` / `:streamRawPredict` suffix).
+///
+/// Requires a regional hostname (for example `us-east5-aiplatform.googleapis.com`).
+/// Streaming REPL traffic should use [`anthropic_partner_stream_url`].
+pub fn is_vertex_anthropic_partner_models_base(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    lower.contains("aiplatform.googleapis.com") && lower.contains("/publishers/anthropic/models/")
+}
+
+/// Model id segment from the URL path (`claude-opus-4-6` from `…/models/claude-opus-4-6:rawPredict`).
+pub fn anthropic_partner_model_id(base_url: &str) -> Option<String> {
+    let trimmed = base_url.trim_end_matches('/');
+    let lower = trimmed.to_ascii_lowercase();
+    let path_end = lower
+        .rfind(":streamrawpredict")
+        .or_else(|| lower.rfind(":rawpredict"))
+        .unwrap_or(trimmed.len());
+    let path = &trimmed[..path_end];
+    let needle = "/models/";
+    let idx = path.find(needle)?;
+    let tail = &path[idx + needle.len()..];
+    if tail.is_empty() {
+        return None;
+    }
+    Some(tail.to_string())
+}
+
+/// `:streamRawPredict` URL for streaming (see [Google's REST
+/// docs](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude/use-claude)).
+pub fn anthropic_partner_stream_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    let lower = trimmed.to_ascii_lowercase();
+    let base_no_method = if let Some(i) = lower.rfind(":streamrawpredict") {
+        &trimmed[..i]
+    } else if let Some(i) = lower.rfind(":rawpredict") {
+        &trimmed[..i]
+    } else {
+        trimmed
+    };
+    format!("{base_no_method}:streamRawPredict")
 }
 
 /// Extract the GCP project ID from a Vertex openapi base URL.
@@ -234,7 +282,31 @@ mod tests {
             ),
             Some("my-proj".to_string())
         );
+        assert_eq!(
+            extract_project(
+                "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6:rawPredict"
+            ),
+            Some("sf-internal-tooling".to_string())
+        );
         assert_eq!(extract_project("https://api.openai.com/v1"), None);
+    }
+
+    #[test]
+    fn anthropic_partner_urls_normalize_stream_raw_predict() {
+        let raw = "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6:rawPredict";
+        assert_eq!(
+            anthropic_partner_stream_url(raw),
+            "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6:streamRawPredict"
+        );
+        assert_eq!(
+            anthropic_partner_model_id(raw),
+            Some("claude-opus-4-6".to_string())
+        );
+        let bare = "https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-6";
+        assert_eq!(
+            anthropic_partner_stream_url(bare),
+            format!("{bare}:streamRawPredict")
+        );
     }
 
     #[test]

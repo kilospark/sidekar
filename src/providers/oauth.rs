@@ -32,6 +32,9 @@ pub const KV_KEY_GEMINI: &str = "oauth:gemini";
 pub const KV_KEY_BEDROCK: &str = "oauth:bedrock";
 pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
+/// Sentinel stored as OpenAI-compat `api_key` when auth uses GCP ADC ([`crate::providers::gcp_adc`]).
+pub const OPENAI_COMPAT_GCP_ADC: &str = "__SIDEKAR_GCP_ADC__";
+
 fn metadata_with_provider_type(
     provider_type: &str,
     extra_metadata: serde_json::Value,
@@ -252,11 +255,27 @@ type OAuthRefreshFn = fn(&OAuthCredentials) -> PinOAuthFut;
 /// Force-refresh the stored access token for `cred_name` using its refresh_token,
 /// regardless of the cached `expires_at`. Called after a 401 from the provider —
 /// the server rejected a token we thought was still valid (clock drift,
-/// early rotation, or revocation). Anthropic and Codex only; other providers
-/// store static API keys with no refresh path.
+/// early rotation, or revocation). Supports Anthropic/Codex OAuth and
+/// OpenAI-compat credentials configured with GCP ADC (`metadata.auth = gcp_adc`).
 pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
     let provider_type = resolve_provider_type_for_credential(cred_name)
         .ok_or_else(|| anyhow::anyhow!("unknown credential '{cred_name}'"))?;
+
+    if provider_type == "oac" {
+        let kv_key = kv_key_for(cred_name);
+        let creds = load_credentials(&kv_key)?.with_context(|| {
+            format!(
+                "no stored credentials for OpenAI-compat credential '{cred_name}'"
+            )
+        })?;
+        if creds.metadata.get("auth").and_then(|v| v.as_str()) != Some("gcp_adc") {
+            anyhow::bail!(
+                "credential '{cred_name}' is not using GCP ADC — update the API key or add a new oac credential"
+            );
+        }
+        crate::providers::gcp_adc::invalidate_cache().await;
+        return crate::providers::gcp_adc::cloud_platform_access_token().await;
+    }
 
     let (kv_key, refresh_fn): (String, OAuthRefreshFn) = match provider_type {
         "anthropic" => (
@@ -439,11 +458,26 @@ pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompa
         .unwrap_or(nickname)
         .to_string();
 
+    let api_key = if creds.metadata.get("auth").and_then(|v| v.as_str()) == Some("gcp_adc") {
+        OPENAI_COMPAT_GCP_ADC.to_string()
+    } else {
+        creds.access_token.clone()
+    };
+
     Ok(OpenAiCompatCredentials {
-        api_key: creds.access_token,
+        api_key,
         base_url,
         name,
     })
+}
+
+/// Resolve a stored OpenAI-compat secret for HTTP (`Bearer`). GCP ADC placeholders become fresh OAuth access tokens.
+pub async fn resolve_openai_compat_api_key(api_key: &str) -> Result<String> {
+    if api_key == OPENAI_COMPAT_GCP_ADC {
+        crate::providers::gcp_adc::cloud_platform_access_token().await
+    } else {
+        Ok(api_key.to_string())
+    }
 }
 
 pub async fn login_openai_compat(
@@ -460,11 +494,18 @@ pub async fn login_openai_compat(
         .filter(|url| !url.trim().is_empty())
         .map(|url| url.trim().trim_end_matches('/').to_string())
         .context("Base URL is required")?;
-    let api_key = api_key
+    let api_key_trimmed = api_key
         .filter(|key| !key.trim().is_empty())
         .map(|key| key.trim().to_string())
-        .context("API key is required")?;
-    save_openai_compat_credential(nickname, &name, &base_url, &api_key)
+        .context("API key is required (use `adc` for GCP Application Default Credentials)")?;
+
+    if api_key_trimmed.eq_ignore_ascii_case("adc")
+        || api_key_trimmed.eq_ignore_ascii_case("gcp-adc")
+    {
+        save_openai_compat_adc(nickname, &name, &base_url)
+    } else {
+        save_openai_compat_credential(nickname, &name, &base_url, &api_key_trimmed)
+    }
 }
 
 pub fn save_openai_compat_credential(
@@ -490,6 +531,33 @@ pub fn save_openai_compat_credential(
 
     Ok(OpenAiCompatCredentials {
         api_key,
+        base_url,
+        name,
+    })
+}
+
+pub fn save_openai_compat_adc(
+    nickname: &str,
+    display_name: &str,
+    base_url: &str,
+) -> Result<OpenAiCompatCredentials> {
+    validate_credential_nickname_for_storage(nickname)?;
+    let name = display_name.trim().to_string();
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+
+    save_static_token(
+        &kv_key_for(nickname),
+        "",
+        serde_json::json!({
+            "provider_type": "oac",
+            "auth": "gcp_adc",
+            "name": name,
+            "base_url": base_url,
+        }),
+    )?;
+
+    Ok(OpenAiCompatCredentials {
+        api_key: OPENAI_COMPAT_GCP_ADC.to_string(),
         base_url,
         name,
     })
