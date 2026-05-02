@@ -229,18 +229,22 @@ pub async fn run(
                         stream_attempt += 1;
                         let delay =
                             std::time::Duration::from_millis(500 * 2u64.pow(stream_attempt - 1));
-                        eprintln!(
-                            "\x1b[33m[mid-stream error before any content; \
-                             retrying {stream_attempt}/{STREAM_CONTENT_RETRIES} \
-                             in {:.1}s: {e:#}]\x1b[0m",
-                            delay.as_secs_f32()
-                        );
                         crate::broker::try_log_error(
                             "repl",
                             &format!(
                                 "mid-stream retry ({stream_attempt}/{STREAM_CONTENT_RETRIES})"
                             ),
                             Some(&format!("{e:#}")),
+                        );
+                        crate::broker::try_log_event(
+                            "debug",
+                            "repl",
+                            "mid-stream-retry-scheduled",
+                            Some(&format!(
+                                "attempt={stream_attempt} max={} delay_secs={:.1}",
+                                STREAM_CONTENT_RETRIES,
+                                delay.as_secs_f32()
+                            )),
                         );
                         // Discard the failed reclaim handle —
                         // there's no live WS to reclaim, and

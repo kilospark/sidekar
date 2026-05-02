@@ -1402,14 +1402,23 @@ async fn catalog_send_openai_compat_model_list_json(
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
             if verbose {
-                eprintln!("\x1b[33m[model list: {url} returned {status}: {body}]\x1b[0m");
+                crate::broker::try_log_event(
+                    "debug",
+                    "provider",
+                    "model-list-http-error",
+                    Some(&format!("url={url} status={status} body={body}")),
+                );
             }
             let detail = format_api_error_body(&body);
             return Err(format!("API error ({status}) at {url}: {detail}"));
         }
         Err(e) => {
             if verbose {
-                eprintln!("\x1b[33m[model list: {url} failed: {e}]\x1b[0m");
+                crate::broker::try_log_error(
+                    "provider",
+                    &format!("model list request failed: {url}"),
+                    Some(&format!("{e:#}")),
+                );
             }
             return Err(format!("API request to {url} failed: {e}"));
         }
@@ -1469,7 +1478,12 @@ pub async fn fetch_openai_compat_model_list(
     let url = openai_models_url(base_url);
     let verbose = is_verbose();
     if verbose {
-        eprintln!("\x1b[2m[fetching models from {url}]\x1b[0m");
+        crate::broker::try_log_event(
+            "debug",
+            "provider",
+            "fetching-model-list",
+            Some(&format!("url={url}")),
+        );
     }
     let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
 
@@ -1833,16 +1847,26 @@ impl Provider {
                     match oauth::force_refresh_token(&cred).await {
                         Ok(new_key) => {
                             refreshed_key = Some(new_key);
-                            eprintln!(
-                                "\x1b[2m[credential `{cred}` refreshed after 401, retrying]\x1b[0m"
+                            crate::broker::try_log_event(
+                                "debug",
+                                "provider",
+                                "credential-refreshed-after-401",
+                                Some(&format!("credential={cred}")),
                             );
                         }
                         Err(refresh_err) => {
-                            eprintln!(
-                                "\x1b[31m[credential `{cred}` refresh failed: {refresh_err:#}]\x1b[0m"
+                            crate::broker::try_log_error(
+                                "provider",
+                                &format!("credential refresh failed: {cred}"),
+                                Some(&format!("{refresh_err:#}")),
                             );
-                            eprintln!(
-                                "\x1b[33m[run `/credential {cred}` to re-resolve, or `sidekar repl login {cred}` to re-authenticate]\x1b[0m"
+                            crate::broker::try_log_event(
+                                "debug",
+                                "provider",
+                                "credential-refresh-remediation",
+                                Some(&format!(
+                                    "credential={cred} hint=/credential {cred} or sidekar repl login {cred}"
+                                )),
                             );
                             return result;
                         }
@@ -1851,15 +1875,19 @@ impl Provider {
                 Err(e) if attempt < max_retries && is_retryable_error(e) => {
                     attempt += 1;
                     let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
-                    eprintln!("\x1b[33m[error: {e:#}]\x1b[0m");
-                    eprintln!(
-                        "\x1b[33m[retrying {attempt}/{max_retries} in {:.1}s...]\x1b[0m",
-                        delay.as_secs_f32()
-                    );
                     crate::broker::try_log_error(
                         "repl",
                         &format!("retrying ({attempt}/{max_retries})"),
                         Some(&format!("{e:#}")),
+                    );
+                    crate::broker::try_log_event(
+                        "debug",
+                        "provider",
+                        "retry-scheduled",
+                        Some(&format!(
+                            "attempt={attempt} max={max_retries} delay_secs={:.1}",
+                            delay.as_secs_f32()
+                        )),
                     );
                     tokio::time::sleep(delay).await;
                 }
