@@ -121,9 +121,14 @@ pub async fn create_cache(req: CreateCacheRequest<'_>) -> Result<Option<CreatedC
         // malformed payload). Surface as Ok(None) so the caller
         // gracefully falls back to uncached generateContent.
         if status.is_client_error() {
-            eprintln!(
-                "gemini cache: create rejected ({status}), falling back to uncached: {}",
-                truncate_for_log(&text, 200)
+            crate::broker::try_log_event(
+                "debug",
+                "gemini-cache",
+                "create-rejected-fallback-uncached",
+                Some(&format!(
+                    "status={status} body={}",
+                    truncate_for_log(&text, 200)
+                )),
             );
             return Ok(None);
         }

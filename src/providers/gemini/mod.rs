@@ -744,11 +744,20 @@ async fn parse_sse_stream(
                             // captures / debug output. Agent loop will
                             // see an empty assistant turn and likely
                             // bail with "no output" — acceptable.
-                            eprintln!("gemini: stream ended with content-policy stop: {reason}");
+                            crate::broker::try_log_event(
+                                "debug",
+                                "gemini",
+                                "content-policy-stop",
+                                Some(reason),
+                            );
                             StopReason::Stop
                         }
                         "OTHER" | "MALFORMED_FUNCTION_CALL" => {
-                            eprintln!("gemini: stream ended abnormally: {reason}");
+                            crate::broker::try_log_error(
+                                "gemini",
+                                &format!("stream ended abnormally: {reason}"),
+                                None,
+                            );
                             StopReason::Error
                         }
                         _ => StopReason::Stop,

@@ -67,7 +67,12 @@ pub async fn fetch_models(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
         Some(p) => p,
         None => {
             if verbose {
-                eprintln!("\x1b[33m[vertex: could not extract project from {base_url}]\x1b[0m");
+                crate::broker::try_log_event(
+                    "debug",
+                    "vertex",
+                    "extract-project-failed",
+                    Some(base_url),
+                );
             }
             return Vec::new();
         }
@@ -77,7 +82,11 @@ pub async fn fetch_models(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
         Ok(c) => c,
         Err(e) => {
             if verbose {
-                eprintln!("\x1b[33m[vertex: failed to build http client: {e}]\x1b[0m");
+                crate::broker::try_log_error(
+                    "vertex",
+                    "failed to build http client",
+                    Some(&format!("{e:#}")),
+                );
             }
             return Vec::new();
         }
@@ -103,7 +112,11 @@ pub async fn fetch_models(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
                 Ok(r) => r,
                 Err(e) => {
                     if verbose {
-                        eprintln!("\x1b[33m[vertex: {url} failed: {e}]\x1b[0m");
+                        crate::broker::try_log_error(
+                            "vertex",
+                            &format!("model list request failed: {url}"),
+                            Some(&format!("{e:#}")),
+                        );
                     }
                     return Vec::new();
                 }
@@ -111,7 +124,12 @@ pub async fn fetch_models(api_key: &str, base_url: &str) -> Vec<RemoteModel> {
             if !resp.status().is_success() {
                 if verbose {
                     let status = resp.status();
-                    eprintln!("\x1b[33m[vertex: {url} returned {status}]\x1b[0m");
+                    crate::broker::try_log_event(
+                        "debug",
+                        "vertex",
+                        "model-list-http-error",
+                        Some(&format!("url={url} status={status}")),
+                    );
                 }
                 return Vec::new();
             }
