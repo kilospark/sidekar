@@ -34,6 +34,8 @@
 //! helpers, writes go through `memory::write_memory_event`. No
 //! new SQL invented here.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use anyhow::Result;

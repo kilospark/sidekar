@@ -56,7 +56,6 @@ use crate::runtime;
 use super::idle::IdleTracker;
 use super::parse;
 use super::prefilter::{self, Verdict};
-use super::promote;
 use super::prompt;
 use super::redact;
 use super::scan;
@@ -258,31 +257,45 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
         Err(e) => return Outcome::Failed(e),
     };
 
-    // Run the memory promoter. Promotion is idempotent — repeat
-    // calls reinforce existing memories via the dedup path rather
-    // than duplicating rows. Failures here are non-fatal: the
-    // journal row is already persisted, so at worst we miss an
-    // opportunity to promote this pass and pick it up next time.
-    match promote::run_for_project(&ctx.project) {
-        Ok(outcome) if outcome.constraints_promoted + outcome.decisions_promoted > 0 => {
+    // Extract reviewable candidates and auto-promote repeated
+    // ones into durable memory. Failures here are non-fatal: the
+    // journal row is already persisted, so at worst we miss a
+    // learning pass and pick it up next time.
+    match crate::memory::process_journal_candidates(
+        &ctx.project,
+        &ctx.session_id,
+        inserted_id,
+        &cleaned,
+    ) {
+        Ok(outcome) if outcome.extracted > 0 => {
             broker::try_log_event(
                 "info",
                 "journal",
-                "promoted",
+                "memory-candidates",
                 Some(&format!(
-                    "project={} constraints={} decisions={} memory_ids={:?}",
+                    "project={} journal_id={} extracted={} inserted={} updated={} auto_promoted={} reinforced={} resolved={} contradicted={} memory_ids={:?}",
                     ctx.project,
-                    outcome.constraints_promoted,
-                    outcome.decisions_promoted,
-                    outcome.new_memory_ids,
+                    inserted_id,
+                    outcome.extracted,
+                    outcome.inserted,
+                    outcome.updated,
+                    outcome.auto_promoted,
+                    outcome.reinforced,
+                    outcome.resolved,
+                    outcome.contradicted,
+                    outcome.memory_ids,
                 )),
             );
         }
         Ok(_) => {
-            // Scan ran, nothing reached the threshold. Normal.
+            // No candidate-worthy items surfaced in this journal.
         }
         Err(e) => {
-            broker::try_log_error("journal", &format!("promote failed: {e:#}"), None);
+            broker::try_log_error(
+                "journal",
+                &format!("candidate extraction failed: {e:#}"),
+                None,
+            );
         }
     }
 

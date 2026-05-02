@@ -1,9 +1,10 @@
 use super::*;
 
 fn with_test_home<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+    let _guard = match crate::test_home_lock().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     let old_home = env::var_os("HOME");
     let temp_home = env::temp_dir().join(format!("sidekar-memory-test-{}", now_epoch_ms()));
@@ -210,6 +211,66 @@ fn hygiene_clean_db_has_no_issues() -> Result<()> {
             "clean DB should have no issues, got: {:?}",
             report.issues
         );
+        Ok(())
+    })
+}
+
+#[test]
+fn relevant_brief_selects_matching_memories_and_logs_usage() -> Result<()> {
+    with_test_home(|| {
+        crate::broker::init_db()?;
+        let conn = crate::broker::open_db()?;
+        conn.execute(
+            "INSERT INTO repl_sessions (id, cwd, created_at, updated_at)
+             VALUES ('s-brief', '/tmp/proj', 0.0, 0.0)",
+            [],
+        )?;
+
+        write_memory_event(
+            "proj",
+            "artifact-pointer",
+            "project",
+            "Relevant file: src/providers/bedrock.rs",
+            0.7,
+            &[],
+            "passive",
+            "journal-candidate",
+        )?;
+        write_memory_event(
+            "proj",
+            "constraint",
+            "project",
+            "Never guess AWS response shape",
+            0.8,
+            &[],
+            "explicit",
+            "user",
+        )?;
+
+        let brief = relevant_brief("proj", "check src/providers/bedrock.rs streaming", 5)?;
+        assert!(
+            brief
+                .text
+                .contains("Relevant file: src/providers/bedrock.rs")
+        );
+        assert!(!brief.ids.is_empty());
+
+        accept_selected_memories(&brief.ids, "s-brief", Some("e-1"), "bedrock.rs streaming")?;
+
+        let usage_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_events_usage WHERE usage_kind IN ('selected', 'accepted')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(usage_count, (brief.ids.len() * 2) as i64);
+        let reinforced: (i64, f64) = conn.query_row(
+            "SELECT reinforcement_count, confidence FROM memory_events
+              WHERE summary = 'Relevant file: src/providers/bedrock.rs'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!(reinforced.0 >= 1);
+        assert!(reinforced.1 > 0.7);
         Ok(())
     })
 }

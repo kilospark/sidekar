@@ -104,7 +104,9 @@ pub async fn run(
         let context_window = match context_window {
             Some(v) => v,
             None => {
-                on_event(&StreamEvent::ResolvingContext);
+                if crate::providers::cached_context_window(model).is_none() {
+                    on_event(&StreamEvent::ResolvingContext);
+                }
                 let v = crate::providers::fetch_context_window(model, provider).await;
                 context_window = Some(v);
                 v

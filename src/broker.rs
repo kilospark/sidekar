@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 mod agent_registry;
 mod agent_sessions;
@@ -618,6 +618,61 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ON memory_journal_support(memory_id);
         CREATE INDEX IF NOT EXISTS idx_memory_journal_support_journal
             ON memory_journal_support(journal_id);
+
+        /*
+         * memory_candidates
+         * -----------------
+         * Auto-extracted learning candidates from journals before or alongside
+         * durable promotion into memory_events. Gives the self-learning loop a
+         * reviewable, queryable staging area instead of silently jumping from
+         * journal text to durable memory.
+         */
+        CREATE TABLE IF NOT EXISTS memory_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            journal_id INTEGER NOT NULL REFERENCES session_journals(id),
+            event_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            summary_norm TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            status TEXT NOT NULL DEFAULT 'new',
+            source_kind TEXT NOT NULL,
+            trigger_kind TEXT NOT NULL,
+            related_memory_id INTEGER REFERENCES memory_events(id),
+            support_count INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE(project, event_type, scope, summary_norm)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_candidates_project_time
+            ON memory_candidates(project, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_memory_candidates_status
+            ON memory_candidates(status, updated_at DESC);
+
+        /*
+         * memory_events_usage
+         * -------------------
+         * Audit trail for automatic memory selection, reinforcement,
+         * contradiction, and resolution. Keeps learning lifecycle
+         * inspectable instead of collapsing everything into confidence
+         * deltas with no provenance.
+         */
+        CREATE TABLE IF NOT EXISTS memory_events_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL REFERENCES memory_events(id),
+            session_id TEXT REFERENCES repl_sessions(id),
+            journal_id INTEGER REFERENCES session_journals(id),
+            entry_id TEXT,
+            usage_kind TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_events_usage_memory_time
+            ON memory_events_usage(memory_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_memory_events_usage_kind_time
+            ON memory_events_usage(usage_kind, created_at DESC);
         ",
     )?;
 

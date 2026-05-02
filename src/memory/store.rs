@@ -1,5 +1,17 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+pub(super) struct MemoryUsageRow {
+    pub id: i64,
+    pub memory_id: i64,
+    pub session_id: Option<String>,
+    pub journal_id: Option<i64>,
+    pub entry_id: Option<String>,
+    pub usage_kind: String,
+    pub detail_json: String,
+    pub created_at: f64,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_memory_event(
     project: &str,
@@ -130,6 +142,7 @@ pub(super) fn search_events(
                AND (e.project = ?2 OR e.scope = 'global')
                AND e.event_type = ?3
                AND e.superseded_by IS NULL
+               AND e.tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY rank
              LIMIT ?4"
         }
@@ -142,6 +155,7 @@ pub(super) fn search_events(
              WHERE memory_events_fts MATCH ?1
                AND (e.project = ?2 OR e.scope = 'global')
                AND e.superseded_by IS NULL
+               AND e.tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY rank
              LIMIT ?3"
         }
@@ -155,6 +169,7 @@ pub(super) fn search_events(
                AND e.scope = 'global'
                AND e.event_type = ?2
                AND e.superseded_by IS NULL
+               AND e.tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY rank
              LIMIT ?3"
         }
@@ -167,6 +182,7 @@ pub(super) fn search_events(
              WHERE memory_events_fts MATCH ?1
                AND e.scope = 'global'
                AND e.superseded_by IS NULL
+               AND e.tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY rank
              LIMIT ?2"
         }
@@ -179,6 +195,7 @@ pub(super) fn search_events(
              WHERE memory_events_fts MATCH ?1
                AND e.event_type = ?2
                AND e.superseded_by IS NULL
+               AND e.tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY rank
              LIMIT ?3"
         }
@@ -190,6 +207,7 @@ pub(super) fn search_events(
              JOIN memory_events e ON memory_events_fts.rowid = e.id
              WHERE memory_events_fts MATCH ?1
                AND e.superseded_by IS NULL
+               AND e.tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY rank
              LIMIT ?2"
         }
@@ -256,6 +274,7 @@ pub(super) fn ranked_recent_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE (project = ?1 OR scope = 'global') AND superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
              LIMIT ?2"
         }
@@ -264,6 +283,7 @@ pub(super) fn ranked_recent_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE scope = 'global' AND superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
              LIMIT ?1"
         }
@@ -272,6 +292,7 @@ pub(super) fn ranked_recent_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY confidence DESC, reinforcement_count DESC, created_at DESC
              LIMIT ?1"
         }
@@ -409,12 +430,15 @@ pub(super) fn exact_match_id(
     let sql = if scope == "global" {
         "SELECT id
          FROM memory_events
-         WHERE summary_hash = ?1 AND event_type = ?2 AND scope = 'global' AND superseded_by IS NULL
+         WHERE summary_hash = ?1 AND event_type = ?2 AND scope = 'global'
+           AND superseded_by IS NULL
+           AND tags_json NOT LIKE '%\"_resolved\"%'
          LIMIT 1"
     } else {
         "SELECT id
          FROM memory_events
          WHERE summary_hash = ?1 AND event_type = ?2 AND superseded_by IS NULL
+           AND tags_json NOT LIKE '%\"_resolved\"%'
            AND (project = ?3 OR scope = 'global')
          LIMIT 1"
     };
@@ -437,7 +461,12 @@ where
     for id in ids {
         conn.execute(
             "UPDATE memory_events
-             SET reinforcement_count = reinforcement_count + 1, last_reinforced_at = ?2, updated_at = ?2
+             SET confidence = CASE
+                    WHEN source_kind = 'user' THEN MIN(confidence + 0.03, 1.0)
+                    ELSE MIN(confidence + 0.03, 0.93)
+                 END,
+                 reinforcement_count = reinforcement_count + 1,
+                 last_reinforced_at = ?2, updated_at = ?2
              WHERE id = ?1",
             params![id, now],
         )?;
@@ -454,6 +483,87 @@ pub(super) fn event_tags(conn: &rusqlite::Connection, id: i64) -> Result<Vec<Str
     Ok(serde_json::from_str(&tags).unwrap_or_default())
 }
 
+pub(super) fn mark_memory_resolved(memory_id: i64) -> Result<()> {
+    let conn = crate::broker::open_db()?;
+    let mut tags = event_tags(&conn, memory_id)?;
+    if !tags.iter().any(|tag| tag == "_resolved") {
+        tags.push("_resolved".to_string());
+    }
+    let now = now_epoch_ms();
+    conn.execute(
+        "UPDATE memory_events
+         SET tags_json = ?2,
+             confidence = MIN(confidence, 0.35),
+             updated_at = ?3
+         WHERE id = ?1",
+        params![memory_id, serde_json::to_string(&tags)?, now],
+    )?;
+    Ok(())
+}
+
+pub(super) fn log_memory_usage(
+    memory_id: i64,
+    session_id: Option<&str>,
+    journal_id: Option<i64>,
+    entry_id: Option<&str>,
+    usage_kind: &str,
+    detail_json: Option<&str>,
+) -> Result<()> {
+    let conn = crate::broker::open_db()?;
+    conn.execute(
+        "INSERT INTO memory_events_usage (
+            memory_id, session_id, journal_id, entry_id, usage_kind, detail_json, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            memory_id,
+            session_id,
+            journal_id,
+            entry_id,
+            usage_kind,
+            detail_json.unwrap_or("{}"),
+            now_epoch_ms() as f64 / 1000.0
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn recent_memory_usage(memory_id: i64, limit: usize) -> Result<Vec<MemoryUsageRow>> {
+    let conn = crate::broker::open_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, memory_id, session_id, journal_id, entry_id, usage_kind, detail_json, created_at
+           FROM memory_events_usage
+          WHERE memory_id = ?1
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?2",
+    )?;
+    let mut rows = stmt.query(params![memory_id, limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(MemoryUsageRow {
+            id: row.get(0)?,
+            memory_id: row.get(1)?,
+            session_id: row.get(2)?,
+            journal_id: row.get(3)?,
+            entry_id: row.get(4)?,
+            usage_kind: row.get(5)?,
+            detail_json: row.get(6)?,
+            created_at: row.get(7)?,
+        });
+    }
+    Ok(out)
+}
+
+pub(super) fn superseded_memory_ids(new_memory_id: i64) -> Result<Vec<i64>> {
+    let conn = crate::broker::open_db()?;
+    let mut stmt = conn.prepare("SELECT id FROM memory_events WHERE superseded_by = ?1")?;
+    let rows = stmt.query_map([new_memory_id], |row| row.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 pub(super) fn find_active_events(
     conn: &rusqlite::Connection,
     project: Option<&str>,
@@ -465,6 +575,7 @@ pub(super) fn find_active_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE (project = ?1 OR scope = 'global') AND event_type = ?2 AND superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY created_at DESC"
         }
         (Some(_), None) => {
@@ -472,6 +583,7 @@ pub(super) fn find_active_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE (project = ?1 OR scope = 'global') AND superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY created_at DESC"
         }
         (None, Some(_)) => {
@@ -479,6 +591,7 @@ pub(super) fn find_active_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE event_type = ?1 AND superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY created_at DESC"
         }
         (None, None) => {
@@ -486,6 +599,7 @@ pub(super) fn find_active_events(
                     tags_json, supersedes_json, superseded_by, created_at, updated_at
              FROM memory_events
              WHERE superseded_by IS NULL
+               AND tags_json NOT LIKE '%\"_resolved\"%'
              ORDER BY created_at DESC"
         }
     };

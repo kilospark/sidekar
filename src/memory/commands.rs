@@ -13,6 +13,8 @@ pub async fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
         "detail" => cmd_memory_detail(ctx, &args[1..]),
+        "usage" => cmd_memory_usage(ctx, &args[1..]),
+        "candidates" => super::candidates::cmd_memory_candidates(ctx, &args[1..]),
         "import" => super::import::cmd_memory_import(ctx, &args[1..]).await,
         "" => cmd_memory_list(ctx, args),
         other => bail!("Unknown memory subcommand: {other}"),
@@ -73,9 +75,6 @@ pub fn startup_brief(limit: usize) -> Result<String> {
     if sections.is_empty() {
         return Ok(String::new());
     }
-
-    let ids: Vec<i64> = deduped.iter().take(limit * 4).map(|row| row.id).collect();
-    reinforce_events(ids)?;
 
     Ok(sections.join("\n"))
 }
@@ -704,5 +703,98 @@ fn cmd_memory_detail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         updated_at: row.15,
     };
     out!(ctx, "{}", crate::output::to_string(&output)?);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct MemoryUsageItem {
+    id: i64,
+    memory_id: i64,
+    session_id: Option<String>,
+    journal_id: Option<i64>,
+    entry_id: Option<String>,
+    usage_kind: String,
+    detail_json: String,
+    created_at: f64,
+}
+
+#[derive(serde::Serialize)]
+struct MemoryUsageOutput {
+    memory_id: i64,
+    items: Vec<MemoryUsageItem>,
+}
+
+impl crate::output::CommandOutput for MemoryUsageOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.items.is_empty() {
+            writeln!(w, "0 usage rows for memory [{}].", self.memory_id)?;
+            return Ok(());
+        }
+        writeln!(
+            w,
+            "{} usage rows for memory [{}]:",
+            self.items.len(),
+            self.memory_id
+        )?;
+        for item in &self.items {
+            let session = item
+                .session_id
+                .as_deref()
+                .map(|value| format!(" session={}", &value[..value.len().min(8)]))
+                .unwrap_or_default();
+            let journal = item
+                .journal_id
+                .map(|value| format!(" journal={value}"))
+                .unwrap_or_default();
+            let entry = item
+                .entry_id
+                .as_deref()
+                .map(|value| format!(" entry={value}"))
+                .unwrap_or_default();
+            let detail = if item.detail_json == "{}" {
+                String::new()
+            } else {
+                format!(" detail={}", item.detail_json)
+            };
+            writeln!(
+                w,
+                "[{}] {} at {:.3}{}{}{}{}",
+                item.id, item.usage_kind, item.created_at, session, journal, entry, detail
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn cmd_memory_usage(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let id: i64 = args
+        .first()
+        .context("Usage: sidekar memory usage <id> [--limit=N]")?
+        .parse()
+        .context("memory id must be numeric")?;
+    let limit = extract_optional_value(args, "--limit=")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20);
+    let items = recent_memory_usage(id, limit)?
+        .into_iter()
+        .map(|row| MemoryUsageItem {
+            id: row.id,
+            memory_id: row.memory_id,
+            session_id: row.session_id,
+            journal_id: row.journal_id,
+            entry_id: row.entry_id,
+            usage_kind: row.usage_kind,
+            detail_json: row.detail_json,
+            created_at: row.created_at,
+        })
+        .collect();
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&MemoryUsageOutput {
+            memory_id: id,
+            items,
+        })?
+    );
     Ok(())
 }

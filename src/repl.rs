@@ -49,6 +49,27 @@ fn repl_status_dim(msg: &str) {
     tunnel_println(&format!("\x1b[2m{msg}\x1b[0m"));
 }
 
+async fn maybe_run_final_journal(ctx: Option<&self::journal::task::Context>) {
+    let Some(ctx) = ctx else {
+        return;
+    };
+
+    match self::journal::task::run_once(ctx).await {
+        self::journal::task::Outcome::Persisted { id, .. } => {
+            if crate::runtime::verbose() {
+                repl_status_dim(&format!("[final journal #{id} written]"));
+            }
+        }
+        self::journal::task::Outcome::Failed(e) => {
+            crate::broker::try_log_error("journal", &format!("final flush failed: {e:#}"), None);
+        }
+        self::journal::task::Outcome::SkippedJournalOff
+        | self::journal::task::Outcome::SkippedOverBudget { .. }
+        | self::journal::task::Outcome::SkippedEmptySlice
+        | self::journal::task::Outcome::SkippedLowSignal { .. } => {}
+    }
+}
+
 /// Resolve a session from the resume option, creating a fresh one if needed.
 /// `credential` is stored on new sessions so `/sessions` can show which
 /// credential authored them.
@@ -267,12 +288,25 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         };
         let cred_tag = cred_name.as_deref().unwrap_or("");
         let (session_id, mut history) = resolve_session(&cwd, mdl, cred_tag, opts.resume.as_ref())?;
+        let prompt_text = input.clone();
         let user_msg = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text: input }],
         };
-        let _ = session::append_message(&session_id, &user_msg);
+        let user_entry_id = session::append_message(&session_id, &user_msg).ok();
         history.push(user_msg);
+
+        let relevant_memory = crate::memory::relevant_brief(&scope_project, &prompt_text, 5)
+            .unwrap_or(crate::memory::RelevantMemoryBrief {
+                text: String::new(),
+                ids: Vec::new(),
+            });
+        let mut turn_system_prompt = system_prompt.clone();
+        if !relevant_memory.text.trim().is_empty() {
+            turn_system_prompt.push('\n');
+            turn_system_prompt.push_str(&relevant_memory.text);
+            turn_system_prompt.push('\n');
+        }
 
         let mut prev_resp_id: Option<String> = None;
         let mut cached_ws: Option<providers::codex::CachedWs> = None;
@@ -300,7 +334,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let run_result = crate::agent::run(
             prov,
             mdl,
-            &system_prompt,
+            &turn_system_prompt,
             &mut history,
             &tool_defs,
             on_event,
@@ -318,6 +352,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             repl_status_dim("[turn complete]");
         }
 
+        let run_ok = run_result.is_ok();
         let did_compact = run_result?;
         if did_compact {
             let _ = session::replace_history(&session_id, &history);
@@ -326,6 +361,23 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 let _ = session::append_message(&session_id, msg);
             }
         }
+        if run_ok {
+            let _ = crate::memory::accept_selected_memories(
+                &relevant_memory.ids,
+                &session_id,
+                user_entry_id.as_deref(),
+                &prompt_text,
+            );
+        }
+
+        let journal_ctx = self::journal::task::Context {
+            provider: std::sync::Arc::new(prov.clone()),
+            session_id: session_id.clone(),
+            project: scope_project.clone(),
+            model: mdl.clone(),
+            cred_name: cred_name.clone().unwrap_or_default(),
+        };
+        maybe_run_final_journal(Some(&journal_ctx)).await;
 
         stop_relay(tunnel_tx.take());
         crate::poller::shutdown_poller();
@@ -394,6 +446,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     //     then-current values.
     // On REPL exit the handle is aborted to stop the poll loop.
     let mut journal_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut journal_ctx: Option<self::journal::task::Context> = None;
 
     loop {
         // Disarm before we block on stdin — an about-to-type user
@@ -565,6 +618,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 model: mdl.clone(),
                 cred_name: cred_name.clone().unwrap_or_default(),
             };
+            journal_ctx = Some(ctx.clone());
             journal_task = Some(self::journal::task::spawn_polling_loop(
                 ctx,
                 idle_tracker.clone(),
@@ -580,6 +634,21 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             };
             history.push(user_msg);
             had_staged_user = true;
+        }
+
+        let selection_hint = input.as_ref().map(|sub| sub.text.clone());
+        let relevant_memory = selection_hint
+            .as_deref()
+            .and_then(|hint| crate::memory::relevant_brief(&scope_name, hint, 5).ok())
+            .unwrap_or(crate::memory::RelevantMemoryBrief {
+                text: String::new(),
+                ids: Vec::new(),
+            });
+        let mut turn_system_prompt = system_prompt.clone();
+        if !relevant_memory.text.trim().is_empty() {
+            turn_system_prompt.push('\n');
+            turn_system_prompt.push_str(&relevant_memory.text);
+            turn_system_prompt.push('\n');
         }
 
         // Run agent loop
@@ -639,7 +708,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let run_result = crate::agent::run(
             prov,
             mdl,
-            &system_prompt,
+            &turn_system_prompt,
             &mut history,
             &tool_defs,
             on_event,
@@ -681,11 +750,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         };
 
         // Persist: full replace only after compaction; otherwise append this turn (user only after success).
+        let mut user_entry_id: Option<String> = None;
         if did_compact {
             let _ = session::replace_history(&session_id, &history);
         } else if run_ok {
             if had_staged_user {
-                let _ = session::append_message(&session_id, &history[pre_len - 1]);
+                user_entry_id = session::append_message(&session_id, &history[pre_len - 1]).ok();
             }
             for msg in &history[pre_len..] {
                 let _ = session::append_message(&session_id, msg);
@@ -694,6 +764,15 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             for msg in &history[pre_len..] {
                 let _ = session::append_message(&session_id, msg);
             }
+        }
+
+        if run_ok && let Some(hint) = selection_hint.as_deref() {
+            let _ = crate::memory::accept_selected_memories(
+                &relevant_memory.ids,
+                &session_id,
+                user_entry_id.as_deref(),
+                hint,
+            );
         }
 
         // Auto-submit follow-ups queued during this turn (merged into one message).
@@ -720,7 +799,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // future poll will run against this tracker.
     if let Some(handle) = journal_task.take() {
         handle.abort();
+        let _ = handle.await;
     }
+    maybe_run_final_journal(journal_ctx.as_ref()).await;
 
     stop_relay(tunnel_tx);
     crate::poller::shutdown_poller();

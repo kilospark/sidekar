@@ -344,6 +344,62 @@ fn schema_migration_creates_memory_journal_support() -> Result<()> {
 }
 
 #[test]
+fn schema_migration_creates_memory_events_usage() -> Result<()> {
+    with_test_db(|| {
+        init_db()?;
+        let conn = open()?;
+
+        conn.execute(
+            "INSERT INTO repl_sessions (id, cwd, created_at, updated_at)
+             VALUES ('s-usage', '/tmp/t', 0.0, 0.0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO session_journals (
+                 session_id, project, created_at, from_entry_id,
+                 to_entry_id, structured_json, headline, model_used,
+                 cred_used
+             ) VALUES ('s-usage', '/tmp/t', 0.0, 'a', 'b', '{}', 'h', 'm', 'c')",
+            [],
+        )?;
+        let journal_id: i64 = conn.query_row(
+            "SELECT id FROM session_journals WHERE session_id = 's-usage'",
+            [],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO memory_events (
+                 project, event_type, scope, summary, summary_norm,
+                 confidence, created_at, updated_at
+             ) VALUES ('/tmp/t', 'decision', 'project',
+                       'picked sqlite', 'picked sqlite', 0.7, 0, 0)",
+            [],
+        )?;
+        let memory_id: i64 = conn.query_row(
+            "SELECT id FROM memory_events WHERE summary = 'picked sqlite'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        conn.execute(
+            "INSERT INTO memory_events_usage (
+                 memory_id, session_id, journal_id, entry_id, usage_kind, detail_json, created_at
+             ) VALUES (?1, 's-usage', ?2, 'e-1', 'reinforced', '{\"source\":\"test\"}', 1.0)",
+            rusqlite::params![memory_id, journal_id],
+        )?;
+
+        let row: (String, String) = conn.query_row(
+            "SELECT usage_kind, detail_json FROM memory_events_usage WHERE memory_id = ?1",
+            [memory_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(row.0, "reinforced");
+        assert_eq!(row.1, "{\"source\":\"test\"}");
+        Ok(())
+    })
+}
+
+#[test]
 fn cancel_outbound_request_flips_open_to_cancelled_and_clears_pending() -> Result<()> {
     with_test_db(|| {
         let sender = AgentId {

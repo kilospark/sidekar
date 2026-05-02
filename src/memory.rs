@@ -145,17 +145,24 @@ struct SearchResultRow {
     score: f64,
 }
 
+mod candidates;
 mod commands;
 mod hygiene;
 mod import;
 mod store;
 mod util;
 
+pub(crate) use candidates::process_journal_candidates;
 pub use commands::cmd_memory;
 pub use commands::startup_brief;
 use hygiene::*;
 use store::*;
 use util::*;
+
+pub struct RelevantMemoryBrief {
+    pub text: String,
+    pub ids: Vec<i64>,
+}
 
 /// Public entry for programmatic callers that need to write a
 /// memory event. Wraps `store::write_memory_event` so external
@@ -199,6 +206,139 @@ pub fn write_memory_event(
         trigger_kind,
         source_kind,
     )
+}
+
+pub fn relevant_brief(
+    project: &str,
+    hint: &str,
+    limit: usize,
+) -> anyhow::Result<RelevantMemoryBrief> {
+    let query = hint.trim();
+    if query.is_empty() {
+        return Ok(RelevantMemoryBrief {
+            text: String::new(),
+            ids: Vec::new(),
+        });
+    }
+
+    let mut matches = search_events(
+        query,
+        crate::scope::ScopeView::Project,
+        Some(project),
+        None,
+        limit.saturating_mul(3).max(limit),
+    )?;
+    for term in path_like_terms(query) {
+        matches.extend(search_events(
+            &term,
+            crate::scope::ScopeView::Project,
+            Some(project),
+            None,
+            limit,
+        )?);
+    }
+    matches.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let rows = dedupe_rows_by_norm(matches.into_iter().map(|item| item.row).collect());
+    if rows.is_empty() {
+        return Ok(RelevantMemoryBrief {
+            text: String::new(),
+            ids: Vec::new(),
+        });
+    }
+
+    let mut lines = vec!["## Relevant Memory".to_string()];
+    let mut ids = Vec::new();
+    for row in rows.into_iter().take(limit) {
+        ids.push(row.id);
+        let scope = if row.scope == crate::scope::GLOBAL_SCOPE {
+            " [global]"
+        } else {
+            ""
+        };
+        lines.push(format!("- [{}] {}{}", row.event_type, row.summary, scope));
+    }
+
+    Ok(RelevantMemoryBrief {
+        text: lines.join("\n"),
+        ids,
+    })
+}
+
+pub fn log_selected_memories(
+    ids: &[i64],
+    session_id: &str,
+    entry_id: Option<&str>,
+    hint: &str,
+) -> anyhow::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let detail = serde_json::json!({ "hint": hint }).to_string();
+    for id in ids {
+        log_memory_usage(
+            *id,
+            Some(session_id),
+            None,
+            entry_id,
+            "selected",
+            Some(&detail),
+        )?;
+    }
+    Ok(())
+}
+
+pub fn accept_selected_memories(
+    ids: &[i64],
+    session_id: &str,
+    entry_id: Option<&str>,
+    hint: &str,
+) -> anyhow::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let detail = serde_json::json!({ "hint": hint }).to_string();
+    for id in ids {
+        log_memory_usage(
+            *id,
+            Some(session_id),
+            None,
+            entry_id,
+            "selected",
+            Some(&detail),
+        )?;
+        log_memory_usage(
+            *id,
+            Some(session_id),
+            None,
+            entry_id,
+            "accepted",
+            Some(&detail),
+        )?;
+    }
+    reinforce_events(ids.iter().copied())?;
+    Ok(())
+}
+
+fn path_like_terms(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in query.split_whitespace() {
+        let cleaned = token
+            .trim_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
+                )
+            })
+            .trim();
+        if cleaned.contains('/') || cleaned.contains('.') {
+            out.push(cleaned.to_string());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
