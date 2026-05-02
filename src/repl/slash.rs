@@ -251,7 +251,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     .iter()
                     .position(|s| s.session.id == *current_session)
                 {
-                    Some(sessions.swap_remove(idx))
+                    Some(sessions.remove(idx))
                 } else {
                     current_info
                 };
@@ -267,7 +267,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         "Current: {} ({} msgs, {} ago, {})",
                         &c.session.id[..8],
                         c.messages,
-                        session::format_relative_age(c.session.updated_at, now),
+                        session::format_relative_age(c.activity_at, now),
                         c.session.model
                     ));
                 }
@@ -275,6 +275,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     tunnel_println("No other sessions.");
                     SlashResult::Continue
                 } else {
+                    sessions.sort_by(|a, b| b.activity_at.total_cmp(&a.activity_at));
                     tunnel_println("Pick session to switch:");
                     for (i, sc) in sessions.iter().enumerate() {
                         let s = &sc.session;
@@ -284,19 +285,22 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         } else {
                             s.provider.as_str()
                         };
-                        let age = session::format_relative_age(s.updated_at, now);
+                        let age = session::format_relative_age(sc.activity_at, now);
                         tunnel_println(&format!(
                             "  [{i}] {name} — {} msgs, {age} ago, {cred}/{}",
                             sc.messages, s.model
                         ));
-                        // Second indented line: first 30 chars of
-                        // the most recent user prompt. Rendered as
-                        // dim-italic so the eye scans the metadata
-                        // first. Skipped when no snippet exists (a
-                        // tool-result-only session or, for the
-                        // current-empty case, nothing has been sent).
-                        if let Some(snip) = sc.last_prompt_snippet(30) {
-                            tunnel_println(&format!("      \x1b[2m\"{snip}\"\x1b[0m"));
+                        match sc.last_prompt_snippet(30) {
+                            Some(snip) => {
+                                tunnel_println(&format!("      \x1b[2m\"{snip}\"\x1b[0m"));
+                            }
+                            None => {
+                                if sc.last_user_content_json.is_some() {
+                                    tunnel_println(
+                                        "      \x1b[2m(no text preview — tools/media only)\x1b[0m",
+                                    );
+                                }
+                            }
                         }
                     }
                     match read_stdin_menu_index("Enter number or Enter: ") {

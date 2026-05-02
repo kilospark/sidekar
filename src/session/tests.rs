@@ -76,6 +76,7 @@ fn last_prompt_snippet_extracts_first_text_block_and_truncates() {
         },
         messages: 1,
         last_user_content_json: Some(content_json.to_string()),
+        activity_at: 0.0,
     };
     // Short prompt — no truncation, no ellipsis.
     let sc = make(
@@ -109,6 +110,20 @@ fn last_prompt_snippet_extracts_first_text_block_and_truncates() {
         sc.last_prompt_snippet(30).as_deref(),
         Some("line one line two")
     );
+
+    // Skip whitespace-only Text blocks; use the first visible text block.
+    let sc = make(
+        &serde_json::to_string(&vec![
+            ContentBlock::Text {
+                text: "   \n\t".into(),
+            },
+            ContentBlock::Text {
+                text: "hello".into(),
+            },
+        ])
+        .unwrap(),
+    );
+    assert_eq!(sc.last_prompt_snippet(30).as_deref(), Some("hello"));
 
     // Multi-block messages (text + tool-result): only the first
     // text block is considered. Tool results are noisy and have
@@ -164,6 +179,7 @@ fn last_prompt_snippet_extracts_first_text_block_and_truncates() {
         },
         messages: 0,
         last_user_content_json: None,
+        activity_at: 0.0,
     };
     assert!(sc.last_prompt_snippet(30).is_none());
 

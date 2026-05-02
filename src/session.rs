@@ -49,11 +49,15 @@ pub struct MessageEntrySummary {
 
 fn preview_text_first_block(content_json: &str, max_chars: usize) -> Option<String> {
     let blocks: Vec<ContentBlock> = serde_json::from_str(content_json).ok()?;
-    let text = blocks.iter().find_map(|b| match b {
-        ContentBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    })?;
-    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut flattened = String::new();
+    for b in &blocks {
+        if let ContentBlock::Text { text } = b {
+            flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !flattened.is_empty() {
+                break;
+            }
+        }
+    }
     if flattened.is_empty() {
         return None;
     }
@@ -102,13 +106,20 @@ pub fn update_session_time(session_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// List sessions for the current working directory, most recent first.
+/// List sessions for the current working directory, most recent transcript
+/// activity first (same ordering rule as [`list_sessions_with_counts`]).
 pub fn list_sessions(cwd: &str, limit: usize) -> Result<Vec<Session>> {
     let conn = crate::broker::open()?;
     let mut stmt = conn.prepare(
-        "SELECT id, cwd, model, provider, name, created_at, updated_at
-         FROM repl_sessions WHERE cwd = ?1
-         ORDER BY updated_at DESC LIMIT ?2",
+        "SELECT s.id, s.cwd, s.model, s.provider, s.name, s.created_at, s.updated_at
+         FROM repl_sessions s
+         WHERE s.cwd = ?1
+         ORDER BY COALESCE(
+           (SELECT MAX(created_at) FROM repl_entries e
+              WHERE e.session_id = s.id AND e.entry_type = 'message'),
+           s.updated_at
+         ) DESC
+         LIMIT ?2",
     )?;
     let rows = stmt.query_map(rusqlite::params![cwd, limit], |row| {
         Ok(Session {
@@ -148,6 +159,9 @@ pub struct SessionWithCount {
     pub session: Session,
     pub messages: usize,
     pub last_user_content_json: Option<String>,
+    /// Latest transcript activity: max message `created_at`, else session row `updated_at`.
+    /// Used for `/session` ordering and “N ago” so it matches conversation recency.
+    pub activity_at: f64,
 }
 
 impl SessionWithCount {
@@ -157,10 +171,10 @@ impl SessionWithCount {
     ///
     /// "Prompt" here means the user-role content; tool results and
     /// images are ignored (tool results are noisy, images have no
-    /// useful preview). We take the FIRST text block of the LAST
-    /// user message: multi-block messages usually put the prompt
-    /// text first (then pasted files / images follow), so this
-    /// yields the intended title-like preview.
+    /// useful preview). We use the first **non-empty** Text block in
+    /// the LAST user message (in order): multi-block messages usually
+    /// put the prompt text first (then pasted files / images follow),
+    /// so this yields the intended title-like preview.
     ///
     /// The truncation adds an ellipsis when it trims. Newlines are
     /// collapsed to single spaces so the preview stays on one line.
@@ -171,7 +185,9 @@ impl SessionWithCount {
 }
 
 /// List sessions for the current working directory, most recent
-/// first, each annotated with its message count.
+/// transcript activity first (`activity_at`: latest message `created_at`,
+/// falling back to the session row's `updated_at`), each annotated with its
+/// message count.
 ///
 /// If `only_nonempty` is true, SQL filters out 0-message sessions at
 /// the query layer — so `limit` is applied against the populated
@@ -218,18 +234,24 @@ pub fn list_sessions_with_counts(
                WHERE session_id = s.id
                  AND entry_type = 'message'
                  AND role = 'user'
-               ORDER BY created_at DESC LIMIT 1) AS last_user_content
+               ORDER BY created_at DESC LIMIT 1) AS last_user_content,
+            COALESCE(
+              (SELECT MAX(created_at) FROM repl_entries
+                 WHERE session_id = s.id AND entry_type = 'message'),
+              s.updated_at
+            ) AS activity_at
           FROM repl_sessions s
           WHERE s.cwd = ?1
             AND (?2 = 0 OR (SELECT COUNT(*) FROM repl_entries
                               WHERE session_id = s.id
                                 AND entry_type = 'message') > 0)
-          ORDER BY s.updated_at DESC
+          ORDER BY activity_at DESC
           LIMIT ?3";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(rusqlite::params![cwd, only_nonempty as i64, limit], |row| {
         let msg_count: i64 = row.get(7)?;
         let last_user_content_json: Option<String> = row.get(8)?;
+        let activity_at: f64 = row.get(9)?;
         Ok(SessionWithCount {
             session: Session {
                 id: row.get(0)?,
@@ -242,6 +264,7 @@ pub fn list_sessions_with_counts(
             },
             messages: msg_count.max(0) as usize,
             last_user_content_json,
+            activity_at,
         })
     })?;
     let mut out = Vec::new();
@@ -255,9 +278,13 @@ pub fn list_sessions_with_counts(
 pub fn list_all_sessions(limit: usize) -> Result<Vec<Session>> {
     let conn = crate::broker::open()?;
     let mut stmt = conn.prepare(
-        "SELECT id, cwd, model, provider, name, created_at, updated_at
-         FROM repl_sessions
-         ORDER BY updated_at DESC LIMIT ?1",
+        "SELECT s.id, s.cwd, s.model, s.provider, s.name, s.created_at, s.updated_at
+         FROM repl_sessions s
+         ORDER BY COALESCE(
+           (SELECT MAX(created_at) FROM repl_entries e
+              WHERE e.session_id = s.id AND e.entry_type = 'message'),
+           s.updated_at
+         ) DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(rusqlite::params![limit], |row| {
         Ok(Session {
