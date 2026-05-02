@@ -30,7 +30,7 @@ pub async fn handle(
 async fn run_repl_credential_add(provider_and_suffix: &[String]) -> Result<()> {
     let msg = sidekar::repl::credential_login::perform_credential_add(
         provider_and_suffix,
-        sidekar::providers::oauth::InteractiveOutput::Cli,
+        sidekar::repl::credential_login::InteractiveOutput::Cli,
     )
     .await?;
     sidekar::output::emit(&sidekar::output::PlainOutput::new(msg))?;

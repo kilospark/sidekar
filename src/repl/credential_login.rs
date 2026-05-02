@@ -29,20 +29,26 @@ pub fn credential_add_usage_message() -> &'static str {
     CREDENTIAL_ADD_USAGE
 }
 
-fn output_line(output: crate::providers::oauth::InteractiveOutput, text: &str) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InteractiveOutput {
+    Cli,
+    Repl,
+}
+
+fn output_line(output: InteractiveOutput, text: &str) {
     match output {
-        crate::providers::oauth::InteractiveOutput::Cli => eprintln!("{text}"),
-        crate::providers::oauth::InteractiveOutput::Repl => crate::tunnel::tunnel_println(text),
+        InteractiveOutput::Cli => eprintln!("{text}"),
+        InteractiveOutput::Repl => crate::tunnel::tunnel_println(text),
     }
 }
 
-fn output_prompt(output: crate::providers::oauth::InteractiveOutput, text: &str) {
+fn output_prompt(output: InteractiveOutput, text: &str) {
     match output {
-        crate::providers::oauth::InteractiveOutput::Cli => {
+        InteractiveOutput::Cli => {
             eprint!("{text}");
             let _ = std::io::stderr().flush();
         }
-        crate::providers::oauth::InteractiveOutput::Repl => {
+        InteractiveOutput::Repl => {
             print!("{text}");
             let _ = std::io::stdout().flush();
             crate::tunnel::tunnel_send(text.as_bytes().to_vec());
@@ -51,7 +57,7 @@ fn output_prompt(output: crate::providers::oauth::InteractiveOutput, text: &str)
 }
 
 fn prompt_required(
-    output: crate::providers::oauth::InteractiveOutput,
+    output: InteractiveOutput,
     label: &str,
     default: Option<&str>,
 ) -> Result<String> {
@@ -75,7 +81,7 @@ fn prompt_required(
     Ok(value.to_string())
 }
 
-fn prompt_optional(output: crate::providers::oauth::InteractiveOutput, label: &str) -> Result<Option<String>> {
+fn prompt_optional(output: InteractiveOutput, label: &str) -> Result<Option<String>> {
     output_prompt(output, &format!("{label}: "));
     let mut value = String::new();
     std::io::stdin()
@@ -95,7 +101,7 @@ fn open_browser_hint(url: &str) {
 
 pub async fn perform_credential_add(
     tokens: &[String],
-    output: crate::providers::oauth::InteractiveOutput,
+    output: InteractiveOutput,
 ) -> Result<String> {
     let provider = match tokens.first().map(|s| s.as_str()) {
         Some(n) => n,
@@ -151,14 +157,37 @@ pub async fn perform_credential_add(
 
     match provider_type {
         "anthropic" => {
-            let _ =
-                crate::providers::oauth::login_anthropic_with_output(Some(nickname), output)
-                    .await?;
+            output_line(output, "No Anthropic credentials found. Starting OAuth login...");
+            let login = crate::providers::oauth::begin_anthropic_login(Some(nickname)).await?;
+            output_line(output, "");
+            output_line(
+                output,
+                &format!("Opening browser for {} login...", login.provider_name),
+            );
+            output_line(
+                output,
+                &format!("If browser doesn't open, visit:\n{}\n", login.auth_url),
+            );
+            open_browser_hint(&login.auth_url);
+            let _ = crate::providers::oauth::finish_anthropic_login(login).await?;
+            output_line(output, "Logged in to Anthropic.");
             Ok(format!("Logged in as '{nickname}' (Claude OAuth)."))
         }
         "codex" => {
-            let (_, account_id) =
-                crate::providers::oauth::login_codex_with_output(Some(nickname), output).await?;
+            output_line(output, "No Codex credentials found. Starting OAuth login...");
+            let login = crate::providers::oauth::begin_codex_login(Some(nickname)).await?;
+            output_line(output, "");
+            output_line(
+                output,
+                &format!("Opening browser for {} login...", login.provider_name),
+            );
+            output_line(
+                output,
+                &format!("If browser doesn't open, visit:\n{}\n", login.auth_url),
+            );
+            open_browser_hint(&login.auth_url);
+            let (_, account_id) = crate::providers::oauth::finish_codex_login(login).await?;
+            output_line(output, "Logged in to Codex.");
             Ok(format!(
                 "Logged in as '{nickname}' (Codex, account: {}).",
                 if account_id.is_empty() {

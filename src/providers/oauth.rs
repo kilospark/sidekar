@@ -32,21 +32,6 @@ pub const KV_KEY_GEMINI: &str = "oauth:gemini";
 pub const KV_KEY_BEDROCK: &str = "oauth:bedrock";
 pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InteractiveOutput {
-    Cli,
-    Repl,
-}
-
-impl InteractiveOutput {
-    fn println(self, text: &str) {
-        match self {
-            Self::Cli => eprintln!("{text}"),
-            Self::Repl => crate::tunnel::tunnel_println(text),
-        }
-    }
-}
-
 fn metadata_with_provider_type(
     provider_type: &str,
     extra_metadata: serde_json::Value,
@@ -302,37 +287,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
 /// Get a valid Anthropic API token. If `nickname` is provided, use that credential set.
 pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
-    get_token(
-        &kv_key,
-        "ANTHROPIC_API_KEY",
-        "Anthropic",
-        anthropic_login,
-        refresh_token_anthropic,
-        None,
-    )
-    .await
-}
-
-/// Get a valid Anthropic API token, with interactive login if needed.
-pub async fn login_anthropic(nickname: Option<&str>) -> Result<String> {
-    login_anthropic_with_output(nickname, InteractiveOutput::Cli).await
-}
-
-pub async fn login_anthropic_with_output(
-    nickname: Option<&str>,
-    output: InteractiveOutput,
-) -> Result<String> {
-    validate_named_credential_nickname(nickname)?;
-    let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
-    get_token(
-        &kv_key,
-        "ANTHROPIC_API_KEY",
-        "Anthropic",
-        anthropic_login,
-        refresh_token_anthropic,
-        Some(output),
-    )
-    .await
+    get_token(&kv_key, "ANTHROPIC_API_KEY", "Anthropic", refresh_token_anthropic).await
 }
 
 fn codex_account_id_from_kv(kv_key: &str) -> Result<String> {
@@ -349,38 +304,7 @@ fn codex_account_id_from_kv(kv_key: &str) -> Result<String> {
 /// Get a valid Codex API token. If `nickname` is provided, use that credential set.
 pub async fn get_codex_token(nickname: Option<&str>) -> Result<(String, String)> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
-    let token = get_token(
-        &kv_key,
-        "OPENAI_API_KEY",
-        "Codex",
-        codex_login,
-        refresh_token_codex,
-        None,
-    )
-    .await?;
-    Ok((token, codex_account_id_from_kv(&kv_key)?))
-}
-
-/// Get a valid Codex API token, with interactive login if needed.
-pub async fn login_codex(nickname: Option<&str>) -> Result<(String, String)> {
-    login_codex_with_output(nickname, InteractiveOutput::Cli).await
-}
-
-pub async fn login_codex_with_output(
-    nickname: Option<&str>,
-    output: InteractiveOutput,
-) -> Result<(String, String)> {
-    validate_named_credential_nickname(nickname)?;
-    let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
-    let token = get_token(
-        &kv_key,
-        "OPENAI_API_KEY",
-        "Codex",
-        codex_login,
-        refresh_token_codex,
-        Some(output),
-    )
-    .await?;
+    let token = get_token(&kv_key, "OPENAI_API_KEY", "Codex", refresh_token_codex).await?;
     Ok((token, codex_account_id_from_kv(&kv_key)?))
 }
 
@@ -618,27 +542,17 @@ async fn get_api_key_token(
     )
 }
 
-/// Generic token retrieval: stored creds → env var → error (or interactive login if `interactive`).
-#[allow(clippy::type_complexity)]
 async fn get_token(
     kv_key: &str,
     env_var: &str,
     provider_name: &str,
-    login_fn: fn(InteractiveOutput) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
-    >,
     refresh_fn: fn(
         &OAuthCredentials,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
     >,
-    interactive: Option<InteractiveOutput>,
 ) -> Result<String> {
-    // 1. Stored OAuth credentials.
-    //    Skip during interactive login — the caller has explicitly asked to
-    //    (re)authenticate this credential, so stale/existing tokens must not
-    //    short-circuit the flow.
-    if interactive.is_none() && let Some(creds) = load_credentials(kv_key)? {
+    if let Some(creds) = load_credentials(kv_key)? {
         if creds.is_expired() {
             match refresh_fn(&creds).await {
                 Ok(new_creds) => {
@@ -664,71 +578,22 @@ async fn get_token(
         }
     }
 
-    // 2. Environment variable fallback — only for non-interactive usage.
-    //    During `credential add`, the user expects OAuth to run and a credential
-    //    row to be persisted; env-var shortcut would silently skip both.
-    if interactive.is_none()
-        && let Ok(key) = std::env::var(env_var)
+    if let Ok(key) = std::env::var(env_var)
         && !key.is_empty()
     {
         return Ok(key);
     }
 
-    // 3. Interactive login (during `credential add`) or fail
-    if let Some(output) = interactive {
-        output.println(&format!("No {provider_name} credentials found. Starting OAuth login..."));
-        let creds = login_fn(output).await?;
-        save_credentials(kv_key, &creds)?;
-        Ok(creds.access_token)
-    } else {
-        bail!(
-            "No {provider_name} credentials found for '{}'.\n\
-             Run: sidekar repl credential add <provider> [name]",
-            kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
-        )
-    }
+    bail!(
+        "No {provider_name} credentials found for '{}'.\n\
+         Run: sidekar repl credential add <provider> [name]",
+        kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Anthropic OAuth
 // ---------------------------------------------------------------------------
-
-fn anthropic_login(
-    output: InteractiveOutput,
-)
--> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
-    Box::pin(async move {
-        let mut creds = pkce_login(
-            ANTHROPIC_CLIENT_ID,
-            ANTHROPIC_AUTHORIZE_URL,
-            ANTHROPIC_TOKEN_URL,
-            ANTHROPIC_CALLBACK_PORT,
-            "/callback",
-            ANTHROPIC_SCOPES,
-            "Anthropic",
-            &[],
-            output,
-            // Anthropic's token endpoint requires `state` — omitting
-            // it returns 400 "Invalid request format". See pkce_login
-            // docs. If this breaks again, first check whether
-            // platform.claude.com has started following RFC 6749.
-            true,
-        )
-        .await?;
-
-        // Fetch profile to get account_uuid (required for API rate limit routing)
-        if let Some(profile) = fetch_anthropic_profile(&creds.access_token).await {
-            creds.metadata = serde_json::json!({
-                "account_uuid": profile.account_uuid,
-                "organization_uuid": profile.organization_uuid,
-                "email": profile.email,
-                "name": profile.name,
-            });
-        }
-
-        Ok(creds)
-    })
-}
 
 struct AnthropicProfile {
     account_uuid: String,
@@ -818,41 +683,6 @@ fn refresh_token_anthropic(
 // Codex OAuth
 // ---------------------------------------------------------------------------
 
-fn codex_login(
-    output: InteractiveOutput,
-)
--> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
-    Box::pin(async move {
-        let extra_params = &[
-            ("id_token_add_organizations", "true"),
-            ("codex_cli_simplified_flow", "true"),
-            ("originator", "sidekar"),
-        ];
-        let mut creds = pkce_login(
-            CODEX_CLIENT_ID,
-            CODEX_AUTHORIZE_URL,
-            CODEX_TOKEN_URL,
-            CODEX_CALLBACK_PORT,
-            "/auth/callback",
-            CODEX_SCOPES,
-            "Codex",
-            extra_params,
-            output,
-            // OpenAI's token endpoint is RFC 6749 strict and rejects
-            // `state` with 400 "Unknown parameter: 'state'". Must be
-            // false. See pkce_login docs. If this breaks again, it
-            // means OpenAI started requiring state — in which case
-            // flip this flag, don't rewrite the function.
-            false,
-        )
-        .await?;
-
-        creds.metadata = codex_credentials_metadata(&creds.access_token);
-
-        Ok(creds)
-    })
-}
-
 fn codex_credentials_metadata(access_token: &str) -> serde_json::Value {
     let jwt = decode_jwt_payload(access_token);
     let account_id = jwt
@@ -914,36 +744,112 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
 // Generic PKCE OAuth flow (shared by both providers)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-async fn pkce_login(
-    client_id: &str,
-    authorize_url: &str,
-    token_url: &str,
-    callback_port: u16,
-    callback_path: &str,
-    scopes: &str,
-    provider_name: &str,
-    extra_params: &[(&str, &str)],
-    output: InteractiveOutput,
-    // Whether to include `state` in the token-exchange body.
-    //
-    // Per RFC 6749 §4.1.3 the token request does NOT include `state`
-    // — `state` is a parameter of the authorization request only.
-    // But Anthropic's token endpoint (`platform.claude.com/v1/oauth
-    // /token`) returns 400 "Invalid request format" if `state` is
-    // absent; OpenAI's (`auth.openai.com/oauth/token`) returns 400
-    // "Unknown parameter: 'state'" if it IS present. These two
-    // behaviors are mutually exclusive, so the flag is per-provider.
-    //
-    // When introducing a new PKCE provider, default to false (spec-
-    // compliant) and flip to true only if you see the Anthropic-
-    // style rejection in a live exchange. See commit history on
-    // this file for the pendulum: v1.0.40 removed state, v2.5.29
-    // put it back, OpenAI then started enforcing strict unknown-
-    // parameter validation and broke Codex — this commit unifies
-    // both cases under a single switch.
+pub(crate) struct InteractiveOAuthLogin {
+    pub provider_name: &'static str,
+    pub auth_url: String,
+    kv_key: String,
+    pending: PendingPkceLogin,
+}
+
+struct PendingPkceLogin {
+    client_id: &'static str,
+    token_url: &'static str,
+    callback: String,
+    verifier: String,
+    state: String,
     include_state_in_token_exchange: bool,
-) -> Result<OAuthCredentials> {
+    code_rx: tokio::sync::oneshot::Receiver<String>,
+    server: tokio::task::JoinHandle<()>,
+}
+
+pub(crate) async fn begin_anthropic_login(nickname: Option<&str>) -> Result<InteractiveOAuthLogin> {
+    validate_named_credential_nickname(nickname)?;
+    let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
+    let (auth_url, pending) = begin_pkce_login(
+        ANTHROPIC_CLIENT_ID,
+        ANTHROPIC_AUTHORIZE_URL,
+        ANTHROPIC_TOKEN_URL,
+        ANTHROPIC_CALLBACK_PORT,
+        "/callback",
+        ANTHROPIC_SCOPES,
+        &[],
+        true,
+    )
+    .await?;
+    Ok(InteractiveOAuthLogin {
+        provider_name: "Anthropic",
+        auth_url,
+        kv_key,
+        pending,
+    })
+}
+
+pub(crate) async fn finish_anthropic_login(login: InteractiveOAuthLogin) -> Result<String> {
+    let (kv_key, mut creds) = complete_interactive_login(login).await?;
+    if let Some(profile) = fetch_anthropic_profile(&creds.access_token).await {
+        creds.metadata = serde_json::json!({
+            "account_uuid": profile.account_uuid,
+            "organization_uuid": profile.organization_uuid,
+            "email": profile.email,
+            "name": profile.name,
+        });
+    }
+    save_credentials(&kv_key, &creds)?;
+    Ok(creds.access_token)
+}
+
+pub(crate) async fn begin_codex_login(nickname: Option<&str>) -> Result<InteractiveOAuthLogin> {
+    validate_named_credential_nickname(nickname)?;
+    let kv_key = resolve_kv_key(nickname, KV_KEY_CODEX);
+    let extra_params = &[
+        ("id_token_add_organizations", "true"),
+        ("codex_cli_simplified_flow", "true"),
+        ("originator", "sidekar"),
+    ];
+    let (auth_url, pending) = begin_pkce_login(
+        CODEX_CLIENT_ID,
+        CODEX_AUTHORIZE_URL,
+        CODEX_TOKEN_URL,
+        CODEX_CALLBACK_PORT,
+        "/auth/callback",
+        CODEX_SCOPES,
+        extra_params,
+        false,
+    )
+    .await?;
+    Ok(InteractiveOAuthLogin {
+        provider_name: "Codex",
+        auth_url,
+        kv_key,
+        pending,
+    })
+}
+
+pub(crate) async fn finish_codex_login(login: InteractiveOAuthLogin) -> Result<(String, String)> {
+    let (kv_key, mut creds) = complete_interactive_login(login).await?;
+    creds.metadata = codex_credentials_metadata(&creds.access_token);
+    save_credentials(&kv_key, &creds)?;
+    Ok((creds.access_token.clone(), codex_account_id_from_kv(&kv_key)?))
+}
+
+async fn complete_interactive_login(
+    login: InteractiveOAuthLogin,
+) -> Result<(String, OAuthCredentials)> {
+    let creds = complete_pkce_login(login.pending).await?;
+    Ok((login.kv_key, creds))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn begin_pkce_login(
+    client_id: &'static str,
+    authorize_url: &'static str,
+    token_url: &'static str,
+    callback_port: u16,
+    callback_path: &'static str,
+    scopes: &'static str,
+    extra_params: &[(&str, &str)],
+    include_state_in_token_exchange: bool,
+) -> Result<(String, PendingPkceLogin)> {
     let verifier = generate_pkce_verifier();
     let challenge = pkce_challenge(&verifier);
     let state = generate_random_hex(32);
@@ -968,11 +874,32 @@ async fn pkce_login(
     let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
     let server = start_callback_server(callback_port, state.clone(), code_tx).await?;
 
-    output.println("");
-    output.println(&format!("Opening browser for {provider_name} login..."));
-    output.println(&format!("If the browser doesn't open, visit:\n{auth_url}\n"));
-    let _ = open_browser(&auth_url);
+    Ok((
+        auth_url,
+        PendingPkceLogin {
+            client_id,
+            token_url,
+            callback,
+            verifier,
+            state,
+            include_state_in_token_exchange,
+            code_rx,
+            server,
+        },
+    ))
+}
 
+async fn complete_pkce_login(pending: PendingPkceLogin) -> Result<OAuthCredentials> {
+    let PendingPkceLogin {
+        client_id,
+        token_url,
+        callback,
+        verifier,
+        state,
+        include_state_in_token_exchange,
+        code_rx,
+        server,
+    } = pending;
     let code = tokio::time::timeout(std::time::Duration::from_secs(120), code_rx)
         .await
         .context("OAuth login timed out (120s)")?
@@ -1009,7 +936,6 @@ async fn pkce_login(
                 if status.is_success() {
                     let token_resp: TokenResponse =
                         resp.json().await.context("Invalid token response")?;
-                    output.println(&format!("Logged in to {provider_name}."));
                     return Ok(OAuthCredentials {
                         access_token: token_resp.access_token,
                         refresh_token: token_resp.refresh_token,

@@ -1104,7 +1104,7 @@ pub(super) async fn apply_slash_result(
             repl_status_dim("Adding credential…");
             match crate::repl::credential_login::perform_credential_add(
                 &tokens,
-                crate::providers::oauth::InteractiveOutput::Repl,
+                crate::repl::credential_login::InteractiveOutput::Repl,
             )
             .await
             {
