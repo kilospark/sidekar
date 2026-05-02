@@ -1,5 +1,31 @@
 # TODO
 
+Engineering backlog for Sidekar. Roadmap prose from retired `context/*-plan.md` files is folded into **Self-learning** and **Orchestration** below. Deferred Chrome/extension-only work stays in repo-root [`TODO.md`](../TODO.md).
+
+## Self-learning / REPL memory loop (remaining)
+
+- Startup retrieval: token-budget ranking (not only fixed-count buckets); optional cwd/path-aware ranking (`startup_brief` today is project-scoped recency + types; per-turn uses `relevant_brief` + path-like terms).
+- Schema/provenance only if usage rows are insufficient: richer `memory_events` or structured `detail_json` for task/path/selection stats.
+- REPL observability: slash or help for why a memory surfaced, recent auto-learned rows, etc. (`sidekar memory usage`, `memory candidates` partially cover this).
+- Usage timing: optionally log `selected` at injection separately from post-turn `accepted` (today `accept_selected_memories` logs both together).
+- Negative signals: user correction → contradiction/demotion surfaced in UX, not only inside candidate promotion.
+- `/status`: optional learning lifecycle snippets (counts, last promotion).
+- Extractor: optional LLM fallback for ambiguous high-signal journal slices.
+- Maintenance: decay/compaction/stale open-thread passes beyond current `memory hygiene` (confirm overlap before expanding).
+
+## Orchestration / adapters / broker (remaining)
+
+- Capability model: explicit per-session capabilities (`inject_text`, `submit`, capture, focus, …) and routing by capability, not only agent name / PTY vs non-PTY.
+- Terminal adapters for sessions Sidekar did not launch: Terminal.app, iTerm2, Warp, WezTerm, kitty, Ghostty (session ID → inject → submit + safety).
+- Editor adapters: VS Code, Zed, Cursor (terminal-backed vs native agent UI).
+- Desktop app adapters: Codex app, Claude Desktop where there is no PTY (APIs first, accessibility fallback).
+- Attention/UX: badges, notifications, queue visibility (broker stays source of truth; today: broker events, `monitor`, poller nudges).
+- CLI naming (optional): align names like `sessions` / `claim` / `attach` / `watch` with current `agent-sessions`, `bus`, `monitor`.
+
+### Non-goals
+
+- Cross-project speculative synthesis by default; repo-wide background file import by default; worker farm / always-on LLM on every micro-event; **A2A** as core primitive for local control (optional gateway later is fine).
+
 ## High Priority
 
 - [ ] Token usage tracking: side-by-side comparison of Claude, Codex, Sidekar consumption
@@ -9,12 +35,9 @@
 - [x] Evaluate mempalace integration (https://github.com/milla-jovovich/mempalace) — no major benefits; sidekar already covers dedup, FTS, confidence, supersession
 - [x] Persona system for agents — REPL reads `AGENTS.md` from cwd, appends to system prompt (`src/repl/system_prompt.rs`)
 - [x] Skills system (agent-defined capabilities) — `/skill <name>` loads SKILL.md from standard agent dirs (claude/codex/gemini/pi/opencode), session-scoped (`src/repl/skills.rs`, `src/repl/slash.rs`)
-- [ ] Multi-agent orchestration
+- [ ] Multi-agent orchestration (see **Orchestration** section above)
 - [ ] Test inter-agent communication across machines
 - [ ] Marketing strategy: public launch vs private/invite-only
-- [x] ~~Terminal adapters~~ — N/A after PTY + REPL approach
-- [x] ~~Editor adapters~~ — N/A after PTY + REPL approach
-- [x] ~~Desktop app adapters~~ — N/A after PTY + REPL approach
 - [x] Clarify and harden first-install signature verification path (`install.sh` bootstrap trust / how signatures are checked before Sidekar is already installed)
 - [ ] Publish Chrome extension to Web Store
 - [ ] Update website copy

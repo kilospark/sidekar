@@ -1,5 +1,7 @@
 # TODO — Deferred Work
 
+Extension / capture-stack deferrals only — not the main Sidekar backlog (**[`context/todo.md`](context/todo.md)**).
+
 Features evaluated and explicitly deferred. Each entry links back to the comparison against Interceptor (github.com/Hacker-Valley-Media/Interceptor) that produced it.
 
 ---
