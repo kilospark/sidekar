@@ -141,9 +141,7 @@ pub(super) fn run(cmd: &str) {
         Err(e) => {
             tunnel_println(&format!("\x1b[31mFailed to wait: {e}\x1b[0m"));
         }
-        _ => {
-            tunnel_println(&format!("\x1b[2m[{elapsed}]\x1b[0m"));
-        }
+        _ => {}
     }
 }
 
