@@ -29,6 +29,7 @@ Engineering backlog for Sidekar (single file). Roadmap prose from retired `conte
 ## High Priority
 
 - [ ] Token usage tracking: side-by-side comparison of Claude, Codex, Sidekar consumption
+- [ ] REPL `/status` & session stats: track usage **per credential × model** within one REPL session (today switching `/credential` / `/model` keeps one blended `TurnStats` bucket; `repl_sessions` stores opening cred/model only).
 - [x] **Session journaling** — shipped on branch `journaling` (10 commits). Background idle-triggered LLM summarization, 12-section structured JSON in `session_journals`, resume injection with reference-only framing, memory promoter at threshold 3. Design doc: `context/journaling.md`. 119 new tests (407 total).
 - [x] Evaluate adding sidekar as a native tool (avoid skills/SKILL.md ceremony) — REPL ships a native `Sidekar` tool with embedded catalog + operating rules (`src/agent/tools.rs:242`)
 - [x] Evaluate adding edit-file and other precision tools (read, grep, glob) — REPL has Read/Write/Edit/Glob/Grep native (`src/agent/tools.rs`)
