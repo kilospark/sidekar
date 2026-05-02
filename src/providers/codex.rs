@@ -37,6 +37,16 @@ pub struct CachedWs {
     read: WsRead,
 }
 
+/// Codex Responses API transport — affects request body shape.
+///
+/// OpenAI WebSocket mode ([guide](https://developers.openai.com/api/docs/guides/websocket-mode)):
+/// do not send transport-specific fields such as `stream` or `background`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CodexTransport {
+    HttpPost,
+    WebSocket,
+}
+
 /// Non-streaming call to the OpenAI Codex Responses API.
 #[allow(clippy::too_many_arguments)]
 pub async fn stream(
@@ -59,7 +69,9 @@ pub async fn stream(
         prompt_cache_key,
         previous_response_id,
         config,
+        CodexTransport::HttpPost,
     );
+
     let url = format!("{}/codex/responses", base_url.trim_end_matches('/'));
 
     let mut headers = reqwest::header::HeaderMap::new();
@@ -119,8 +131,9 @@ fn build_request_body(
     messages: &[ChatMessage],
     tools: &[ToolDef],
     prompt_cache_key: Option<&str>,
-    previous_response_id: Option<&str>,
+    _previous_response_id: Option<&str>,
     config: &super::StreamConfig,
+    transport: CodexTransport,
 ) -> Value {
     let mut input: Vec<Value> = Vec::new();
 
@@ -263,17 +276,22 @@ fn build_request_body(
         "model": model,
         "instructions": system_prompt,
         "input": input,
-        "stream": true,
         "store": false,
         "include": ["reasoning.encrypted_content"],
     });
 
-    // previous_response_id is NOT compatible with store:false — the server
-    // returns "Previous response not found" because it doesn't persist.
-    // Keeping the plumbing in case store:true becomes viable.
-    if let Some(_rid) = previous_response_id.filter(|id| !id.is_empty()) {
-        // body["previous_response_id"] = json!(rid);
+    // SSE (`POST …/codex/responses`): streaming responses use `stream: true`.
+    // WebSocket mode omits `stream` — see OpenAI WebSocket mode guide.
+    if matches!(transport, CodexTransport::HttpPost) {
+        body["stream"] = json!(true);
     }
+
+    // Stateful chaining (`previous_response_id` + incremental `input`) is documented for
+    // WebSocket performance — see [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode).
+    // Sidecar still sends full prepared history each turn; enabling `previous_response_id` safely
+    // requires emitting only **new** input items on continuation turns (not implemented yet).
+    // `previous_response_id` remains plumbed through for that follow-up.
+
 
     if let Some(key) = prompt_cache_key.filter(|key| !key.is_empty()) {
         body["prompt_cache_key"] = json!(key);
@@ -845,9 +863,10 @@ async fn connect_ws(
 
 /// Stream a codex response over WebSocket instead of SSE.
 ///
-/// Same payload as the HTTP POST path, but:
-/// - Protocol: `wss://` instead of `https://`
+/// Same payload fields as the HTTP POST path except:
+/// - Protocol: `wss://…/codex/responses` instead of `https://`
 /// - Header: `OpenAI-Beta: responses_websockets=2026-02-06`
+/// - No `stream` key in JSON ([WebSocket mode guide](https://developers.openai.com/api/docs/guides/websocket-mode))
 /// - Client sends: `{ "type": "response.create", ...body }`
 /// - Server sends: raw JSON events per WS message (no SSE framing)
 ///
@@ -879,6 +898,7 @@ pub async fn stream_ws(
         prompt_cache_key,
         previous_response_id,
         config,
+        CodexTransport::WebSocket,
     );
 
     let mut ws_body = body;
@@ -1252,16 +1272,24 @@ where
             }
 
             "error" => {
-                let msg = data
+                let nested = data.get("error");
+                let code = nested
+                    .and_then(|e| e.get("code"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| data.get("code").and_then(|v| v.as_str()));
+                let mut msg = data
                     .get("message")
                     .and_then(|v| v.as_str())
                     .or_else(|| {
-                        data.get("error")
+                        nested
                             .and_then(|e| e.get("message"))
                             .and_then(|v| v.as_str())
                     })
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("Codex WS error: {data}"));
+                if let Some(c) = code {
+                    msg = format!("{msg} ({c})");
+                }
                 let _ = tx.send(StreamEvent::Error { message: msg });
                 // Protocol-level error; connection may still be alive
                 completed = true;

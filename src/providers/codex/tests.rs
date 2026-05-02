@@ -1,4 +1,4 @@
-use super::{apply_usage, build_request_body};
+use super::{apply_usage, build_request_body, CodexTransport};
 use crate::providers::{ChatMessage, ContentBlock, Role, StreamConfig, Usage};
 use serde_json::json;
 
@@ -21,6 +21,7 @@ fn build_request_body_includes_prompt_cache_key() {
         Some("sess-123"),
         None,
         &test_config(),
+        CodexTransport::HttpPost,
     );
 
     assert_eq!(
@@ -44,6 +45,7 @@ fn build_request_body_sets_store_false_with_encrypted_reasoning() {
         None,
         None,
         &test_config(),
+        CodexTransport::HttpPost,
     );
 
     assert_eq!(body.get("store").and_then(|v| v.as_bool()), Some(false));
@@ -53,10 +55,10 @@ fn build_request_body_sets_store_false_with_encrypted_reasoning() {
     );
 }
 
-// NOTE: previous_response_id is plumbed through the call chain but NOT yet
-// included in the HTTP POST body because chatgpt.com's POST endpoint rejects
-// it (WebSocket only). These tests verify the parameter flows correctly; the
-// body assertion is commented out until WS transport is implemented.
+// NOTE: `previous_response_id` is plumbed for future WebSocket chaining per OpenAI's
+// [WebSocket mode guide](https://developers.openai.com/api/docs/guides/websocket-mode).
+// It is not sent yet because continuation expects incremental `input` only; Sidekar still
+// sends full history each turn.
 #[test]
 fn build_request_body_omits_previous_response_id_with_store_false() {
     let body = build_request_body(
@@ -72,9 +74,10 @@ fn build_request_body_omits_previous_response_id_with_store_false() {
         None,
         Some("resp_abc123"),
         &test_config(),
+        CodexTransport::HttpPost,
     );
 
-    // previous_response_id is incompatible with store:false
+    // Not emitted until incremental-input chaining is implemented (WS + POST semantics differ).
     assert!(body.get("previous_response_id").is_none());
 }
 
@@ -133,6 +136,7 @@ fn build_request_body_replays_encrypted_reasoning() {
         None,
         None,
         &test_config(),
+        CodexTransport::HttpPost,
     );
 
     let input = body.get("input").and_then(|v| v.as_array()).unwrap();
@@ -198,6 +202,7 @@ fn build_request_body_includes_codex_config_fields() {
         None,
         None,
         &config,
+        CodexTransport::HttpPost,
     );
 
     assert_eq!(
@@ -210,4 +215,28 @@ fn build_request_body_includes_codex_config_fields() {
         Some(&json!({"effort": "high", "summary": "auto"}))
     );
     assert_eq!(body.get("text"), Some(&json!({"verbosity": "verbose"})));
+}
+
+#[test]
+fn build_request_body_websocket_omits_stream_flag() {
+    let body = build_request_body(
+        "gpt-5.4",
+        "system",
+        &[ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        &[],
+        None,
+        None,
+        &test_config(),
+        CodexTransport::WebSocket,
+    );
+
+    assert!(
+        body.get("stream").is_none(),
+        "OpenAI WS guide: omit transport-specific stream flag"
+    );
 }
