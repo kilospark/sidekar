@@ -11,7 +11,7 @@ pub(super) enum SlashResult {
     SwitchSession(String),
     /// Requires provider + model.
     NeedProvider(SlashAsync),
-    /// Same tokens as CLI after `sidekar repl login` (without the `login` word).
+    /// Same tokens as CLI after `credential add` (provider + optional suffix; no `add` word).
     CredentialLogin(Vec<String>),
     SetCredential(String),
     SetModel(String),
@@ -258,7 +258,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     let creds = providers::oauth::list_credentials();
                     if creds.is_empty() {
                         tunnel_println(
-                            "No credentials stored. Use /credential add … or sidekar repl login …",
+                            "No credentials stored. Use /credential add … or sidekar repl credential add …",
                         );
                         SlashResult::Continue
                     } else {
@@ -292,17 +292,35 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         }
                     }
                 }
-                Some("add") | Some("login") | Some("update") => {
+                Some("add") | Some("update") => {
                     let tokens: Vec<String> = parts.iter().skip(2).map(|s| s.to_string()).collect();
                     if tokens.is_empty() {
                         tunnel_println(&format!(
                             "\x1b[2m{}\x1b[0m",
-                            crate::repl::credential_login::login_usage_message()
+                            crate::repl::credential_login::credential_add_usage_message()
                         ));
                         SlashResult::Continue
                     } else {
                         SlashResult::CredentialLogin(tokens)
                     }
+                }
+                Some("login") => {
+                    tunnel_println(
+                        "\x1b[33m`/credential login` was removed — use `/credential add` with the same tokens.\x1b[0m",
+                    );
+                    let tokens: Vec<String> = parts.iter().skip(2).map(|s| s.to_string()).collect();
+                    if tokens.is_empty() {
+                        tunnel_println(&format!(
+                            "\x1b[2m{}\x1b[0m",
+                            crate::repl::credential_login::credential_add_usage_message()
+                        ));
+                    } else {
+                        tunnel_println(&format!(
+                            "\x1b[2mExample: /credential add {}\x1b[0m",
+                            tokens.join(" ")
+                        ));
+                    }
+                    SlashResult::Continue
                 }
                 Some("delete") => {
                     let creds = providers::oauth::list_credentials();
@@ -543,6 +561,64 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             }
             SlashResult::Continue
         }
+        "/inbox" => {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            match parts.get(1).copied().unwrap_or("list") {
+                "list" => {
+                    let n = parts
+                        .get(2)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(10)
+                        .min(50);
+                    match crate::broker::events_recent_by_source(n, "inbox") {
+                        Ok(rows) if rows.is_empty() => tunnel_println("Inbox empty."),
+                        Ok(rows) => {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs_f64())
+                                .unwrap_or(0.0);
+                            for row in rows {
+                                let age =
+                                    crate::session::format_relative_age(row.created_at as f64, now);
+                                let (sender, preview) = inbox_sender_and_preview(&row);
+                                tunnel_println(&format!(
+                                    "  [{id:>4}] {age:>8}  {sender}: {preview}",
+                                    id = row.id
+                                ));
+                            }
+                            tunnel_println("\x1b[2mUse /inbox show <id> or /inbox clear\x1b[0m");
+                        }
+                        Err(e) => {
+                            tunnel_println(&format!("\x1b[31m/inbox list failed: {e:#}\x1b[0m"));
+                        }
+                    }
+                }
+                "show" => {
+                    let id_arg = parts.get(2).copied().unwrap_or("");
+                    let Ok(id) = id_arg.parse::<i64>() else {
+                        tunnel_println("Usage: /inbox show <id>");
+                        return Some(SlashResult::Continue);
+                    };
+                    match crate::broker::event_by_id(id) {
+                        Ok(Some(row)) if row.source == "inbox" => {
+                            tunnel_println(&render_inbox_show(&row));
+                        }
+                        Ok(Some(_)) | Ok(None) => {
+                            tunnel_println(&format!("No inbox item with id {id}."));
+                        }
+                        Err(e) => {
+                            tunnel_println(&format!("\x1b[31m/inbox show failed: {e:#}\x1b[0m"));
+                        }
+                    }
+                }
+                "clear" => match crate::broker::events_clear_source("inbox") {
+                    Ok(n) => tunnel_println(&format!("Cleared {n} inbox item(s).")),
+                    Err(e) => tunnel_println(&format!("\x1b[31m/inbox clear failed: {e:#}\x1b[0m")),
+                },
+                _ => tunnel_println("Usage: /inbox [list [N] | show <id> | clear]"),
+            }
+            SlashResult::Continue
+        }
         "/skill" => {
             let parts: Vec<_> = input.split_whitespace().collect();
             match parts.get(1).copied() {
@@ -659,6 +735,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /compact     — Compact older session context now");
             tunnel_println("  /status      — Show session / model / token usage / context fill");
             tunnel_println("  /stats       — Show process diagnostics (RSS, CPU, threads)");
+            tunnel_println("  /inbox       — List/show/clear recent bus or relay arrivals");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
             tunnel_println(
                 "  /proxy       — Toggle MITM capture for streaming API (`sidekar proxy log`)",
@@ -674,7 +751,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  ! <command>  — Run a shell command without leaving the REPL");
             tunnel_println("");
             tunnel_println(
-                "Auth: /credential add …  or  sidekar repl login …  ·  sidekar repl logout",
+                "Auth: /credential add …  ·  sidekar repl credential add …  ·  sidekar repl logout",
             );
             SlashResult::Continue
         }
@@ -757,10 +834,8 @@ pub(super) async fn apply_slash_result(
             }
         }
         SlashResult::CredentialLogin(tokens) => {
-            repl_status_dim("Credential login…");
-            let mut args = vec!["login".to_string()];
-            args.extend(tokens);
-            match crate::repl::credential_login::perform_login(&args).await {
+            repl_status_dim("Adding credential…");
+            match crate::repl::credential_login::perform_credential_add(&tokens).await {
                 Ok(msg) => tunnel_println(&msg),
                 Err(e) => tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m")),
             }
@@ -968,6 +1043,85 @@ fn render_journal_show(row: &crate::repl::journal::store::JournalRow) -> String 
     out
 }
 
+fn inbox_sender_and_preview(row: &crate::broker::EventRow) -> (String, String) {
+    if let Some(details) = row.details.as_deref()
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(details)
+    {
+        let sender = value
+            .get("sender")
+            .and_then(|v| v.as_str())
+            .unwrap_or(row.message.as_str())
+            .to_string();
+        let body = value
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim();
+        return (sender, truncate_inline(body, 80));
+    }
+    (row.message.clone(), "(no body)".to_string())
+}
+
+fn render_inbox_show(row: &crate::broker::EventRow) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let age = crate::session::format_relative_age(row.created_at as f64, now);
+    let mut sender = row.message.clone();
+    let mut recipient = String::new();
+    let mut body = row.details.clone().unwrap_or_default();
+    if let Some(details) = row.details.as_deref()
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(details)
+    {
+        sender = value
+            .get("sender")
+            .and_then(|v| v.as_str())
+            .unwrap_or(sender.as_str())
+            .to_string();
+        recipient = value
+            .get("recipient")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        body = value
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("Inbox item {}\n", row.id));
+    out.push_str(&format!("From: {sender}\n"));
+    if !recipient.is_empty() {
+        out.push_str(&format!("To: {recipient}\n"));
+    }
+    out.push_str(&format!("Age: {age}\n\n"));
+    out.push_str(body.trim());
+    out
+}
+
+fn truncate_inline(s: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max_chars {
+            out.push('…');
+            break;
+        }
+        if ch == '\n' || ch == '\r' {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() {
+        "(empty)".to_string()
+    } else {
+        out
+    }
+}
+
 pub(super) fn is_known_slash_command(cmd: &str) -> bool {
     matches!(
         cmd,
@@ -983,6 +1137,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/stats"
             | "/status"
             | "/journal"
+            | "/inbox"
             | "/relay"
             | "/proxy"
             | "/verbose"
@@ -1125,7 +1280,7 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
     let provider_type =
         providers::oauth::resolve_provider_type_for_credential(cred_name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…); see `sidekar repl login --help`."
+                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…); see `sidekar repl --help`."
             )
         })?;
     let cred = Some(cred_name.to_string());

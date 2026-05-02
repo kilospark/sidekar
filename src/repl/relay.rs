@@ -119,12 +119,13 @@ pub(super) fn inject_bus_messages(
     let n = messages.len();
     for msg in messages {
         let text = format!("[Bus message from {}]: {}", msg.sender, msg.body);
-        broker::try_log_event(
-            "debug",
-            "bus",
-            "received",
-            Some(&format!("from={}", msg.sender)),
-        );
+        let inbox_detail = serde_json::json!({
+            "sender": msg.sender,
+            "body": msg.body,
+            "recipient": msg.recipient,
+        })
+        .to_string();
+        broker::try_log_event("info", "inbox", "received", Some(&inbox_detail));
         let steering = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],

@@ -61,6 +61,52 @@ pub fn events_recent(limit: usize, level: Option<&str>) -> Result<Vec<EventRow>>
         .map_err(Into::into)
 }
 
+/// Recent events for one source, newest first.
+pub fn events_recent_by_source(limit: usize, source: &str) -> Result<Vec<EventRow>> {
+    let conn = open()?;
+    let lim = limit.clamp(1, 500) as i64;
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, level, source, message, details
+         FROM events
+         WHERE source = ?1
+         ORDER BY id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![source, lim], |row| {
+        Ok(EventRow {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            level: row.get(2)?,
+            source: row.get(3)?,
+            message: row.get(4)?,
+            details: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Fetch one event by numeric id.
+pub fn event_by_id(id: i64) -> Result<Option<EventRow>> {
+    let conn = open()?;
+    conn.query_row(
+        "SELECT id, created_at, level, source, message, details FROM events WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(EventRow {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                level: row.get(2)?,
+                source: row.get(3)?,
+                message: row.get(4)?,
+                details: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Delete all events, or only those matching a level.
 pub fn events_clear(level: Option<&str>) -> Result<u64> {
     let conn = open()?;
@@ -68,6 +114,13 @@ pub fn events_clear(level: Option<&str>) -> Result<u64> {
         Some(lvl) => conn.execute("DELETE FROM events WHERE level = ?1", params![lvl])?,
         None => conn.execute("DELETE FROM events", [])?,
     };
+    Ok(changed as u64)
+}
+
+/// Delete all events for one source.
+pub fn events_clear_source(source: &str) -> Result<u64> {
+    let conn = open()?;
+    let changed = conn.execute("DELETE FROM events WHERE source = ?1", params![source])?;
     Ok(changed as u64)
 }
 
