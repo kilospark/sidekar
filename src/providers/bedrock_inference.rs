@@ -45,6 +45,18 @@ pub(crate) fn infer_bedrock_inference_family(
     if prov_lc == "qwen" || m.starts_with("qwen.") {
         return BedrockInferenceFamily::OpenAiChatCompletions;
     }
+    // Z.ai GLM on Bedrock: same OpenAI-compat tool/message constraints as Qwen.
+    if m.starts_with("zai.") || prov_lc == "z.ai" || prov_lc == "zai" {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
+    // Mistral models use OpenAI-style streaming payloads inside Bedrock event chunks; routing them
+    // through Anthropic JSON-event decoding yields validationException / parse failures mid-stream.
+    if m.starts_with("mistral.") || m.starts_with("mistralai.") {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
+    if prov_lc == "mistral ai" || prov_lc == "mistral" {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
     BedrockInferenceFamily::AnthropicMessages
 }
 
@@ -263,6 +275,14 @@ mod tests {
             BedrockInferenceFamily::OpenAiChatCompletions
         );
         assert_eq!(
+            infer_bedrock_inference_family("foo", Some("Z.ai")),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("foo", Some("Mistral AI")),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
             infer_bedrock_inference_family("foo", Some("Anthropic")),
             BedrockInferenceFamily::AnthropicMessages
         );
@@ -284,6 +304,14 @@ mod tests {
         );
         assert_eq!(
             infer_bedrock_inference_family("qwen.qwen3-coder-next", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("zai.glm-4.7", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("mistral.mistral-large-2407-v1:0", None),
             BedrockInferenceFamily::OpenAiChatCompletions
         );
         assert_eq!(
