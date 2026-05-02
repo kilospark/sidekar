@@ -45,6 +45,8 @@ Engineering backlog for Sidekar (single file). Roadmap prose from retired `conte
 
 ## Medium Priority
 
+- [ ] **REPL extended thinking UX:** runtime flag (CLI and/or env) to show or hide streamed `ThinkingDelta` / dim thinking lines in `EventRenderer` — default on when the provider emits it.
+- [ ] **`event_forward` thinking:** forward `Thinking` / `Reasoning` content (or a compact summary) alongside assistant `Text` on `Done` for relay/Telegram consumers; today relay paths only carry normal text blocks.
 - [x] Pluggable output pipeline: `--format=text|json|toon` (default text), with `--json` / `--toon` shorthand. Applies globally via `src/output.rs` / `runtime::output_format`.
 - [x] Google login (in addition to GitHub)
 - [ ] Session inspection tools (`sidekar sessions`, `sidekar attach`)
