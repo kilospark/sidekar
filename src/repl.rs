@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use std::io::{self, BufRead, Write};
 
 pub mod credential_login;
+mod debug_export;
 mod editor;
 mod event_forward;
 mod relay;
@@ -16,11 +17,11 @@ mod skills;
 pub(crate) mod journal;
 mod ratelimit;
 pub(crate) mod slash;
-mod transcript_hooks;
 mod spinner;
 mod stats;
 mod status;
 mod system_prompt;
+mod transcript_hooks;
 mod turn_stats;
 mod user_turn;
 

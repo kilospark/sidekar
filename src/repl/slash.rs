@@ -105,9 +105,7 @@ fn format_entry_content_for_history_show(content_json: &str) -> String {
                 "[image] type={media_type} path={}",
                 source_path.as_deref().unwrap_or("(inline)")
             ),
-            providers::ContentBlock::EncryptedReasoning { .. } => {
-                "[encrypted_reasoning] …".into()
-            }
+            providers::ContentBlock::EncryptedReasoning { .. } => "[encrypted_reasoning] …".into(),
             providers::ContentBlock::Reasoning { text } => {
                 format!("[reasoning]\n{}", truncate_inline(&text, 12_000))
             }
@@ -126,7 +124,11 @@ fn format_entry_content_for_history_show(content_json: &str) -> String {
     }
 }
 
-fn print_transcript_slice(slice: &[session::MessageEntrySummary], global_start_idx: usize, banner: &str) {
+fn print_transcript_slice(
+    slice: &[session::MessageEntrySummary],
+    global_start_idx: usize,
+    banner: &str,
+) {
     tunnel_println(banner);
     tunnel_println(
         "\x1b[2m/prune after @idx · /prune after <id_prefix> · /history show <idx>\x1b[0m",
@@ -479,7 +481,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                             "[{idx}] {role} id={}",
                                             summary.id
                                         ));
-                                        tunnel_println(&format_entry_content_for_history_show(&json));
+                                        tunnel_println(&format_entry_content_for_history_show(
+                                            &json,
+                                        ));
                                     }
                                     Ok(None) => tunnel_println("That entry no longer exists."),
                                     Err(e) => tunnel_println(&format!(
@@ -538,10 +542,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         if rows_full.is_empty() {
                             tunnel_println("No transcript messages in this session.");
                         } else if rows_full.len() <= HISTORY_DISPLAY_CAP {
-                            let banner = format!(
-                                "Transcript (\x1b[1m{}\x1b[0m messages):",
-                                rows_full.len()
-                            );
+                            let banner =
+                                format!("Transcript (\x1b[1m{}\x1b[0m messages):", rows_full.len());
                             print_transcript_slice(&rows_full, 0, &banner);
                         } else {
                             let take = HISTORY_DISPLAY_CAP;
@@ -551,10 +553,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 "\x1b[2mShowing last {take} of {} messages (/history full for all).\x1b[0m",
                                 rows_full.len()
                             ));
-                            let banner = format!(
-                                "Transcript (\x1b[1m{}\x1b[0m messages):",
-                                rows_full.len()
-                            );
+                            let banner =
+                                format!("Transcript (\x1b[1m{}\x1b[0m messages):", rows_full.len());
                             print_transcript_slice(slice, start, &banner);
                         }
                     }
@@ -568,7 +568,10 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
         }
         "/undo" => {
             let parts: Vec<&str> = input.split_whitespace().collect();
-            let n = parts.get(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+            let n = parts
+                .get(1)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1);
             if n < 1 {
                 tunnel_println("Usage: /undo [N]  — drop last N user turns (default 1; N ≥ 1)");
                 SlashResult::Continue
@@ -906,6 +909,43 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                 Some(name) => SlashResult::LoadSkill(name.to_string()),
             }
         }
+        "/debug" => {
+            let parts: Vec<&str> = ctx.input.split_whitespace().collect();
+            let arg = parts.get(1).copied();
+            let report = super::debug_export::format_debug_bundle(
+                ctx.cred_name,
+                ctx.model,
+                ctx.session_id,
+                ctx.cwd,
+            );
+            tunnel_println(&report);
+            match arg {
+                None => {
+                    tunnel_println(
+                        "\x1b[2mTip: `/debug copy` writes this bundle to the clipboard (macOS).\x1b[0m",
+                    );
+                }
+                Some("copy") => {
+                    #[cfg(target_os = "macos")]
+                    match crate::desktop::input::set_clipboard_text(&report) {
+                        Ok(()) => {
+                            tunnel_println("\x1b[32mCopied debug bundle to clipboard.\x1b[0m")
+                        }
+                        Err(e) => tunnel_println(&format!(
+                            "\x1b[33mpbcopy failed ({e:#}); bundle was printed above.\x1b[0m"
+                        )),
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    tunnel_println(
+                        "\x1b[33m`/debug copy` needs macOS (pbcopy). Output was printed above.\x1b[0m",
+                    );
+                }
+                Some(other) => tunnel_println(&format!(
+                    "\x1b[33mUnknown `/debug` option `{other}`. Use `/debug` or `/debug copy`.\x1b[0m"
+                )),
+            }
+            SlashResult::Continue
+        }
         "/stats" => {
             // /stats is a read-only snapshot: no provider call, no
             // history mutation. Safe to run at any time, including
@@ -994,7 +1034,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /new         — Start fresh session");
             tunnel_println("  /session     — List and switch sessions");
             tunnel_println("  /history     — Transcript (/history full | N | show idx)");
-            tunnel_println("  /undo [N]    — Drop last N user turns (+ refresh journals / usage stats)");
+            tunnel_println(
+                "  /undo [N]    — Drop last N user turns (+ refresh journals / usage stats)",
+            );
             tunnel_println(
                 "  /prune after … — Drop newer rows after id prefix or @index from listing",
             );
@@ -1010,6 +1052,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /journal     — Toggle background session journaling (on/off)");
             tunnel_println(
                 "  /verbose     — Verbose API logging + `[turn complete]` after each run (on/off)",
+            );
+            tunnel_println(
+                "  /debug       — Diagnostics for bug reports (`/debug copy` → clipboard on macOS)",
             );
             tunnel_println("  /quit        — Exit REPL");
             tunnel_println("  /help        — Show this help");
@@ -1466,6 +1511,7 @@ pub(super) fn is_known_slash_command(cmd: &str) -> bool {
             | "/relay"
             | "/proxy"
             | "/verbose"
+            | "/debug"
             | "/skill"
             | "/help"
     )
