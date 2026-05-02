@@ -307,6 +307,8 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     oc         OpenCode — API key
     grok       Grok (xAI) — API key
     gem        Gemini (Google) — API key
+    bedrock | brk   Amazon Bedrock — IAM / SigV4
+    gcp | vertex    Vertex AI (OpenAI-compat) — project + region; Bearer via `gcloud`
     oac        Generic OpenAI-compat API
 
   Named credentials use prefix to determine provider:
@@ -315,6 +317,8 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     or-personal, or-grok      → OpenRouter
     oc-work, opencode-pro     → OpenCode
     grok-work                 → Grok
+    brk-ci, bedrock-prod      → Bedrock
+    gcp-main, vertex-prod     → GCP Vertex
     oac-lab, oac-local        → OpenAI-compat
 
   Environment:
@@ -340,6 +344,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     sidekar repl credential add claude work     → stored as 'claude-work'
     sidekar repl credential add or personal    → stored as 'or-personal'
     sidekar repl credential add grok
+    sidekar repl credential add gcp work       → stored as 'gcp-work'
     sidekar repl credential add oac local http://localhost:11434/v1
     sidekar repl models -c claude-1
     sidekar repl sessions

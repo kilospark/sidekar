@@ -52,6 +52,26 @@ pub(super) fn format_debug_bundle(
                         }
                         Err(e) => lines.push(format!("bedrock_config_error={e:#}")),
                     }
+                } else if pt == "gcp" {
+                    let key = crate::providers::oauth::kv_key_for(cred_name);
+                    match crate::providers::oauth::load_credentials(&key) {
+                        Ok(Some(creds)) => {
+                            if let Some(p) = creds.metadata.get("gcp_project").and_then(|v| v.as_str())
+                            {
+                                lines.push(format!("gcp_project={p:?}"));
+                            }
+                            if let Some(loc) =
+                                creds.metadata.get("gcp_location").and_then(|v| v.as_str())
+                            {
+                                lines.push(format!("gcp_location={loc:?}"));
+                            }
+                            lines.push(
+                                "gcp_hint=Bearer from `gcloud auth print-access-token`; Vertex quota uses x-goog-user-project on some routes".into(),
+                            );
+                        }
+                        Ok(None) => lines.push("gcp_config_error=(missing KV entry)".into()),
+                        Err(e) => lines.push(format!("gcp_config_error={e:#}")),
+                    }
                 }
             }
             None => lines.push("provider_type=(unknown nickname)".to_string()),
@@ -60,7 +80,7 @@ pub(super) fn format_debug_bundle(
 
     lines.push(String::new());
     lines.push(
-        "# Paste everything above when reporting Sidekar + Bedrock/AWS issues. No secrets included."
+        "# Paste everything above when reporting Sidekar + Bedrock/AWS/GCP issues. No secrets included."
             .into(),
     );
     lines.join("\n")

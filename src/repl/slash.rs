@@ -1662,7 +1662,7 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
     let provider_type =
         providers::oauth::resolve_provider_type_for_credential(cred_name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…); see `sidekar repl --help`."
+                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, gcp-, vertex-, oac-…); see `sidekar repl --help`."
             )
         })?;
     let cred = Some(cred_name.to_string());
@@ -1698,6 +1698,15 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
         "bedrock" => {
             let b = providers::oauth::load_bedrock_stored(cred_name)?;
             Ok(Provider::bedrock(b.region, b.aws_profile))
+        }
+        "gcp" => {
+            let creds = providers::oauth::get_gcp_vertex_credentials(cred_name).await?;
+            Ok(Provider::gcp_vertex(
+                creds.api_key,
+                creds.base_url,
+                creds.name,
+                cred,
+            ))
         }
         "oac" => {
             let creds = providers::oauth::get_openai_compat_credentials(cred_name).await?;

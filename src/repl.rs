@@ -205,8 +205,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         && providers::oauth::resolve_provider_type_for_credential(name).is_none()
     {
         anyhow::bail!(
-            "Unknown credential: '{name}'. Use a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, oac-…).\n\
-                 Examples: claude, claude-1, codex, codex-work, or-personal, anthropic, gem-work, oac-lab\n\
+            "Unknown credential: '{name}'. Use a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, gcp-work, oac-…).\n\
+                 Examples: claude, claude-1, codex, codex-work, or-personal, anthropic, gem-work, gcp, vertex-prod, oac-lab\n\
                  Add credentials: sidekar repl credential add <provider> [name]  (see sidekar repl --help)"
         );
     }

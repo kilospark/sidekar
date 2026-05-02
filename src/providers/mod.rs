@@ -1666,6 +1666,22 @@ impl Provider {
         }
     }
 
+    /// Vertex AI OpenAI-compatible endpoint; bearer token from `gcloud auth print-access-token`.
+    pub fn gcp_vertex(
+        api_key: String,
+        base_url: String,
+        display_name: String,
+        credential: Option<String>,
+    ) -> Self {
+        Provider::OpenAiCompat {
+            api_key,
+            base_url,
+            provider_type: "gcp".to_string(),
+            display_name,
+            credential,
+        }
+    }
+
     /// OpenCode uses the Anthropic API shape with a different base URL.
     pub fn opencode(api_key: String, credential: Option<String>) -> Self {
         Provider::Anthropic {
@@ -1732,12 +1748,14 @@ impl Provider {
     }
 
     /// Anthropic OAuth, Codex, and OpenAI-compat credentials using GCP ADC
-    /// (`OPENAI_COMPAT_GCP_ADC`) may recover from 401 via [`oauth::force_refresh_token`].
+    /// (`OPENAI_COMPAT_GCP_ADC`) or gcloud CLI (`OPENAI_COMPAT_GCLOUD_CLI`) may recover from 401 via [`oauth::force_refresh_token`].
     pub(crate) fn supports_oauth_refresh_on_401(&self) -> bool {
         match self {
             Provider::Codex { .. } => true,
             Provider::Anthropic { api_key, .. } => api_key.contains("sk-ant-oat"),
-            Provider::OpenAiCompat { api_key, .. } => api_key == oauth::OPENAI_COMPAT_GCP_ADC,
+            Provider::OpenAiCompat { api_key, .. } => {
+                api_key == oauth::OPENAI_COMPAT_GCP_ADC || api_key == oauth::OPENAI_COMPAT_GCLOUD_CLI
+            }
             _ => false,
         }
     }

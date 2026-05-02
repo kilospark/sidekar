@@ -1,7 +1,8 @@
 //! Google Vertex AI OpenAI-compatible endpoint adapter.
 //!
-//! Vertex's OpenAI-compat surface lives at:
-//!   `https://aiplatform.googleapis.com/v1/projects/<PROJECT>/locations/<LOC>/endpoints/openapi`
+//! Vertex's OpenAI-compat surface lives at regional hosts
+//! `{LOC}-aiplatform.googleapis.com` or host `aiplatform.googleapis.com` when `LOC` is `global`:
+//!   `/v1/projects/<PROJECT>/locations/<LOC>/endpoints/openapi`
 //!
 //! Partner Claude on Vertex also exposes `:rawPredict` / `:streamRawPredict` on publisher model paths;
 //! see [`is_vertex_anthropic_partner_models_base`] and [`anthropic_partner_stream_url`].
@@ -54,6 +55,21 @@ const KNOWN_PUBLISHERS: &[&str] = &[
 pub fn is_vertex_openapi_base(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
     lower.contains("aiplatform.googleapis.com") && lower.contains("/endpoints/openapi")
+}
+
+/// Base URL for Vertex AI OpenAI-compatible Chat Completions (`…/chat/completions`).
+///
+/// `location` is normalized to lowercase for the hostname and path (e.g. `us-central1`).
+/// **`global`** uses host `aiplatform.googleapis.com`; regional locations use `{loc}-aiplatform.googleapis.com`.
+pub fn openapi_endpoint_base(project_id: &str, location: &str) -> String {
+    let proj = project_id.trim();
+    let loc = location.trim().to_ascii_lowercase();
+    let host = if loc == "global" {
+        "aiplatform.googleapis.com".to_string()
+    } else {
+        format!("{loc}-aiplatform.googleapis.com")
+    };
+    format!("https://{host}/v1/projects/{proj}/locations/{loc}/endpoints/openapi")
 }
 
 /// Publisher-model Claude on Vertex
@@ -428,5 +444,17 @@ mod tests {
         assert!(parse_publisher_models("qwen", &body).is_empty());
         let body = json!({});
         assert!(parse_publisher_models("qwen", &body).is_empty());
+    }
+
+    #[test]
+    fn openapi_endpoint_base_regional_and_global() {
+        assert_eq!(
+            openapi_endpoint_base("my-proj", "us-central1"),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/endpoints/openapi"
+        );
+        assert_eq!(
+            openapi_endpoint_base("my-proj", "GLOBAL"),
+            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/endpoints/openapi"
+        );
     }
 }

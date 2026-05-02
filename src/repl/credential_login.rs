@@ -16,12 +16,14 @@ Providers:
   grok       Grok (xAI) — API key
   gem        Gemini (Google) — API key
   bedrock | brk Amazon Bedrock — IAM profile / credential chain → HTTPS SigV4
+  gcp | vertex  Vertex AI (OpenAI-compat) — project id + region; Bearer via gcloud CLI
   oac <nickname> <url> [api_key|adc]
 
 Examples:
   sidekar repl credential add claude
   sidekar repl credential add claude work       → stored as 'claude-work'
   sidekar repl credential add or personal       → stored as 'or-personal'
+  sidekar repl credential add gcp prod          → stored as 'gcp-prod'
   sidekar repl credential add oac local http://localhost:11434/v1";
 
 /// CLI missing-arg help and REPL `/credential add` (no tokens).
@@ -156,7 +158,7 @@ pub async fn perform_credential_add(
         crate::providers::oauth::resolve_provider_type_for_login(nickname, provider).ok_or_else(
             || {
                 anyhow!(
-                    "Unknown provider: '{provider}'.\nUse: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, oac"
+                    "Unknown provider: '{provider}'.\nUse: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, gcp/vertex, oac"
                 )
             },
         )?;
@@ -300,8 +302,28 @@ pub async fn perform_credential_add(
             );
             Ok(format!("Logged in as '{nickname}' (Amazon Bedrock)."))
         }
+        "gcp" => {
+            output_line(
+                output,
+                "Vertex OpenAI-compat uses `gcloud auth print-access-token` as Bearer. Run `gcloud auth login` if needed.",
+            );
+            let project = prompt_required(output, "GCP project id", None)?;
+            let location = prompt_required(
+                output,
+                "Vertex location (region), e.g. us-central1 or global",
+                Some("us-central1"),
+            )?;
+            crate::providers::oauth::save_gcp_vertex_credential(nickname, &project, &location)?;
+            output_line(
+                output,
+                &format!("Saved GCP Vertex config to `{kv_key}` (OpenAI-compat base URL in metadata)."),
+            );
+            Ok(format!(
+                "Logged in as '{nickname}' (GCP Vertex, project {project}, {location})."
+            ))
+        }
         _ => Err(anyhow!(
-            "Unknown provider type for '{nickname}'.\nUse: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, oac"
+            "Unknown provider type for '{nickname}'.\nUse: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, gcp/vertex, oac"
         )),
     }
 }

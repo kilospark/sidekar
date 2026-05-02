@@ -5,6 +5,9 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Provider configs (from pi-mono)
@@ -34,6 +37,73 @@ pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
 /// Sentinel stored as OpenAI-compat `api_key` when auth uses GCP ADC ([`crate::providers::gcp_adc`]).
 pub const OPENAI_COMPAT_GCP_ADC: &str = "__SIDEKAR_GCP_ADC__";
+
+/// Sentinel when auth runs `gcloud auth print-access-token` ([`gcloud_cli_access_token`]).
+pub const OPENAI_COMPAT_GCLOUD_CLI: &str = "__SIDEKAR_GCLOUD_CLI__";
+
+#[derive(Clone)]
+struct GcloudCliCached {
+    token: String,
+    valid_until: Instant,
+}
+
+fn gcloud_cli_mutex() -> &'static Mutex<Option<GcloudCliCached>> {
+    static CELL: OnceLock<Mutex<Option<GcloudCliCached>>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(None))
+}
+
+/// Drop cached `gcloud` access token (e.g. after HTTP 401).
+pub async fn invalidate_gcloud_cli_token_cache() {
+    *gcloud_cli_mutex().lock().await = None;
+}
+
+/// OAuth access token from the active gcloud user account (`gcloud auth print-access-token`).
+///
+/// Cached ~50 minutes (typical access-token TTL ~1h). Requires [Google Cloud CLI](https://cloud.google.com/sdk/gcloud)
+/// on `PATH` and a prior `gcloud auth login` (or equivalent).
+pub async fn gcloud_cli_access_token() -> Result<String> {
+    let mut guard = gcloud_cli_mutex().lock().await;
+    let now = Instant::now();
+    if let Some(c) = guard.as_ref() {
+        if now < c.valid_until {
+            return Ok(c.token.clone());
+        }
+    }
+    let token = gcloud_cli_access_token_uncached().await?;
+    let valid_until = Instant::now() + Duration::from_secs(50 * 60);
+    *guard = Some(GcloudCliCached {
+        token: token.clone(),
+        valid_until,
+    });
+    Ok(token)
+}
+
+async fn gcloud_cli_access_token_uncached() -> Result<String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(45),
+        tokio::process::Command::new("gcloud")
+            .args(["auth", "print-access-token", "--quiet"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output(),
+    )
+    .await
+    .context("gcloud auth print-access-token timed out after 45s")?
+    .context("failed to spawn `gcloud` — install Google Cloud SDK and ensure `gcloud` is on PATH")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "gcloud auth print-access-token failed: {stderr}\n\
+             Fix: install gcloud, then run `gcloud auth login` (or activate a service-account key)."
+        );
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        bail!("gcloud returned an empty access token");
+    }
+    Ok(token)
+}
 
 fn metadata_with_provider_type(
     provider_type: &str,
@@ -118,6 +188,8 @@ pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("gemini")
     } else if matches_convention(nickname, "brk") || matches_convention(nickname, "bedrock") {
         Some("bedrock")
+    } else if matches_convention(nickname, "gcp") || matches_convention(nickname, "vertex") {
+        Some("gcp")
     } else if matches_convention(nickname, "oac") {
         Some("oac")
     } else {
@@ -142,6 +214,7 @@ fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
         Some("grok") => Some("grok"),
         Some("gemini") => Some("gemini"),
         Some("bedrock") => Some("bedrock"),
+        Some("gcp") => Some("gcp"),
         Some("oac") => Some("oac"),
         Some("openai-compatible") => Some("oac"),
         _ => None,
@@ -159,6 +232,7 @@ fn legacy_kv_credential_type(stem: &str) -> Option<&'static str> {
         "grok" => Some("grok"),
         "gemini" => Some("gemini"),
         "bedrock" | "brk" => Some("bedrock"),
+        "gcp" | "vertex" => Some("gcp"),
         _ => None,
     }
 }
@@ -179,6 +253,7 @@ pub fn provider_type_from_cli_keyword(keyword: &str) -> Option<&'static str> {
         "grok" => Some("grok"),
         "gem" | "gemini" => Some("gemini"),
         "bedrock" | "brk" => Some("bedrock"),
+        "gcp" | "vertex" => Some("gcp"),
         _ => None,
     }
 }
@@ -256,10 +331,16 @@ type OAuthRefreshFn = fn(&OAuthCredentials) -> PinOAuthFut;
 /// regardless of the cached `expires_at`. Called after a 401 from the provider —
 /// the server rejected a token we thought was still valid (clock drift,
 /// early rotation, or revocation). Supports Anthropic/Codex OAuth and
-/// OpenAI-compat credentials configured with GCP ADC (`metadata.auth = gcp_adc`).
+/// OpenAI-compat credentials configured with GCP ADC (`metadata.auth = gcp_adc`), or
+/// GCP Vertex credentials using `gcloud auth print-access-token` (`provider_type = gcp`).
 pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
     let provider_type = resolve_provider_type_for_credential(cred_name)
         .ok_or_else(|| anyhow::anyhow!("unknown credential '{cred_name}'"))?;
+
+    if provider_type == "gcp" {
+        invalidate_gcloud_cli_token_cache().await;
+        return gcloud_cli_access_token().await;
+    }
 
     if provider_type == "oac" {
         let kv_key = kv_key_for(cred_name);
@@ -426,6 +507,70 @@ pub fn save_bedrock_credential(
     )
 }
 
+/// Vertex AI OpenAI-compatible endpoint (`…/endpoints/openapi`) using [`crate::providers::vertex::openapi_endpoint_base`].
+///
+/// Bearer tokens come from [`gcloud_cli_access_token`] (`gcloud auth print-access-token`).
+pub fn save_gcp_vertex_credential(nickname: &str, project_id: &str, location: &str) -> Result<()> {
+    validate_credential_nickname_for_storage(nickname)?;
+    let proj = project_id.trim();
+    let loc = location.trim();
+    if proj.is_empty() {
+        bail!("GCP project id cannot be empty");
+    }
+    if loc.is_empty() {
+        bail!("GCP Vertex location (region) cannot be empty — e.g. us-central1 or global");
+    }
+    let base_url = crate::providers::vertex::openapi_endpoint_base(proj, loc);
+    let display = format!("GCP Vertex ({proj})");
+    save_static_token(
+        &kv_key_for(nickname),
+        OPENAI_COMPAT_GCLOUD_CLI,
+        serde_json::json!({
+            "provider_type": "gcp",
+            "auth": "gcloud_cli",
+            "name": display,
+            "base_url": base_url,
+            "gcp_project": proj,
+            "gcp_location": loc,
+        }),
+    )
+}
+
+pub async fn get_gcp_vertex_credentials(nickname: &str) -> Result<OpenAiCompatCredentials> {
+    let kv_key = kv_key_for(nickname);
+    let creds = load_credentials(&kv_key)?.with_context(|| {
+        format!(
+            "No GCP Vertex credentials found for '{nickname}'.\n\
+             Run: sidekar repl credential add gcp [nickname]"
+        )
+    })?;
+    if creds.metadata.get("provider_type").and_then(|v| v.as_str()) != Some("gcp") {
+        bail!("credential '{nickname}' is not GCP Vertex");
+    }
+    let base_url = creds
+        .metadata
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .context("GCP credential is missing base_url metadata")?
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let name = creds
+        .metadata
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(nickname)
+        .to_string();
+
+    Ok(OpenAiCompatCredentials {
+        api_key: OPENAI_COMPAT_GCLOUD_CLI.to_string(),
+        base_url,
+        name,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatCredentials {
     pub api_key: String,
@@ -471,10 +616,13 @@ pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompa
     })
 }
 
-/// Resolve a stored OpenAI-compat secret for HTTP (`Bearer`). GCP ADC placeholders become fresh OAuth access tokens.
+/// Resolve a stored OpenAI-compat secret for HTTP (`Bearer`). GCP ADC placeholders become fresh OAuth access tokens;
+/// GCP Vertex `gcloud` placeholders invoke `gcloud auth print-access-token`.
 pub async fn resolve_openai_compat_api_key(api_key: &str) -> Result<String> {
     if api_key == OPENAI_COMPAT_GCP_ADC {
         crate::providers::gcp_adc::cloud_platform_access_token().await
+    } else if api_key == OPENAI_COMPAT_GCLOUD_CLI {
+        gcloud_cli_access_token().await
     } else {
         Ok(api_key.to_string())
     }
