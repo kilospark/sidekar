@@ -56,9 +56,12 @@ async fn maybe_run_final_journal(ctx: Option<&self::journal::task::Context>) {
 
     match self::journal::task::run_once(ctx).await {
         self::journal::task::Outcome::Persisted { id, .. } => {
-            if crate::runtime::verbose() {
-                repl_status_dim(&format!("[final journal #{id} written]"));
-            }
+            crate::broker::try_log_event(
+                "debug",
+                "journal",
+                "final-written",
+                Some(&format!("id={id}")),
+            );
         }
         self::journal::task::Outcome::Failed(e) => {
             crate::broker::try_log_error("journal", &format!("final flush failed: {e:#}"), None);

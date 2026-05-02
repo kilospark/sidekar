@@ -378,9 +378,7 @@ pub(crate) fn spawn_polling_loop(
 
             match run_once(&ctx).await {
                 Outcome::Persisted { id, .. } => {
-                    if runtime::verbose() {
-                        eprintln!("\x1b[2m[journal #{id} written]\x1b[0m");
-                    }
+                    broker::try_log_event("debug", "journal", "written", Some(&format!("id={id}")));
                 }
                 Outcome::Failed(e) => {
                     broker::try_log_error("journal", &format!("pass failed: {e:#}"), None);

@@ -211,12 +211,19 @@ pub(super) fn emit_transient_status(text: &str) {
     if with_active_prompt(|editor| {
         let cols = editor.terminal_columns();
         let truncated = truncate_ansi_to_width(text, cols.saturating_sub(1));
-        editor.clear_prompt_and_status_inner();
-        emit_raw("\r\x1b[2K");
-        emit_raw(&truncated);
-        emit_raw("\n");
+        let mut out = editor.build_clear_string(editor.status_visible);
+        editor.rendered_rows = 0;
+        editor.rendered_pending_rows = 0;
+        editor.rendered_cursor = CursorPos::default();
+        out.push('\r');
+        out.push_str(&truncated);
+        out.push_str("\r\n");
+        let (layout, pending_rows) = editor.append_prompt_frame(&mut out);
+        emit_raw(&out);
         editor.status_visible = true;
-        editor.redraw_inner();
+        editor.rendered_rows = layout.rows;
+        editor.rendered_pending_rows = pending_rows;
+        editor.rendered_cursor = layout.cursor;
     })
     .is_none()
     {
@@ -234,9 +241,16 @@ pub(super) fn clear_transient_status() {
         if !editor.status_visible {
             return;
         }
-        editor.clear_prompt_and_status_inner();
+        let mut out = editor.build_clear_string(true);
+        editor.rendered_rows = 0;
+        editor.rendered_pending_rows = 0;
+        editor.rendered_cursor = CursorPos::default();
+        let (layout, pending_rows) = editor.append_prompt_frame(&mut out);
+        emit_raw(&out);
         editor.status_visible = false;
-        editor.redraw_inner();
+        editor.rendered_rows = layout.rows;
+        editor.rendered_pending_rows = pending_rows;
+        editor.rendered_cursor = layout.cursor;
     })
     .is_none()
     {
@@ -1090,17 +1104,20 @@ impl LineEditor {
     }
 
     fn redraw_inner(&mut self) {
-        let cols = self.terminal_columns();
-        let layout = self.compute_layout(cols);
-        // Build clear + paint as one string so the terminal sees an atomic
-        // frame. Emitting clear and paint as separate writes let some
-        // terminals (Terminal.app during rapid bracketed-paste processing)
-        // drop intermediate frames entirely.
         let mut out = self.build_clear_string(false);
         self.rendered_rows = 0;
         self.rendered_pending_rows = 0;
         self.rendered_cursor = CursorPos::default();
+        let (layout, pending_rows) = self.append_prompt_frame(&mut out);
+        emit_raw(&out);
+        self.rendered_rows = layout.rows;
+        self.rendered_pending_rows = pending_rows;
+        self.rendered_cursor = layout.cursor;
+    }
 
+    fn append_prompt_frame(&self, out: &mut String) -> (RenderLayout, usize) {
+        let cols = self.terminal_columns();
+        let layout = self.compute_layout(cols);
         let pending_bar = self.pending_bar_line(cols);
         let pending_rows = usize::from(pending_bar.is_some());
         let rows = self.wrapped_rows(cols);
@@ -1119,7 +1136,7 @@ impl LineEditor {
                     out.push_str(CONTINUATION_PREFIX);
                 }
             }
-            append_row_with_placeholders(&mut out, &self.buffer, row.clone(), &placeholder_spans);
+            append_row_with_placeholders(out, &self.buffer, row.clone(), &placeholder_spans);
         }
         out.push_str("\x1b[999D");
         if layout.end.row > 0 {
@@ -1131,10 +1148,7 @@ impl LineEditor {
         if layout.cursor.col > 0 {
             out.push_str(&format!("\x1b[{}C", layout.cursor.col));
         }
-        emit_raw(&out);
-        self.rendered_rows = layout.rows;
-        self.rendered_pending_rows = pending_rows;
-        self.rendered_cursor = layout.cursor;
+        (layout, pending_rows)
     }
 
     fn redraw(&mut self) {
