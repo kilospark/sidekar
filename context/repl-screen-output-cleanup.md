@@ -7,12 +7,13 @@
 3. compaction progress and journal-written notices removed from screen
 4. token footer and tool-summary transcript lines gated behind verbose mode
 5. spinner output delayed until `250ms`; refresh slowed to `250ms`
+6. bus messages no longer print into live REPL transcript
 
 ## Queue
 
 1. Bus / relay display lane
-   - stop injecting bus messages into main transcript stream
-   - move to notification lane or explicit inbox view
+   - add explicit inbox / notification surface for bus traffic
+   - keep delivery visible without polluting main prompt/output flow
 
 2. Shell escape footer policy
    - hide `[elapsed]` on success

@@ -119,8 +119,12 @@ pub(super) fn inject_bus_messages(
     let n = messages.len();
     for msg in messages {
         let text = format!("[Bus message from {}]: {}", msg.sender, msg.body);
-        let display = format!("\x1b[33m[bus] {} says: {}\x1b[0m", msg.sender, msg.body);
-        tunnel_println(&display);
+        broker::try_log_event(
+            "debug",
+            "bus",
+            "received",
+            Some(&format!("from={}", msg.sender)),
+        );
         let steering = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],
