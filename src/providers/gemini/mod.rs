@@ -134,8 +134,11 @@ pub async fn stream(
             if let Some(fp) = &cache_fingerprint {
                 let _ = cache_registry::delete(fp);
             }
-            eprintln!(
-                "gemini cache: server-side eviction detected, retrying without cachedContent"
+            crate::broker::try_log_event(
+                "debug",
+                "gemini-cache",
+                "server-eviction-retrying-uncached",
+                None,
             );
             send_generate_request(
                 api_key,
@@ -307,7 +310,11 @@ async fn prepare_cache(
         Ok(Some(c)) => c,
         Ok(None) => return None, // 4xx — not retryable; fall back
         Err(e) => {
-            eprintln!("gemini cache: create failed, continuing uncached: {e:#}");
+            crate::broker::try_log_error(
+                "gemini-cache",
+                "create failed, continuing uncached",
+                Some(&format!("{e:#}")),
+            );
             return None;
         }
     };
@@ -320,7 +327,11 @@ async fn prepare_cache(
         expires_at_unix: created.expires_at_unix,
     };
     if let Err(e) = cache_registry::store(&entry) {
-        eprintln!("gemini cache: registry store failed: {e:#}");
+        crate::broker::try_log_error(
+            "gemini-cache",
+            "registry store failed",
+            Some(&format!("{e:#}")),
+        );
         // Server has the cache; we just can't track it locally. Use
         // it for this turn — we'll pay a creation cost again next
         // turn, but correctness is preserved.
