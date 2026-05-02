@@ -209,8 +209,7 @@ impl EventRenderer {
             StreamEvent::Done { message } => {
                 self.stop_spinner();
                 self.clear_partial_preview();
-                let mut lines = self.md.finalize();
-                lines.push(String::new());
+                let lines = self.md.finalize();
                 emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
                 if crate::runtime::verbose() {
