@@ -86,17 +86,17 @@ pub fn anthropic_partner_model_id(base_url: &str) -> Option<String> {
 
 /// Vertex `openapi` Chat Completions does not serve Claude ([Google docs](https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview)).
 /// Map to publisher-model base (`…/publishers/anthropic/models/<id>`) using the same scheme/host/project/location.
+///
+/// Accepts catalog IDs (`anthropic/claude-…`) or bare Vertex Claude IDs (`claude-opus-4-6`, …).
 pub fn openapi_base_to_anthropic_partner_base(base_url: &str, model: &str) -> Option<String> {
     if !is_vertex_openapi_base(base_url) {
         return None;
     }
     let model_clean = model
         .strip_suffix(super::ANTHROPIC_1M_SUFFIX)
-        .unwrap_or(model);
-    let (pub_id, bare_id) = model_clean.split_once('/')?;
-    if pub_id != "anthropic" || bare_id.is_empty() {
-        return None;
-    }
+        .unwrap_or(model)
+        .trim();
+    let bare_id = anthropic_partner_bare_model_id(model_clean)?;
     let parsed = url::Url::parse(base_url.trim_end_matches('/')).ok()?;
     let scheme = parsed.scheme();
     let host = parsed.host_str()?;
@@ -105,6 +105,21 @@ pub fn openapi_base_to_anthropic_partner_base(base_url: &str, model: &str) -> Op
     Some(format!(
         "{scheme}://{host}/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{bare_id}"
     ))
+}
+
+/// Bare publisher model segment for Claude (`claude-opus-4-6`) or full `anthropic/<id>` from catalog.
+fn anthropic_partner_bare_model_id(model_clean: &str) -> Option<&str> {
+    if let Some((pub_id, bare)) = model_clean.split_once('/') {
+        if pub_id == "anthropic" && !bare.is_empty() {
+            return Some(bare);
+        }
+        return None;
+    }
+    let lower = model_clean.to_ascii_lowercase();
+    if lower.starts_with("claude-") && !model_clean.contains('/') {
+        return Some(model_clean);
+    }
+    None
 }
 
 fn extract_location_from_vertex_path(path: &str) -> Option<String> {
@@ -334,6 +349,12 @@ mod tests {
         let openapi = "https://us-east5-aiplatform.googleapis.com/v1beta1/projects/sf-internal-tooling/locations/us-east5/endpoints/openapi";
         assert_eq!(
             openapi_base_to_anthropic_partner_base(openapi, "anthropic/claude-opus-4-6"),
+            Some(
+                "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6".to_string()
+            )
+        );
+        assert_eq!(
+            openapi_base_to_anthropic_partner_base(openapi, "claude-opus-4-6"),
             Some(
                 "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6".to_string()
             )

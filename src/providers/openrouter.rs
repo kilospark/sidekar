@@ -3,8 +3,8 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamEvent,
-    ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamConfig,
+    StreamEvent, ToolDef, Usage,
 };
 
 /// Streaming call to OpenRouter's OpenAI-compatible chat completions API.
@@ -42,6 +42,20 @@ pub async fn stream_with_provider(
     tools: &[ToolDef],
     _prompt_cache_key: Option<&str>,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    if let Some(partner_base) = super::vertex::openapi_base_to_anthropic_partner_base(base_url, model)
+    {
+        return super::anthropic::stream_vertex_anthropic_partner(
+            api_key,
+            &partner_base,
+            model,
+            system_prompt,
+            messages,
+            tools,
+            &StreamConfig::default(),
+        )
+        .await;
+    }
+
     let body = build_request_body(model, system_prompt, messages, tools);
     let url = super::openai_chat_completions_url(base_url);
 
