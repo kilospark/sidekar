@@ -18,7 +18,8 @@ const BRAILLE_TICKS: &[char] = &[
     '⠺', '⠻', '⠼', '⠽', '⠾', '⠿',
 ];
 pub(super) const COLOR: &str = "\x1b[36m";
-pub(super) const TICK: Duration = Duration::from_millis(80);
+const SHOW_AFTER: Duration = Duration::from_millis(250);
+pub(super) const TICK: Duration = Duration::from_millis(250);
 
 /// Build one spinner frame string. Format: `⠿ X.Xs label` (one random braille cell).
 /// `idx` is kept for call-site compatibility; each frame picks a fresh random tick.
@@ -50,6 +51,10 @@ impl Spinner {
         let r = running.clone();
         let handle = std::thread::spawn(move || {
             let started = Instant::now();
+            std::thread::sleep(SHOW_AFTER);
+            if !r.load(Ordering::Relaxed) {
+                return;
+            }
             let mut i = 0usize;
             while r.load(Ordering::Relaxed) {
                 emit_transient_status(&frame(i, started.elapsed(), &label));
