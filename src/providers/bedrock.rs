@@ -983,15 +983,15 @@ pub async fn stream(
             .await
     };
     let resolve_elapsed = resolve_started.elapsed();
-    let candidates = bedrock_invoke_model_id_candidates(&base_model_id, region, resolved);
+    let candidates = bedrock_invoke_model_id_candidates(&base_model_id, region, resolved.clone());
 
-    let mut last_failure: Option<(u16, String, String)> = None;
+    let mut invoke_attempts: Vec<(String, u16, String, String)> = Vec::new();
     let mut http_resp = None;
     let mut selected_path_model_id = None;
     let invoke_started = Instant::now();
-    for path_model_id in candidates {
+    for path_model_id in &candidates {
         let signing = signing_params(&identity, region, "bedrock")?;
-        let url = bedrock_invoke_url(region, &path_model_id)?;
+        let url = bedrock_invoke_url(region, path_model_id)?;
         let http_req = signed_request(&Method::POST, &url, &header_pairs, &body_vec, &signing)?;
         let reqwest_req =
             reqwest::Request::try_from(http_req).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1012,22 +1012,46 @@ pub async fn stream(
             .unwrap_or("")
             .to_string();
         let err_body = resp.bytes().await.unwrap_or_default();
-        last_failure = Some((status.as_u16(), ct_hint, utf8_preview(&err_body)));
+        let body_preview = utf8_preview(&err_body);
+        invoke_attempts.push((
+            path_model_id.clone(),
+            status.as_u16(),
+            ct_hint.clone(),
+            body_preview.clone(),
+        ));
     }
 
     let http_resp = match http_resp {
         Some(r) => r,
-        None => match last_failure {
-            Some((code, ct_hint, body)) => anyhow::bail!(
-                "Bedrock invoke_model_with_response_stream HTTP {} ({}): {}",
-                code,
-                ct_hint,
-                body
-            ),
-            None => anyhow::bail!(
-                "Bedrock invoke_model_with_response_stream: no response and no error detail"
-            ),
-        },
+        None => {
+            let attempts_detail = invoke_attempts
+                .iter()
+                .map(|(mid, code, ct, body)| {
+                    format!("  - modelId={mid:?} → HTTP {code} ({ct}): {body}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let ordered = candidates
+                .iter()
+                .map(|s| format!("{s:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            match invoke_attempts.last() {
+                Some((_, code, ct_hint, body)) => anyhow::bail!(
+                    "Bedrock invoke_model_with_response_stream HTTP {code} ({ct_hint}): {body}\n\
+                     region={region:?} aws_profile={profile:?} base_model_id={base_model_id:?}\n\
+                     resolved_inference_profile={resolved:?}\n\
+                     candidates_tried_in_order: [{ordered}]\n\
+                     per_attempt:\n{attempts_detail}",
+                ),
+                None => anyhow::bail!(
+                    "Bedrock invoke_model_with_response_stream: no response and no error detail\n\
+                     region={region:?} aws_profile={profile:?} base_model_id={base_model_id:?}\n\
+                     resolved_inference_profile={resolved:?}\n\
+                     candidates_tried_in_order: [{ordered}]",
+                ),
+            }
+        }
     };
     let selected_path_model_id = selected_path_model_id.unwrap_or_else(|| base_model_id.clone());
     let invoke_elapsed = invoke_started.elapsed();
