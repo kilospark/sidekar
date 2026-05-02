@@ -17,6 +17,17 @@ type WsStream =
 type WsWrite = futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
+fn log_ws_verbose(event: &str, detail: Option<&str>) {
+    if !super::is_verbose() {
+        return;
+    }
+    crate::broker::try_log_event("debug", "codex-ws", event, detail);
+}
+
+fn log_ws_error(event: &str, detail: &str) {
+    crate::broker::try_log_error("codex-ws", event, Some(detail));
+}
+
 /// A reusable WebSocket connection to the Codex Responses API.
 ///
 /// Held across turns in a REPL session so the server can correlate requests
@@ -763,10 +774,10 @@ async fn connect_ws(
     let ws = if let Some((proxy_port, _)) = super::attached_mitm_for_custom_tls() {
         let proxy_addr = format!("127.0.0.1:{}", proxy_port);
         if verbose {
-            crate::tunnel::tunnel_println(&format!(
-                "\x1b[2m[ws] CONNECT tunnel via proxy :{}\x1b[0m",
-                proxy_port
-            ));
+            log_ws_verbose(
+                "connect-tunnel-via-proxy",
+                Some(&format!("port={proxy_port}")),
+            );
         }
         let mut tcp = tokio::net::TcpStream::connect(&proxy_addr)
             .await
@@ -796,9 +807,10 @@ async fn connect_ws(
         }
 
         if verbose {
-            crate::tunnel::tunnel_println(&format!(
-                "\x1b[2m[ws] TLS + WS handshake to {host}\x1b[0m"
-            ));
+            log_ws_verbose(
+                "tls-ws-handshake",
+                Some(&format!("host={host} via_proxy=true")),
+            );
         }
         let connector = Some(tokio_tungstenite::Connector::Rustls(tls_config));
         let (ws, _) =
@@ -808,9 +820,10 @@ async fn connect_ws(
         ws
     } else {
         if verbose {
-            crate::tunnel::tunnel_println(&format!(
-                "\x1b[2m[ws] TLS + WS handshake to {host}\x1b[0m"
-            ));
+            log_ws_verbose(
+                "tls-ws-handshake",
+                Some(&format!("host={host} via_proxy=false")),
+            );
         }
         let connector = tokio_tungstenite::Connector::Rustls(tls_config);
         let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
@@ -824,7 +837,7 @@ async fn connect_ws(
         ws
     };
     if verbose {
-        crate::tunnel::tunnel_println("\x1b[2m[ws] connected\x1b[0m");
+        log_ws_verbose("connected", None);
     }
 
     Ok(futures_util::StreamExt::split(ws))
@@ -888,48 +901,40 @@ pub async fn stream_ws(
         if let Some(ws) = cached_ws {
             let (mut w, mut r) = (ws.write, ws.read);
             if verbose {
-                crate::tunnel::tunnel_println("\x1b[2m[ws] sending on cached connection\x1b[0m");
+                log_ws_verbose("sending-on-cached-connection", None);
             }
             if w.send(WsMessage::Text(payload.clone().into()))
                 .await
                 .is_ok()
             {
                 if verbose {
-                    crate::tunnel::tunnel_println(
-                        "\x1b[2m[ws] sent, validating with first read...\x1b[0m",
-                    );
+                    log_ws_verbose("validating-cached-connection", None);
                 }
                 // Validate: read first message to confirm connection is alive
                 use futures_util::StreamExt;
                 if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) = r.next().await {
                     if verbose {
-                        crate::tunnel::tunnel_println(
-                            "\x1b[2m[ws] cached connection alive, reusing\x1b[0m",
-                        );
+                        log_ws_verbose("cached-connection-reused", None);
                     }
                     break 'conn (w, r, Some(t.to_string()));
                 }
                 if verbose {
-                    crate::tunnel::tunnel_println(
-                        "\x1b[2m[ws] cached read failed (broken pipe), reconnecting\x1b[0m",
-                    );
+                    log_ws_verbose("cached-read-failed-reconnecting", None);
                 }
             } else if verbose {
-                crate::tunnel::tunnel_println(
-                    "\x1b[2m[ws] cached send failed, reconnecting\x1b[0m",
-                );
+                log_ws_verbose("cached-send-failed-reconnecting", None);
             }
         } else if verbose {
-            crate::tunnel::tunnel_println("\x1b[2m[ws] no cached connection\x1b[0m");
+            log_ws_verbose("no-cached-connection", None);
         }
 
         // Fresh connection (either no cache, or cache was dead)
         if verbose {
-            crate::tunnel::tunnel_println("\x1b[2m[ws] opening fresh connection\x1b[0m");
+            log_ws_verbose("opening-fresh-connection", None);
         }
         let (mut w, r) = connect_ws(api_key, account_id, base_url, verbose).await?;
         if verbose {
-            crate::tunnel::tunnel_println("\x1b[2m[ws] sending response.create\x1b[0m");
+            log_ws_verbose("sending-response-create", None);
         }
         w.send(WsMessage::Text(payload.into()))
             .await
@@ -945,23 +950,19 @@ pub async fn stream_ws(
         match parse_ws_stream(&mut read, &tx, first_text).await {
             Ok(true) => {
                 if verbose {
-                    crate::tunnel::tunnel_println(
-                        "\x1b[2m[ws] reclaiming connection for reuse\x1b[0m",
-                    );
+                    log_ws_verbose("reclaiming-connection-for-reuse", None);
                 }
                 let _ = reclaim_tx.send(Some(CachedWs { write, read }));
             }
             Ok(false) => {
                 if verbose {
-                    crate::tunnel::tunnel_println("\x1b[2m[ws] server closed connection\x1b[0m");
+                    log_ws_verbose("server-closed-connection", None);
                 }
                 let _ = reclaim_tx.send(None);
             }
             Err(e) => {
                 if verbose {
-                    crate::tunnel::tunnel_println(&format!(
-                        "\x1b[2m[ws] transport error: {e:#}\x1b[0m"
-                    ));
+                    log_ws_error("transport-error", &format!("{e:#}"));
                 }
                 let _ = tx.send(StreamEvent::Error {
                     message: format!("{e:#}"),

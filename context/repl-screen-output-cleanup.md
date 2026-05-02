@@ -12,6 +12,8 @@
 8. core retry/auth/model-list debug chatter moved from stderr to broker log
 9. low-signal REPL status lines moved off screen (`turn complete`, relay connect, MITM attach)
 10. Gemini / Vertex provider debug stderr moved to broker log
+11. Codex WS verbose traces moved off screen into broker log
+12. REPL startup banner condensed from two lines to one
 
 ## Queue
 
@@ -20,14 +22,12 @@
    - keep delivery visible without polluting main prompt/output flow
 
 2. Startup condensation
-   - collapse banner / model / credential / rate-limit lines into tighter startup surface
-   - push detail to `/status`
+   - review whether rate-limit warning should move to `/status` or remain inline
 
 3. Verbose/status cleanup
    - review remaining startup/status lines that still commit into transcript
 
 4. Provider-specific debug surfaces
-   - review verbose WS traces in Codex provider
    - review remaining provider stderr paths
    - normalize under one verbosity policy
 

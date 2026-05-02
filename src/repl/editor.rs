@@ -2322,22 +2322,21 @@ pub(super) fn read_input_or_bus(
 }
 
 pub(super) fn print_banner(model: Option<&str>, credential: Option<&str>) {
-    println!("\x1b[1;36mSidekar REPL\x1b[0m");
-    let line2 = match (model, credential) {
+    let line = match (model, credential) {
         (Some(m), Some(c)) => format!(
-            "\x1b[36mmodel\x1b[0m {m}  \x1b[36mcredential\x1b[0m {c}  \x1b[2m/help · /quit · ↑ pulls queued input\x1b[0m"
+            "\x1b[1;36mSidekar REPL\x1b[0m  \x1b[36mmodel\x1b[0m {m}  \x1b[36mcred\x1b[0m {c}  \x1b[2m/help · /quit · ↑ queued\x1b[0m"
         ),
         (Some(m), None) => format!(
-            "\x1b[36mmodel\x1b[0m {m}  \x1b[2m/credential <name> · /help · ↑ pulls queued input\x1b[0m"
+            "\x1b[1;36mSidekar REPL\x1b[0m  \x1b[36mmodel\x1b[0m {m}  \x1b[2m/credential <name> · /help · ↑ queued\x1b[0m"
         ),
         (None, Some(c)) => format!(
-            "\x1b[36mcredential\x1b[0m {c}  \x1b[2m/model <name> · ↑ pulls queued input\x1b[0m"
+            "\x1b[1;36mSidekar REPL\x1b[0m  \x1b[36mcred\x1b[0m {c}  \x1b[2m/model <name> · /help · ↑ queued\x1b[0m"
         ),
         (None, None) => {
-            "\x1b[2m/credential + /model to start · /help · ↑ pulls queued input\x1b[0m".to_string()
+            "\x1b[1;36mSidekar REPL\x1b[0m  \x1b[2m/credential + /model to start · /help · ↑ queued\x1b[0m".to_string()
         }
     };
-    println!("{line2}");
+    println!("{line}");
     if let Some(c) = credential
         && let Some(until) =
             crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(c))
