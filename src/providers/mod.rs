@@ -2023,6 +2023,24 @@ impl Provider {
                     )
                     .await?;
                     Ok(no_ws_reclaim(rx))
+                } else if let Some(partner_base) =
+                    vertex::openapi_base_to_anthropic_partner_base(base_url, model)
+                {
+                    let mut cfg = stream_config.clone();
+                    cfg.credential_kv_key = credential
+                        .as_ref()
+                        .map(|n| crate::providers::oauth::kv_key_for(n));
+                    let rx = anthropic::stream_vertex_anthropic_partner(
+                        &key,
+                        &partner_base,
+                        model,
+                        system_prompt,
+                        messages,
+                        tools,
+                        &cfg,
+                    )
+                    .await?;
+                    Ok(no_ws_reclaim(rx))
                 } else {
                     let rx = openrouter::stream_with_provider(
                         display_name,

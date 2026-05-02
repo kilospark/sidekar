@@ -14,12 +14,17 @@
 //!    and must be queried per publisher with the
 //!    `x-goog-user-project: <PROJECT>` header.
 //!
-//! 2. The chat endpoint requires model IDs in `<publisher>/<model-id>` form
+//! 2. The **`openapi` Chat Completions** path (`…/chat/completions`) supports **Gemini**
+//!    and select self-hosted Model Garden containers — **not** Anthropic Claude.
+//!    Claude on Vertex uses **publisher-model** `:streamRawPredict` instead; Sidekar
+//!    redirects `anthropic/<id>` automatically ([overview](https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview)).
+//!
+//! 3. For Gemini via openapi, model IDs must be `<publisher>/<model-id>`
 //!    (e.g. `google/gemini-2.5-flash`). Bare `gemini-2.5-flash` returns 400.
 //!    The publisher-models response uses `publishers/<pub>/models/<id>` —
 //!    we transform to the `<pub>/<id>` form expected by the chat endpoint.
 //!
-//! 3. Auth uses `Authorization: Bearer <token>` where `<token>` is a GCP OAuth2 access token (`ya29.*`).
+//! 4. Auth uses `Authorization: Bearer <token>` where `<token>` is a GCP OAuth2 access token (`ya29.*`).
 //!    Store **`adc`** on the OpenAI-compat credential to resolve tokens via Application Default Credentials
 //!    ([`crate::providers::gcp_adc`]): `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`,
 //!    or GCE metadata. Alternatively paste a token from `gcloud auth print-access-token`.
@@ -77,6 +82,39 @@ pub fn anthropic_partner_model_id(base_url: &str) -> Option<String> {
         return None;
     }
     Some(tail.to_string())
+}
+
+/// Vertex `openapi` Chat Completions does not serve Claude ([Google docs](https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview)).
+/// Map to publisher-model base (`…/publishers/anthropic/models/<id>`) using the same scheme/host/project/location.
+pub fn openapi_base_to_anthropic_partner_base(base_url: &str, model: &str) -> Option<String> {
+    if !is_vertex_openapi_base(base_url) {
+        return None;
+    }
+    let model_clean = model
+        .strip_suffix(super::ANTHROPIC_1M_SUFFIX)
+        .unwrap_or(model);
+    let (pub_id, bare_id) = model_clean.split_once('/')?;
+    if pub_id != "anthropic" || bare_id.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(base_url.trim_end_matches('/')).ok()?;
+    let scheme = parsed.scheme();
+    let host = parsed.host_str()?;
+    let project = extract_project(base_url)?;
+    let location = extract_location_from_vertex_path(parsed.path())?;
+    Some(format!(
+        "{scheme}://{host}/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{bare_id}"
+    ))
+}
+
+fn extract_location_from_vertex_path(path: &str) -> Option<String> {
+    let rest = path.split("/locations/").nth(1)?;
+    let loc = rest.split('/').next()?;
+    if loc.is_empty() {
+        None
+    } else {
+        Some(loc.to_string())
+    }
 }
 
 /// `:streamRawPredict` URL for streaming (see [Google's REST
@@ -289,6 +327,28 @@ mod tests {
             Some("sf-internal-tooling".to_string())
         );
         assert_eq!(extract_project("https://api.openai.com/v1"), None);
+    }
+
+    #[test]
+    fn openapi_base_maps_to_anthropic_partner_for_claude_models() {
+        let openapi = "https://us-east5-aiplatform.googleapis.com/v1beta1/projects/sf-internal-tooling/locations/us-east5/endpoints/openapi";
+        assert_eq!(
+            openapi_base_to_anthropic_partner_base(openapi, "anthropic/claude-opus-4-6"),
+            Some(
+                "https://us-east5-aiplatform.googleapis.com/v1/projects/sf-internal-tooling/locations/us-east5/publishers/anthropic/models/claude-opus-4-6".to_string()
+            )
+        );
+        assert!(
+            openapi_base_to_anthropic_partner_base(openapi, "google/gemini-2.5-flash").is_none(),
+            "Gemini must stay on openapi Chat Completions"
+        );
+        assert!(
+            openapi_base_to_anthropic_partner_base(
+                "https://api.openai.com/v1",
+                "anthropic/claude-opus-4-6"
+            )
+            .is_none()
+        );
     }
 
     #[test]
