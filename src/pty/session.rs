@@ -1,11 +1,7 @@
 use super::*;
 
-/// Kill and reap a child process, clean up broker and socket state.
-pub(crate) fn cleanup_child_and_state(
-    child_pid: libc::pid_t,
-    agent_name: Option<&str>,
-    socket_path: Option<&std::path::Path>,
-) {
+/// Kill and reap a child process and unregister broker agent state.
+pub(crate) fn cleanup_child_and_state(child_pid: libc::pid_t, agent_name: Option<&str>) {
     // Kill child if still running
     if unsafe { libc::kill(child_pid, 0) } == 0 {
         unsafe { libc::kill(child_pid, libc::SIGTERM) };
@@ -22,10 +18,6 @@ pub(crate) fn cleanup_child_and_state(
     // Clean broker
     if let Some(name) = agent_name {
         let _ = broker::unregister_agent(name);
-    }
-    // Clean socket
-    if let Some(path) = socket_path {
-        let _ = std::fs::remove_file(path);
     }
 }
 

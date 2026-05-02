@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 mod agent_registry;
 mod agent_sessions;
@@ -105,7 +105,24 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     init_schema(conn)?;
+    // v4: drop legacy agents.socket_path (bus delivery uses broker SQLite `bus_queue`).
+    if version < 4 {
+        migrate_agents_drop_socket_path(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    Ok(())
+}
+
+fn migrate_agents_drop_socket_path(conn: &Connection) -> Result<()> {
+    let has_socket_path = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+        stmt.query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .any(|name| name == "socket_path")
+    };
+    if has_socket_path {
+        conn.execute_batch("ALTER TABLE agents DROP COLUMN socket_path")?;
+    }
     Ok(())
 }
 
@@ -182,7 +199,6 @@ fn init_schema(conn: &Connection) -> Result<()> {
             pane TEXT,
             pane_unique_id TEXT,
             agent_type TEXT,
-            socket_path TEXT,
             cwd TEXT,
             registered_at INTEGER NOT NULL,
             last_seen_at INTEGER NOT NULL

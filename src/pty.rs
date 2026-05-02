@@ -373,7 +373,7 @@ pub async fn run_agent(
         Ok(v) => v,
         Err(e) => {
             // silent — error propagated via return
-            cleanup_child_and_state(child_pid, registered_name.as_deref(), None);
+            cleanup_child_and_state(child_pid, registered_name.as_deref());
             if let Some((_, ref ca_path)) = proxy_info {
                 crate::proxy::cleanup_ca_file(ca_path);
             }
@@ -466,7 +466,7 @@ pub async fn run_agent(
                 crate::proxy::remove_codex_ca();
             }
             let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
-            cleanup_child_and_state(child_pid, Some(&identity.name), None);
+            cleanup_child_and_state(child_pid, Some(&identity.name));
             return Err(e);
         }
     };

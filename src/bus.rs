@@ -183,9 +183,7 @@ pub struct SidekarBusState {
     pub identity: Option<AgentId>,
     /// Unique pane/session ID (e.g. "pty-12345" or "mcp-12345").
     pub pane_unique_id: Option<String>,
-    pub socket_path: Option<PathBuf>,
     /// True when identity was inherited from a parent PTY wrapper.
-    /// Skip starting a duplicate IPC socket when inherited.
     pub inherited_pty: bool,
     /// True when identity was borrowed from another process (CLI recovering PTY state).
     /// Drop will NOT unregister — the owning process manages the registration.
@@ -197,7 +195,6 @@ impl SidekarBusState {
         Self {
             identity: None,
             pane_unique_id: None,
-            socket_path: None,
             inherited_pty: false,
             borrowed: false,
         }
@@ -228,13 +225,6 @@ impl SidekarBusState {
     pub fn touch(&self) {
         if let Some(name) = self.name() {
             let _ = broker::touch_agent(name);
-        }
-    }
-
-    pub fn set_socket_path(&mut self, socket_path: Option<PathBuf>) {
-        self.socket_path = socket_path.clone();
-        if let Some(name) = self.name() {
-            let _ = broker::set_agent_socket_path(name, socket_path.as_deref());
         }
     }
 

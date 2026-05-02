@@ -4,7 +4,6 @@ use super::*;
 pub struct BrokerAgent {
     pub id: AgentId,
     pub pane_unique_id: Option<String>,
-    pub socket_path: Option<String>,
     pub cwd: Option<String>,
     pub registered_at: u64,
     pub last_seen_at: u64,
@@ -31,8 +30,8 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
         .map(|p| p.to_string_lossy().to_string());
     tx.execute(
         "INSERT INTO agents (
-            name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?8)",
+            name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
         params![
             agent.name,
             nick,
@@ -45,19 +44,6 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
         ],
     )?;
     tx.commit()?;
-    Ok(())
-}
-
-pub fn set_agent_socket_path(name: &str, socket_path: Option<&Path>) -> Result<()> {
-    let conn = open()?;
-    conn.execute(
-        "UPDATE agents SET socket_path = ?2, last_seen_at = ?3 WHERE name = ?1",
-        params![
-            name,
-            socket_path.map(|p| p.to_string_lossy().to_string()),
-            crate::message::epoch_secs() as i64
-        ],
-    )?;
     Ok(())
 }
 
@@ -89,7 +75,7 @@ pub fn unregister_agent(name: &str) -> Result<()> {
 pub fn agent_for_pane_unique(pane_unique_id: &str) -> Result<Option<BrokerAgent>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
-        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
          FROM agents
          WHERE pane_unique_id = ?1
          LIMIT 1",
@@ -102,12 +88,12 @@ pub fn agent_for_pane_unique(pane_unique_id: &str) -> Result<Option<BrokerAgent>
 pub fn list_agents(session: Option<&str>) -> Result<Vec<BrokerAgent>> {
     let conn = open()?;
     let sql = if session.is_some() {
-        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
          FROM agents
          WHERE session = ?1
          ORDER BY name"
     } else {
-        "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
          FROM agents
          ORDER BY name"
     };
@@ -128,7 +114,7 @@ pub fn find_agent(target: &str, session: Option<&str>) -> Result<Option<BrokerAg
     let conn = open()?;
     let mut stmt = if session.is_some() {
         conn.prepare(
-            "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
+            "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
              FROM agents
              WHERE session = ?1 AND (name = ?2 OR nick = ?2)
              ORDER BY CASE WHEN name = ?2 THEN 0 ELSE 1 END
@@ -136,7 +122,7 @@ pub fn find_agent(target: &str, session: Option<&str>) -> Result<Option<BrokerAg
         )?
     } else {
         conn.prepare(
-            "SELECT name, nick, session, pane, pane_unique_id, agent_type, socket_path, cwd, registered_at, last_seen_at
+            "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
              FROM agents
              WHERE name = ?1 OR nick = ?1
              ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END
@@ -164,9 +150,8 @@ fn row_to_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrokerAgent> {
             agent_type: row.get(5)?,
         },
         pane_unique_id: row.get(4)?,
-        socket_path: row.get(6)?,
-        cwd: row.get(7)?,
-        registered_at: row.get::<_, i64>(8)? as u64,
-        last_seen_at: row.get::<_, i64>(9)? as u64,
+        cwd: row.get(6)?,
+        registered_at: row.get::<_, i64>(7)? as u64,
+        last_seen_at: row.get::<_, i64>(8)? as u64,
     })
 }

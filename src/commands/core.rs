@@ -45,16 +45,6 @@ pub(super) async fn cmd_uninstall(_ctx: &mut AppContext) -> Result<()> {
         let _ = std::fs::remove_dir_all(&config_dir);
     }
 
-    if let Ok(entries) = std::fs::read_dir("/tmp") {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("sidekar-") && name.ends_with(".sock") {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-
     let agents_skill_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".agents")

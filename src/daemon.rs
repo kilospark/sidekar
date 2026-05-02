@@ -38,6 +38,7 @@ fn pid_path() -> PathBuf {
     data_dir().join("daemon.pid")
 }
 
+/// Unix socket path for CLI ↔ daemon IPC (`sidekar daemon`). Not used for agent-to-agent bus (that uses broker SQLite).
 pub fn socket_path() -> PathBuf {
     data_dir().join("daemon.sock")
 }
