@@ -835,6 +835,52 @@ fn exec_grep(args: &Value) -> Result<String> {
     Ok(truncate_output(&out))
 }
 
+/// Chrome tab monitor keeps CDP + debounce state in-process (`tokio::spawn`).
+/// Spawning `sidekar monitor …` as subprocess exits after `start` returns and kills watcher.
+/// REPL `Sidekar` tool must dispatch monitor on shared runtime instead.
+fn sidekar_tool_monitor_should_run_in_process(argv: &[String]) -> bool {
+    if argv.first().map(|s| s.as_str()) != Some("monitor") {
+        return false;
+    }
+    match argv.get(1).map(|s| s.as_str()) {
+        None => true,
+        Some("start" | "stop" | "status") => true,
+        Some(_) => false,
+    }
+}
+
+async fn run_monitor_sidekar_tool_in_process(argv: &[String]) -> Result<String> {
+    let mut ctx = crate::AppContext::new()?;
+    if let Some(port) = std::env::var("CDP_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
+        ctx.cdp_port = port;
+    }
+
+    let needs_browser_session = matches!(argv.get(1).map(|s| s.as_str()), Some("start"));
+    if needs_browser_session {
+        let reused = match ctx.auto_discover_last_session() {
+            Ok(()) => crate::get_debug_tabs(&ctx).await.is_ok(),
+            Err(_) => false,
+        };
+        if !reused {
+            ctx.clear_current_session();
+            crate::commands::dispatch(
+                &mut ctx,
+                "launch",
+                &["--profile".to_string(), "default".to_string()],
+            )
+            .await?;
+            let _ = ctx.drain_output();
+        }
+    }
+
+    let tail: Vec<String> = argv.iter().skip(1).cloned().collect();
+    crate::commands::dispatch(&mut ctx, "monitor", &tail).await?;
+    Ok(truncate_output(&ctx.drain_output()))
+}
+
 async fn exec_sidekar(
     args: &Value,
     cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -856,6 +902,10 @@ async fn exec_sidekar(
         .and_then(|v| v.as_u64())
         .unwrap_or(120)
         .min(600);
+
+    if sidekar_tool_monitor_should_run_in_process(&string_args) {
+        return run_monitor_sidekar_tool_in_process(&string_args).await;
+    }
 
     let sidekar_bin =
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sidekar"));
