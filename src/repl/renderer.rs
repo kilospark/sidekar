@@ -254,18 +254,16 @@ impl EventRenderer {
             }
             StreamEvent::ToolCallEnd { index } => {
                 if let Some((name, args_json)) = self.tool_args.remove(index) {
-                    if crate::runtime::verbose() {
-                        let display_name = if name.is_empty() {
-                            "tool"
-                        } else {
-                            name.as_str()
-                        };
-                        let detail = extract_tool_summary(display_name, &args_json);
-                        self.emitln(&format!(
-                            "\n\x1b[2m└─\x1b[0m \x1b[36m{display_name}\x1b[0m \x1b[2m{detail}\x1b[0m"
-                        ));
-                        let _ = io::stdout().flush();
-                    }
+                    let display_name = if name.is_empty() {
+                        "tool"
+                    } else {
+                        name.as_str()
+                    };
+                    let detail = extract_tool_summary(display_name, &args_json);
+                    self.emitln(&format!(
+                        "\n\x1b[2m└─\x1b[0m \x1b[36m{display_name}\x1b[0m \x1b[2m{detail}\x1b[0m"
+                    ));
+                    let _ = io::stdout().flush();
                 }
                 // Restart spinner while tool executes and next API call happens
                 self.stop_spinner();
