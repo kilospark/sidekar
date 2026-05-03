@@ -1,4 +1,9 @@
 use super::*;
+use crate::tunnel::tunnel_println;
+
+/// SGR: italic + bright cyan foreground + dark gray background (inbound bus activity).
+const BUS_CONSOLE_LINE: &str = "\x1b[48;5;237m\x1b[3m\x1b[96m";
+const BUS_CONSOLE_RESET: &str = "\x1b[0m";
 
 /// Start the relay tunnel. Returns `(TunnelSender, pipe_fd)` on success.
 pub(super) async fn start_relay(
@@ -126,6 +131,14 @@ pub(super) fn inject_bus_messages(
         })
         .to_string();
         broker::try_log_event("info", "inbox", "received", Some(&inbox_detail));
+        let display = format!(
+            "{}[bus] {} says: {}{}",
+            BUS_CONSOLE_LINE,
+            msg.sender,
+            msg.body,
+            BUS_CONSOLE_RESET,
+        );
+        tunnel_println(&display);
         let steering = ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],
