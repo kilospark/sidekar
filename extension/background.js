@@ -80,8 +80,8 @@ async function discoverDaemonPort(extToken) {
     ports.map(async (port) => {
       const r = await fetch(`http://127.0.0.1:${port}/health`, {
         signal: AbortSignal.timeout(1000),
-        // Chrome 142+: explicit loopback address space for Private Network Access probes.
-        targetAddressSpace: "local",
+        // Chrome PNA: 127.0.0.1 is `loopback`, not `local` (RFC1918-style); wrong value blocks fetch.
+        targetAddressSpace: "loopback",
       });
       if (r.ok) {
         const body = await r.json();
