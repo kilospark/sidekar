@@ -193,7 +193,7 @@ fn wire_type_from_kv_metadata(nick: &str) -> Option<&'static str> {
 /// row exists, or when a row exists but omits recognized `metadata.provider_type`.
 fn legacy_kv_credential_type(stem: &str) -> Option<&'static str> {
     match stem {
-        "anthropic" => Some("anthropic"),
+        "anthropic" | "claude" => Some("anthropic"),
         "codex" | "openai" => Some("codex"),
         "openrouter" => Some("openrouter"),
         "opencode" | "opencode-zen" => Some("opencode-zen"),
@@ -920,7 +920,10 @@ fn codex_credentials_metadata(access_token: &str) -> serde_json::Value {
         })
         .unwrap_or("")
         .to_string();
-    serde_json::json!({ "account_id": account_id, "email": email })
+    metadata_with_provider_type(
+        "codex",
+        serde_json::json!({ "account_id": account_id, "email": email }),
+    )
 }
 
 fn refresh_token_codex(
@@ -1000,14 +1003,19 @@ pub(crate) async fn begin_anthropic_login(nickname: Option<&str>) -> Result<Inte
 
 pub(crate) async fn finish_anthropic_login(login: InteractiveOAuthLogin) -> Result<String> {
     let (kv_key, mut creds) = complete_interactive_login(login).await?;
-    if let Some(profile) = fetch_anthropic_profile(&creds.access_token).await {
-        creds.metadata = serde_json::json!({
-            "account_uuid": profile.account_uuid,
-            "organization_uuid": profile.organization_uuid,
-            "email": profile.email,
-            "name": profile.name,
-        });
-    }
+    creds.metadata = if let Some(profile) = fetch_anthropic_profile(&creds.access_token).await {
+        metadata_with_provider_type(
+            "anthropic",
+            serde_json::json!({
+                "account_uuid": profile.account_uuid,
+                "organization_uuid": profile.organization_uuid,
+                "email": profile.email,
+                "name": profile.name,
+            }),
+        )
+    } else {
+        metadata_with_provider_type("anthropic", serde_json::json!({}))
+    };
     save_credentials(&kv_key, &creds)?;
     Ok(creds.access_token)
 }
@@ -1510,6 +1518,16 @@ mod tests {
             resolve_provider_type_for_credential("gemini"),
             Some("gemini")
         );
+        assert_eq!(
+            resolve_provider_type_for_credential("claude"),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn codex_credentials_metadata_sets_provider_type() {
+        let meta = codex_credentials_metadata("");
+        assert_eq!(meta["provider_type"], "codex");
     }
 
     #[test]

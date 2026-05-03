@@ -1183,6 +1183,32 @@ impl RemoteModel {
     }
 }
 
+/// Dim-line suffix after model id (`display_name` + optional `, Nk ctx`) for [`RemoteModel`] listings.
+///
+/// When `provider_type == "bedrock"` and verbose is off, drops `display_name` if it duplicates `id`,
+/// is empty, or looks like an ARN so picker / `repl models` stays readable.
+#[must_use]
+pub fn model_list_display_suffix(
+    provider_type: &str,
+    id: &str,
+    display_name: &str,
+    context_window: u32,
+) -> String {
+    let ctx = if context_window > 0 {
+        format!(", {}k ctx", context_window / 1000)
+    } else {
+        String::new()
+    };
+    let name_trim = display_name.trim();
+    if provider_type == "bedrock" && !is_verbose() {
+        if name_trim.is_empty() || name_trim == id || name_trim.starts_with("arn:") {
+            return ctx;
+        }
+        return format!("{name_trim}{ctx}");
+    }
+    format!("{display_name}{ctx}")
+}
+
 /// Fetch available models from a provider's API.
 pub async fn fetch_model_list(
     provider_type: &str,

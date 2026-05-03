@@ -117,6 +117,14 @@ fn handle_credentials() -> Result<()> {
     Ok(())
 }
 
+fn skip_models_bedrock_detail_option<T>(v: &Option<T>) -> bool {
+    !sidekar::providers::is_verbose() || v.is_none()
+}
+
+fn skip_models_bedrock_detail_vec<T>(v: &Vec<T>) -> bool {
+    !sidekar::providers::is_verbose() || v.is_empty()
+}
+
 async fn handle_models(args: &[String]) -> Result<()> {
     let mut credential: Option<String> = None;
     let mut i = 1;
@@ -176,9 +184,9 @@ struct ModelEntry {
     id: String,
     display_name: String,
     context_window: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "skip_models_bedrock_detail_option")]
     bedrock_foundation_model_arn: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "skip_models_bedrock_detail_vec")]
     bedrock_inference_profile_refs: Vec<String>,
 }
 
@@ -202,15 +210,16 @@ impl sidekar::output::CommandOutput for ModelsListOutput {
             self.credential, self.provider_type
         )?;
         for m in &self.models {
-            let ctx = if m.context_window > 0 {
-                format!(", {}k ctx", m.context_window / 1000)
-            } else {
-                String::new()
-            };
+            let dim = sidekar::providers::model_list_display_suffix(
+                self.provider_type.as_str(),
+                m.id.as_str(),
+                m.display_name.as_str(),
+                m.context_window,
+            );
             writeln!(
                 w,
-                "  \x1b[36m{}\x1b[0m  \x1b[2m{}{}\x1b[0m",
-                m.id, m.display_name, ctx
+                "  \x1b[36m{}\x1b[0m  \x1b[2m{}\x1b[0m",
+                m.id, dim
             )?;
             if sidekar::providers::is_verbose() {
                 if let Some(ref fm) = m.bedrock_foundation_model_arn {

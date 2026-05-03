@@ -327,3 +327,36 @@ fn plain_text_before_first_tool_stops_at_tool_call() {
     ];
     assert_eq!(openai_plain_text_before_first_tool_call(&blocks), "step 1");
 }
+
+#[test]
+fn model_list_display_suffix_hides_arn_like_bedrock_label_when_verbose_off() {
+    let prev = super::is_verbose();
+    super::set_verbose(false);
+    let arn = "arn:aws:bedrock:us-east-1::foundation-model/x";
+    let s = super::model_list_display_suffix("bedrock", "anthropic.x", arn, 200_000);
+    assert_eq!(s, ", 200k ctx");
+    super::set_verbose(prev);
+}
+
+#[test]
+fn model_list_display_suffix_keeps_human_bedrock_label_when_verbose_off() {
+    let prev = super::is_verbose();
+    super::set_verbose(false);
+    let s = super::model_list_display_suffix(
+        "bedrock",
+        "anthropic.foo",
+        "Claude Sonnet",
+        200_000,
+    );
+    assert_eq!(s, "Claude Sonnet, 200k ctx");
+    super::set_verbose(prev);
+}
+
+#[test]
+fn model_list_display_suffix_non_bedrock_unchanged_when_verbose_off() {
+    let prev = super::is_verbose();
+    super::set_verbose(false);
+    let s = super::model_list_display_suffix("anthropic", "m", "Thing", 100_000);
+    assert_eq!(s, "Thing, 100k ctx");
+    super::set_verbose(prev);
+}

@@ -1560,21 +1560,16 @@ pub(super) async fn interactive_select_model(
     let current = current_model.unwrap_or_default();
     tunnel_println("\nAvailable models (pick one to set):");
     for (i, m) in models.iter().enumerate() {
-        let ctx = if m.context_window > 0 {
-            format!("{}k ctx", m.context_window / 1000)
-        } else {
-            String::new()
-        };
         let marker = if m.id == current { " (current)" } else { "" };
+        let dim = providers::model_list_display_suffix(
+            pt,
+            m.id.as_str(),
+            m.display_name.as_str(),
+            m.context_window,
+        );
         tunnel_println(&format!(
-            "  [{i}] \x1b[36m{}\x1b[0m  \x1b[2m{}{}{marker}\x1b[0m",
-            m.id,
-            m.display_name,
-            if ctx.is_empty() {
-                String::new()
-            } else {
-                format!(", {ctx}")
-            }
+            "  [{i}] \x1b[36m{}\x1b[0m  \x1b[2m{}{marker}\x1b[0m",
+            m.id, dim
         ));
         if crate::providers::is_verbose() {
             if let Some(ref fm) = m.bedrock_foundation_model_arn {

@@ -575,6 +575,18 @@ fn modality_contains_text(list: Option<&Vec<String>>) -> bool {
     list.is_some_and(|v| v.iter().any(|s| s.eq_ignore_ascii_case("TEXT")))
 }
 
+fn bedrock_list_display_name(model_id: &str, api_model_name: Option<&str>) -> String {
+    let raw = api_model_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(model_id);
+    if raw.starts_with("arn:") {
+        model_id.to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
 fn format_list_error(detail_body: &str, status_line: String) -> String {
     let detail = format!("{status_line}: {detail_body}");
     let iam = detail_body.contains("AccessDenied")
@@ -801,8 +813,8 @@ pub async fn fetch_bedrock_model_list(
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .map(std::string::ToString::to_string);
-        let mut row =
-            RemoteModel::catalog(id.clone(), m.model_name.unwrap_or_else(|| id.clone()), 0);
+        let display = bedrock_list_display_name(id, m.model_name.as_deref());
+        let mut row = RemoteModel::catalog(id.clone(), display, 0);
         row.bedrock_foundation_model_arn = fm_arn;
         row.bedrock_inference_profile_refs = invoke_refs;
         models.push(row);

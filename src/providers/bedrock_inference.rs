@@ -91,7 +91,10 @@ pub(crate) fn build_bedrock_invoke_stream_body(
             // Model id is only in the InvokeModel path segment; duplicate `model` in JSON
             // confuses some Bedrock vendors (AWS Nemotron samples omit it).
             obj.remove("model");
-            obj.insert("stream".into(), json!(true));
+            // `InvokeModelWithResponseStream` streams via the REST route; bodies that include
+            // OpenAI's `stream` / `stream_options` hit strict validators ("stream: Extra inputs
+            // are not permitted") — mirror Anthropic Messages handling in `build_bedrock_anthropic_*`.
+            obj.remove("stream");
             obj.remove("stream_options");
             let max = cfg.max_tokens;
             obj.insert("max_completion_tokens".into(), json!(max));
@@ -317,6 +320,36 @@ mod tests {
         assert_eq!(
             infer_bedrock_inference_family("anthropic.claude-3-5-sonnet-20240620-v1:0", None),
             BedrockInferenceFamily::AnthropicMessages
+        );
+    }
+
+    #[test]
+    fn bedrock_openai_invoke_body_omits_stream_key() {
+        let cfg = super::super::StreamConfig::default();
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }];
+        let bytes = build_bedrock_invoke_stream_body(
+            BedrockInferenceFamily::OpenAiChatCompletions,
+            "openai.gpt-oss-20b-1:0",
+            "",
+            &messages,
+            &[],
+            &cfg,
+        )
+        .expect("body");
+        let v: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("body must be JSON");
+        assert!(
+            v.get("stream").is_none(),
+            "InvokeModelWithResponseStream uses route for streaming; top-level \"stream\" is rejected ({v})"
+        );
+        assert!(
+            v.get("stream_options").is_none(),
+            "OpenAI stream_options must not be sent on Bedrock stream invoke ({v})"
         );
     }
 }
