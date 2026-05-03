@@ -1,7 +1,21 @@
 use super::*;
 
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::tungstenite::protocol::Message;
+
+/// Request target path for `/health` probes (Chrome extension port discovery).
+/// Query string is stripped so `/health?x=1` still matches.
+fn health_request_path(first_line: &str) -> Option<&str> {
+    let mut parts = first_line.split_whitespace();
+    parts.next()?; // method
+    let target = parts.next()?;
+    Some(target.split('?').next().unwrap_or(target))
+}
+
+fn is_health_probe(first_line: &str) -> bool {
+    matches!(health_request_path(first_line), Some("/health"))
+}
 
 /// Port range for the localhost HTTP/WebSocket listener used by extensions.
 const HTTP_PORT_START: u16 = 21517;
@@ -57,22 +71,44 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
 
     let first_line = request.lines().next().unwrap_or("");
 
-    if first_line.starts_with("GET /health") {
-        let body = r#"{"sidekar":true}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\n\
-             Content-Type: application/json\r\n\
-             x-sidekar: 1\r\n\
-             Access-Control-Allow-Origin: *\r\n\
-             Content-Length: {}\r\n\
-             Connection: close\r\n\
-             \r\n\
-             {}",
-            body.len(),
-            body
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        return;
+    // Chrome MV3 extension fetch() from the service worker is cross-origin vs
+    // http://127.0.0.1 — newer Chrome sends a Private Network Access OPTIONS
+    // preflight before GET. Without `Access-Control-Allow-Private-Network` the
+    // probe fails and the extension never discovers the daemon port.
+    if is_health_probe(first_line) {
+        let method = first_line.split_whitespace().next().unwrap_or("");
+        if method.eq_ignore_ascii_case("OPTIONS") {
+            let response = concat!(
+                "HTTP/1.1 204 No Content\r\n",
+                "Access-Control-Allow-Origin: *\r\n",
+                "Access-Control-Allow-Methods: GET, OPTIONS\r\n",
+                "Access-Control-Allow-Headers: *\r\n",
+                "Access-Control-Max-Age: 86400\r\n",
+                "Access-Control-Allow-Private-Network: true\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            return;
+        }
+        if method.eq_ignore_ascii_case("GET") {
+            let body = r#"{"sidekar":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 x-sidekar: 1\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Access-Control-Allow-Private-Network: true\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            return;
+        }
     }
 
     if first_line.contains("/ext") {
@@ -453,4 +489,30 @@ async fn handle_ext_websocket(
         &format!("bridge disconnected (conn: {conn_id})"),
         None,
     );
+}
+
+#[cfg(test)]
+mod health_probe_tests {
+    use super::{health_request_path, is_health_probe};
+
+    #[test]
+    fn health_path_strips_query_string() {
+        assert_eq!(
+            health_request_path("GET /health?foo=1 HTTP/1.1"),
+            Some("/health")
+        );
+        assert_eq!(
+            health_request_path("OPTIONS /health HTTP/1.1"),
+            Some("/health")
+        );
+    }
+
+    #[test]
+    fn health_probe_detection() {
+        assert!(is_health_probe("GET /health HTTP/1.1"));
+        assert!(is_health_probe("OPTIONS /health HTTP/1.1"));
+        assert!(is_health_probe("get /health HTTP/1.1"));
+        assert!(!is_health_probe("GET /ext HTTP/1.1"));
+        assert!(!is_health_probe("GET /healthcheck HTTP/1.1"));
+    }
 }
