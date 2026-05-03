@@ -3,32 +3,45 @@
 use anyhow::{Context, Result, anyhow, bail};
 use std::io::Write;
 
-const CREDENTIAL_ADD_USAGE: &str = "\
-Usage: sidekar repl credential add <provider> [name]
+const REPL_CREDENTIAL_HELP: &str = "\
+Sidekar LLM credentials (each login is stored under KV key `oauth:<nickname>`).
 
-  Second token is an optional nickname suffix: claude + work → stored credential 'claude-work'.
+Commands:
+  sidekar repl credential add <provider> [nickname]   Add or refresh credentials
+  sidekar repl credentials                             List saved credentials (nickname + provider)
+  sidekar repl logout [nickname | all]                 Remove one credential or wipe all
 
-Providers:
-  claude     Claude (Anthropic) — OAuth
-  codex      Codex (OpenAI) — OAuth
-  or         OpenRouter — API key
-  oc         OpenCode — API key
-  grok       Grok (xAI) — API key
-  gem        Gemini (Google) — API key
-  bedrock | brk Amazon Bedrock — IAM profile / credential chain → HTTPS SigV4
-  gcp | vertex  Vertex AI (OpenAI-compat) — project id + region; Bearer via gcloud CLI
-  oac <nickname> <url> [api_key|adc]
+How `credential add` works
+  The first token after `add` is the **provider keyword** (what you are logging into).
+  The optional second token is the **nickname** — it becomes the credential name / KV key.
+  If you omit the nickname, the provider keyword itself is used as the key (e.g. only `gemini` → key `gemini`).
+  Provider type is always saved in credential metadata; the nickname string does **not** imply the provider.
+
+Providers (first argument to `credential add`):
+  claude              Claude (Anthropic) — OAuth device flow
+  codex               Codex (OpenAI) — OAuth device flow
+  openrouter          OpenRouter — API key
+  opencode-zen        OpenCode Zen — API key
+  opencode-go         OpenCode Go — API key
+  grok                Grok (xAI) — API key
+  gemini              Gemini (Google) — API key
+  bedrock             Amazon Bedrock — IAM / SigV4
+  vertex              GCP Vertex AI (OpenAI-compat) — project id + region; Bearer via `gcloud`
+  openai-compat       Generic OpenAI-compat — uses a positional form (see below)
+
+OpenAI-compat (positional only)
+  sidekar repl credential add openai-compat <nickname> <base_url> [api_key | adc]
 
 Examples:
   sidekar repl credential add claude
-  sidekar repl credential add claude work       → stored as 'claude-work'
-  sidekar repl credential add or personal       → stored as 'or-personal'
-  sidekar repl credential add gcp prod          → stored as 'gcp-prod'
-  sidekar repl credential add oac local http://localhost:11434/v1";
+  sidekar repl credential add claude work               → nickname `work`
+  sidekar repl credential add vertex prod              → nickname `prod` (Vertex / GCP)
+  sidekar repl credential add openrouter personal       → nickname `personal`
+  sidekar repl credential add openai-compat local http://localhost:11434/v1";
 
-/// CLI missing-arg help and REPL `/credential add` (no tokens).
+/// Full credential CLI help (`sidekar repl credential`, `--help`, unknown subcommand, empty `/credential add`).
 pub fn credential_add_usage_message() -> &'static str {
-    CREDENTIAL_ADD_USAGE
+    REPL_CREDENTIAL_HELP
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,12 +120,15 @@ pub async fn perform_credential_add(
 ) -> Result<String> {
     let provider = match tokens.first().map(|s| s.as_str()) {
         Some(n) => n,
-        None => bail!("{}", CREDENTIAL_ADD_USAGE),
+        None => bail!("{}", credential_add_usage_message()),
     };
 
-    // oac is positional: oac <nickname> <url> [api_key]
-    if provider == "oac" {
-        let name = tokens.get(1).map(|s| s.as_str()).unwrap_or("oac");
+    // openai-compat is positional: openai-compat <nickname> <url> [api_key]
+    if provider == "openai-compat" {
+        let name = tokens
+            .get(1)
+            .map(|s| s.as_str())
+            .unwrap_or("openai-compat");
         let display_name = name.to_string();
         let base_url = match tokens.get(2).map(|s| s.as_str()) {
             Some(url) if !url.trim().is_empty() => url.trim().to_string(),
@@ -144,13 +160,10 @@ pub async fn perform_credential_add(
         ));
     }
 
-    // Optional suffix: `credential add claude work` → nickname = "claude-work"
+    // Optional second token: bare nickname (`credential add openrouter personal` → `personal`).
     let nickname: String = match tokens.get(1).map(|s| s.as_str()) {
-        Some(name) if !name.starts_with('-') => {
-            let base = provider.trim_end_matches('-');
-            format!("{base}-{name}")
-        }
-        _ => provider.to_string(),
+        Some(name) if !name.starts_with('-') => name.trim().to_string(),
+        _ => provider.trim_end_matches('-').to_string(),
     };
     let nickname = nickname.as_str();
 
@@ -158,7 +171,7 @@ pub async fn perform_credential_add(
         crate::providers::oauth::resolve_provider_type_for_login(nickname, provider).ok_or_else(
             || {
                 anyhow!(
-                    "Unknown provider: '{provider}'.\nUse: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, gcp/vertex, oac"
+                    "Unknown provider: '{provider}'.\nUse: claude, codex, openrouter, opencode-zen, opencode-go, grok, gemini, bedrock, vertex, openai-compat"
                 )
             },
         )?;
@@ -221,18 +234,18 @@ pub async fn perform_credential_add(
             output_line(output, "OpenRouter API key saved.");
             Ok(format!("Logged in as '{nickname}' (OpenRouter)."))
         }
-        "opencode" => {
-            output_line(output, "No OpenCode credentials found. Opening https://opencode.ai/auth ...");
+        "opencode-zen" => {
+            output_line(output, "No OpenCode Zen credentials found. Opening https://opencode.ai/auth ...");
             open_browser_hint("https://opencode.ai/auth");
             let key = prompt_required(output, "Paste API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
-                "opencode",
+                "opencode-zen",
                 &key,
                 serde_json::json!({}),
             )?;
-            output_line(output, "OpenCode API key saved.");
-            Ok(format!("Logged in as '{nickname}' (OpenCode)."))
+            output_line(output, "OpenCode Zen API key saved.");
+            Ok(format!("Logged in as '{nickname}' (OpenCode Zen)."))
         }
         "opencode-go" => {
             output_line(
@@ -323,7 +336,7 @@ pub async fn perform_credential_add(
             ))
         }
         _ => Err(anyhow!(
-            "Unknown provider type for '{nickname}'.\nUse: claude, codex, or, oc, ocg, grok, gem, bedrock/brk, gcp/vertex, oac"
+            "Unknown provider type for '{nickname}'.\nUse: claude, codex, openrouter, opencode-zen, opencode-go, grok, gemini, bedrock, vertex, openai-compat"
         )),
     }
 }

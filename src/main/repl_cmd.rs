@@ -12,7 +12,7 @@ pub async fn handle(
     match sub {
         "login" => {
             anyhow::bail!(
-                "`sidekar repl login` was removed. Use:\n  sidekar repl credential add <provider> [name]\n\n{}",
+                "`sidekar repl login` was removed. Use:\n  sidekar repl credential        (credential commands)\n  sidekar repl credential add …  (add credentials)\n\n{}",
                 sidekar::repl::credential_login::credential_add_usage_message()
             );
         }
@@ -95,12 +95,12 @@ impl sidekar::output::CommandOutput for CredentialsListOutput {
         if self.credentials.is_empty() {
             writeln!(
                 w,
-                "No stored credentials. Use: sidekar repl credential add <provider> [name]"
+                "No stored credentials. Use: sidekar repl credential add <provider> [nickname]"
             )?;
         } else {
-            writeln!(w, "Stored credentials:")?;
+            writeln!(w, "Stored credentials (nickname → provider):")?;
             for c in &self.credentials {
-                writeln!(w, "  {} ({})", c.name, c.provider)?;
+                writeln!(w, "  {} → {}", c.name, c.provider)?;
             }
         }
         Ok(())

@@ -14,11 +14,11 @@
 //! auto-compact?" should run `/status`; users asking "is sidekar
 //! leaking memory?" should run `/stats`.
 //!
-//! Pure formatter. No I/O, no mutex. All data comes through the
-//! `StatusView` argument so unit tests can assert layout without
-//! threading `Arc<Mutex<TurnStats>>`.
+//! Snapshot helpers (`capture_turn_status_snapshot`, `build_status_view`)
+//! acquire `TurnStats` briefly so `/status` can stay synchronous at the
+//! call site aside from the async gateway fetch handled in `slash.rs`.
 
-use crate::providers::{StopReason, Usage};
+use crate::providers::{ChatMessage, StopReason, Usage};
 
 /// All the inputs `/status` needs, pre-extracted from REPL state so
 /// this module is easy to test and has no coupling to the REPL's
@@ -64,6 +64,84 @@ pub(super) struct StatusView<'a> {
     pub journal_on: bool,
     /// Remaining local lockout duration for current credential, if any.
     pub credential_lock_remaining: Option<std::time::Duration>,
+    /// Optional gateway / account limits body for the **Gateway limits** section
+    /// (provider-specific; omitted when nothing applies).
+    pub gateway_limits_body: Option<String>,
+}
+
+/// Owned snapshot of [`super::turn_stats::TurnStats`] for building a [`StatusView`].
+pub(super) struct TurnStatusSnapshot {
+    pub cumulative: Usage,
+    pub last: Option<Usage>,
+    pub turn_count: u32,
+    pub last_stop_reason: Option<StopReason>,
+    pub last_response_id: String,
+    pub session_age: std::time::Duration,
+    pub since_last_turn: Option<std::time::Duration>,
+}
+
+pub(super) fn capture_turn_status_snapshot(
+    turn_stats: &std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
+) -> TurnStatusSnapshot {
+    let ts = turn_stats
+        .lock()
+        .expect("turn_stats mutex poisoned");
+    TurnStatusSnapshot {
+        cumulative: ts.cumulative.clone(),
+        last: ts.last.clone(),
+        turn_count: ts.turn_count,
+        last_stop_reason: ts.last_stop_reason.clone(),
+        last_response_id: ts.last_response_id.clone(),
+        session_age: ts.session_started_at.elapsed(),
+        since_last_turn: ts.last_turn_at.map(|t| t.elapsed()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_status_view<'a>(
+    snap: &'a TurnStatusSnapshot,
+    session_id: &'a str,
+    cwd: &'a str,
+    model: &'a str,
+    cred_name: &'a str,
+    history: &[ChatMessage],
+    gateway_limits_body: Option<String>,
+) -> StatusView<'a> {
+    let cw = crate::providers::cached_context_window(model);
+    let tokens_estimate = crate::agent::compaction::estimate_tokens_public(history);
+    let credential_lock_remaining =
+        if cred_name.is_empty() || cred_name == "(none)" {
+            None
+        } else {
+            crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(
+                cred_name,
+            ))
+            .map(|until| {
+                std::time::Duration::from_secs(
+                    until.saturating_sub(crate::providers::session_lock::current_epoch()),
+                )
+            })
+            .filter(|d| !d.is_zero())
+        };
+    StatusView {
+        session_id,
+        cwd,
+        model,
+        cred_name,
+        context_window: cw,
+        history_tokens_estimate: tokens_estimate,
+        history_messages: history.len(),
+        cumulative: &snap.cumulative,
+        turn_count: snap.turn_count,
+        last: snap.last.as_ref(),
+        last_stop_reason: snap.last_stop_reason.as_ref(),
+        last_response_id: &snap.last_response_id,
+        session_age: snap.session_age,
+        since_last_turn: snap.since_last_turn,
+        journal_on: crate::runtime::journal(),
+        credential_lock_remaining,
+        gateway_limits_body,
+    }
 }
 
 /// Same 90% rule as `agent::compaction::maybe_compact`. Mirrored here
@@ -181,6 +259,11 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
             "  warning   \x1b[31mrate-limited; resets in {}\x1b[0m\n",
             fmt_duration(remaining)
         ));
+    }
+
+    if let Some(ref body) = v.gateway_limits_body {
+        out.push_str("\n\x1b[1mGateway limits\x1b[0m\n");
+        out.push_str(body);
     }
 
     // ----- Usage (cumulative) --------------------------------------
@@ -325,6 +408,7 @@ mod tests {
             since_last_turn: last.map(|_| std::time::Duration::from_secs(5)),
             journal_on: true,
             credential_lock_remaining: None,
+            gateway_limits_body: None,
         }
     }
 
@@ -437,6 +521,7 @@ mod tests {
             since_last_turn: Some(std::time::Duration::from_secs(12)),
             journal_on: true,
             credential_lock_remaining: None,
+            gateway_limits_body: None,
         };
         let s = format_status(&v);
         // Eye-visible only when --nocapture is set.
@@ -471,5 +556,15 @@ mod tests {
         let s = format_status(&v);
         assert!(s.contains("rate-limited"));
         assert!(s.contains("1m 35s"));
+    }
+
+    #[test]
+    fn gateway_limits_section_renders_when_body_set() {
+        let cum = Usage::default();
+        let mut v = view_defaults(&cum, 0, None);
+        v.gateway_limits_body = Some("  remaining         unlimited\n".into());
+        let s = format_status(&v);
+        assert!(s.contains("Gateway limits"));
+        assert!(s.contains("remaining"));
     }
 }

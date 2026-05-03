@@ -24,10 +24,17 @@ const DEFAULT_BUS_LIST_LIMIT: usize = 20;
 
 // --- Terminal title helper ---
 
-/// Write an OSC 0 escape sequence to set the terminal title.
-/// Tries `/dev/tty` first (works even when stderr is redirected, e.g. in PTY
-/// mode), then falls back to stderr.
-pub fn set_terminal_title(title: &str) {
+fn sanitize_terminal_title_text(title: &str) -> String {
+    title
+        .chars()
+        .map(|c| match c {
+            '\u{2014}' | '\u{2013}' | '\u{2015}' => '-',
+            _ => c,
+        })
+        .collect()
+}
+
+fn emit_terminal_title_sequence(title: &str) {
     let seq = format!("\x1b]0;{title}\x07");
     if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
         let _ = tty.write_all(seq.as_bytes());
@@ -35,6 +42,25 @@ pub fn set_terminal_title(title: &str) {
     } else {
         eprint!("{seq}");
     }
+}
+
+/// Write an OSC 0 escape sequence to set the terminal title.
+/// Tries `/dev/tty` first (works even when stderr is redirected, e.g. in PTY
+/// mode), then falls back to stderr.
+pub fn set_terminal_title(title: &str) {
+    let title = sanitize_terminal_title_text(title);
+    emit_terminal_title_sequence(&title);
+}
+
+/// REPL window title: green check when idle at prompt; hourglass while the agent runs.
+pub fn set_repl_terminal_title(nick: &str, agent_working: bool) {
+    let nick = sanitize_terminal_title_text(nick);
+    let indicator = if agent_working {
+        "\u{23f3} "
+    } else {
+        "\u{2705} "
+    };
+    emit_terminal_title_sequence(&format!("{indicator}{nick} - sidekar repl"));
 }
 
 // --- PTY registration inheritance ---
@@ -379,5 +405,18 @@ pub fn check_outbound_timeouts(state: &SidekarBusState) -> Option<String> {
         None
     } else {
         Some(warnings.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_terminal_title_replaces_unicode_dashes() {
+        assert_eq!(
+            sanitize_terminal_title_text("proj — sidekar\u{2013}repl"),
+            "proj - sidekar-repl"
+        );
     }
 }

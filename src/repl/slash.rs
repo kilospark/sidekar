@@ -7,11 +7,13 @@ use super::*;
 
 pub(super) enum SlashResult {
     Continue,
+    /// `/status`: snapshot REPL state (may fetch gateway/account limits for the active provider).
+    Status,
     Quit,
     SwitchSession(String),
     /// Requires provider + model.
     NeedProvider(SlashAsync),
-    /// Same tokens as CLI after `credential add` (provider + optional suffix; no `add` word).
+    /// Same tokens as CLI after `credential add` (provider keyword + optional nickname).
     CredentialLogin(Vec<String>),
     SetCredential(String),
     SetModel(String),
@@ -48,12 +50,6 @@ pub(super) struct SlashContext<'a> {
     /// growth; passed as a length rather than a slice to avoid moving
     /// the editor's state across the slash boundary.
     pub editor_input_history_len: usize,
-    /// Per-session cumulative usage, touched on every Done event by
-    /// the main on_event callback. Borrowed here (as an Arc+Mutex
-    /// handle) so `/status` can produce a StatusView without copying.
-    /// The mutex is intentionally separate from the renderer's mutex
-    /// — see src/repl/turn_stats.rs for why.
-    pub turn_stats: &'a std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
 }
 
 /// Default tail window when `/history` is run without `full` or `N`.
@@ -966,71 +962,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println(&text);
             SlashResult::Continue
         }
-        "/status" => {
-            // /status is user-facing: session age, cumulative
-            // provider-reported token usage, context-window fill,
-            // last response_id. All data is read-only; we briefly
-            // acquire the turn_stats mutex for a snapshot and drop
-            // it before rendering.
-            //
-            // Context-window size comes from the cached lookup — if
-            // no turn has run on this model yet the window is shown
-            // as "unknown" and the fill bar is suppressed. We don't
-            // block on fetch_context_window because the REPL input
-            // path must stay synchronous; users can run /status
-            // again after the first turn completes.
-            let snap_cum;
-            let snap_last;
-            let snap_turns;
-            let snap_stop;
-            let snap_rid;
-            let snap_age;
-            let snap_since;
-            {
-                let ts = ctx.turn_stats.lock().expect("turn_stats mutex poisoned");
-                snap_cum = ts.cumulative.clone();
-                snap_last = ts.last.clone();
-                snap_turns = ts.turn_count;
-                snap_stop = ts.last_stop_reason.clone();
-                snap_rid = ts.last_response_id.clone();
-                snap_age = ts.session_started_at.elapsed();
-                snap_since = ts.last_turn_at.map(|t| t.elapsed());
-            }
-            let cw = providers::cached_context_window(model);
-            let tokens_estimate = crate::agent::compaction::estimate_tokens_public(ctx.history);
-            let credential_lock_remaining = if cred_name.is_empty() {
-                None
-            } else {
-                providers::session_lock::read_locked(&providers::oauth::kv_key_for(cred_name))
-                    .map(|until| {
-                        std::time::Duration::from_secs(
-                            until.saturating_sub(providers::session_lock::current_epoch()),
-                        )
-                    })
-                    .filter(|d| !d.is_zero())
-            };
-            let view = super::status::StatusView {
-                session_id: current_session,
-                cwd,
-                model,
-                cred_name,
-                context_window: cw,
-                history_tokens_estimate: tokens_estimate,
-                history_messages: ctx.history.len(),
-                cumulative: &snap_cum,
-                turn_count: snap_turns,
-                last: snap_last.as_ref(),
-                last_stop_reason: snap_stop.as_ref(),
-                last_response_id: &snap_rid,
-                session_age: snap_age,
-                since_last_turn: snap_since,
-                journal_on: crate::runtime::journal(),
-                credential_lock_remaining,
-            };
-            let text = super::status::format_status(&view);
-            tunnel_println(&text);
-            SlashResult::Continue
-        }
+        "/status" => SlashResult::Status,
         "/help" => {
             tunnel_println("Slash commands:");
             tunnel_println("  /credential  — list / add / update / delete · or /credential <name>");
@@ -1046,7 +978,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             );
             tunnel_println("  /skill       — Load a skill into the session system prompt");
             tunnel_println("  /compact     — Compact older session context now");
-            tunnel_println("  /status      — Show session / model / token usage / context fill");
+            tunnel_println("  /status      — Session / model / token usage / context fill");
             tunnel_println("  /stats       — Show process diagnostics (RSS, CPU, threads)");
             tunnel_println("  /inbox       — List/show/clear recent bus or relay arrivals");
             tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
@@ -1085,6 +1017,50 @@ pub(super) enum SlashAction {
     Quit,
 }
 
+async fn gateway_limits_body_fetch(
+    provider: Option<&Provider>,
+    cred_display: &str,
+) -> Option<String> {
+    let nick_opt = if cred_display.is_empty() || cred_display == "(none)" {
+        None
+    } else {
+        Some(cred_display)
+    };
+
+    let prov = provider?;
+
+    let api_key_result = match prov {
+        Provider::OpenRouter { .. } => providers::oauth::get_openrouter_token(nick_opt)
+            .await
+            .map_err(|e| format!("{e:#}")),
+        Provider::OpenAiCompat { api_key, base_url, .. } => {
+            if !base_url.to_ascii_lowercase().contains("openrouter.ai") {
+                return None;
+            }
+            providers::oauth::resolve_openai_compat_api_key(api_key)
+                .await
+                .map_err(|e| format!("{e:#}"))
+        }
+        _ => return None,
+    };
+
+    let api_key = match api_key_result {
+        Ok(k) => k,
+        Err(e) => {
+            return Some(format!(
+                "  \x1b[33mcould not resolve API key: {e}\x1b[0m\n"
+            ));
+        }
+    };
+
+    match providers::openrouter::fetch_openrouter_key_limits_body(&api_key).await {
+        Ok(body) => Some(body),
+        Err(e) => Some(format!(
+            "  \x1b[33mcould not fetch gateway limits: {e}\x1b[0m\n"
+        )),
+    }
+}
+
 /// Apply a `SlashResult` to mutable REPL state. Returns control flow instruction.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn apply_slash_result(
@@ -1106,6 +1082,23 @@ pub(super) async fn apply_slash_result(
 ) -> Result<SlashAction> {
     match result {
         SlashResult::Continue => {}
+        SlashResult::Status => {
+            let snap = super::status::capture_turn_status_snapshot(turn_stats);
+            let cred_display = cred_name.as_deref().unwrap_or("(none)");
+            let model_display = model.as_deref().unwrap_or("(not set)");
+            let gateway_limits_body =
+                gateway_limits_body_fetch(provider.as_ref(), cred_display).await;
+            let view = super::status::build_status_view(
+                &snap,
+                session_id.as_str(),
+                cwd,
+                model_display,
+                cred_display,
+                history,
+                gateway_limits_body,
+            );
+            tunnel_println(&super::status::format_status(&view));
+        }
         SlashResult::Quit => return Ok(SlashAction::Quit),
         SlashResult::SwitchSession(new_id) => {
             *history = session::load_history(&new_id)?;
@@ -1662,7 +1655,7 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
     let provider_type =
         providers::oauth::resolve_provider_type_for_credential(cred_name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown credential '{cred_name}'. Expected a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, gcp-, vertex-, oac-…); see `sidekar repl --help`."
+                "Unknown credential '{cred_name}'. No `oauth:{cred_name}` entry with recognizable metadata — run `credential list` or `sidekar repl credential add …`; see `sidekar repl --help`."
             )
         })?;
     let cred = Some(cred_name.to_string());
@@ -1679,7 +1672,7 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
             let api_key = providers::oauth::get_openrouter_token(Some(cred_name)).await?;
             Ok(Provider::openrouter(api_key, cred))
         }
-        "opencode" => {
+        "opencode-zen" => {
             let api_key = providers::oauth::get_opencode_token(Some(cred_name)).await?;
             Ok(Provider::opencode(api_key, cred))
         }

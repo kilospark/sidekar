@@ -748,5 +748,106 @@ pub(super) fn apply_usage(u: &Value, usage: &mut Usage) {
         .saturating_sub(usage.cache_write_tokens);
 }
 
+// ---------------------------------------------------------------------------
+// GET https://openrouter.ai/api/v1/key — credit / usage snapshot for `/status`
+// ---------------------------------------------------------------------------
+
+fn gw_limits_row(label: &str, value: &str) -> String {
+    format!("  {:<18}{}\n", label, value)
+}
+
+fn json_optional_limit_display(val: Option<&Value>) -> String {
+    match val {
+        None | Some(Value::Null) => "unlimited".into(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Bool(b)) => format!("{b}"),
+        Some(_) => "—".into(),
+    }
+}
+
+fn json_usage_display(val: Option<&Value>) -> String {
+    match val {
+        Some(Value::Number(n)) => n.to_string(),
+        _ => "0".into(),
+    }
+}
+
+/// Fetch OpenRouter key limits (`GET /api/v1/key`) and format rows for `/status`.
+pub async fn fetch_openrouter_key_limits_body(api_key: &str) -> Result<String, String> {
+    let client = super::build_streaming_client(std::time::Duration::from_secs(15))
+        .map_err(|e| e.to_string())?;
+    let url = "https://openrouter.ai/api/v1/key";
+    let response = client
+        .get(url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(240).collect();
+        return Err(format!("HTTP {status}: {snippet}"));
+    }
+
+    let v: Value = response.json().await.map_err(|e| e.to_string())?;
+    let data = v
+        .get("data")
+        .and_then(|d| d.as_object())
+        .ok_or_else(|| "response missing data object".to_string())?;
+
+    let mut out = String::new();
+    out.push_str(&gw_limits_row(
+        "remaining",
+        &json_optional_limit_display(data.get("limit_remaining")),
+    ));
+    out.push_str(&gw_limits_row(
+        "limit",
+        &json_optional_limit_display(data.get("limit")),
+    ));
+    out.push_str(&gw_limits_row("usage", &json_usage_display(data.get("usage"))));
+    out.push_str(&gw_limits_row(
+        "usage (today UTC)",
+        &json_usage_display(data.get("usage_daily")),
+    ));
+    out.push_str(&gw_limits_row(
+        "usage (week UTC)",
+        &json_usage_display(data.get("usage_weekly")),
+    ));
+    out.push_str(&gw_limits_row(
+        "usage (month UTC)",
+        &json_usage_display(data.get("usage_monthly")),
+    ));
+
+    if let Some(Value::String(s)) = data.get("limit_reset") {
+        if !s.is_empty() {
+            out.push_str(&gw_limits_row("limit resets", s));
+        }
+    }
+
+    if let Some(Value::Bool(b)) = data.get("include_byok_in_limit") {
+        out.push_str(&gw_limits_row(
+            "BYOK in limit",
+            if *b { "yes" } else { "no" },
+        ));
+    }
+
+    let byok_usage = json_usage_display(data.get("byok_usage"));
+    if byok_usage != "0" {
+        out.push_str(&gw_limits_row("BYOK usage", &byok_usage));
+    }
+
+    if let Some(Value::Bool(ft)) = data.get("is_free_tier") {
+        out.push_str(&gw_limits_row(
+            "free tier account",
+            if *ft { "yes" } else { "no" },
+        ));
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests;

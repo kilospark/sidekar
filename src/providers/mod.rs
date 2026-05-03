@@ -1193,7 +1193,7 @@ pub async fn fetch_model_list(
         "codex" => fetch_codex_model_list(api_key).await,
         "openrouter" => fetch_openrouter_model_list(api_key).await,
         "grok" => fetch_openai_compat_model_list(api_key, oauth::GROK_BASE_URL).await,
-        "opencode" => fetch_opencode_model_list(api_key).await,
+        "opencode-zen" | "opencode" => fetch_opencode_model_list(api_key).await,
         "opencode-go" => fetch_opencode_go_model_list(api_key).await,
         "gemini" => gemini::fetch_gemini_model_list(api_key).await,
         "bedrock" => Ok(Vec::new()),
@@ -1554,7 +1554,7 @@ async fn fetch_opencode_public_model_list(
 }
 
 async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "Opencode", true).await
+    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "OpenCode Zen", true).await
 }
 
 async fn fetch_opencode_go_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
@@ -1765,7 +1765,7 @@ impl Provider {
             Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai/zen/go") => {
                 "opencode-go"
             }
-            Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai") => "opencode",
+            Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai") => "opencode-zen",
             Provider::Anthropic { .. } => "anthropic",
             Provider::Codex { .. } => "codex",
             Provider::OpenRouter { .. } => "openrouter",

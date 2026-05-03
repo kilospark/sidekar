@@ -205,9 +205,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         && providers::oauth::resolve_provider_type_for_credential(name).is_none()
     {
         anyhow::bail!(
-            "Unknown credential: '{name}'. Use a nicknamed key (e.g. claude-work) or default stem (anthropic, codex, gem, gcp-work, oac-…).\n\
-                 Examples: claude, claude-1, codex, codex-work, or-personal, anthropic, gem-work, gcp, vertex-prod, oac-lab\n\
-                 Add credentials: sidekar repl credential add <provider> [name]  (see sidekar repl --help)"
+            "Unknown credential: '{name}'. Use a stored credential key (`oauth:<name>`), e.g. default stems anthropic/codex/gemini or a name from `credential add`.\n\
+                 Examples: anthropic, gemini, work, personal (whatever you chose)\n\
+                 Add credentials: sidekar repl credential add <provider> [nickname]  (see sidekar repl --help)"
         );
     }
 
@@ -263,7 +263,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         broker::try_log_error("bus", &format!("registration failed: {e}"), None);
     }
 
-    crate::bus::set_terminal_title(&format!("{nick} - sidekar repl"));
+    crate::bus::set_repl_terminal_title(&nick, false);
 
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
@@ -342,6 +342,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         });
 
         let pre_len = history.len();
+        crate::bus::set_repl_terminal_title(&nick, true);
         let run_result = crate::agent::run(
             prov,
             mdl,
@@ -358,6 +359,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         if let Ok(mut guard) = renderer.lock() {
             guard.teardown();
         }
+        crate::bus::set_repl_terminal_title(&nick, false);
 
         if crate::runtime::verbose() && run_result.is_ok() {
             crate::broker::try_log_event("debug", "repl", "turn-complete", None);
@@ -467,6 +469,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         // agent returns, so the journaling task only fires if the
         // user genuinely went idle, not merely "between turns."
         idle_tracker.disarm();
+        crate::bus::set_repl_terminal_title(&nick, false);
 
         let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
             InputEvent::User(s) => Some(s),
@@ -536,7 +539,6 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 loaded_skills: &loaded_skills,
                 history: &history,
                 editor_input_history_len: line_editor.input_history_len(),
-                turn_stats: &turn_stats,
             };
             if let Some(result) = handle_slash_command(&slash_ctx) {
                 match apply_slash_result(
@@ -716,6 +718,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         });
 
         let pre_len = history.len();
+        crate::bus::set_repl_terminal_title(&nick, true);
         let run_result = crate::agent::run(
             prov,
             mdl,
@@ -734,6 +737,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
         let returned_editor = active_prompt.finish();
         line_editor = returned_editor;
+        crate::bus::set_repl_terminal_title(&nick, false);
 
         let run_ok = run_result.is_ok();
         if run_ok {

@@ -160,107 +160,84 @@ fn resolve_kv_key(nickname: Option<&str>, default_key: &str) -> String {
     }
 }
 
-/// Provider type for a nickname.
-///
-/// A nickname matches a convention only if it is exactly the prefix
-/// (`claude`) or uses a dash boundary (`claude-work`). This prevents names
-/// like `oracle-prod` from being misclassified as OpenRouter and `ocean`
-/// from being misclassified as OpenCode.
-pub fn provider_type_for(nickname: &str) -> Option<&'static str> {
-    if matches_convention(nickname, "claude") {
-        Some("anthropic")
-    } else if matches_convention(nickname, "codex") {
-        Some("codex")
-    } else if matches_convention(nickname, "or") {
-        Some("openrouter")
-    } else if matches_convention(nickname, "ocg") || matches_convention(nickname, "opencode-go") {
-        Some("opencode-go")
-    } else if matches_convention(nickname, "oc") || matches_convention(nickname, "opencode") {
-        Some("opencode")
-    } else if matches_convention(nickname, "grok") {
-        Some("grok")
-    } else if matches_convention(nickname, "gem") {
-        // Gemini native provider. `gem` only (not `gemini`) per user
-        // convention. `gem` uniquely identifies Google Gemini among
-        // sidekar's providers; `gemma` would be a different model
-        // family and would require a different prefix if we ever
-        // added it.
-        Some("gemini")
-    } else if matches_convention(nickname, "brk") || matches_convention(nickname, "bedrock") {
-        Some("bedrock")
-    } else if matches_convention(nickname, "gcp") || matches_convention(nickname, "vertex") {
-        Some("gcp")
-    } else if matches_convention(nickname, "oac") {
-        Some("oac")
-    } else {
-        stored_provider_type_for(nickname)
-    }
-}
-
-fn matches_convention(nickname: &str, prefix: &str) -> bool {
-    nickname == prefix
-        || (nickname.starts_with(prefix) && nickname.as_bytes().get(prefix.len()) == Some(&b'-'))
-}
-
-fn stored_provider_type_for(nickname: &str) -> Option<&'static str> {
-    let key = kv_key_for(nickname);
-    let creds = load_credentials(&key).ok()??;
-    match creds.metadata.get("provider_type").and_then(|v| v.as_str()) {
-        Some("anthropic") => Some("anthropic"),
-        Some("codex") => Some("codex"),
-        Some("openrouter") => Some("openrouter"),
-        Some("opencode") => Some("opencode"),
-        Some("opencode-go") => Some("opencode-go"),
-        Some("grok") => Some("grok"),
-        Some("gemini") => Some("gemini"),
-        Some("bedrock") => Some("bedrock"),
-        Some("gcp") => Some("gcp"),
-        Some("oac") => Some("oac"),
-        Some("openai-compatible") => Some("oac"),
+/// Normalize `metadata.provider_type` from the KV store into the internal wire enum.
+fn normalize_stored_provider_type(raw: &str) -> Option<&'static str> {
+    match raw {
+        "anthropic" => Some("anthropic"),
+        "codex" => Some("codex"),
+        "openrouter" => Some("openrouter"),
+        "opencode" | "opencode-zen" => Some("opencode-zen"),
+        "opencode-go" => Some("opencode-go"),
+        "grok" => Some("grok"),
+        "gemini" => Some("gemini"),
+        "bedrock" => Some("bedrock"),
+        "gcp" => Some("gcp"),
+        "oac" | "openai-compatible" => Some("oac"),
         _ => None,
     }
 }
 
-/// Default `oauth:<stem>` key stems (no `oauth:` prefix) → wire type.
+fn wire_type_from_kv_metadata(nick: &str) -> Option<&'static str> {
+    let key = kv_key_for(nick);
+    let Ok(Some(creds)) = load_credentials(&key) else {
+        return None;
+    };
+    creds
+        .metadata
+        .get("provider_type")
+        .and_then(|v| v.as_str())
+        .and_then(normalize_stored_provider_type)
+}
+
+/// Default `oauth:<stem>` key stems (no `oauth:` prefix) → wire type when no credential
+/// row exists, or when a row exists but omits recognized `metadata.provider_type`.
 fn legacy_kv_credential_type(stem: &str) -> Option<&'static str> {
     match stem {
         "anthropic" => Some("anthropic"),
         "codex" | "openai" => Some("codex"),
         "openrouter" => Some("openrouter"),
-        "opencode" => Some("opencode"),
+        "opencode" | "opencode-zen" => Some("opencode-zen"),
         "opencode-go" => Some("opencode-go"),
         "grok" => Some("grok"),
         "gemini" => Some("gemini"),
-        "bedrock" | "brk" => Some("bedrock"),
+        "bedrock" => Some("bedrock"),
         "gcp" | "vertex" => Some("gcp"),
         _ => None,
     }
 }
 
-/// Credential nickname or bare default-KV stem (`anthropic`, `claude-work`, …).
+/// Resolve the wire provider for `oauth:{nick}`.
+///
+/// Deterministic source of truth is **`metadata.provider_type`** on the stored credential.
+/// If the row is missing or lacks a recognized `provider_type`, we fall back to **legacy bare
+/// stems** (`anthropic`, `gemini`, …) so default singleton keys keep working.
+///
+/// Arbitrary nicknames (e.g. `work`, `personal`) never imply a provider from the string alone.
 pub fn resolve_provider_type_for_credential(nick: &str) -> Option<&'static str> {
-    provider_type_for(nick).or_else(|| legacy_kv_credential_type(nick))
+    wire_type_from_kv_metadata(nick).or_else(|| legacy_kv_credential_type(nick))
 }
 
-/// `sidekar repl credential add` keyword when convention match on nickname fails.
+/// Maps the first token of `credential add <provider> …` to a wire provider type.
 pub fn provider_type_from_cli_keyword(keyword: &str) -> Option<&'static str> {
     match keyword {
         "claude" | "anthropic" => Some("anthropic"),
         "codex" | "openai" => Some("codex"),
-        "or" | "openrouter" => Some("openrouter"),
-        "oc" | "opencode" => Some("opencode"),
-        "ocg" | "opencode-go" => Some("opencode-go"),
+        "openrouter" => Some("openrouter"),
+        "opencode-zen" => Some("opencode-zen"),
+        "opencode-go" => Some("opencode-go"),
         "grok" => Some("grok"),
-        "gem" | "gemini" => Some("gemini"),
-        "bedrock" | "brk" => Some("bedrock"),
-        "gcp" | "vertex" => Some("gcp"),
+        "gemini" => Some("gemini"),
+        "bedrock" => Some("bedrock"),
+        "vertex" => Some("gcp"),
+        "openai-compat" => Some("oac"),
         _ => None,
     }
 }
 
-/// Login: prefer convention on full nickname, else CLI provider keyword.
-pub fn resolve_provider_type_for_login(nickname: &str, cli_keyword: &str) -> Option<&'static str> {
-    provider_type_for(nickname).or_else(|| provider_type_from_cli_keyword(cli_keyword))
+/// Provider type for `credential add <provider> …` — derived **only** from the CLI `<provider>`
+/// keyword, not from the optional nickname.
+pub fn resolve_provider_type_for_login(_nickname: &str, cli_keyword: &str) -> Option<&'static str> {
+    provider_type_from_cli_keyword(cli_keyword)
 }
 
 /// Get the email/identity stored in a credential's metadata.
@@ -286,15 +263,36 @@ pub fn credential_email(nickname: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// List all stored credential nicknames.
+/// Human-facing provider label for credential listings (`sidekar repl credentials`, `/credential`).
+///
+/// Uses the resolved **wire** type from `resolve_provider_type_for_credential`, not the KV nickname.
+pub fn credential_provider_display_label(wire_type: &str) -> String {
+    match wire_type {
+        "anthropic" => "claude (Anthropic OAuth)".into(),
+        "codex" => "codex (OpenAI OAuth)".into(),
+        "openrouter" => "openrouter".into(),
+        "opencode-zen" | "opencode" => "opencode-zen".into(),
+        "opencode-go" => "opencode-go".into(),
+        "grok" => "grok".into(),
+        "gemini" => "gemini".into(),
+        "bedrock" => "bedrock".into(),
+        "gcp" => "vertex (GCP Vertex)".into(),
+        "oac" => "openai-compat".into(),
+        "unknown" => "unknown".into(),
+        other => format!("unrecognized ({other})"),
+    }
+}
+
+/// List stored credentials as `(nickname, provider_label)` for display.
 pub fn list_credentials() -> Vec<(String, String)> {
     let entries = crate::broker::kv_list(None).unwrap_or_default();
     entries
         .into_iter()
         .filter_map(|e| {
             let name = e.key.strip_prefix("oauth:")?;
-            let provider = resolve_provider_type_for_credential(name).unwrap_or("unknown");
-            Some((name.to_string(), provider.to_string()))
+            let wire = resolve_provider_type_for_credential(name).unwrap_or("unknown");
+            let label = credential_provider_display_label(wire);
+            Some((name.to_string(), label))
         })
         .collect()
 }
@@ -351,7 +349,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
         })?;
         if creds.metadata.get("auth").and_then(|v| v.as_str()) != Some("gcp_adc") {
             anyhow::bail!(
-                "credential '{cred_name}' is not using GCP ADC — update the API key or add a new oac credential"
+                "credential '{cred_name}' is not using GCP ADC — update the API key or add a new openai-compat credential"
             );
         }
         crate::providers::gcp_adc::invalidate_cache().await;
@@ -368,7 +366,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
             refresh_token_codex,
         ),
         other => anyhow::bail!(
-            "provider '{other}' has no refresh flow — re-authenticate via `sidekar repl credential add <provider> [name]`"
+            "provider '{other}' has no refresh flow — re-authenticate via `sidekar repl credential add <provider> [nickname]`"
         ),
     };
 
@@ -376,7 +374,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("no stored credentials for '{cred_name}'"))?;
     if creds.refresh_token.is_empty() {
         anyhow::bail!(
-            "credential '{cred_name}' has no refresh token — re-authenticate via `sidekar repl credential add <provider> [name]`"
+            "credential '{cred_name}' has no refresh token — re-authenticate via `sidekar repl credential add <provider> [nickname]`"
         );
     }
     let new_creds = refresh_fn(&creds).await?;
@@ -414,10 +412,10 @@ pub async fn get_openrouter_token(nickname: Option<&str>) -> Result<String> {
     get_api_key_token(&kv_key, &["OPENROUTER_API_KEY"], "OpenRouter").await
 }
 
-/// Get a valid OpenCode API key. No OAuth — uses stored key or OPENCODE_API_KEY env var.
+/// Get a valid OpenCode Zen API key. No OAuth — uses stored key or OPENCODE_API_KEY env var.
 pub async fn get_opencode_token(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_OPENCODE);
-    get_api_key_token(&kv_key, &["OPENCODE_API_KEY"], "OpenCode").await
+    get_api_key_token(&kv_key, &["OPENCODE_API_KEY"], "OpenCode Zen").await
 }
 
 /// Get a valid OpenCode Go API key. Same key as OpenCode Zen, separate KV slot.
@@ -541,7 +539,7 @@ pub async fn get_gcp_vertex_credentials(nickname: &str) -> Result<OpenAiCompatCr
     let creds = load_credentials(&kv_key)?.with_context(|| {
         format!(
             "No GCP Vertex credentials found for '{nickname}'.\n\
-             Run: sidekar repl credential add gcp [nickname]"
+             Run: sidekar repl credential add vertex [nickname]"
         )
     })?;
     if creds.metadata.get("provider_type").and_then(|v| v.as_str()) != Some("gcp") {
@@ -583,7 +581,7 @@ pub async fn get_openai_compat_credentials(nickname: &str) -> Result<OpenAiCompa
     let creds = load_credentials(&kv_key)?.with_context(|| {
         format!(
             "No OpenAI-compat credentials found for '{nickname}'.\n\
-             Run: sidekar repl credential add oac {nickname} <base_url>"
+             Run: sidekar repl credential add openai-compat {nickname} <base_url>"
         )
     })?;
     let base_url = creds
@@ -753,7 +751,7 @@ async fn get_api_key_token(
     }
     bail!(
         "No {provider_name} credentials found for '{}'.\n\
-         Run: sidekar repl credential add <provider> [name]",
+         Run: sidekar repl credential add <provider> [nickname]",
         kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
     )
 }
@@ -802,7 +800,7 @@ async fn get_token(
 
     bail!(
         "No {provider_name} credentials found for '{}'.\n\
-         Run: sidekar repl credential add <provider> [name]",
+         Run: sidekar repl credential add <provider> [nickname]",
         kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
     )
 }
@@ -1463,27 +1461,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_type_for_grok_and_compat_prefixes() {
-        assert_eq!(provider_type_for("grok"), Some("grok"));
-        assert_eq!(provider_type_for("grok-work"), Some("grok"));
-        assert_eq!(provider_type_for("oac"), Some("oac"));
-        assert_eq!(provider_type_for("oac-local"), Some("oac"));
-        assert_eq!(provider_type_for("oac-lab"), Some("oac"));
-        assert_eq!(provider_type_for("compat-local"), None);
-        assert_eq!(provider_type_for("oai-lab"), None);
+    fn resolve_provider_unknown_arbitrary_nickname_without_kv() {
+        assert_eq!(
+            resolve_provider_type_for_credential("meaningless-zx-not-stored"),
+            None
+        );
     }
 
     #[test]
-    fn provider_type_for_gemini_uses_gem_prefix() {
-        // Gemini nicknames start with `gem`. The `gem-` variant is
-        // the canonical multi-credential form (gem-work, gem-test).
-        assert_eq!(provider_type_for("gem"), Some("gemini"));
-        assert_eq!(provider_type_for("gem-work"), Some("gemini"));
-        assert_eq!(provider_type_for("gem-test"), Some("gemini"));
+    fn resolve_openai_compat_login_from_cli_keyword_only() {
+        assert_eq!(
+            resolve_provider_type_for_login("ignored-nickname", "openai-compat"),
+            Some("oac")
+        );
     }
 
     #[test]
-    fn resolve_credential_type_handles_default_kv_stems() {
+    fn resolve_login_from_cli_keyword_only() {
+        assert_eq!(
+            resolve_provider_type_for_login("weird-nick", "claude"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            resolve_provider_type_for_login("gemini-work", "openrouter"),
+            Some("openrouter")
+        );
+    }
+
+    #[test]
+    fn credential_provider_display_labels_distinct_opencode_and_vertex() {
+        assert_eq!(credential_provider_display_label("opencode"), "opencode-zen");
+        assert_eq!(credential_provider_display_label("opencode-zen"), "opencode-zen");
+        assert_eq!(credential_provider_display_label("opencode-go"), "opencode-go");
+        assert_eq!(credential_provider_display_label("gcp"), "vertex (GCP Vertex)");
+    }
+
+    #[test]
+    fn resolve_credential_type_handles_legacy_kv_stems() {
         assert_eq!(
             resolve_provider_type_for_credential("anthropic"),
             Some("anthropic")
@@ -1509,14 +1523,6 @@ mod tests {
         assert!(validate_credential_nickname_for_storage("login").is_ok());
         assert!(validate_credential_nickname_for_storage("claude-work").is_ok());
         assert!(validate_credential_nickname_for_storage("adder").is_ok());
-    }
-
-    #[test]
-    fn resolve_login_falls_back_to_cli_keyword() {
-        assert_eq!(
-            resolve_provider_type_for_login("weird-nick", "claude"),
-            Some("anthropic")
-        );
     }
 
     #[test]
@@ -1620,21 +1626,5 @@ mod tests {
         .copied()
         .collect();
         assert_eq!(keys, expected);
-    }
-
-    #[test]
-    fn provider_type_for_gemini_does_not_collide_with_other_gem_prefixes() {
-        // Hypothetical future models whose names start with `gem`
-        // must NOT be claimed by the Gemini provider. matches_convention
-        // requires exact prefix match or `prefix-` form, so `gemma`
-        // and `gemstones` naturally miss, but pin them in a test so a
-        // future change to the matcher doesn't silently break this.
-        assert_eq!(provider_type_for("gemma"), None);
-        assert_eq!(provider_type_for("gemstones"), None);
-        assert_eq!(provider_type_for("gemini-model"), None);
-        // Exact `gemini` (no dash) is also not accepted as a prefix —
-        // callers who want to use the bare name should use `gem`.
-        // If we ever add `gemini` as an accepted prefix, update here.
-        assert_eq!(provider_type_for("gemini"), None);
     }
 }

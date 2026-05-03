@@ -290,7 +290,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
   Undo/prune/compact reset usage counters for /status and clear session journals whose entry pointers
   would be stale. Non-interactive: sidekar repl transcript list|undo|prune-after [--session=P].
   Options:
-    -c <credential>  Named credential (claude, codex, or-personal, grok, gem, etc.)
+    -c <credential>  Stored credential name (`oauth:<name>` key): defaults like anthropic, gemini, or a nickname from `credential add`
     -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
     -p <prompt>      Initial prompt (skip interactive input for first turn)
     -r [session_id]  Resume a session (picker if no ID; prefix match)
@@ -301,37 +301,34 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
                      or per-process via `SIDEKAR_JOURNAL=off`. Flip at runtime with `/journal off`.)
 
   Providers:
-    claude     Claude (Anthropic) — OAuth device flow
-    codex      Codex (OpenAI) — OAuth device flow
-    or         OpenRouter — API key
-    oc         OpenCode — API key
-    grok       Grok (xAI) — API key
-    gem        Gemini (Google) — API key
-    bedrock | brk   Amazon Bedrock — IAM / SigV4
-    gcp | vertex    Vertex AI (OpenAI-compat) — project + region; Bearer via `gcloud`
-    oac        Generic OpenAI-compat API
+    claude           Claude (Anthropic) — OAuth device flow
+    codex            Codex (OpenAI) — OAuth device flow
+    openrouter       OpenRouter — API key
+    opencode-zen     OpenCode Zen — API key
+    opencode-go      OpenCode Go — API key
+    grok             Grok (xAI) — API key
+    gemini           Gemini (Google) — API key
+    bedrock          Amazon Bedrock — IAM / SigV4
+    vertex           GCP Vertex AI (OpenAI-compat) — project + region; Bearer via `gcloud`
+    openai-compat    Generic OpenAI-compat API
 
-  Named credentials use prefix to determine provider:
-    claude-work, claude-2     → Anthropic
-    codex-ci, codex-fast      → OpenAI/Codex
-    or-personal, or-grok      → OpenRouter
-    oc-work, opencode-pro     → OpenCode
-    grok-work                 → Grok
-    brk-ci, bedrock-prod      → Bedrock
-    gcp-main, vertex-prod     → GCP Vertex
-    oac-lab, oac-local        → OpenAI-compat
+  Stored credential names (`oauth:<key>`):
+    Choose any unique key when adding (`credential add openrouter personal` → key `personal`).
+    Provider type is always taken from saved credential metadata, not from the key string.
 
   Environment:
     SIDEKAR_MODEL              Default model (overridden by -m)
     ANTHROPIC_API_KEY          Fallback for claude credentials
-    OPENROUTER_API_KEY         Fallback for or credentials
-    OPENCODE_API_KEY           Fallback for oc credentials
+    OPENROUTER_API_KEY         Fallback for openrouter credentials
+    OPENCODE_API_KEY           Fallback for opencode-zen / opencode-go credentials
+    GEMINI_API_KEY / GOOGLE_API_KEY   Fallback for gemini credentials
     XAI_API_KEY                Fallback for grok credentials
 
   Subcommands:
-    sidekar repl credential add <provider> [name]       Store OAuth/API credentials
-    sidekar repl credential add oac <nick> <url> [key]  Store generic OpenAI-compat credentials
-    sidekar repl logout [name|all]                      Remove stored credentials
+    sidekar repl credential                              Credential help (providers + examples)
+    sidekar repl credential add <provider> [nickname]    Store OAuth/API credentials
+    sidekar repl credential add openai-compat <nick> <url> [key]  Store generic OpenAI-compat credentials
+    sidekar repl logout [nickname|all]                   Remove stored credentials
     sidekar repl credentials                            List stored credentials
     sidekar repl models -c <credential>                   List available models for a provider
     sidekar repl sessions                                List sessions in this directory
@@ -341,15 +338,15 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
 
   Examples:
     sidekar repl credential add claude
-    sidekar repl credential add claude work     → stored as 'claude-work'
-    sidekar repl credential add or personal    → stored as 'or-personal'
+    sidekar repl credential add claude work           → stored as 'work'
+    sidekar repl credential add openrouter personal   → stored as 'personal'
     sidekar repl credential add grok
-    sidekar repl credential add gcp work       → stored as 'gcp-work'
-    sidekar repl credential add oac local http://localhost:11434/v1
+    sidekar repl credential add vertex prod           → stored as 'prod'
+    sidekar repl credential add openai-compat local http://localhost:11434/v1
     sidekar repl models -c claude-1
     sidekar repl sessions
     sidekar repl -c claude-1 -m claude-sonnet-4-20250514
-    sidekar repl -c or -m x-ai/grok-3 -p \"explain quantum computing\"
+    sidekar repl -c personal -m x-ai/grok-3 -p \"explain quantum computing\"
     sidekar repl -c grok -m grok-4
     sidekar repl -c local -m llama3.1
     sidekar repl -c codex -m o3 -r
