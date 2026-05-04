@@ -26,6 +26,18 @@ export function parseCookie(req) {
   return match ? match[1] : null;
 }
 
+/** JWT string from HttpOnly cookie or `Authorization: Bearer` (for relay WS bootstrap). */
+export function getRawSessionToken(req) {
+  let token = parseCookie(req);
+  if (!token) {
+    const auth = req.headers.authorization || "";
+    if (auth.startsWith("Bearer ")) {
+      token = auth.slice(7).trim();
+    }
+  }
+  return token || null;
+}
+
 export async function getUser(req) {
   // Try cookie first
   let token = parseCookie(req);

@@ -1,4 +1,4 @@
-import { getUser, parseCookie, clearSessionCookie } from "../_auth.js";
+import { getUser, getRawSessionToken, clearSessionCookie } from "../_auth.js";
 import { getDb } from "../_db.js";
 import { ObjectId } from "mongodb";
 
@@ -43,9 +43,9 @@ export default async function handler(req, res) {
     const user = await getUser(req);
     if (!user) return res.status(401).json({ error: "not authenticated" });
 
-    // If ?ws=1, return the raw JWT for WebSocket auth (cookie is HttpOnly)
+    // If ?ws=1, return the raw JWT for WebSocket auth (cookie is HttpOnly or Bearer).
     if (req.query.ws) {
-      const token = parseCookie(req);
+      const token = getRawSessionToken(req);
       return res.json({ user, token });
     }
 

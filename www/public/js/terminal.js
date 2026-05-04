@@ -34,8 +34,20 @@
     },
   });
 
-  term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.open(document.getElementById("terminal"));
+
+  // @xterm/addon-web-links UMD exposes the class as global WebLinksAddon (not WebLinksAddon.WebLinksAddon).
+  try {
+    var LinkCtor =
+      typeof WebLinksAddon !== "undefined"
+        ? WebLinksAddon.WebLinksAddon || WebLinksAddon
+        : null;
+    if (LinkCtor) {
+      term.loadAddon(new LinkCtor());
+    }
+  } catch (e) {
+    console.warn("terminal: web-links addon skipped", e);
+  }
 
   // Mobile touch scroll fix — xterm's built-in touch handler converts pixel
   // delta to lines at ~1 line per cell height, which feels frozen on phones.
@@ -137,7 +149,7 @@
     setStatus("", "connecting...");
 
     // Fetch JWT token for cross-origin WebSocket auth (cookie is HttpOnly)
-    fetch("/api/auth/session?ws=1")
+    fetch("/api/auth/session?ws=1", { credentials: "same-origin" })
       .then(function (res) {
         if (res.status === 401) {
           window.location.href = "/login?redirect=/terminal/" + sessionId;
@@ -209,7 +221,8 @@
           };
         });
       })
-      .catch(function () {
+      .catch(function (err) {
+        console.warn("terminal connect:", err);
         setStatus("error", "session unavailable — retrying...");
         scheduleReconnect();
       });

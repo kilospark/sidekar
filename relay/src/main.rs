@@ -5,11 +5,29 @@ mod slack;
 mod telegram;
 mod types;
 
+use axum::http::{HeaderValue, request::Parts};
 use axum::{routing::{get, post}, Router};
 use bridge::AppState;
 use registry::Registry;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
+
+fn relay_allow_origin(origin: &HeaderValue, _parts: &Parts) -> bool {
+    let Ok(s) = origin.to_str() else {
+        return false;
+    };
+    if s == "https://sidekar.dev" || s == "https://www.sidekar.dev" {
+        return true;
+    }
+    if s.starts_with("http://localhost:") && s.len() < 64 {
+        return true;
+    }
+    let Some(rest) = s.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or("");
+    host.ends_with(".vercel.app") && !host.starts_with('.')
+}
 
 #[tokio::main]
 async fn main() {
@@ -107,12 +125,9 @@ async fn main() {
         slack,
     };
 
-    // CORS — allow sidekar.dev
+    // CORS — browser hits resolve + WS bootstrap from sidekar.dev, previews, localhost.
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::list([
-            "https://sidekar.dev".parse().unwrap(),
-            "http://localhost:3000".parse().unwrap(),
-        ]))
+        .allow_origin(AllowOrigin::predicate(relay_allow_origin))
         .allow_headers(tower_http::cors::Any)
         .allow_methods(tower_http::cors::Any);
 
