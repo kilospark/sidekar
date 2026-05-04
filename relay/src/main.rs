@@ -55,6 +55,10 @@ async fn main() {
         .expect("JWT_SECRET environment variable is required")
         .trim()
         .to_string();
+    tracing::info!(
+        jwt_secret_utf8_len = jwt_secret.len(),
+        "JWT secret loaded (must match Vercel HS256 signing secret)"
+    );
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
     let instance_id = std::env::var("RELAY_INSTANCE_ID")
         .or_else(|_| std::env::var("HOSTNAME"))

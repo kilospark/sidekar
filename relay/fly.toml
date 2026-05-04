@@ -5,7 +5,7 @@
 #   flyctl deploy
 #
 # Secrets (set once via `flyctl secrets set`, not committed):
-#   MONGODB_URI, JWT_SECRET
+#   MONGODB_URI, JWT_SECRET (same UTF-8 string as Vercel Production JWT_SECRET)
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME (optional)
 #   SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET (optional)
 #

@@ -1,7 +1,18 @@
 import { SignJWT, jwtVerify } from "jose";
 import { ObjectId } from "mongodb";
 
-const JWT_SECRET = new TextEncoder().encode((process.env.JWT_SECRET || "dev-secret-change-me").trim());
+// Align with relay (`relay/src/auth.rs`): HS256 over UTF-8 bytes of this string.
+// If Production omits JWT_SECRET, tokens would be signed with the dev fallback below
+// while Fly uses a real secret → relay returns invalid_token on /resolve and WS.
+const rawJwtSecret = process.env.JWT_SECRET || "";
+if (process.env.VERCEL_ENV === "production" && !rawJwtSecret.trim()) {
+  throw new Error(
+    "[_auth] JWT_SECRET must be set for Vercel Production (same value as Fly JWT_SECRET)."
+  );
+}
+const JWT_SECRET = new TextEncoder().encode(
+  (rawJwtSecret.trim() || "dev-secret-change-me")
+);
 const COOKIE_NAME = "sidekar_session";
 
 export async function signToken(payload) {
