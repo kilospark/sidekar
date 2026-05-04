@@ -1,12 +1,15 @@
 # Cursor Agent API — Research Notes
 
-**Date:** 2026-04-29
-**Decision:** Do NOT add Cursor as a REPL credential provider. The API is proprietary ConnectRPC/protobuf with no public contract — reverse-engineering it is fragile and not worth the effort.
+**Date:** 2026-04-29 (REPL subsection updated 2026-05-03)
+
+**REPL evolution:** A native Rust REPL stub now exists (`src/providers/cursor.rs`; default backend `https://api2.cursor.sh`). Full streaming is **not** implemented — see **`context/cursor-repl-rust-attempts.md`** for abandoned approaches (Cloud Agents API, Node/`@cursor/sdk` bridge, guessing protos) and the remaining checklist.
+
+Below, the original **AiService / StreamChat** protobuf field tables remain useful baseline research; captures may also show **`agent.v1.AgentService`** (`Run`, `RunSSE`, …) from newer bundles.
 
 ## Current State
 
 - **PTY mode**: Cursor/agent is fully supported via `CursorFamily` in `src/agent_cli/cursor_family.rs`. PTY wraps the external `cursor`/`agent` binary with startup injection, argv enrichment, broker registration, bus poller, relay tunnel.
-- **REPL mode**: No Cursor provider. Not planned.
+- **REPL mode**: `Provider::Cursor` — exchange + optional Connect unary probe only; **`stream`** blocked on committed protobuf + bidirectional **`Run`** (or explicitly chosen RPC) from captures. Not a substitute for PTY until that lands.
 
 ## Research Findings
 
@@ -60,13 +63,14 @@
 
 **StreamChatResponse**: field 2 = text (string)
 
-### Why Not Worth It
+### Why full REPL chat is risky / paused (historic “why skip this” list)
+Same blockers apply to **shipping** Cursor as a first-class Rust chat backend; **`cursor.rs`** only implements **exchange + unary probe** until protos are nailed from captures.
 1. **No public API contract** — schema extracted from minified JS bundle, will break silently on updates.
-2. **Protobuf-only streaming** — requires implementing ConnectRPC envelope framing + protobuf serialization for a proprietary schema. No JSON fallback for streaming.
-3. **No official SDK or documentation** — Cursor does not publish an API for third-party use.
-4. **PTY mode already works** — wrapping the `cursor`/`agent` CLI binary is the supported path.
-5. **Token lifecycle unclear** — refresh token rotation, expiry, and re-auth flows are opaque.
-6. **Effort/value mismatch** — maintaining a ConnectRPC protobuf client against an undocumented, frequently-changing API is ongoing toil for marginal benefit over PTY mode.
+2. **Protobuf-only streaming** — requires Connect envelope framing + correct serialization for proprietary messages. No JSON fallback for streaming.
+3. **No official third-party HTTP contract** — behavior is inferred from tooling.
+4. **PTY mode works well** — wrapping the `cursor`/`agent` CLI remains the dependable integration path.
+5. **Token lifecycle** — refresh/expiry semantics for IDE vs API key flows are easy to misunderstand.
+6. **Maintenance burden** — a full protobuf client tied to unpublished wire shapes is ongoing toil for unclear payoff vs PTY.
 
 ---
 
