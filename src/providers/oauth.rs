@@ -32,6 +32,7 @@ pub const KV_KEY_OPENCODE: &str = "oauth:opencode";
 pub const KV_KEY_OPENCODE_GO: &str = "oauth:opencode-go";
 pub const KV_KEY_GROK: &str = "oauth:grok";
 pub const KV_KEY_GEMINI: &str = "oauth:gemini";
+pub const KV_KEY_CURSOR: &str = "oauth:cursor";
 pub const KV_KEY_BEDROCK: &str = "oauth:bedrock";
 pub const GROK_BASE_URL: &str = "https://api.x.ai";
 
@@ -172,6 +173,7 @@ fn normalize_stored_provider_type(raw: &str) -> Option<&'static str> {
         "gemini" => Some("gemini"),
         "bedrock" => Some("bedrock"),
         "gcp" => Some("gcp"),
+        "cursor" => Some("cursor"),
         "oac" | "openai-compatible" => Some("oac"),
         _ => None,
     }
@@ -200,6 +202,7 @@ fn legacy_kv_credential_type(stem: &str) -> Option<&'static str> {
         "opencode-go" => Some("opencode-go"),
         "grok" => Some("grok"),
         "gemini" => Some("gemini"),
+        "cursor" => Some("cursor"),
         "bedrock" => Some("bedrock"),
         "gcp" | "vertex" => Some("gcp"),
         _ => None,
@@ -230,6 +233,7 @@ pub fn provider_type_from_cli_keyword(keyword: &str) -> Option<&'static str> {
         "bedrock" => Some("bedrock"),
         "vertex" => Some("gcp"),
         "openai-compat" => Some("oac"),
+        "cursor" => Some("cursor"),
         _ => None,
     }
 }
@@ -275,6 +279,7 @@ pub fn credential_provider_display_label(wire_type: &str) -> String {
         "opencode-go" => "opencode-go".into(),
         "grok" => "grok".into(),
         "gemini" => "gemini".into(),
+        "cursor" => "cursor".into(),
         "bedrock" => "bedrock".into(),
         "gcp" => "vertex (GCP Vertex)".into(),
         "oac" => "openai-compat".into(),
@@ -443,6 +448,12 @@ pub async fn get_gemini_token(nickname: Option<&str>) -> Result<String> {
         return Ok(key);
     }
     get_api_key_token(&kv_key, &["GEMINI_API_KEY"], "Gemini").await
+}
+
+/// Cursor API key (`CURSOR_API_KEY`). Consumed natively toward `CURSOR_BACKEND` / `exchange_user_api_key` (not `api.cursor.com` Cloud Agents).
+pub async fn get_cursor_token(nickname: Option<&str>) -> Result<String> {
+    let kv_key = resolve_kv_key(nickname, KV_KEY_CURSOR);
+    get_api_key_token(&kv_key, &["CURSOR_API_KEY"], "Cursor").await
 }
 
 #[derive(Debug, Clone)]

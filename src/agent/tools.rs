@@ -37,7 +37,16 @@ device/account management, daemon/config, and extension control. Prefer \
 this over `Bash` when calling sidekar so the invocation is explicit and \
 cacheable. Pass the subcommand and its arguments verbatim in `args` (do \
 NOT include `sidekar` itself). For exact flags and examples on a command, \
-call with args=[\"help\",\"<command>\"].\n\n",
+call with args=[\"help\",\"<command>\"].\n\n\
+## Tab monitor (read this before `monitor`)\n\
+`args` must start with `\"monitor\"`. Use this Sidekar tool — not Bash — for \
+`monitor start|stop|status`. Bash runs a subprocess whose CLI `start` blocks until \
+Ctrl-C (stalls the turn) or hits Bash timeout (watcher dies). In REPL, `monitor start` \
+via this tool returns immediately on the next transcript line while the watcher keeps \
+running until `monitor stop` or REPL exit. Tab ids: hex from `tabs`, list index from \
+that session, or `all`; not Chrome extension numeric ids — for extension-only workflows use \
+`sidekar ext monitor start …` with ids from `sidekar ext tabs`. `monitor status` only sees \
+monitors in this same REPL process, not another terminal.\n\n",
         );
         out.push_str("## Command catalog\n");
         out.push_str(catalog);
@@ -836,8 +845,8 @@ fn exec_grep(args: &Value) -> Result<String> {
 }
 
 /// Chrome tab monitor keeps CDP + debounce state in-process (`tokio::spawn`).
-/// Spawning `sidekar monitor …` as subprocess exits after `start` returns and kills watcher.
-/// REPL `Sidekar` tool must dispatch monitor on shared runtime instead.
+/// CLI `monitor start` blocks until Ctrl-C so the watcher stays alive; `Sidekar` tool
+/// dispatches in-process with `MonitorReturnAfterStartGuard` so agent turn completes.
 fn sidekar_tool_monitor_should_run_in_process(argv: &[String]) -> bool {
     if argv.first().map(|s| s.as_str()) != Some("monitor") {
         return false;
@@ -850,6 +859,7 @@ fn sidekar_tool_monitor_should_run_in_process(argv: &[String]) -> bool {
 }
 
 async fn run_monitor_sidekar_tool_in_process(argv: &[String]) -> Result<String> {
+    let _return_after_start = crate::commands::monitor::MonitorReturnAfterStartGuard::enter();
     let mut ctx = crate::AppContext::new()?;
     if let Some(port) = std::env::var("CDP_PORT")
         .ok()

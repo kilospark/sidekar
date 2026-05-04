@@ -93,6 +93,13 @@ sidekar monitor <start|stop|status> [tab_id|all]
   Watch one or more tabs for title and favicon changes, then deliver notifications
   through Sidekar's bus transport.
 
+  REPL agents: drive this only via the Sidekar tool (args [\"monitor\", …]),
+  not Bash(`sidekar …`) — see embedded tool description \"Tab monitor\".
+
+  `monitor start` blocks until Ctrl-C so watcher stays alive in that process.
+  From REPL via the Sidekar tool, start returns immediately; watcher keeps running
+  for REPL process lifetime. `status` only reflects monitors in same OS process.
+
   Examples:
     sidekar monitor start all
     sidekar monitor start 12345 67890

@@ -333,6 +333,117 @@ const refMaps = new Map();
 // Watch state: watchId -> { tabId, selector } — used for re-injection on navigation
 const activeWatchers = new Map();
 
+// Tab title monitor: chrome.tabs.onUpdated (extension tab IDs — complements CDP `sidekar monitor`).
+const TAB_MONITOR_DEBOUNCE_MS = 3000;
+/** @type {Map<number, { lastTitle: string, debounceTimer: ReturnType<typeof setTimeout>|null }>} */
+const tabMonitorEntries = new Map();
+let tabMonitorListenerInstalled = false;
+
+function ensureTabMonitorListener() {
+  if (tabMonitorListenerInstalled) return;
+  chrome.tabs.onUpdated.addListener(onTabMonitorTabUpdated);
+  tabMonitorListenerInstalled = true;
+}
+
+function onTabMonitorTabUpdated(tabId, changeInfo, tab) {
+  if (!tabMonitorEntries.has(tabId)) return;
+  const url = tab.url || "";
+  if (url.startsWith("chrome://") || url.startsWith("chrome-extension://")) return;
+
+  if (changeInfo.title === undefined && changeInfo.favIconUrl === undefined) return;
+
+  const entry = tabMonitorEntries.get(tabId);
+  const newTitle = tab.title || "";
+  const oldTitle = entry.lastTitle || "";
+
+  if (newTitle === oldTitle) return;
+
+  if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+  entry.debounceTimer = setTimeout(() => {
+    entry.debounceTimer = null;
+    chrome.tabs.get(tabId).then((t) => {
+      if (!tabMonitorEntries.has(tabId)) return;
+      const cur = (t && t.title) || "";
+      const prev = entry.lastTitle || "";
+      if (cur === prev || prev === "") {
+        entry.lastTitle = cur;
+        return;
+      }
+      sendWs({
+        type: "tab_monitor_event",
+        tabId,
+        previousTitle: prev,
+        currentTitle: cur,
+        url: (t && t.url) || "",
+      });
+      entry.lastTitle = cur;
+    });
+  }, TAB_MONITOR_DEBOUNCE_MS);
+}
+
+async function cmdTabMonitor(msg) {
+  const sub = msg.sub || "";
+  if (sub === "stop") {
+    for (const ent of tabMonitorEntries.values()) {
+      if (ent.debounceTimer) clearTimeout(ent.debounceTimer);
+    }
+    tabMonitorEntries.clear();
+    return { ok: true };
+  }
+  if (sub === "status") {
+    const tabIds = [...tabMonitorEntries.keys()];
+    return { active: tabIds.length > 0, watching: tabIds.length, tabIds };
+  }
+  if (sub !== "start") {
+    return { error: `unknown tabmonitor sub: ${sub}` };
+  }
+
+  for (const ent of tabMonitorEntries.values()) {
+    if (ent.debounceTimer) clearTimeout(ent.debounceTimer);
+  }
+  tabMonitorEntries.clear();
+
+  /** @type {number[]} */
+  let rawIds = [];
+  if (msg.all === true) {
+    const tabs = await chrome.tabs.query({});
+    rawIds = tabs.map((t) => t.id).filter((id) => id != null);
+  } else if (Array.isArray(msg.tabIds)) {
+    rawIds = msg.tabIds.map((n) => Number(n)).filter((n) => Number.isFinite(n));
+  } else {
+    return { error: "tabmonitor start requires all:true or tabIds:[...]" };
+  }
+
+  let added = 0;
+  const skippedTabIds = [];
+  for (const tid of rawIds) {
+    try {
+      const t = await chrome.tabs.get(tid);
+      const url = t.url || "";
+      if (url.startsWith("chrome://") || url.startsWith("chrome-extension://")) {
+        skippedTabIds.push(tid);
+        continue;
+      }
+      tabMonitorEntries.set(tid, { lastTitle: t.title || "", debounceTimer: null });
+      added += 1;
+    } catch {
+      skippedTabIds.push(tid);
+    }
+  }
+
+  if (added === 0) {
+    return { error: "No valid tabs to monitor (use extension tab IDs from `sidekar ext tabs`)" };
+  }
+
+  ensureTabMonitorListener();
+  return {
+    ok: true,
+    watching: added,
+    tabIds: [...tabMonitorEntries.keys()],
+    skippedTabIds,
+  };
+}
+
 /** Safe unwrap of chrome.scripting.executeScript results (empty array / missing result). */
 function firstInjectionResult(exec) {
   if (!exec || exec.length === 0) {
@@ -379,6 +490,8 @@ async function handleCommand(msg) {
         return await cmdClose(msg);
       case "scroll":
         return await cmdScroll(msg);
+      case "tabmonitor":
+        return await cmdTabMonitor(msg);
       case "history":
         return await cmdHistory(msg);
       case "watch":

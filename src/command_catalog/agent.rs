@@ -84,8 +84,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "monitor",
-        "<start|stop|status>",
-        "Watch tabs for background changes",
+        "<start|stop|status> [tab_id|all]",
+        "CDP tabs → bus; in REPL use Sidekar tool not Bash (see tool doc \"Tab monitor\")",
         CommandGroup::Agent,
         true,
         true,

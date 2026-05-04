@@ -74,6 +74,16 @@ pub async fn send_cli_command(
         };
         cmd_json["deliver_to"] = json!(dest);
     }
+    if command == "monitor-start" {
+        let Some(dest) = crate::bus::resolve_registered_agent_bus_name_for_current_process() else {
+            bail!(
+                "sidekar ext monitor start needs a broker-registered agent context: \
+                 run from `sidekar repl`, `sidekar claude`, … or set SIDEKAR_AGENT_NAME \
+                 so tab title events can be delivered to the bus."
+            );
+        };
+        cmd_json["deliver_to"] = json!(dest);
+    }
 
     let result = crate::daemon::send_command(&cmd_json)?;
 
@@ -462,9 +472,35 @@ fn build_command(
             Ok(cmd)
         }
         "watchers" => Ok(json!({"command": "watchers"})),
+        "monitor-start" => {
+            if args.len() == 1 && args[0] == "all" {
+                return Ok(json!({
+                    "command": "tabmonitor",
+                    "sub": "start",
+                    "all": true
+                }));
+            }
+            let mut ids: Vec<u64> = Vec::new();
+            for a in args {
+                let n: u64 = a
+                    .parse()
+                    .with_context(|| format!("extension tab ID must be numeric, got: {a}"))?;
+                ids.push(n);
+            }
+            if ids.is_empty() {
+                bail!("Usage: sidekar ext monitor start <tab_id...>|all");
+            }
+            Ok(json!({
+                "command": "tabmonitor",
+                "sub": "start",
+                "tabIds": ids
+            }))
+        }
+        "monitor-stop" => Ok(json!({"command": "tabmonitor", "sub": "stop"})),
+        "monitor-status" => Ok(json!({"command": "tabmonitor", "sub": "status"})),
         "context" => Ok(json!({"command": "context"})),
         _ => bail!(
-            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, context, status, stop"
+            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, monitor-start, monitor-stop, monitor-status, context, status, stop"
         ),
     }
 }

@@ -98,7 +98,7 @@ pub fn inherit_pty_registration() -> Option<AgentId> {
 }
 
 /// Resolve the broker [`crate::broker::AgentId::name`] row used as `bus_queue.recipient`
-/// for subprocesses (CDP monitor, `sidekar ext watch`) that are not the registering
+/// for subprocesses (CDP monitor, `sidekar ext watch`, `sidekar ext monitor`) that are not the registering
 /// process themselves.
 ///
 /// Order: runtime / `SIDEKAR_AGENT_NAME`, PTY parent-chain

@@ -3,7 +3,7 @@ use crate::transport::{self, Transport};
 use crate::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
 /// Global timestamp of the last sidekar tool call (epoch ms).
@@ -53,6 +53,29 @@ static MONITOR: tokio::sync::OnceCell<Mutex<Option<MonitorState>>> =
 
 async fn monitor_cell() -> &'static Mutex<Option<MonitorState>> {
     MONITOR.get_or_init(|| async { Mutex::new(None) }).await
+}
+
+/// >0 while REPL Sidekar tool dispatches `monitor start` so it returns without blocking the turn.
+static MONITOR_RETURN_AFTER_START_DEPTH: AtomicU32 = AtomicU32::new(0);
+
+/// RAII: increment depth while the Sidekar tool runs `monitor start` in-process.
+pub(crate) struct MonitorReturnAfterStartGuard;
+
+impl MonitorReturnAfterStartGuard {
+    pub(crate) fn enter() -> Self {
+        MONITOR_RETURN_AFTER_START_DEPTH.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for MonitorReturnAfterStartGuard {
+    fn drop(&mut self) {
+        MONITOR_RETURN_AFTER_START_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn monitor_return_after_start() -> bool {
+    MONITOR_RETURN_AFTER_START_DEPTH.load(Ordering::SeqCst) > 0
 }
 
 /// Deliver a notification message using the chosen transport.
@@ -620,18 +643,46 @@ pub async fn cmd_monitor(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     match sub {
         "start" => {
-            let tab_ids: Vec<String> = args
-                .iter()
-                .skip(1)
-                .filter(|a| !a.starts_with("--"))
-                .cloned()
-                .collect();
+            let mut tab_ids: Vec<String> = Vec::new();
+            for a in args.iter().skip(1) {
+                match a.as_str() {
+                    // Legacy no-ops (older help / transcripts).
+                    "--foreground" | "-f" => {}
+                    s if s.starts_with('-') => bail!("Unknown flag: {s}"),
+                    s => tab_ids.push(s.to_string()),
+                }
+            }
 
             if tab_ids.is_empty() {
                 bail!("Usage: monitor start <tab_id|tab_id2|all>");
             }
 
-            start_monitor(ctx, tab_ids).await
+            start_monitor(ctx, tab_ids).await?;
+
+            if monitor_return_after_start() {
+                return Ok(());
+            }
+
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(
+                    "Monitor running. Press Ctrl-C to stop."
+                ))?
+            );
+            let _ = tokio::signal::ctrl_c().await;
+            let cell = monitor_cell().await;
+            let mut guard = cell.lock().await;
+            if let Some(mon) = guard.take() {
+                mon.running.store(false, Ordering::Relaxed);
+                mon.task_handle.abort();
+            }
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new("Monitor stopped."))?
+            );
+            Ok(())
         }
         "stop" => {
             let cell = monitor_cell().await;

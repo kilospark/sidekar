@@ -387,10 +387,13 @@ pub async fn handle_ext(args: &[String], override_tab_id: &Option<String>) -> Re
         eprintln!("  history <query>              Search browsing history");
         eprintln!("  context                      Current browser context");
         eprintln!();
-        eprintln!("Watchers (events delivered via bus):");
-        eprintln!("  watch <selector>             Watch element, stream changes to bus");
+        eprintln!("Watchers & tab monitor (events delivered via bus):");
+        eprintln!("  watch <selector>             Watch DOM element text");
         eprintln!("  unwatch [watchId]            Remove watcher(s)");
-        eprintln!("  watchers                     List active watchers");
+        eprintln!("  watchers                     List DOM watchers");
+        eprintln!(
+            "  monitor <start|stop|status>  Tab title monitor (Chrome extension tab IDs)"
+        );
         eprintln!("  dev-extract                  Extract embedded extension ZIP");
         eprintln!();
         eprintln!("Management:");
@@ -402,11 +405,36 @@ pub async fn handle_ext(args: &[String], override_tab_id: &Option<String>) -> Re
         );
         std::process::exit(1);
     }
-    let sub_args = if args.len() > 1 {
-        args[1..].to_vec()
-    } else {
-        vec![]
+
+    let (command, sub_args): (String, Vec<String>) = match sub.as_str() {
+        "monitor" => {
+            let msub = args
+                .get(1)
+                .map(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Usage: sidekar ext monitor <start|stop|status> [tab_id...|all]")
+                })?;
+            let tail: Vec<String> = args.iter().skip(2).cloned().collect();
+            match msub {
+                "start" => ("monitor-start".to_string(), tail),
+                "stop" => ("monitor-stop".to_string(), Vec::new()),
+                "status" => ("monitor-status".to_string(), Vec::new()),
+                other => anyhow::bail!(
+                    "Unknown ext monitor subcommand: {other} (use start, stop, status)"
+                ),
+            }
+        }
+        _ => (
+            sub,
+            if args.len() > 1 {
+                args[1..].to_vec()
+            } else {
+                vec![]
+            },
+        ),
     };
+
     let default_tab = super::tab_id_from_global_flag(override_tab_id);
-    sidekar::ext::send_cli_command(&sub, &sub_args, default_tab).await
+    sidekar::ext::send_cli_command(&command, &sub_args, default_tab).await
 }

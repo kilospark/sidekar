@@ -190,10 +190,11 @@ sidekar ext <subcommand> [args...]
     history <query>                   Search browsing history
     context                           Active tab + windows + recent activity
 
-  Watchers (events delivered via bus):
-    watch <selector>                  Watch element, stream changes to bus
+  Watchers & tab monitor (events delivered via bus):
+    watch <selector>                  Watch DOM element text
     unwatch [watchId]                 Remove watcher(s)
-    watchers                          List active watchers
+    watchers                          List DOM watchers
+    monitor <start|stop|status>       Tab title monitor (Chrome tab IDs)
 
   Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands),
          --focus (raise Chrome + activate tab for navigate | new-tab | screenshot | paste | set-value)
@@ -204,6 +205,7 @@ sidekar ext <subcommand> [args...]
     sidekar ext history \"terraform vpc\"
     sidekar ext context
     sidekar ext watch \"span.notification-count\"
+    sidekar ext monitor start all
     sidekar ext paste --html \"<h1>Title</h1>\" --text \"Title\"
     sidekar ext eval-page \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\""
         }

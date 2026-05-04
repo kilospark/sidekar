@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod bedrock;
 mod bedrock_inference;
 pub mod codex;
+pub mod cursor;
 pub mod gcp_adc;
 pub mod gemini;
 pub mod oauth;
@@ -72,6 +73,17 @@ pub fn shared_mitm_proxy_port() -> Option<u16> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     g.as_ref().map(|a| a.port)
+}
+
+/// Attached MITM port + CA PEM path for subprocess env (`NODE_EXTRA_CA_CERTS`,
+/// `HTTPS_PROXY`, etc.). Parent REPL keeps process env unchanged; spawn helpers
+/// merge these when bridging non-reqwest subprocesses.
+pub(super) fn attached_mitm_for_child_env() -> Option<(u16, PathBuf)> {
+    let g = ATTACHED_MITM_PROXY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    g.as_ref()
+        .map(|a| (a.port, a.ca_pem_path.clone()))
 }
 
 /// Build a reqwest client for streaming provider API calls. When an MITM
@@ -1029,6 +1041,7 @@ async fn fetch_model_limits(model: &str, provider: &Provider) -> Option<(u32, u3
             api_key, base_url, ..
         } => gemini::fetch_gemini_model_limits(api_key, base_url, model).await,
         Provider::Bedrock { .. } => None,
+        Provider::Cursor { .. } => None,
     }
 }
 
@@ -1222,6 +1235,7 @@ pub async fn fetch_model_list(
         "opencode-zen" | "opencode" => fetch_opencode_model_list(api_key).await,
         "opencode-go" => fetch_opencode_go_model_list(api_key).await,
         "gemini" => gemini::fetch_gemini_model_list(api_key).await,
+        "cursor" => fetch_cursor_model_list(api_key).await,
         "bedrock" => Ok(Vec::new()),
         _ => Ok(Vec::new()),
     }
@@ -1248,6 +1262,7 @@ pub async fn fetch_model_list_for_provider(
             region,
             aws_profile,
         } => bedrock::fetch_bedrock_model_list(region, aws_profile.as_deref()).await,
+        Provider::Cursor { api_key, .. } => fetch_cursor_model_list(api_key).await,
     }
 }
 
@@ -1552,6 +1567,67 @@ pub async fn fetch_openai_compat_model_list(
     Ok(models)
 }
 
+async fn fetch_cursor_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let url = "https://api.cursor.com/v1/models";
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+    let auth = STANDARD.encode(format!("{}:", api_key.trim()));
+    let req = client
+        .get(url)
+        .header("Authorization", format!("Basic {auth}"));
+    let body = catalog_send_json_broker_logged(req, "Cursor API").await?;
+
+    fn push_cursor_model(models: &mut Vec<RemoteModel>, m: &serde_json::Value) {
+        let id = m
+            .get("id")
+            .or_else(|| m.pointer("/model/id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if id.is_empty() {
+            return;
+        }
+        let name = m
+            .get("name")
+            .or_else(|| m.get("displayName"))
+            .or_else(|| m.pointer("/model/name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(id);
+        let ctx = m
+            .get("context_length")
+            .or_else(|| m.get("context_window"))
+            .or_else(|| m.get("max_context_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        models.push(RemoteModel::catalog(id.to_string(), name.to_string(), ctx));
+    }
+
+    let mut models = Vec::new();
+    if let Some(items) = body.get("items").and_then(|d| d.as_array()) {
+        for item in items {
+            match item.as_str() {
+                Some(id) if !id.is_empty() => {
+                    models.push(RemoteModel::catalog(id.to_string(), id.to_string(), 0))
+                }
+                _ => push_cursor_model(&mut models, item),
+            }
+        }
+    }
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        for m in data {
+            push_cursor_model(&mut models, m);
+        }
+    }
+    if models.is_empty()
+        && let Some(arr) = body.get("models").and_then(|d| d.as_array())
+    {
+        for m in arr {
+            push_cursor_model(&mut models, m);
+        }
+    }
+    Ok(models)
+}
+
 /// Public OpenCode catalog (`/zen/v1` vs `/zen/go/v1`). Zen sends `anthropic-version`; Go does not.
 async fn fetch_opencode_public_model_list(
     url: &'static str,
@@ -1638,6 +1714,12 @@ pub enum Provider {
     Bedrock {
         region: String,
         aws_profile: Option<String>,
+    },
+/// Cursor — **Rust client toward `CURSOR_BACKEND` (`api2.cursor.sh`)**. Chat streaming still
+/// needs checked-in protobuf for `agent.v1.AgentService/Run` (BiDi); see `cursor.rs` module docs.
+    Cursor {
+        api_key: String,
+        credential: Option<String>,
     },
 }
 
@@ -1751,6 +1833,10 @@ impl Provider {
         }
     }
 
+    pub fn cursor(api_key: String, credential: Option<String>) -> Self {
+        Provider::Cursor { api_key, credential }
+    }
+
     pub fn api_key(&self) -> &str {
         match self {
             Provider::Anthropic { api_key, .. } => api_key,
@@ -1759,6 +1845,7 @@ impl Provider {
             Provider::OpenAiCompat { api_key, .. } => api_key,
             Provider::Gemini { api_key, .. } => api_key,
             Provider::Bedrock { .. } => "_",
+            Provider::Cursor { api_key, .. } => api_key,
         }
     }
 
@@ -1770,6 +1857,7 @@ impl Provider {
             Provider::OpenAiCompat { credential, .. } => credential.as_deref(),
             Provider::Gemini { credential, .. } => credential.as_deref(),
             Provider::Bedrock { .. } => None,
+            Provider::Cursor { credential, .. } => credential.as_deref(),
         }
     }
 
@@ -1798,6 +1886,7 @@ impl Provider {
             Provider::OpenAiCompat { provider_type, .. } => provider_type,
             Provider::Gemini { .. } => "gemini",
             Provider::Bedrock { .. } => "bedrock",
+            Provider::Cursor { .. } => "cursor",
         }
     }
 
@@ -1846,6 +1935,7 @@ impl Provider {
                 suppress_anthropic_cache_markers: true,
                 ..StreamConfig::default()
             },
+            Provider::Cursor { .. } => StreamConfig::default(),
         }
     }
 
@@ -2129,6 +2219,19 @@ impl Provider {
                     messages,
                     tools,
                     &stream_config,
+                )
+                .await?;
+                Ok(no_ws_reclaim(rx))
+            }
+            Provider::Cursor { api_key, .. } => {
+                let key = api_key_override.unwrap_or(api_key);
+                let rx = cursor::stream(
+                    key,
+                    model,
+                    system_prompt,
+                    messages,
+                    tools,
+                    prompt_cache_key,
                 )
                 .await?;
                 Ok(no_ws_reclaim(rx))

@@ -125,6 +125,12 @@ pub struct WatchRecord {
     pub created_at: u64,
 }
 
+/// Extension-driven tab title monitor (one active registration per bridge connection).
+pub struct TabMonitorRecord {
+    pub deliver_to: String,
+    pub created_at: u64,
+}
+
 /// A single passive-network event as received from the extension. The extension
 /// has already capped body previews (~64 KiB) and stripped sensitive header
 /// keys; daemon-side treatment is storage + retrieval only.
@@ -200,6 +206,7 @@ pub struct ExtState {
     pub connections: HashMap<u64, ExtConnection>,
     pub next_connection_id: u64,
     pub watches: HashMap<String, WatchRecord>,
+    pub tab_monitors: HashMap<u64, TabMonitorRecord>,
     /// Per-connection passive-network firehose rings. Not a request/response
     /// pending map — pure push-from-extension path with bounded storage.
     pub passive_rings: HashMap<u64, PassiveNetRing>,
@@ -212,6 +219,7 @@ impl Default for ExtState {
             connections: HashMap::new(),
             next_connection_id: 1,
             watches: HashMap::new(),
+            tab_monitors: HashMap::new(),
             passive_rings: HashMap::new(),
             passive_ring_cap: 2000,
         }
@@ -240,6 +248,7 @@ async fn disconnect_bridge(state: &SharedState, connection_id: u64) {
         let mut s = state.lock().await;
         // Remove watches owned by this connection
         s.watches.retain(|_, w| w.conn_id != connection_id);
+        s.tab_monitors.remove(&connection_id);
         match s.connections.remove(&connection_id) {
             Some(conn) => conn.pending,
             None => return,
@@ -316,6 +325,70 @@ pub async fn list_watches(state: &SharedExtState) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Register broker delivery target after extension confirms tab monitor start.
+pub async fn register_tab_monitor(state: &SharedExtState, conn_id: u64, deliver_to: String) {
+    let mut s = state.lock().await;
+    s.tab_monitors.insert(
+        conn_id,
+        TabMonitorRecord {
+            deliver_to,
+            created_at: epoch_secs(),
+        },
+    );
+}
+
+pub async fn remove_tab_monitor(state: &SharedExtState, conn_id: u64) -> Option<TabMonitorRecord> {
+    let mut s = state.lock().await;
+    s.tab_monitors.remove(&conn_id)
+}
+
+pub async fn sweep_stale_tab_monitors(state: &SharedExtState, max_age_secs: u64) -> usize {
+    let mut s = state.lock().await;
+    let now = epoch_secs();
+    let live_conns: std::collections::HashSet<u64> = s.connections.keys().copied().collect();
+    let before = s.tab_monitors.len();
+    s.tab_monitors.retain(|cid, rec| {
+        live_conns.contains(cid) && now.saturating_sub(rec.created_at) <= max_age_secs
+    });
+    before - s.tab_monitors.len()
+}
+
+/// Deliver a tab title-change notification from the extension (`chrome.tabs`).
+pub async fn deliver_tab_monitor_event(
+    state: &SharedExtState,
+    conn_id: u64,
+    tab_id: i64,
+    previous_title: &str,
+    current_title: &str,
+    url: Option<&str>,
+) -> Result<()> {
+    let deliver_to = {
+        let s = state.lock().await;
+        let Some(rec) = s.tab_monitors.get(&conn_id) else {
+            crate::broker::try_log_event(
+                "debug",
+                "ext",
+                "tab_monitor_event dropped: no TabMonitorRecord for connection",
+                Some(&format!("conn={conn_id}")),
+            );
+            return Ok(());
+        };
+        rec.deliver_to.clone()
+    };
+
+    let mut message = format!(
+        "Tab title changed on [{tab_id}]: \"{}\" -> \"{}\"",
+        previous_title.replace('"', "'"),
+        current_title.replace('"', "'")
+    );
+    if let Some(u) = url.filter(|x| !x.is_empty()) {
+        message.push_str(&format!("\nURL: {u}"));
+    }
+    let formatted = format!("[from sidekar-ext-tab-monitor]: {message}");
+    crate::broker::enqueue_message("sidekar-ext-tab-monitor", &deliver_to, &formatted)?;
+    Ok(())
 }
 
 /// Deliver a watch event via the broker to the registered agent.

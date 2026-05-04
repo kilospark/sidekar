@@ -197,6 +197,7 @@ fn default_model_for_provider(provider_type: &str) -> String {
         "openrouter" => "anthropic/claude-haiku-4-5",
         "grok" => "grok-3-mini",
         "gemini" => "gemini-2.0-flash",
+        "cursor" => "composer-2",
         "opencode" => "claude-haiku-4-5",
         _ => "gpt-4o-mini",
     }

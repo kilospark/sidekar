@@ -70,6 +70,11 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                 .get("watchId")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let inner_sub = ext_cmd
+                .get("sub")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             let ext_state = {
                 let s = state.lock().await;
@@ -127,6 +132,28 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                 } else {
                     let mut s = ext_state.lock().await;
                     s.watches.clear();
+                }
+            } else if inner_cmd == "tabmonitor" {
+                match inner_sub.as_str() {
+                    "start" => {
+                        if final_result.get("error").is_none()
+                            && final_result.get("ok").and_then(|v| v.as_bool()) != Some(false)
+                            && let Some(ref dest) = deliver_to
+                        {
+                            crate::ext::register_tab_monitor(
+                                &ext_state,
+                                routed_conn_id,
+                                dest.clone(),
+                            )
+                            .await;
+                        }
+                    }
+                    "stop" => {
+                        if final_result.get("error").is_none() {
+                            crate::ext::remove_tab_monitor(&ext_state, routed_conn_id).await;
+                        }
+                    }
+                    _ => {}
                 }
             }
 

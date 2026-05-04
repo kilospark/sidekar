@@ -143,6 +143,7 @@ pub(super) async fn housekeeping_loop(http_port: u16, ext_state: crate::ext::Sha
                 sweep_dead_agents();
                 cleanup_stale_messages();
                 crate::ext::sweep_stale_watches(&ext_state, STALE_WATCH_AGE_SECS).await;
+                crate::ext::sweep_stale_tab_monitors(&ext_state, STALE_WATCH_AGE_SECS).await;
                 if http_port > 0 {
                     discover_heartbeat(http_port).await;
                 }

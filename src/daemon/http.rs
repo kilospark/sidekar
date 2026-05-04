@@ -390,6 +390,32 @@ async fn handle_ext_websocket(
                                     }
                                 continue;
                             }
+                            if msg_type == "tab_monitor_event" {
+                                let tab_id = val.get("tabId").and_then(|v| v.as_i64()).unwrap_or(-1);
+                                let prev_t =
+                                    val.get("previousTitle").and_then(|v| v.as_str()).unwrap_or("");
+                                let cur_t =
+                                    val.get("currentTitle").and_then(|v| v.as_str()).unwrap_or("");
+                                let url = val.get("url").and_then(|v| v.as_str());
+                                if tab_id >= 0
+                                    && let Err(e) = crate::ext::deliver_tab_monitor_event(
+                                        &ext_state,
+                                        conn_id,
+                                        tab_id,
+                                        prev_t,
+                                        cur_t,
+                                        url,
+                                    )
+                                    .await
+                                {
+                                    crate::broker::try_log_error(
+                                        "ext",
+                                        "tab_monitor event delivery failed",
+                                        Some(&format!("{e:#}")),
+                                    );
+                                }
+                                continue;
+                            }
                             if msg_type == "cli_exec" {
                                 let id = val
                                     .get("id")

@@ -25,6 +25,7 @@ Providers (first argument to `credential add`):
   opencode-go         OpenCode Go — API key
   grok                Grok (xAI) — API key
   gemini              Gemini (Google) — API key
+  cursor              Cursor — `CURSOR_API_KEY` → `api2.cursor.sh` (Connect / MitM-visible path); REPL stream still blocked on protobuf `AgentService.Run`
   bedrock             Amazon Bedrock — IAM / SigV4
   vertex              GCP Vertex AI (OpenAI-compat) — project id + region; Bearer via `gcloud`
   openai-compat       Generic OpenAI-compat — uses a positional form (see below)
@@ -171,7 +172,7 @@ pub async fn perform_credential_add(
         crate::providers::oauth::resolve_provider_type_for_login(nickname, provider).ok_or_else(
             || {
                 anyhow!(
-                    "Unknown provider: '{provider}'.\nUse: claude, codex, openrouter, opencode-zen, opencode-go, grok, gemini, bedrock, vertex, openai-compat"
+                    "Unknown provider: '{provider}'.\nUse: claude, codex, openrouter, opencode-zen, opencode-go, grok, gemini, cursor, bedrock, vertex, openai-compat"
                 )
             },
         )?;
@@ -292,6 +293,22 @@ pub async fn perform_credential_add(
             output_line(output, "Gemini API key saved.");
             Ok(format!("Logged in as '{nickname}' (Gemini)."))
         }
+        "cursor" => {
+            output_line(
+                output,
+                "Cursor uses your API key against the backend Sidekar already logs (default https://api2.cursor.sh). Full REPL streaming needs Rust protobuf for `agent.v1.AgentService/Run` — see src/providers/cursor.rs header.",
+            );
+            open_browser_hint("https://cursor.com/docs");
+            let key = prompt_required(output, "Cursor API key", None)?;
+            crate::providers::oauth::save_api_key_credential(
+                &kv_key,
+                "cursor",
+                &key,
+                serde_json::json!({}),
+            )?;
+            output_line(output, "Cursor API key saved.");
+            Ok(format!("Logged in as '{nickname}' (Cursor API key)."))
+        }
         "bedrock" => {
             output_line(
                 output,
@@ -336,7 +353,7 @@ pub async fn perform_credential_add(
             ))
         }
         _ => Err(anyhow!(
-            "Unknown provider type for '{nickname}'.\nUse: claude, codex, openrouter, opencode-zen, opencode-go, grok, gemini, bedrock, vertex, openai-compat"
+            "Unknown provider type for '{nickname}'.\nUse: claude, codex, openrouter, opencode-zen, opencode-go, grok, gemini, cursor, bedrock, vertex, openai-compat"
         )),
     }
 }
