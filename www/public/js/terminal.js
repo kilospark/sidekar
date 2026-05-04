@@ -231,7 +231,7 @@
         if (m === "invalid_token") {
           setStatus(
             "error",
-            "Relay rejected the session JWT — set Vercel Production JWT_SECRET to the exact Fly JWT_SECRET (see fly.toml)."
+            "Session token invalid or expired — sign out and sign in again."
           );
           return;
         }

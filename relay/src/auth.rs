@@ -36,8 +36,18 @@ pub fn validate_session_jwt(jwt: &str, secret: &str) -> Option<String> {
     let mut validation = Validation::new(Algorithm::HS256);
     // The Vercel API sets sub, login, name — we only need sub
     validation.set_required_spec_claims(&["sub", "exp"]);
+    // jsonwebtoken v9: default validate_aud=true + aud=None rejects any JWT that carries `aud`
+    // (`InvalidAudience`). Our session tokens don't define an audience contract; match `jose`
+    // verification on Vercel (`jwtVerify`).
+    validation.validate_aud = false;
 
-    let token_data = decode::<serde_json::Value>(jwt, &key, &validation).ok()?;
+    let token_data = match decode::<serde_json::Value>(jwt, &key, &validation) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "session jwt decode failed");
+            return None;
+        }
+    };
     let sub = token_data.claims.get("sub")?.as_str()?;
     Some(sub.to_string())
 }
