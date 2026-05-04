@@ -7,6 +7,7 @@ sidekar-extension.zip
 assets/extension.zip
 .vercel
 .DS_Store
+.scratch/
 screenshots/
 native/macos-automation/.build/
 # Site download payloads (built in CI / Vercel — not tracked)
