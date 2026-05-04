@@ -751,7 +751,15 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let did_compact = match run_result {
             Ok(c) => c,
             Err(e) if e.is::<crate::agent::Cancelled>() => {
+                let had_partial_turn = history.len() > pre_len;
                 history.truncate(pre_len);
+                if had_partial_turn {
+                    // Local transcript dropped assistant/tool rows — drop provider
+                    // continuation too (esp. Codex WS) or next request replays server state
+                    // for turn user thought they cancelled.
+                    prev_resp_id = None;
+                    cached_ws = None;
+                }
                 tunnel_println("\x1b[33m[cancelled]\x1b[0m");
                 false
             }
