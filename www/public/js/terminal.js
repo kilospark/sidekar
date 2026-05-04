@@ -160,6 +160,10 @@
       })
       .then(function (data) {
         if (!data) return; // redirecting
+        if (!data.token) {
+          window.location.href = "/login?redirect=/terminal/" + sessionId;
+          return;
+        }
 
         return resolveOwnerOrigin(data.token).then(function (ownerOrigin) {
           var wsUrl = toWebSocketOrigin(ownerOrigin) + "/session/" + sessionId;
@@ -223,6 +227,18 @@
       })
       .catch(function (err) {
         console.warn("terminal connect:", err);
+        var m = err && err.message ? String(err.message) : String(err);
+        if (m === "invalid_token") {
+          setStatus(
+            "error",
+            "Relay rejected the session token. Confirm Fly JWT_SECRET matches Vercel JWT_SECRET."
+          );
+          return;
+        }
+        if (m === "missing_token") {
+          window.location.href = "/login?redirect=/terminal/" + sessionId;
+          return;
+        }
         setStatus("error", "session unavailable — retrying...");
         scheduleReconnect();
       });
@@ -276,7 +292,17 @@
       encodeURIComponent(token);
     return fetch(url)
       .then(function (res) {
-        if (res.status === 401) throw new Error("unauthorized");
+        if (res.status === 401) {
+          return res.text().then(function (t) {
+            var body = (t || "").trim();
+            var code = body;
+            try {
+              var j = JSON.parse(body);
+              if (j && typeof j.error === "string") code = j.error;
+            } catch (_) {}
+            throw new Error(code);
+          });
+        }
         if (res.status === 404) throw new Error("not found");
         if (!res.ok) throw new Error("resolve failed");
         return res.json();

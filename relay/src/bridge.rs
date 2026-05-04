@@ -375,12 +375,24 @@ pub async fn handle_resolve_session(
 
     let jwt = match jwt {
         Some(t) => t,
-        None => return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response(),
+        None => {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "missing_token" })),
+            )
+                .into_response();
+        }
     };
 
     let user_id = match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
         Some(uid) => uid,
-        None => return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response(),
+        None => {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "invalid_token" })),
+            )
+                .into_response();
+        }
     };
 
     match state.registry.resolve_viewer_route(&session_id, &user_id).await {
