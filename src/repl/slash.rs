@@ -1,4 +1,5 @@
 use super::renderer::EventRenderer;
+use super::status::StatusQuotaSection;
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -7,7 +8,7 @@ use super::*;
 
 pub(super) enum SlashResult {
     Continue,
-    /// `/status`: snapshot REPL state (may fetch gateway/account limits for the active provider).
+    /// `/status`: snapshot REPL state (may poll provider quota HTTP where implemented).
     Status,
     Quit,
     SwitchSession(String),
@@ -1017,10 +1018,10 @@ pub(super) enum SlashAction {
     Quit,
 }
 
-async fn gateway_limits_body_fetch(
+async fn quota_section_fetch(
     provider: Option<&Provider>,
     cred_display: &str,
-) -> Option<String> {
+) -> Option<StatusQuotaSection> {
     let nick_opt = if cred_display.is_empty() || cred_display == "(none)" {
         None
     } else {
@@ -1029,35 +1030,71 @@ async fn gateway_limits_body_fetch(
 
     let prov = provider?;
 
-    let api_key_result = match prov {
-        Provider::OpenRouter { .. } => providers::oauth::get_openrouter_token(nick_opt)
-            .await
-            .map_err(|e| format!("{e:#}")),
+    match prov {
+        Provider::Codex {
+            api_key,
+            account_id,
+            ..
+        } => match providers::codex::fetch_codex_plan_quota_body(api_key, account_id).await {
+            Ok(body) => Some(StatusQuotaSection {
+                title: "Codex plan usage".into(),
+                body,
+            }),
+            Err(e) => Some(StatusQuotaSection {
+                title: "Codex plan usage".into(),
+                body: format!("  \x1b[33m{e}\x1b[0m\n"),
+            }),
+        },
+        Provider::OpenRouter { .. } => {
+            let api_key = match providers::oauth::get_openrouter_token(nick_opt).await {
+                Ok(k) => k,
+                Err(e) => {
+                    return Some(StatusQuotaSection {
+                        title: "OpenRouter".into(),
+                        body: format!(
+                            "  \x1b[33mcould not resolve API key: {e:#}\x1b[0m\n"
+                        ),
+                    });
+                }
+            };
+            match providers::openrouter::fetch_openrouter_key_limits_body(&api_key).await {
+                Ok(body) => Some(StatusQuotaSection {
+                    title: "OpenRouter".into(),
+                    body,
+                }),
+                Err(e) => Some(StatusQuotaSection {
+                    title: "OpenRouter".into(),
+                    body: format!("  \x1b[33mcould not fetch limits: {e}\x1b[0m\n"),
+                }),
+            }
+        }
         Provider::OpenAiCompat { api_key, base_url, .. } => {
             if !base_url.to_ascii_lowercase().contains("openrouter.ai") {
                 return None;
             }
-            providers::oauth::resolve_openai_compat_api_key(api_key)
-                .await
-                .map_err(|e| format!("{e:#}"))
+            let api_key = match providers::oauth::resolve_openai_compat_api_key(api_key).await {
+                Ok(k) => k,
+                Err(e) => {
+                    return Some(StatusQuotaSection {
+                        title: "OpenRouter".into(),
+                        body: format!(
+                            "  \x1b[33mcould not resolve API key: {e:#}\x1b[0m\n"
+                        ),
+                    });
+                }
+            };
+            match providers::openrouter::fetch_openrouter_key_limits_body(&api_key).await {
+                Ok(body) => Some(StatusQuotaSection {
+                    title: "OpenRouter".into(),
+                    body,
+                }),
+                Err(e) => Some(StatusQuotaSection {
+                    title: "OpenRouter".into(),
+                    body: format!("  \x1b[33mcould not fetch limits: {e}\x1b[0m\n"),
+                }),
+            }
         }
-        _ => return None,
-    };
-
-    let api_key = match api_key_result {
-        Ok(k) => k,
-        Err(e) => {
-            return Some(format!(
-                "  \x1b[33mcould not resolve API key: {e}\x1b[0m\n"
-            ));
-        }
-    };
-
-    match providers::openrouter::fetch_openrouter_key_limits_body(&api_key).await {
-        Ok(body) => Some(body),
-        Err(e) => Some(format!(
-            "  \x1b[33mcould not fetch gateway limits: {e}\x1b[0m\n"
-        )),
+        _ => None,
     }
 }
 
@@ -1086,8 +1123,7 @@ pub(super) async fn apply_slash_result(
             let snap = super::status::capture_turn_status_snapshot(turn_stats);
             let cred_display = cred_name.as_deref().unwrap_or("(none)");
             let model_display = model.as_deref().unwrap_or("(not set)");
-            let gateway_limits_body =
-                gateway_limits_body_fetch(provider.as_ref(), cred_display).await;
+            let quota_section = quota_section_fetch(provider.as_ref(), cred_display).await;
             let view = super::status::build_status_view(
                 &snap,
                 session_id.as_str(),
@@ -1095,7 +1131,7 @@ pub(super) async fn apply_slash_result(
                 model_display,
                 cred_display,
                 history,
-                gateway_limits_body,
+                quota_section,
             );
             tunnel_println(&super::status::format_status(&view));
         }

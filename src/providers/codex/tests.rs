@@ -240,3 +240,18 @@ fn build_request_body_websocket_omits_stream_flag() {
         "OpenAI WS guide: omit transport-specific stream flag"
     );
 }
+
+#[test]
+fn wham_usage_formats_rate_limits_object() {
+    let data = json!({
+        "rate_limits": {
+            "five_hour": { "percent_left": 40.0, "reset_time_ms": 2000000000000_u64 },
+            "weekly": { "remaining_percent": 88.5, "reset_at": 1700000000_u64 }
+        }
+    });
+    let s = super::format_codex_wham_usage_body(&data).expect("parses");
+    assert!(s.contains("5h window"));
+    assert!(s.contains("40.0%"));
+    assert!(s.contains("weekly window"));
+    assert!(s.contains("88.5%"));
+}

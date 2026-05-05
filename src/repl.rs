@@ -390,7 +390,18 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             model: mdl.clone(),
             cred_name: cred_name.clone().unwrap_or_default(),
         };
+        tunnel_println("");
+        repl_status_dim("Closing REPL…");
+        let journal_exit_flush = crate::runtime::journal();
+        if journal_exit_flush {
+            repl_status_dim(
+                "Session journal: exit flush running (blocks on model until complete)…",
+            );
+        }
         maybe_run_final_journal(Some(&journal_ctx)).await;
+        if journal_exit_flush {
+            repl_status_dim("Session journal: exit flush finished.");
+        }
 
         stop_relay(tunnel_tx.take());
         crate::poller::shutdown_poller();
@@ -805,7 +816,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         }
     }
 
-    // Show resume command
+    tunnel_println("");
+    repl_status_dim("Closing REPL…");
+
+    // Resume hint printed last — exit flush may block on an LLM call.
     let mut resume_cmd = String::from("sidekar repl");
     if let Some(ref c) = cred_name {
         resume_cmd.push_str(&format!(" -c {c}"));
@@ -814,7 +828,6 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         resume_cmd.push_str(&format!(" -m {m}"));
     }
     resume_cmd.push_str(&format!(" -r {session_id}"));
-    tunnel_println(&format!("\n\x1b[2m{resume_cmd}\x1b[0m"));
 
     // Stop the journaling polling task, if it was spawned. Abort
     // is immediate; any in-flight LLM call is dropped. Not calling
@@ -824,7 +837,17 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         handle.abort();
         let _ = handle.await;
     }
+
+    let journal_exit_flush = journal_ctx.is_some() && crate::runtime::journal();
+    if journal_exit_flush {
+        repl_status_dim(
+            "Session journal: exit flush running (blocks on model until complete)…",
+        );
+    }
     maybe_run_final_journal(journal_ctx.as_ref()).await;
+    if journal_exit_flush {
+        repl_status_dim("Session journal: exit flush finished.");
+    }
 
     stop_relay(tunnel_tx);
     crate::poller::shutdown_poller();
@@ -833,9 +856,12 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // ExecSession cleanup: kill any still-running PTY sessions.
     #[cfg(unix)]
     {
+        repl_status_dim("Stopping tool shell sessions…");
         let mgr = crate::agent::tools::exec_session_manager();
         mgr.terminate_all().await;
     }
+
+    tunnel_println(&format!("\n\x1b[2m{resume_cmd}\x1b[0m"));
 
     Ok(())
 }

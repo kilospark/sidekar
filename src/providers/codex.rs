@@ -733,18 +733,201 @@ fn apply_usage(u: &Value, usage: &mut Usage) {
 }
 
 // ---------------------------------------------------------------------------
+// ChatGPT Codex plan quota (`/backend-api/wham/usage`)
+// ---------------------------------------------------------------------------
+
+/// Poll Codex ChatGPT plan quota (rolling ~5h + weekly windows). Same bearer +
+/// account id as Codex Responses API.
+///
+/// Endpoint is not part of OpenAI's published Responses reference; Community +
+/// Codex CLI tooling rely on it for quota summaries.
+pub async fn fetch_codex_plan_quota_body(access_token: &str, account_id: &str) -> Result<String, String> {
+    if access_token.is_empty() {
+        return Err("missing Codex access token".into());
+    }
+    if account_id.is_empty() {
+        return Err("missing ChatGPT account id".into());
+    }
+    let url = "https://chatgpt.com/backend-api/wham/usage";
+    let client = super::build_streaming_client(std::time::Duration::from_secs(20))
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(url)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Accept", "application/json")
+        .header("ChatGPT-Account-Id", account_id)
+        .header("Origin", "https://chatgpt.com")
+        .header("Referer", "https://chatgpt.com/")
+        .header("originator", "sidekar")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(240).collect();
+        return Err(format!("HTTP {status}: {snippet}"));
+    }
+    let v: Value = response.json().await.map_err(|e| e.to_string())?;
+    format_codex_wham_usage_body(&v).ok_or_else(|| {
+        let snippet = serde_json::to_string(&v).unwrap_or_default();
+        let snippet: String = snippet.chars().take(280).collect();
+        format!("unexpected wham/usage JSON shape: {snippet}")
+    })
+}
+
+fn codex_quota_limits_bucket(data: &Value) -> Option<&serde_json::Map<String, Value>> {
+    data.get("rate_limit")
+        .and_then(|v| v.as_object())
+        .or_else(|| data.get("rate_limits").and_then(|v| v.as_object()))
+}
+
+fn resolve_codex_window_blob(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    let obj = value.as_object()?;
+    if obj.contains_key("percent_left")
+        || obj.contains_key("remaining_percent")
+        || obj.contains_key("used_percent")
+        || obj.contains_key("reset_at")
+        || obj.contains_key("reset_time_ms")
+    {
+        return Some(obj);
+    }
+    obj.get("primary_window").and_then(|v| v.as_object())
+}
+
+fn find_codex_limit_window<'a>(
+    bucket: Option<&'a serde_json::Map<String, Value>>,
+    root: &'a serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    let mut maps: Vec<&serde_json::Map<String, Value>> = Vec::new();
+    if let Some(b) = bucket {
+        maps.push(b);
+    }
+    maps.push(root);
+    for map in maps {
+        for k in keys {
+            if let Some(v) = map.get(*k) {
+                if let Some(inner) = resolve_codex_window_blob(v) {
+                    return Some(inner);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn codex_percent_left(window: &serde_json::Map<String, Value>) -> Option<f64> {
+    if let Some(p) = window
+        .get("percent_left")
+        .and_then(|v| v.as_f64())
+        .or_else(|| window.get("remaining_percent").and_then(|v| v.as_f64()))
+    {
+        return Some(p);
+    }
+    window
+        .get("used_percent")
+        .and_then(|v| v.as_f64())
+        .map(|u| (100.0 - u).max(0.0))
+}
+
+fn codex_reset_epoch_secs(window: &serde_json::Map<String, Value>) -> Option<u64> {
+    let raw = window
+        .get("reset_time_ms")
+        .or_else(|| window.get("reset_at"))
+        .and_then(|v| v.as_u64())?;
+    Some(if raw > 100_000_000_000 { raw / 1000 } else { raw })
+}
+
+fn format_codex_quota_reset_countdown(epoch_secs: u64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if epoch_secs <= now {
+        return "now".into();
+    }
+    let delta = epoch_secs - now;
+    if delta < 60 {
+        format!("in {delta}s")
+    } else if delta < 3600 {
+        format!("in {}m", delta / 60)
+    } else if delta < 86400 {
+        format!("in {}h{}m", delta / 3600, (delta % 3600) / 60)
+    } else {
+        format!("in {}d{}h", delta / 86400, (delta % 86400) / 3600)
+    }
+}
+
+fn format_codex_limit_line(label: &str, window: &serde_json::Map<String, Value>) -> String {
+    let pct = codex_percent_left(window)
+        .map(|p| format!("{p:.1}% left"))
+        .unwrap_or_else(|| "—".into());
+    let tail = codex_reset_epoch_secs(window)
+        .map(|e| format!(" · resets {}", format_codex_quota_reset_countdown(e)))
+        .unwrap_or_default();
+    format!("  {:<18}{}{}\n", label, pct, tail)
+}
+
+fn format_codex_wham_usage_body(data: &Value) -> Option<String> {
+    let root = data.as_object()?;
+    let bucket = codex_quota_limits_bucket(data);
+    let five = find_codex_limit_window(
+        bucket,
+        root,
+        &[
+            "five_hour",
+            "five_hour_limit",
+            "five_hour_rate_limit",
+            "primary",
+            "primary_window",
+        ],
+    );
+    let weekly = find_codex_limit_window(
+        bucket,
+        root,
+        &[
+            "weekly",
+            "weekly_limit",
+            "weekly_rate_limit",
+            "secondary",
+            "secondary_window",
+        ],
+    );
+    let mut out = String::new();
+    if let Some(w) = five {
+        out.push_str(&format_codex_limit_line("5h window", w));
+    }
+    if let Some(w) = weekly {
+        out.push_str(&format_codex_limit_line("weekly window", w));
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket transport
 // ---------------------------------------------------------------------------
 
+/// Rate-limit snapshot from WS HTTP handshake (`x-ratelimit-*`), mirroring SSE POST path.
+fn ws_handshake_rate_limit<B>(resp: &http::Response<B>) -> Option<RateLimitSnapshot> {
+    RateLimitSnapshot::from_openai_headers(resp.headers()).into_option()
+}
+
 /// Open a fresh WebSocket connection to the Codex Responses API.
 ///
-/// Handles both direct and MITM-proxy paths. Returns split write+read halves.
+/// Handles both direct and MITM-proxy paths. Returns split write+read halves plus
+/// handshake headers-derived limits when present.
 async fn connect_ws(
     api_key: &str,
     account_id: &str,
     base_url: &str,
     verbose: bool,
-) -> Result<(WsWrite, WsRead)> {
+) -> Result<(WsWrite, WsRead, Option<RateLimitSnapshot>)> {
     let http_url = format!("{}/codex/responses", base_url.trim_end_matches('/'));
     let ws_url = http_url
         .replacen("https://", "wss://", 1)
@@ -789,7 +972,7 @@ async fn connect_ws(
     .with_no_client_auth();
     let tls_config = std::sync::Arc::new(tls_config);
 
-    let ws = if let Some((proxy_port, _)) = super::attached_mitm_for_custom_tls() {
+    let (ws, handshake_rl) = if let Some((proxy_port, _)) = super::attached_mitm_for_custom_tls() {
         let proxy_addr = format!("127.0.0.1:{}", proxy_port);
         if verbose {
             log_ws_verbose(
@@ -831,11 +1014,11 @@ async fn connect_ws(
             );
         }
         let connector = Some(tokio_tungstenite::Connector::Rustls(tls_config));
-        let (ws, _) =
+        let (ws, resp) =
             tokio_tungstenite::client_async_tls_with_config(ws_request, tcp, None, connector)
                 .await
                 .context("WS handshake over proxy tunnel failed")?;
-        ws
+        (ws, ws_handshake_rate_limit(&resp))
     } else {
         if verbose {
             log_ws_verbose(
@@ -844,7 +1027,7 @@ async fn connect_ws(
             );
         }
         let connector = tokio_tungstenite::Connector::Rustls(tls_config);
-        let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
+        let (ws, resp) = tokio_tungstenite::connect_async_tls_with_config(
             ws_request,
             None,
             false,
@@ -852,13 +1035,14 @@ async fn connect_ws(
         )
         .await
         .context("failed to connect WebSocket to Codex API")?;
-        ws
+        (ws, ws_handshake_rate_limit(&resp))
     };
     if verbose {
         log_ws_verbose("connected", None);
     }
 
-    Ok(futures_util::StreamExt::split(ws))
+    let (w, r) = futures_util::StreamExt::split(ws);
+    Ok((w, r, handshake_rl))
 }
 
 /// Stream a codex response over WebSocket instead of SSE.
@@ -917,7 +1101,7 @@ pub async fn stream_ws(
     // the send may appear to succeed (data goes to OS buffer) but the first
     // read will fail with broken pipe. Reading one message before spawning
     // the reader task lets us detect this and reconnect transparently.
-    let (write, mut read, first_text) = 'conn: {
+    let (write, mut read, first_text, handshake_rl) = 'conn: {
         if let Some(ws) = cached_ws {
             let (mut w, mut r) = (ws.write, ws.read);
             if verbose {
@@ -936,7 +1120,7 @@ pub async fn stream_ws(
                     if verbose {
                         log_ws_verbose("cached-connection-reused", None);
                     }
-                    break 'conn (w, r, Some(t.to_string()));
+                    break 'conn (w, r, Some(t.to_string()), None);
                 }
                 if verbose {
                     log_ws_verbose("cached-read-failed-reconnecting", None);
@@ -952,14 +1136,14 @@ pub async fn stream_ws(
         if verbose {
             log_ws_verbose("opening-fresh-connection", None);
         }
-        let (mut w, r) = connect_ws(api_key, account_id, base_url, verbose).await?;
+        let (mut w, r, rl) = connect_ws(api_key, account_id, base_url, verbose).await?;
         if verbose {
             log_ws_verbose("sending-response-create", None);
         }
         w.send(WsMessage::Text(payload.into()))
             .await
             .context("failed to send response.create over WS")?;
-        (w, r, None)
+        (w, r, None, rl)
     };
 
     let (tx, rx) = mpsc::unbounded_channel();
@@ -967,7 +1151,7 @@ pub async fn stream_ws(
 
     let verbose = super::is_verbose();
     tokio::spawn(async move {
-        match parse_ws_stream(&mut read, &tx, first_text).await {
+        match parse_ws_stream(&mut read, &tx, first_text, handshake_rl).await {
             Ok(true) => {
                 if verbose {
                     log_ws_verbose("reclaiming-connection-for-reuse", None);
@@ -1002,10 +1186,14 @@ pub async fn stream_ws(
 /// `first_text` is an optional pre-read message from connection validation
 /// (used when reusing a cached WS — we read the first message before spawning
 /// the reader task to detect broken connections).
+///
+/// `rate_limit` comes from WS HTTP handshake headers on fresh connections only;
+/// reused sockets skip handshake this turn so it is typically `None`.
 async fn parse_ws_stream<S>(
     read: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<S>>,
     tx: &mpsc::UnboundedSender<StreamEvent>,
     first_text: Option<String>,
+    rate_limit: Option<RateLimitSnapshot>,
 ) -> Result<bool>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1249,7 +1437,7 @@ where
                         stop_reason: stop,
                         model: model_id.clone(),
                         response_id: response_id.clone(),
-                        rate_limit: None,
+                        rate_limit: rate_limit.clone(),
                     },
                 });
                 completed = true;

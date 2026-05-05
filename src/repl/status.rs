@@ -20,6 +20,14 @@
 
 use crate::providers::{ChatMessage, StopReason, Usage};
 
+/// Optional polled quota row block for `/status` (OpenRouter key limits,
+/// Codex ChatGPT plan windows, …).
+#[derive(Debug, Clone)]
+pub(super) struct StatusQuotaSection {
+    pub title: String,
+    pub body: String,
+}
+
 /// All the inputs `/status` needs, pre-extracted from REPL state so
 /// this module is easy to test and has no coupling to the REPL's
 /// mutable state or the renderer's mutex.
@@ -64,9 +72,8 @@ pub(super) struct StatusView<'a> {
     pub journal_on: bool,
     /// Remaining local lockout duration for current credential, if any.
     pub credential_lock_remaining: Option<std::time::Duration>,
-    /// Optional gateway / account limits body for the **Gateway limits** section
-    /// (provider-specific; omitted when nothing applies).
-    pub gateway_limits_body: Option<String>,
+    /// Optional provider-polled quota section (HTTP `/status` fetch).
+    pub quota_section: Option<StatusQuotaSection>,
 }
 
 /// Owned snapshot of [`super::turn_stats::TurnStats`] for building a [`StatusView`].
@@ -105,7 +112,7 @@ pub(super) fn build_status_view<'a>(
     model: &'a str,
     cred_name: &'a str,
     history: &[ChatMessage],
-    gateway_limits_body: Option<String>,
+    quota_section: Option<StatusQuotaSection>,
 ) -> StatusView<'a> {
     let cw = crate::providers::cached_context_window(model);
     let tokens_estimate = crate::agent::compaction::estimate_tokens_public(history);
@@ -140,7 +147,7 @@ pub(super) fn build_status_view<'a>(
         since_last_turn: snap.since_last_turn,
         journal_on: crate::runtime::journal(),
         credential_lock_remaining,
-        gateway_limits_body,
+        quota_section,
     }
 }
 
@@ -261,9 +268,9 @@ pub(super) fn format_status(v: &StatusView<'_>) -> String {
         ));
     }
 
-    if let Some(ref body) = v.gateway_limits_body {
-        out.push_str("\n\x1b[1mGateway limits\x1b[0m\n");
-        out.push_str(body);
+    if let Some(ref q) = v.quota_section {
+        out.push_str(&format!("\n\x1b[1m{}\x1b[0m\n", q.title));
+        out.push_str(&q.body);
     }
 
     // ----- Usage (cumulative) --------------------------------------
@@ -408,7 +415,7 @@ mod tests {
             since_last_turn: last.map(|_| std::time::Duration::from_secs(5)),
             journal_on: true,
             credential_lock_remaining: None,
-            gateway_limits_body: None,
+            quota_section: None,
         }
     }
 
@@ -521,7 +528,7 @@ mod tests {
             since_last_turn: Some(std::time::Duration::from_secs(12)),
             journal_on: true,
             credential_lock_remaining: None,
-            gateway_limits_body: None,
+            quota_section: None,
         };
         let s = format_status(&v);
         // Eye-visible only when --nocapture is set.
@@ -559,12 +566,15 @@ mod tests {
     }
 
     #[test]
-    fn gateway_limits_section_renders_when_body_set() {
+    fn quota_section_renders_when_set() {
         let cum = Usage::default();
         let mut v = view_defaults(&cum, 0, None);
-        v.gateway_limits_body = Some("  remaining         unlimited\n".into());
+        v.quota_section = Some(StatusQuotaSection {
+            title: "OpenRouter".into(),
+            body: "  remaining         unlimited\n".into(),
+        });
         let s = format_status(&v);
-        assert!(s.contains("Gateway limits"));
+        assert!(s.contains("OpenRouter"));
         assert!(s.contains("remaining"));
     }
 }
