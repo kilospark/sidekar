@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use std::io::{self, BufRead, Write};
 
 pub mod credential_login;
+mod codex_footer;
 mod debug_export;
 mod editor;
 mod event_forward;
@@ -323,8 +324,23 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let mut cached_ws: Option<providers::codex::CachedWs> = None;
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let _cancel_watch = EscCancelWatcher::start(cancel.clone(), tunnel_input_fd);
+        let codex_wh_once = std::sync::Arc::new(std::sync::Mutex::new(
+            self::codex_footer::CodexWhamFooterCache::new(),
+        ));
+        let codex_footer_once = match prov {
+            Provider::Codex {
+                api_key,
+                account_id,
+                ..
+            } => Some(self::codex_footer::CodexFooterBindings {
+                cache: codex_wh_once.clone(),
+                api_key: api_key.clone(),
+                account_id: account_id.clone(),
+            }),
+            _ => None,
+        };
         let renderer =
-            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone(), codex_footer_once)));
         let renderer_for_events = renderer.clone();
         // Forwarder is lock-free (atomic state), shared by Arc so the
         // per-event callback doesn't acquire a second mutex. Hot-path
@@ -443,6 +459,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     // On session switch (`/new`, `/session`) we reset this — the
     // switch handlers below replace it via `TurnStats::new()`.
     let turn_stats = std::sync::Arc::new(std::sync::Mutex::new(self::turn_stats::TurnStats::new()));
+
+    let codex_wh_cache = std::sync::Arc::new(std::sync::Mutex::new(
+        self::codex_footer::CodexWhamFooterCache::new(),
+    ));
 
     // Idle tracker for the background journaling subsystem.
     // - Armed at StreamEvent::Done in the event callback below.
@@ -568,6 +588,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                     &mut system_prompt,
                     &mut loaded_skills,
                     &turn_stats,
+                    Some(&codex_wh_cache),
                 )
                 .await?
                 {
@@ -683,7 +704,20 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             tunnel_input_fd,
         );
         let renderer =
-            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone(), {
+                match prov {
+                    Provider::Codex {
+                        api_key,
+                        account_id,
+                        ..
+                    } => Some(self::codex_footer::CodexFooterBindings {
+                        cache: codex_wh_cache.clone(),
+                        api_key: api_key.clone(),
+                        account_id: account_id.clone(),
+                    }),
+                    _ => None,
+                }
+            })));
         let renderer_for_events = renderer.clone();
         // Forwarder is lock-free (atomic state), shared by Arc so the
         // per-event callback doesn't acquire a second mutex. Hot-path

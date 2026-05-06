@@ -560,7 +560,7 @@ async fn parse_sse_stream(
                             stop_reason: stop,
                             model: model_id.clone(),
                             response_id: response_id.clone(),
-                            rate_limit: rate_limit.clone(),
+                            rate_limit: merged_codex_rate_limit_for_done(rate_limit.clone(), &data),
                         },
                     });
                 }
@@ -733,15 +733,81 @@ fn apply_usage(u: &Value, usage: &mut Usage) {
 }
 
 // ---------------------------------------------------------------------------
+// Codex quota JSON → RateLimitSnapshot (stream + `wham/usage`)
+// ---------------------------------------------------------------------------
+
+/// Map Codex `rate_limits` JSON (Responses `response.completed`, or `wham/usage` root object)
+/// into [`RateLimitSnapshot`]. `% left` becomes utilization % for the same footer labels as Claude.
+pub fn rate_limit_snapshot_from_codex_quota_json(data: &Value) -> Option<RateLimitSnapshot> {
+    let root = data.as_object()?;
+    let bucket = codex_quota_limits_bucket(data);
+    let five = find_codex_limit_window(
+        bucket,
+        root,
+        &[
+            "five_hour",
+            "five_hour_limit",
+            "five_hour_rate_limit",
+            "primary",
+            "primary_window",
+        ],
+    );
+    let weekly = find_codex_limit_window(
+        bucket,
+        root,
+        &[
+            "weekly",
+            "weekly_limit",
+            "weekly_rate_limit",
+            "secondary",
+            "secondary_window",
+        ],
+    );
+    let mut snap = RateLimitSnapshot::default();
+    if let Some(w) = five {
+        if let Some(p_left) = codex_percent_left(w) {
+            let util_pct = (100.0_f64 - p_left).round().clamp(0.0, 100.0) as u32;
+            snap.util_5h_pct = Some(util_pct);
+        }
+        if let Some(e) = codex_reset_epoch_secs(w) {
+            snap.reset_5h_at = Some(e);
+        }
+    }
+    if let Some(w) = weekly {
+        if let Some(p_left) = codex_percent_left(w) {
+            let util_pct = (100.0_f64 - p_left).round().clamp(0.0, 100.0) as u32;
+            snap.util_7d_pct = Some(util_pct);
+        }
+        if let Some(e) = codex_reset_epoch_secs(w) {
+            snap.reset_7d_at = Some(e);
+        }
+    }
+    snap.into_option()
+}
+
+pub(crate) fn rate_limit_snapshot_from_codex_completed_event(data: &Value) -> Option<RateLimitSnapshot> {
+    if let Some(r) = data.get("response") {
+        if let Some(s) = rate_limit_snapshot_from_codex_quota_json(r) {
+            return Some(s);
+        }
+    }
+    rate_limit_snapshot_from_codex_quota_json(data)
+}
+
+fn merged_codex_rate_limit_for_done(
+    header_or_ws_snap: Option<RateLimitSnapshot>,
+    event: &Value,
+) -> Option<RateLimitSnapshot> {
+    let stream = rate_limit_snapshot_from_codex_completed_event(event);
+    RateLimitSnapshot::overlay_option(header_or_ws_snap, stream)
+}
+
+// ---------------------------------------------------------------------------
 // ChatGPT Codex plan quota (`/backend-api/wham/usage`)
 // ---------------------------------------------------------------------------
 
-/// Poll Codex ChatGPT plan quota (rolling ~5h + weekly windows). Same bearer +
-/// account id as Codex Responses API.
-///
-/// Endpoint is not part of OpenAI's published Responses reference; Community +
-/// Codex CLI tooling rely on it for quota summaries.
-pub async fn fetch_codex_plan_quota_body(access_token: &str, account_id: &str) -> Result<String, String> {
+/// Raw JSON from `wham/usage` (same shape as stream `rate_limits` in many builds).
+pub async fn fetch_codex_plan_quota_json(access_token: &str, account_id: &str) -> Result<Value, String> {
     if access_token.is_empty() {
         return Err("missing Codex access token".into());
     }
@@ -768,7 +834,16 @@ pub async fn fetch_codex_plan_quota_body(access_token: &str, account_id: &str) -
         let snippet: String = text.chars().take(240).collect();
         return Err(format!("HTTP {status}: {snippet}"));
     }
-    let v: Value = response.json().await.map_err(|e| e.to_string())?;
+    response.json().await.map_err(|e| e.to_string())
+}
+
+/// Poll Codex ChatGPT plan quota (rolling ~5h + weekly windows). Same bearer +
+/// account id as Codex Responses API.
+///
+/// Endpoint is not part of OpenAI's published Responses reference; Community +
+/// Codex CLI tooling rely on it for quota summaries.
+pub async fn fetch_codex_plan_quota_body(access_token: &str, account_id: &str) -> Result<String, String> {
+    let v = fetch_codex_plan_quota_json(access_token, account_id).await?;
     format_codex_wham_usage_body(&v).ok_or_else(|| {
         let snippet = serde_json::to_string(&v).unwrap_or_default();
         let snippet: String = snippet.chars().take(280).collect();
@@ -1437,7 +1512,7 @@ where
                         stop_reason: stop,
                         model: model_id.clone(),
                         response_id: response_id.clone(),
-                        rate_limit: rate_limit.clone(),
+                        rate_limit: merged_codex_rate_limit_for_done(rate_limit.clone(), &data),
                     },
                 });
                 completed = true;

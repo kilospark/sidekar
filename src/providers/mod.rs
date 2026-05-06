@@ -610,6 +610,52 @@ impl RateLimitSnapshot {
             && self.session_reset_at.is_none()
             && self.util_5h_pct.is_none()
             && self.util_7d_pct.is_none()
+            && self.reset_5h_at.is_none()
+            && self.reset_7d_at.is_none()
+    }
+
+    /// Merge `overlay` onto `base`: any `Some` field in `overlay` replaces `base`.
+    /// `None` overlay fields leave `base` unchanged. Used to layer Codex stream
+    /// quota JSON over handshake `x-ratelimit-*`, and wham cache over both.
+    pub fn overlay_option(base: Option<Self>, overlay: Option<Self>) -> Option<Self> {
+        match (base, overlay) {
+            (None, None) => None,
+            (Some(b), None) => b.into_option(),
+            (None, Some(o)) => o.into_option(),
+            (Some(mut b), Some(o)) => {
+                if o.requests_remaining.is_some() {
+                    b.requests_remaining = o.requests_remaining;
+                }
+                if o.requests_limit.is_some() {
+                    b.requests_limit = o.requests_limit;
+                }
+                if o.tokens_remaining.is_some() {
+                    b.tokens_remaining = o.tokens_remaining;
+                }
+                if o.tokens_limit.is_some() {
+                    b.tokens_limit = o.tokens_limit;
+                }
+                if o.reset_at.is_some() {
+                    b.reset_at = o.reset_at;
+                }
+                if o.session_reset_at.is_some() {
+                    b.session_reset_at = o.session_reset_at;
+                }
+                if o.util_5h_pct.is_some() {
+                    b.util_5h_pct = o.util_5h_pct;
+                }
+                if o.reset_5h_at.is_some() {
+                    b.reset_5h_at = o.reset_5h_at;
+                }
+                if o.util_7d_pct.is_some() {
+                    b.util_7d_pct = o.util_7d_pct;
+                }
+                if o.reset_7d_at.is_some() {
+                    b.reset_7d_at = o.reset_7d_at;
+                }
+                b.into_option()
+            }
+        }
     }
 
     /// Parse rate-limit headers in the OpenAI-style schema (`x-ratelimit-*`).

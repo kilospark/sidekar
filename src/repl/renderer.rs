@@ -1,6 +1,7 @@
 use super::spinner::Spinner;
 use super::*;
 use crate::providers::ContentBlock;
+use crate::providers::RateLimitSnapshot;
 
 // ---------------------------------------------------------------------------
 // Stream event rendering
@@ -47,6 +48,7 @@ pub(super) struct EventRenderer {
     /// True once any `ThinkingDelta` arrived this provider round — skips duplicating
     /// thinking blocks from `Done.message.content`.
     thinking_streamed: bool,
+    codex_footer: Option<super::codex_footer::CodexFooterBindings>,
 }
 
 /// Minimum interval between partial-preview rerenders. ~30 Hz — fast enough
@@ -72,7 +74,10 @@ fn emit_lines_batched(lines: &[String]) {
 }
 
 impl EventRenderer {
-    pub(super) fn new(_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub(super) fn new(
+        _cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        codex_footer: Option<super::codex_footer::CodexFooterBindings>,
+    ) -> Self {
         Self {
             md: crate::md::MarkdownStream::new(),
             tool_args: std::collections::HashMap::new(),
@@ -81,6 +86,7 @@ impl EventRenderer {
             last_preview_at: None,
             thinking_line_buf: String::new(),
             thinking_streamed: false,
+            codex_footer,
         }
     }
 
@@ -280,24 +286,57 @@ impl EventRenderer {
                 let lines = self.md.finalize();
                 emit_lines_batched(&lines);
                 let _ = io::stdout().flush();
-                // Always-on dim footer (not gated on `--verbose`): tokens +
-                // optional cache breakdown + provider rate-limit snapshot when present.
+                // Always-on dim footer: tokens + optional cache + quota (headers, stream
+                // `rate_limits`, cached `wham/usage` for Codex). Quota stress → yellow/red.
                 let u = &message.usage;
-                let rl = crate::repl::ratelimit::format_compact(message.rate_limit.as_ref());
-                if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
-                    self.emitln(&format!(
-                        "\x1b[2m[{} in / {} out / {} cache read / {} cache write tokens{}]\x1b[0m",
+                let merged_rl = if let Some(ref cf) = self.codex_footer {
+                    let cached = cf
+                        .cache
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.snapshot.clone());
+                    let merged =
+                        RateLimitSnapshot::overlay_option(cached, message.rate_limit.clone());
+                    if let Ok(mut g) = cf.cache.lock() {
+                        g.snapshot = merged.clone();
+                    }
+                    merged
+                } else {
+                    message.rate_limit.clone()
+                };
+                let quota_mid = crate::repl::ratelimit::quota_colored_mid(merged_rl.as_ref());
+                let merged_shows_quota = !quota_mid.is_empty();
+                let body = if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
+                    format!(
+                        "{} in / {} out / {} cache read / {} cache write tokens",
                         u.input_tokens,
                         u.output_tokens,
                         u.cache_read_tokens,
-                        u.cache_write_tokens,
-                        rl
-                    ));
+                        u.cache_write_tokens
+                    )
                 } else {
-                    self.emitln(&format!(
-                        "\x1b[2m[{} in / {} out tokens{}]\x1b[0m",
-                        u.input_tokens, u.output_tokens, rl
-                    ));
+                    format!("{} in / {} out tokens", u.input_tokens, u.output_tokens)
+                };
+                let footer = if quota_mid.is_empty() {
+                    format!("\x1b[2m[{body}]\x1b[0m")
+                } else {
+                    format!("\x1b[2m[{body}{quota_mid}\x1b[2m]\x1b[0m")
+                };
+                self.emitln(&footer);
+                if let Some(ref cf) = self.codex_footer {
+                    if let Ok(mut g) = cf.cache.lock() {
+                        if g.should_spawn_wham(merged_shows_quota) {
+                            g.note_wham_spawned();
+                            crate::repl::codex_footer::spawn_wham_quota_refresh(
+                                super::codex_footer::CodexFooterBindings {
+                                    cache: cf.cache.clone(),
+                                    api_key: cf.api_key.clone(),
+                                    account_id: cf.account_id.clone(),
+                                },
+                                merged_shows_quota,
+                            );
+                        }
+                    }
                 }
                 let _ = io::stdout().flush();
             }

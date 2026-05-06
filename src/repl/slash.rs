@@ -1116,6 +1116,9 @@ pub(super) async fn apply_slash_result(
     system_prompt: &mut String,
     loaded_skills: &mut Vec<String>,
     turn_stats: &std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
+    codex_wh_cache: Option<
+        &std::sync::Arc<std::sync::Mutex<super::codex_footer::CodexWhamFooterCache>>,
+    >,
 ) -> Result<SlashAction> {
     match result {
         SlashResult::Continue => {}
@@ -1199,6 +1202,11 @@ pub(super) async fn apply_slash_result(
                     *cred_name = Some(name.clone());
                     // Invalidate cached WS — old connection has stale auth
                     *cached_ws = None;
+                    if let Some(c) = codex_wh_cache
+                        && let Ok(mut g) = c.lock()
+                    {
+                        g.clear();
+                    }
                     let email_info = providers::oauth::credential_email(&name)
                         .map(|e| format!(" <{e}>"))
                         .unwrap_or_default();
@@ -1656,7 +1664,7 @@ pub(super) async fn run_compact(
     turn_stats: Option<&std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>>,
 ) {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone())));
+    let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone(), None)));
     let renderer_for_events = renderer.clone();
     let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
         if let Ok(mut guard) = renderer_for_events.lock() {

@@ -1,5 +1,5 @@
 use super::{apply_usage, build_request_body, CodexTransport};
-use crate::providers::{ChatMessage, ContentBlock, Role, StreamConfig, Usage};
+use crate::providers::{ChatMessage, ContentBlock, RateLimitSnapshot, Role, StreamConfig, Usage};
 use serde_json::json;
 
 fn test_config() -> StreamConfig {
@@ -254,4 +254,48 @@ fn wham_usage_formats_rate_limits_object() {
     assert!(s.contains("40.0%"));
     assert!(s.contains("weekly window"));
     assert!(s.contains("88.5%"));
+}
+
+#[test]
+fn quota_json_maps_percent_left_into_util_pct() {
+    let data = json!({
+        "rate_limits": {
+            "five_hour": { "percent_left": 40.0, "reset_time_ms": 2000000000000_u64 },
+            "weekly": { "remaining_percent": 88.5, "reset_at": 1700000000_u64 },
+        },
+    });
+    let snap = super::rate_limit_snapshot_from_codex_quota_json(&data).expect("snapshot");
+    assert_eq!(snap.util_5h_pct, Some(60));
+    assert_eq!(snap.util_7d_pct, Some(12));
+}
+
+#[test]
+fn completed_event_reads_response_rate_limits() {
+    let evt = json!({
+        "type": "response.completed",
+        "response": {
+            "rate_limits": {
+                "five_hour": { "percent_left": 50.0, "reset_at": 1700000000_u64 },
+            },
+        },
+    });
+    let snap =
+        super::rate_limit_snapshot_from_codex_completed_event(&evt).expect("parse event");
+    assert_eq!(snap.util_5h_pct, Some(50));
+}
+
+#[test]
+fn overlay_keeps_openai_tokens_when_stream_adds_plan_util() {
+    let header = RateLimitSnapshot {
+        tokens_remaining: Some(400),
+        tokens_limit: Some(900_000),
+        ..Default::default()
+    };
+    let stream = RateLimitSnapshot {
+        util_5h_pct: Some(42),
+        ..Default::default()
+    };
+    let m = RateLimitSnapshot::overlay_option(Some(header), Some(stream)).expect("merged");
+    assert_eq!(m.util_5h_pct, Some(42));
+    assert_eq!(m.tokens_remaining, Some(400));
 }
