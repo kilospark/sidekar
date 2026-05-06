@@ -37,7 +37,11 @@ pub(crate) fn infer_bedrock_inference_family(
     }
     // NVIDIA Nemotron on Bedrock uses InvokeModel + OpenAI-shaped JSON (`messages`,
     // `max_tokens`, …), not Anthropic Messages — see AWS blog “Run NVIDIA Nemotron 3 Super”.
-    if prov_lc == "nvidia" || m.starts_with("nvidia.") {
+    if prov_lc == "nvidia"
+        || prov_lc.contains("nvidia")
+        || m.starts_with("nvidia.")
+        || m.contains("nemotron")
+    {
         return BedrockInferenceFamily::OpenAiChatCompletions;
     }
     // Qwen on Bedrock validates requests like OpenAI Chat Completions (e.g. each tool needs
@@ -55,6 +59,15 @@ pub(crate) fn infer_bedrock_inference_family(
         return BedrockInferenceFamily::OpenAiChatCompletions;
     }
     if prov_lc == "mistral ai" || prov_lc == "mistral" {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
+    // Moonshot Kimi on Bedrock: OpenAI Chat Completions wire format; Anthropic-shaped `tools`
+    // triggers validation_error ("missing field `type`").
+    if m.starts_with("moonshotai.") || prov_lc.contains("moonshot") {
+        return BedrockInferenceFamily::OpenAiChatCompletions;
+    }
+    // MiniMax on Bedrock: same OpenAI-compat constraints as Qwen / Nemotron.
+    if m.starts_with("minimax.") || prov_lc.contains("minimax") {
         return BedrockInferenceFamily::OpenAiChatCompletions;
     }
     BedrockInferenceFamily::AnthropicMessages
@@ -96,7 +109,16 @@ pub(crate) fn build_bedrock_invoke_stream_body(
             // are not permitted") — mirror Anthropic Messages handling in `build_bedrock_anthropic_*`.
             obj.remove("stream");
             obj.remove("stream_options");
-            let max = cfg.max_tokens;
+            // Third-party OpenAI-compat models often have ~128k total context; Sidekar's Bedrock
+            // default max output (64k) plus a large system+history prompt exceeds that (e.g.
+            // Nemotron: 67k in + 64k out > 131072).
+            let max = bedrock_openai_max_tokens_clamped(
+                model_id,
+                system_prompt,
+                messages,
+                tools,
+                cfg.max_tokens,
+            );
             obj.insert("max_completion_tokens".into(), json!(max));
             // NVIDIA / legacy Bedrock samples use `max_tokens` (AWS CLI Nemotron guides).
             obj.insert("max_tokens".into(), json!(max));
@@ -123,6 +145,100 @@ pub(crate) fn build_bedrock_invoke_stream_body(
             serde_json::to_vec(&Value::Object(body)).map_err(anyhow::Error::from)
         }
     }
+}
+
+/// Conservative context ceiling for Bedrock vendors using the OpenAI-shaped Invoke body.
+fn bedrock_openai_context_ceiling(model_id: &str) -> u32 {
+    let m = model_id.trim().to_ascii_lowercase();
+    if m.starts_with("openai.") {
+        return 200_000;
+    }
+    // NVIDIA Nemotron 3, Moonshot Kimi, MiniMax, many Meta/Mistral SKUs: ~128k combined budget.
+    if m.starts_with("nvidia.")
+        || m.contains("nemotron")
+        || m.starts_with("moonshotai.")
+        || m.starts_with("minimax.")
+        || m.starts_with("meta.")
+        || m.starts_with("mistral")
+    {
+        return 131_072;
+    }
+    131_072
+}
+
+/// Wire-size budget for tool definitions (not represented as ChatMessage content).
+fn rough_tool_defs_char_budget(tools: &[ToolDef]) -> usize {
+    let mut chars: usize = 0;
+    for t in tools {
+        chars = chars
+            .saturating_add(t.name.len())
+            .saturating_add(t.description.len())
+            .saturating_add(t.input_schema.to_string().len())
+            .saturating_add(256);
+    }
+    chars
+}
+
+fn rough_bedrock_message_chars(system_prompt: &str, messages: &[ChatMessage]) -> usize {
+    let mut chars: usize = system_prompt.len();
+    for msg in messages {
+        for block in &msg.content {
+            chars = chars.saturating_add(match block {
+                ContentBlock::Text { text } => text.len(),
+                ContentBlock::Thinking { thinking, .. } => thinking.len(),
+                ContentBlock::ToolCall { arguments, .. } => {
+                    arguments.to_string().len().saturating_add(96)
+                }
+                ContentBlock::ToolResult { content, .. } => content.len().saturating_add(48),
+                ContentBlock::Image { data_base64, .. } => {
+                    data_base64.len().saturating_div(4).saturating_add(256)
+                }
+                ContentBlock::EncryptedReasoning {
+                    encrypted_content,
+                    summary,
+                } => {
+                    let s: usize = summary.iter().map(|v| v.to_string().len()).sum();
+                    encrypted_content.len().saturating_add(s)
+                }
+                ContentBlock::Reasoning { text } => text.len(),
+            });
+        }
+    }
+    chars
+}
+
+/// Pessimistic billable input estimate: Bedrock's tokenizer + JSON-wrapped `messages`/`tools`
+/// often exceeds naive `chars/4`; tool-only validation errors (column ~13k) mean schema size matters.
+fn bedrock_combined_input_tokens_pessimistic(
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+) -> u32 {
+    let c_msgs = rough_bedrock_message_chars(system_prompt, messages);
+    let c_tools = rough_tool_defs_char_budget(tools);
+    let chars = c_msgs.saturating_add(c_tools);
+    // OpenAI-style request JSON expands with keys/quotes/escapes — stay above Bedrock's count.
+    let base = (chars / 3).max(1) as u64;
+    // ~33% headroom vs chars/3: matches cases where server reports ~35% more than chars/4.
+    let boosted = base.saturating_mul(4).saturating_div(3);
+    boosted.min(u64::from(u32::MAX)) as u32
+}
+
+fn bedrock_openai_max_tokens_clamped(
+    model_id: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    requested: u32,
+) -> u32 {
+    let ceiling = bedrock_openai_context_ceiling(model_id);
+    const MARGIN: u32 = 4096;
+    let est_in = bedrock_combined_input_tokens_pessimistic(system_prompt, messages, tools);
+    let room = ceiling.saturating_sub(est_in).saturating_sub(MARGIN);
+    if room == 0 {
+        return 1;
+    }
+    requested.min(room).max(1)
 }
 
 fn validate_deepseek_plain_text_messages(messages: &[ChatMessage]) -> Result<()> {
@@ -289,6 +405,18 @@ mod tests {
             infer_bedrock_inference_family("foo", Some("Anthropic")),
             BedrockInferenceFamily::AnthropicMessages
         );
+        assert_eq!(
+            infer_bedrock_inference_family("foo", Some("Moonshot AI")),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("foo", Some("MiniMax")),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("foo", Some("NVIDIA")),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
     }
 
     #[test]
@@ -321,6 +449,18 @@ mod tests {
             infer_bedrock_inference_family("anthropic.claude-3-5-sonnet-20240620-v1:0", None),
             BedrockInferenceFamily::AnthropicMessages
         );
+        assert_eq!(
+            infer_bedrock_inference_family("moonshotai.kimi-k2.5", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("minimax.minimax-m2.5", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
+        assert_eq!(
+            infer_bedrock_inference_family("us.amazon.nemotron-super-3-120b-1:0", None),
+            BedrockInferenceFamily::OpenAiChatCompletions
+        );
     }
 
     #[test]
@@ -351,5 +491,64 @@ mod tests {
             v.get("stream_options").is_none(),
             "OpenAI stream_options must not be sent on Bedrock stream invoke ({v})"
         );
+    }
+
+    #[test]
+    fn bedrock_openai_clamps_max_tokens_when_history_is_large() {
+        let mut cfg = super::super::StreamConfig::default();
+        cfg.max_tokens = 64_000;
+        let huge = "x".repeat(270_000);
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: huge }],
+        }];
+        let bytes = build_bedrock_invoke_stream_body(
+            BedrockInferenceFamily::OpenAiChatCompletions,
+            "nvidia.nemotron-super-3-120b",
+            "",
+            &messages,
+            &[],
+            &cfg,
+        )
+        .expect("body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let max = v.get("max_tokens").and_then(|x| x.as_u64()).expect("max_tokens");
+        assert!(max < 64_000, "expected clamp from 64k, got {max}");
+    }
+
+    #[test]
+    fn bedrock_openai_clamps_when_tool_schemas_are_huge() {
+        use serde_json::json;
+
+        let mut cfg = super::super::StreamConfig::default();
+        cfg.max_tokens = 64_000;
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }];
+        let tools = vec![super::super::ToolDef {
+            name: "bash".to_string(),
+            description: "shell".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pad": { "type": "string", "description": "x".repeat(200_000) }
+                }
+            }),
+        }];
+        let bytes = build_bedrock_invoke_stream_body(
+            BedrockInferenceFamily::OpenAiChatCompletions,
+            "nvidia.nemotron-super-3-120b",
+            "",
+            &messages,
+            &tools,
+            &cfg,
+        )
+        .expect("body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        let max = v.get("max_tokens").and_then(|x| x.as_u64()).expect("max_tokens");
+        assert!(max < 64_000, "tool bulk must lower max_tokens, got {max}");
     }
 }
