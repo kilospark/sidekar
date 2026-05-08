@@ -310,6 +310,33 @@ pub struct ViewerQuery {
     pub token: Option<String>,
 }
 
+enum ViewerAuthError {
+    Missing,
+    Invalid,
+}
+
+/// Resolve authenticated user id for viewer paths (JWT or Bearer device token).
+async fn try_viewer_user_id(
+    state: &AppState,
+    query_token: Option<String>,
+    headers: &HeaderMap,
+) -> Result<String, ViewerAuthError> {
+    if let Some(bearer) = extract_bearer_token(headers) {
+        return auth::validate_device_token(&state.db, &bearer)
+            .await
+            .ok_or(ViewerAuthError::Invalid);
+    }
+
+    let jwt = query_token.or_else(|| extract_cookie_token(headers, "sidekar_session"));
+
+    let jwt = match jwt {
+        Some(t) => t,
+        None => return Err(ViewerAuthError::Missing),
+    };
+
+    auth::validate_session_jwt(&jwt, &state.jwt_secret).ok_or(ViewerAuthError::Invalid)
+}
+
 /// Upgrade a viewer connection (browser → relay).
 pub async fn handle_viewer_upgrade(
     State(state): State<AppState>,
@@ -318,22 +345,13 @@ pub async fn handle_viewer_upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    // Extract JWT from query param or cookie
-    let jwt = query
-        .token
-        .or_else(|| extract_cookie_token(&headers, "sidekar_session"));
-
-    let jwt = match jwt {
-        Some(t) => t,
-        None => {
-            return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response()
+    let user_id = match try_viewer_user_id(&state, query.token, &headers).await {
+        Ok(uid) => uid,
+        Err(ViewerAuthError::Missing) => {
+            return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response();
         }
-    };
-
-    let user_id = match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
-        Some(uid) => uid,
-        None => {
-            return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response()
+        Err(ViewerAuthError::Invalid) => {
+            return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response();
         }
     };
 
@@ -369,24 +387,16 @@ pub async fn handle_resolve_session(
     Query(query): Query<ResolveQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let jwt = query
-        .token
-        .or_else(|| extract_cookie_token(&headers, "sidekar_session"));
-
-    let jwt = match jwt {
-        Some(t) => t,
-        None => {
+    let user_id = match try_viewer_user_id(&state, query.token, &headers).await {
+        Ok(uid) => uid,
+        Err(ViewerAuthError::Missing) => {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({ "error": "missing_token" })),
             )
                 .into_response();
         }
-    };
-
-    let user_id = match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
-        Some(uid) => uid,
-        None => {
+        Err(ViewerAuthError::Invalid) => {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({ "error": "invalid_token" })),

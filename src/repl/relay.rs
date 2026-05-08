@@ -50,6 +50,17 @@ pub(super) fn stop_relay(tx: Option<crate::tunnel::TunnelSender>) {
     crate::tunnel::clear_output_tunnel();
 }
 
+/// Attach this REPL's stdin/stdout to another machine's relay tunnel (web-terminal protocol).
+pub(super) async fn run_remote_relay_attach(session_id: &str) {
+    let Some(token) = crate::auth::auth_token() else {
+        tunnel_println("\x1b[31mNot logged in. Run: sidekar device login\x1b[0m");
+        return;
+    };
+    if let Err(e) = crate::tunnel::attach_remote_relay_terminal(&token, session_id).await {
+        tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m"));
+    }
+}
+
 /// Spawn a task that drains `TunnelReceiver` into a pipe fd for the poll loop.
 fn bridge_tunnel_input(mut rx: crate::tunnel::TunnelReceiver, bus_name: &str) -> Option<i32> {
     use std::os::unix::io::FromRawFd;

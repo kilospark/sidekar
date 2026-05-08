@@ -66,6 +66,14 @@ pub(crate) struct RelaySessionInfo {
     pub name: String,
     pub nickname: Option<String>,
     pub hostname: String,
+    #[serde(default)]
+    pub agent_type: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub owner_origin: Option<String>,
+    #[serde(default)]
+    pub viewers: usize,
 }
 
 pub(crate) fn fetch_relay_sessions() -> Result<Vec<RelaySessionInfo>> {

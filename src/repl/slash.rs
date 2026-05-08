@@ -20,6 +20,10 @@ pub(super) enum SlashResult {
     SetModel(String),
     RelayOn,
     RelayOff,
+    /// List relay tunnel sessions (`/relay list`), optional menu attach.
+    RelayList,
+    /// Attach to relay session id without menu (`/relay attach <id>`).
+    RelayAttachSession(String),
     /// Attach local MITM (same path as `--proxy`) for capturing API traffic into `proxy_log`.
     ProxyOn,
     ProxyOff,
@@ -161,6 +165,17 @@ fn read_stdin_menu_index(prompt: &str) -> StdinMenuIndex {
         Ok(i) => StdinMenuIndex::Index(i),
         Err(_) => StdinMenuIndex::NotANumber,
     }
+}
+
+/// True when `target` is the relay session this REPL is currently hosting (avoid viewer round-trip).
+fn relay_attach_is_local_tunnel(
+    target_session_id: &str,
+    tunnel_tx: &Option<crate::tunnel::TunnelSender>,
+) -> bool {
+    tunnel_tx
+        .as_ref()
+        .and_then(|t| t.registered_session_id())
+        .is_some_and(|sid| sid == target_session_id)
 }
 
 pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult> {
@@ -629,10 +644,18 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             }
         }
         "/relay" => {
-            let arg = input.split_whitespace().nth(1).unwrap_or("");
-            match arg {
+            let parts: Vec<&str> = input.split_whitespace().collect();
+            match parts.get(1).copied().unwrap_or("") {
                 "on" | "true" | "1" => SlashResult::RelayOn,
                 "off" | "false" | "0" => SlashResult::RelayOff,
+                "list" => SlashResult::RelayList,
+                "attach" => match parts.get(2).copied().filter(|s| !s.is_empty()) {
+                    Some(id) => SlashResult::RelayAttachSession(id.to_string()),
+                    None => {
+                        tunnel_println("Usage: /relay attach <session_id>");
+                        SlashResult::Continue
+                    }
+                },
                 "" => {
                     let state = if crate::tunnel::has_output_tunnel() {
                         "on"
@@ -640,10 +663,11 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         "off"
                     };
                     tunnel_println(&format!("Relay: {state}"));
+                    tunnel_println("\x1b[2m/relay list — remote terminals · attach <session_id>\x1b[0m");
                     SlashResult::Continue
                 }
                 _ => {
-                    tunnel_println("Usage: /relay [on|off]");
+                    tunnel_println("Usage: /relay [on|off|list|attach <session_id>]");
                     SlashResult::Continue
                 }
             }
@@ -982,7 +1006,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             tunnel_println("  /status      — Session / model / token usage / context fill");
             tunnel_println("  /stats       — Show process diagnostics (RSS, CPU, threads)");
             tunnel_println("  /inbox       — List/show/clear recent bus or relay arrivals");
-            tunnel_println("  /relay       — Toggle web terminal relay (on/off)");
+            tunnel_println("  /relay       — Web relay (on/off), /relay list, /relay attach <id>");
             tunnel_println(
                 "  /proxy       — Toggle MITM capture for streaming API (`sidekar proxy log`)",
             );
@@ -1252,6 +1276,115 @@ pub(super) async fn apply_slash_result(
                 stop_relay(tunnel_tx.take());
                 *tunnel_input_fd = None;
                 tunnel_println("Relay: \x1b[31moff\x1b[0m");
+            }
+        }
+        SlashResult::RelayList => {
+            if crate::auth::auth_token().is_none() {
+                tunnel_println("\x1b[31mNot logged in. Run: sidekar device login\x1b[0m");
+            } else {
+                let rows = match tokio::task::spawn_blocking(|| {
+                    crate::transport::fetch_relay_sessions()
+                })
+                .await
+                {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        tunnel_println(&format!(
+                            "\x1b[31mFailed to list relay sessions: {e:#}\x1b[0m"
+                        ));
+                        return Ok(SlashAction::Continue);
+                    }
+                    Err(e) => {
+                        tunnel_println(&format!("\x1b[31mList task failed: {e}\x1b[0m"));
+                        return Ok(SlashAction::Continue);
+                    }
+                };
+                if rows.is_empty() {
+                    tunnel_println(
+                        "No remote relay sessions (no tunnel hosts heartbeating for your account).",
+                    );
+                } else {
+                    tunnel_println("Pick a session to attach (\x1b[2mCtrl+] to detach once connected\x1b[0m):");
+                    for (i, s) in rows.iter().enumerate() {
+                        let local = relay_attach_is_local_tunnel(&s.id, tunnel_tx);
+                        let id8 = s.id.chars().take(8).collect::<String>();
+                        let name = if s.name.is_empty() {
+                            "—"
+                        } else {
+                            s.name.as_str()
+                        };
+                        let nick = s
+                            .nickname
+                            .as_deref()
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or("—");
+                        let agent = if s.agent_type.is_empty() {
+                            "—"
+                        } else {
+                            s.agent_type.as_str()
+                        };
+                        let host = if s.hostname.is_empty() {
+                            "—"
+                        } else {
+                            s.hostname.as_str()
+                        };
+                        let cwd_disp = truncate_inline(
+                            s.cwd.as_str().trim(),
+                            52,
+                        );
+                        tunnel_println(&format!(
+                            "  [{i}] {id8}  {name}  {agent}  @{nick}  {host}  · \x1b[2m{} viewer(s){}\x1b[0m",
+                            s.viewers,
+                            if local {
+                                "  · this REPL (skip)"
+                            } else {
+                                ""
+                            },
+                        ));
+                        if let Some(ref o) = s.owner_origin {
+                            if !o.is_empty() {
+                                tunnel_println(&format!(
+                                    "      \x1b[2morigin: {}\x1b[0m",
+                                    truncate_inline(o.trim(), 64)
+                                ));
+                            }
+                        }
+                        if !s.cwd.is_empty() {
+                            tunnel_println(&format!("      \x1b[2m{cwd_disp}\x1b[0m"));
+                        }
+                    }
+                    match read_stdin_menu_index("Enter number or Enter: ") {
+                        StdinMenuIndex::Blank => {
+                            tunnel_println("\x1b[2mCancelled.\x1b[0m");
+                        }
+                        StdinMenuIndex::Index(idx) => {
+                            if let Some(s) = rows.get(idx) {
+                                if relay_attach_is_local_tunnel(&s.id, tunnel_tx) {
+                                    tunnel_println(
+                                        "\x1b[2mThat session is this REPL's live relay — already on your terminal. Not attaching.\x1b[0m",
+                                    );
+                                } else {
+                                    super::relay::run_remote_relay_attach(&s.id).await;
+                                }
+                            } else {
+                                tunnel_println("Invalid.");
+                            }
+                        }
+                        StdinMenuIndex::NotANumber => tunnel_println("Invalid."),
+                        StdinMenuIndex::EofOrReadError => {}
+                    }
+                }
+            }
+        }
+        SlashResult::RelayAttachSession(session_id) => {
+            if crate::auth::auth_token().is_none() {
+                tunnel_println("\x1b[31mNot logged in. Run: sidekar device login\x1b[0m");
+            } else if relay_attach_is_local_tunnel(&session_id, tunnel_tx) {
+                tunnel_println(
+                    "\x1b[2mThat session is this REPL's live relay — already on your terminal. Not attaching.\x1b[0m",
+                );
+            } else {
+                super::relay::run_remote_relay_attach(&session_id).await;
             }
         }
         SlashResult::ProxyOn => {

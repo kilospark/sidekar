@@ -18,8 +18,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 mod transport;
+mod viewer;
 
 use transport::*;
+pub use viewer::attach_remote_relay_terminal;
 
 const DEFAULT_RELAY_URL: &str = "wss://relay.sidekar.dev/tunnel";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -185,6 +187,13 @@ impl TunnelSender {
     /// Request graceful shutdown of the tunnel background task.
     pub fn shutdown(&self) {
         let _ = self.tx.try_send(TunnelCommand::Shutdown);
+    }
+
+    /// Relay-assigned session id for this tunnel host (updated on reconnect).
+    /// Used to avoid `/relay attach` round-tripping into the same REPL session.
+    pub fn registered_session_id(&self) -> Option<String> {
+        let s = self.session_id.lock().ok()?.clone();
+        (!s.is_empty()).then_some(s)
     }
 }
 
