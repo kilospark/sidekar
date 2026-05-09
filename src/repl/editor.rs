@@ -2250,6 +2250,7 @@ pub(crate) fn read_line_stdio_or_tunnel(tunnel_fd: Option<i32>) -> io::Result<St
     // longer behaved like menus used to—we only multiplex stdin + tunnel fds.
     let stdin_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
     let stdin_poll_fd = stdin_tty.then_some(libc::STDIN_FILENO);
+    let mut tunnel_fd = tunnel_fd;
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 256];
 
@@ -2276,7 +2277,13 @@ pub(crate) fn read_line_stdio_or_tunnel(tunnel_fd: Option<i32>) -> io::Result<St
 
         for pollfd in &fds_arr {
             let ev = pollfd.revents;
-            if ev == 0 || (ev & libc::POLLNVAL) != 0 {
+            if ev == 0 {
+                continue;
+            }
+            if (ev & libc::POLLNVAL) != 0 || (ev & libc::POLLHUP) != 0 {
+                if tunnel_fd == Some(pollfd.fd) {
+                    tunnel_fd = None;
+                }
                 continue;
             }
 
@@ -2330,10 +2337,8 @@ pub(crate) fn read_line_stdio_or_tunnel(tunnel_fd: Option<i32>) -> io::Result<St
                         return Err(err);
                     }
                     if n == 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "relay input closed before end of line",
-                        ));
+                        tunnel_fd = None;
+                        break;
                     }
                     let n = n as usize;
                     reject_ctrl_c(&buf[..n])?;
@@ -2381,6 +2386,7 @@ pub(super) fn read_input_or_bus(
     }
     let _raw_mode = raw_mode;
     let stdin_fd = _raw_mode.as_ref().map(|_| libc::STDIN_FILENO);
+    let mut tunnel_fd = tunnel_fd;
 
     let mut buf = [0u8; 64];
     // Bus poll runs only on poll() timeouts, not on every iteration. Each
@@ -2421,6 +2427,12 @@ pub(super) fn read_input_or_bus(
             if ready > 0 {
                 for pollfd in fds_arr.iter() {
                     if (pollfd.revents & libc::POLLIN) == 0 {
+                        if tunnel_fd.is_some_and(|fd| fd == pollfd.fd)
+                            && ((pollfd.revents & libc::POLLNVAL) != 0
+                                || (pollfd.revents & libc::POLLHUP) != 0)
+                        {
+                            tunnel_fd = None;
+                        }
                         continue;
                     }
                     if tunnel_fd.is_some_and(|fd| fd == pollfd.fd) {
@@ -2442,6 +2454,9 @@ pub(super) fn read_input_or_bus(
                                 if let Some(line) = drain_editor_pending_submit(editor) {
                                     return InputEvent::User(line);
                                 }
+                            }
+                            0 => {
+                                tunnel_fd = None;
                             }
                             _ => {}
                         }

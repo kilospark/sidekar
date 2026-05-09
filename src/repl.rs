@@ -276,7 +276,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         Some(false) => crate::config::RelayMode::Off,
         None => crate::config::relay_mode(),
     };
-    let (mut tunnel_tx, mut tunnel_input_fd) = if relay_policy == crate::config::RelayMode::On {
+    let (mut tunnel_tx, mut tunnel_input_bridge) = if relay_policy == crate::config::RelayMode::On {
         start_relay(&bus_name, &cwd, &nick).await
     } else {
         (None, None)
@@ -322,7 +322,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let mut prev_resp_id: Option<String> = None;
         let mut cached_ws: Option<providers::codex::CachedWs> = None;
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let _cancel_watch = EscCancelWatcher::start(cancel.clone(), tunnel_input_fd);
+        let _cancel_watch = EscCancelWatcher::start(
+            cancel.clone(),
+            tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
+        );
         let codex_wh_once = std::sync::Arc::new(std::sync::Mutex::new(
             self::codex_footer::CodexWhamFooterCache::new(),
         ));
@@ -420,7 +423,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             repl_status_dim("Session journal: exit flush finished.");
         }
 
-        stop_relay(tunnel_tx.take());
+        stop_relay(tunnel_tx.take(), tunnel_input_bridge.take());
         crate::poller::shutdown_poller();
         let _ = broker::unregister_agent(&bus_name);
         return Ok(());
@@ -503,7 +506,11 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         idle_tracker.disarm();
         crate::bus::set_repl_terminal_title(&nick, false);
 
-        let input = match read_input_or_bus(&bus_name, &mut line_editor, tunnel_input_fd) {
+        let input = match read_input_or_bus(
+            &bus_name,
+            &mut line_editor,
+            tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
+        ) {
             InputEvent::User(s) => Some(s),
             InputEvent::Bus => None, // no user text — bus messages trigger the agent
             InputEvent::Eof => break,
@@ -571,7 +578,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 loaded_skills: &loaded_skills,
                 history: &history,
                 editor_input_history_len: line_editor.input_history_len(),
-                tunnel_input_fd,
+                tunnel_input_fd: tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
             };
             if let Some(result) = handle_slash_command(&slash_ctx) {
                 match apply_slash_result(
@@ -582,7 +589,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                     &mut history,
                     &mut session_id,
                     &mut tunnel_tx,
-                    &mut tunnel_input_fd,
+                    &mut tunnel_input_bridge,
                     &bus_name,
                     &cwd,
                     &nick,
@@ -703,7 +710,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let active_prompt = ActivePromptSession::start(
             std::mem::take(&mut line_editor),
             cancel.clone(),
-            tunnel_input_fd,
+            tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
         );
         let renderer =
             std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone(), {
@@ -883,7 +890,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         repl_status_dim("Session journal: exit flush finished.");
     }
 
-    stop_relay(tunnel_tx);
+    stop_relay(tunnel_tx, tunnel_input_bridge);
     crate::poller::shutdown_poller();
     let _ = broker::unregister_agent(&bus_name);
 

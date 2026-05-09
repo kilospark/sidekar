@@ -1139,7 +1139,7 @@ pub(super) async fn apply_slash_result(
     history: &mut Vec<ChatMessage>,
     session_id: &mut String,
     tunnel_tx: &mut Option<crate::tunnel::TunnelSender>,
-    tunnel_input_fd: &mut Option<i32>,
+    tunnel_input_bridge: &mut Option<super::relay::TunnelInputBridge>,
     bus_name: &str,
     cwd: &str,
     nick: &str,
@@ -1204,8 +1204,13 @@ pub(super) async fn apply_slash_result(
                 }
                 SlashAsync::InteractiveSelectModel => {
                     let cn = cred_name.as_deref().unwrap_or("?");
-                    if let Some(selected) =
-                        interactive_select_model(prov, cn, model.as_deref(), *tunnel_input_fd).await
+                    if let Some(selected) = interactive_select_model(
+                        prov,
+                        cn,
+                        model.as_deref(),
+                        tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
+                    )
+                    .await
                     {
                         *model = Some(selected);
                     }
@@ -1217,7 +1222,7 @@ pub(super) async fn apply_slash_result(
             match crate::repl::credential_login::perform_credential_add(
                 &tokens,
                 crate::repl::credential_login::InteractiveOutput::Repl,
-                *tunnel_input_fd,
+                tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
             )
             .await
             {
@@ -1265,10 +1270,10 @@ pub(super) async fn apply_slash_result(
             if tunnel_tx.is_some() {
                 tunnel_println("Relay is already on.");
             } else {
-                let (tx, fd) = start_relay(bus_name, cwd, nick).await;
+                let (tx, bridge) = start_relay(bus_name, cwd, nick).await;
                 if tx.is_some() {
                     *tunnel_tx = tx;
-                    *tunnel_input_fd = fd;
+                    *tunnel_input_bridge = bridge;
                     tunnel_println("Relay: \x1b[32mon\x1b[0m");
                 } else {
                     tunnel_println(
@@ -1281,8 +1286,7 @@ pub(super) async fn apply_slash_result(
             if tunnel_tx.is_none() {
                 tunnel_println("Relay is already off.");
             } else {
-                stop_relay(tunnel_tx.take());
-                *tunnel_input_fd = None;
+                stop_relay(tunnel_tx.take(), tunnel_input_bridge.take());
                 tunnel_println("Relay: \x1b[31moff\x1b[0m");
             }
         }
@@ -1355,7 +1359,10 @@ pub(super) async fn apply_slash_result(
                             tunnel_println(&format!("      \x1b[2m{cwd_disp}\x1b[0m"));
                         }
                     }
-                    match read_stdin_menu_index("Enter number or Enter: ", *tunnel_input_fd) {
+                    match read_stdin_menu_index(
+                        "Enter number or Enter: ",
+                        tunnel_input_bridge.as_ref().and_then(|bridge| bridge.fd()),
+                    ) {
                         StdinMenuIndex::Blank => {
                             tunnel_println("\x1b[2mCancelled.\x1b[0m");
                         }
@@ -1366,7 +1373,15 @@ pub(super) async fn apply_slash_result(
                                         "\x1b[2mThat session is this REPL's live relay — already on your terminal. Not attaching.\x1b[0m",
                                     );
                                 } else {
+                                    if let Some(bridge) = tunnel_input_bridge.as_ref() {
+                                        bridge.pause();
+                                        bridge.drain();
+                                    }
                                     super::relay::run_remote_relay_attach(&s.id).await;
+                                    if let Some(bridge) = tunnel_input_bridge.as_ref() {
+                                        bridge.drain();
+                                        bridge.resume();
+                                    }
                                 }
                             } else {
                                 tunnel_println("Invalid.");
@@ -1386,7 +1401,15 @@ pub(super) async fn apply_slash_result(
                     "\x1b[2mThat session is this REPL's live relay — already on your terminal. Not attaching.\x1b[0m",
                 );
             } else {
+                if let Some(bridge) = tunnel_input_bridge.as_ref() {
+                    bridge.pause();
+                    bridge.drain();
+                }
                 super::relay::run_remote_relay_attach(&session_id).await;
+                if let Some(bridge) = tunnel_input_bridge.as_ref() {
+                    bridge.drain();
+                    bridge.resume();
+                }
             }
         }
         SlashResult::ProxyOn => {

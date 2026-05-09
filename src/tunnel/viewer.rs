@@ -4,7 +4,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::io::{Read, Write};
+use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -117,19 +119,36 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
     let _ = std::io::stderr().flush();
 
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let stdin_running = Arc::new(AtomicBool::new(true));
+    let stdin_running_thread = stdin_running.clone();
 
     let reader = std::thread::spawn(move || {
-        let mut stdin = std::io::stdin().lock();
         let mut buf = [0u8; 4096];
-        loop {
-            match stdin.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if stdin_tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        while stdin_running_thread.load(Ordering::Relaxed) {
+            let mut pollfd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+            if ready <= 0 {
+                continue;
+            }
+            if (pollfd.revents & libc::POLLIN) == 0 {
+                continue;
+            }
+            let n = unsafe {
+                libc::read(
+                    libc::STDIN_FILENO,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n <= 0 {
+                break;
+            }
+            if stdin_tx.send(buf[..n as usize].to_vec()).is_err() {
+                break;
             }
         }
     });
@@ -179,6 +198,7 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
     }
     .await;
 
+    stdin_running.store(false, Ordering::Relaxed);
     drop(_raw);
     let _ = ws_write.close().await;
 
