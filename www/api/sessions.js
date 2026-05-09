@@ -1,5 +1,7 @@
+import { ObjectId } from "mongodb";
 import { getUserOrDevice } from "./_auth.js";
 import { getDb } from "./_db.js";
+import { expandLinkedUserObjectIds } from "./_linkedAccounts.js";
 
 const SESSION_TTL_MS = 90 * 1000; // matches relay's SESSION_TTL_SECS
 
@@ -25,25 +27,50 @@ export default async function handler(req, res) {
     const db = await getDb();
     const cutoff = new Date(Date.now() - SESSION_TTL_MS);
 
+    const oid = new ObjectId(userId);
+    const linkedOids = await expandLinkedUserObjectIds(db, oid);
+    const linkedHex = linkedOids.map((o) => o.toString().toLowerCase());
+
     const docs = await db
       .collection("sessions")
       .find({
-        user_id: userId,
+        user_id: { $in: linkedHex },
         last_heartbeat: { $gt: cutoff },
       })
       .sort({ connected_at: -1 })
       .toArray();
 
-    const sessions = docs.map((d) => ({
-      id: d.session_id,
-      name: d.name || "",
-      agent_type: d.agent_type || "",
-      cwd: d.cwd || "",
-      hostname: d.hostname || "",
-      nickname: d.nickname || null,
-      connected_at: d.connected_at,
-      relay_url: d.owner_origin || null,
-    }));
+    const userRows = await db
+      .collection("users")
+      .find({ _id: { $in: linkedOids } })
+      .project({ login: 1, name: 1 })
+      .toArray();
+    const metaByHex = {};
+    for (const u of userRows) {
+      const hs = u._id.toString().toLowerCase();
+      metaByHex[hs] = { login: u.login || "", name: u.name || "" };
+    }
+
+    const selfHex = oid.toString().toLowerCase();
+
+    const sessions = docs.map((d) => {
+      const uh = String(d.user_id || "").toLowerCase();
+      const isOwn = uh === selfHex;
+      const ownMeta = metaByHex[uh] || {};
+      return {
+        id: d.session_id,
+        name: d.name || "",
+        agent_type: d.agent_type || "",
+        cwd: d.cwd || "",
+        hostname: d.hostname || "",
+        nickname: d.nickname || null,
+        connected_at: d.connected_at,
+        relay_url: d.owner_origin || null,
+        from_linked_account: !isOwn,
+        owner_login: !isOwn ? ownMeta.login || null : null,
+        owner_name: !isOwn ? ownMeta.name || null : null,
+      };
+    });
 
     res.json({ sessions });
   } catch (err) {

@@ -228,6 +228,22 @@ impl Registry {
         });
     }
 
+    /// Viewer may attach or send keystrokes when they are the session owner or
+    /// share an edge in MongoDB `account_links` with the owner.
+    pub async fn viewer_can_access_session_owned_by(
+        &self,
+        viewer_id: &str,
+        session_owner_id: &str,
+    ) -> bool {
+        if viewer_id.eq_ignore_ascii_case(session_owner_id) {
+            return true;
+        }
+        let allowed = crate::account_links::expand_linked_user_hex_ids(&self.db, viewer_id).await;
+        allowed
+            .iter()
+            .any(|x| x.eq_ignore_ascii_case(session_owner_id))
+    }
+
     /// Register a new tunnel session. Writes metadata to MongoDB, stores
     /// live connection state in-memory. Returns the session_id.
     pub async fn register(
@@ -312,8 +328,11 @@ impl Registry {
             chrono::Utc::now().timestamp_millis() - (SESSION_TTL_SECS * 1000),
         );
 
+        let user_ids =
+            crate::account_links::expand_linked_user_hex_ids(&self.db, user_id).await;
+
         let filter = mongodb::bson::doc! {
-            "user_id": user_id,
+            "user_id": { "$in": &user_ids },
             "last_heartbeat": { "$gt": cutoff },
         };
 
@@ -375,12 +394,20 @@ impl Registry {
         mpsc::UnboundedSender<TunnelMsg>,
         String,
     )> {
-        let live = self.live.read().await;
-        let session = live.get(session_id)?;
+        let owner_id = {
+            let live = self.live.read().await;
+            live.get(session_id)?.user_id.clone()
+        };
 
-        if session.user_id != user_id {
+        if !self
+            .viewer_can_access_session_owned_by(user_id, &owner_id)
+            .await
+        {
             return None;
         }
+
+        let live = self.live.read().await;
+        let session = live.get(session_id)?;
 
         let viewer_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -415,12 +442,22 @@ impl Registry {
             .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
             .find_one(mongodb::bson::doc! {
                 "session_id": session_id,
-                "user_id": user_id,
                 "last_heartbeat": { "$gt": cutoff },
             })
             .await
             .ok()
             .flatten()?;
+
+        let owner = doc.get_str("user_id").unwrap_or("");
+        if owner.is_empty() {
+            return None;
+        }
+        if !self
+            .viewer_can_access_session_owned_by(user_id, owner)
+            .await
+        {
+            return None;
+        }
 
         let owner_instance_id = doc
             .get_str("owner_instance_id")
@@ -452,10 +489,8 @@ impl Registry {
         }
     }
 
-    /// Push raw viewer-style keystroke bytes into the tunnel for a given
-    /// (session_id, user_id). Returns true if delivered, false if the
-    /// session is unknown locally, owned by another user, or the tunnel
-    /// channel is closed.
+    /// Tunnel input is authorized only for the session owner or a viewer account
+    /// linked via `account_links` (same semantics as viewer WebSocket attach).
     ///
     /// Used by non-WebSocket viewer transports (e.g. Telegram) that
     /// synthesize keystrokes on behalf of a human author.
@@ -465,13 +500,23 @@ impl Registry {
         user_id: &str,
         data: Vec<u8>,
     ) -> bool {
+        let owner = {
+            let live = self.live.read().await;
+            match live.get(session_id) {
+                Some(s) => s.user_id.clone(),
+                None => return false,
+            }
+        };
+        if !self
+            .viewer_can_access_session_owned_by(user_id, &owner)
+            .await
+        {
+            return false;
+        }
         let live = self.live.read().await;
         let Some(session) = live.get(session_id) else {
             return false;
         };
-        if session.user_id != user_id {
-            return false;
-        }
         session.tunnel_tx.send(TunnelMsg::Data(data)).is_ok()
     }
 

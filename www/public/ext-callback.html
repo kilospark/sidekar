@@ -3,66 +3,33 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sidekar - Extension Auth</title>
+<title>Sidekar — Extension</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/auth-complete.css" />
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #ffffff;
-  color: #111111;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  padding: 24px;
-}
-.card {
-  background: #f5f5f5;
-  border: 1px solid #d4d4d4;
-  border-radius: 0;
-  padding: 40px;
-  max-width: 420px;
-  width: 100%;
-  text-align: center;
-}
-h1 { font-size: 20px; margin-bottom: 8px; }
-.icon { font-size: 48px; margin-bottom: 16px; }
-.subtitle { color: #525252; font-size: 14px; margin-bottom: 24px; line-height: 1.5; }
-.status { font-size: 14px; margin-top: 16px; }
-.status.success { color: #111111; }
-.status.error { color: #111111; }
-.spinner {
-  display: inline-block;
-  width: 20px;
-  height: 20px;
-  border: 2px solid #d4d4d4;
-  border-top-color: #111111;
-  border-radius: 0;
-  margin-bottom: 16px;
-}
+/* #loading / #success / #error-view toggles only — layout comes from auth-complete.css */
 #ext-token { display: none; }
 </style>
 </head>
-<body>
-<div class="card">
+<body class="auth-complete-page">
+<div class="auth-complete-card">
   <div id="loading">
-    <div class="spinner"></div>
-    <h1>Connecting extension...</h1>
-    <p class="subtitle">Generating your extension token.</p>
+    <div class="auth-complete-spinner"></div>
+    <h1 class="auth-complete-title">Connecting extension…</h1>
+    <p class="auth-complete-subtitle">Generating your extension token.</p>
   </div>
   <div id="success" style="display:none;">
-    <div class="icon">&#10003;</div>
-    <h1>Extension authenticated</h1>
-    <p class="subtitle">You can close this tab. The Sidekar extension is now connected to your account.</p>
+    <div class="auth-complete-icon">&#10003;</div>
+    <h1 class="auth-complete-title">Extension authenticated</h1>
+    <p class="auth-complete-subtitle">You can close this tab. The Sidekar extension is now connected to your account.</p>
     <div id="ext-token" data-token=""></div>
   </div>
   <div id="error-view" style="display:none;">
-    <div class="icon">&#10007;</div>
-    <h1>Authentication failed</h1>
-    <p class="subtitle" id="error-msg">Something went wrong. Please try again from the extension popup.</p>
+    <div class="auth-complete-icon-error">&#10007;</div>
+    <h1 class="auth-complete-title">Authentication failed</h1>
+    <p class="auth-complete-subtitle" id="error-msg">Something went wrong. Please try again from the extension popup.</p>
   </div>
 </div>
 <script>
@@ -85,7 +52,6 @@ h1 { font-size: 20px; margin-bottom: 8px; }
     tokenEl.setAttribute("data-token", token);
     if (profile) tokenEl.setAttribute("data-profile", JSON.stringify(profile));
     tokenEl.style.display = "block";
-    // Also broadcast via postMessage for the extension to pick up
     window.postMessage({ type: "sidekar-ext-token", token: token, profile: profile }, "*");
   }
 

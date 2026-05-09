@@ -842,7 +842,15 @@ fn handle_anthropic_event(
                 }
                 Some(BlockType::ToolUse) => {
                     let arguments =
-                        serde_json::from_str(&state.tool_json_accum).unwrap_or(json!({}));
+                        serde_json::from_str(&state.tool_json_accum).unwrap_or_else(|e| {
+                            let prefix: String = state.tool_json_accum.chars().take(500).collect();
+                            crate::broker::try_log_error(
+                                "anthropic-transport",
+                                "tool_use input_json parse failed",
+                                Some(&format!("{e}; args_prefix={prefix}")),
+                            );
+                            json!({})
+                        });
                     state.content_blocks.push(ContentBlock::ToolCall {
                         id: std::mem::take(&mut state.tool_id),
                         name: std::mem::take(&mut state.tool_name),

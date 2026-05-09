@@ -16,6 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/common.css">
+<link rel="stylesheet" href="/css/auth-complete.css">
 <script>
 (function() {
   var stored = localStorage.getItem('theme');
@@ -137,6 +138,21 @@ input[type="text"]:focus {
 #auth-loading {
   display: block;
 }
+
+/* Success state matches ext-callback (light card, high contrast) */
+#approve-success {
+  display: none;
+}
+.card.approve-card-done {
+  background: #f5f5f5;
+  border-color: #d4d4d4;
+}
+.card.approve-card-done .auth-complete-title {
+  color: #111111;
+}
+.card.approve-card-done .auth-complete-subtitle {
+  color: #525252;
+}
 </style>
 </head>
 <body>
@@ -159,18 +175,26 @@ input[type="text"]:focus {
   </nav>
 
   <div class="page-content">
-    <div class="card">
-      <div class="card-title">Authorize your device</div>
-      <div class="subtitle">Enter the code shown in your terminal</div>
+    <div class="card" id="approve-card">
+      <div id="approve-form-stage">
+        <div class="card-title">Authorize your device</div>
+        <div class="subtitle">Enter the code shown in your terminal</div>
 
-      <div id="auth-loading" class="loading">Checking authentication...</div>
+        <div id="auth-loading" class="loading">Checking authentication...</div>
 
-      <form id="approve-form" style="display: none;">
-        <label for="code-input">Device code</label>
-        <input type="text" id="code-input" placeholder="ABCD-1234" maxlength="9" autocomplete="off" autofocus>
-        <button type="submit" id="submit-btn">Approve Device</button>
-        <div id="message" class="message"></div>
-      </form>
+        <form id="approve-form" style="display: none;">
+          <label for="code-input">Device code</label>
+          <input type="text" id="code-input" placeholder="ABCD-1234" maxlength="9" autocomplete="off" autofocus>
+          <button type="submit" id="submit-btn">Approve Device</button>
+          <div id="message" class="message"></div>
+        </form>
+      </div>
+
+      <div id="approve-success" aria-live="polite">
+        <div class="auth-complete-icon">&#10003;</div>
+        <h1 class="auth-complete-title">Device connected</h1>
+        <p class="auth-complete-subtitle">You can close this tab. Your terminal will finish signing in automatically.</p>
+      </div>
     </div>
   </div>
 

@@ -113,20 +113,44 @@
     }
     var created = d.created_at ? formatDate(new Date(d.created_at)) : "-";
 
+    var metaTail =
+      '<div class="device-meta-row"><span class="label">Last seen</span><span class="value">' +
+      escapeHtml(lastDisplay) +
+      "</span></div>" +
+      '<div class="device-meta-row"><span class="label">Authorized</span><span class="value">' +
+      created +
+      "</span></div>";
+
+    var linkedBadge = "";
+    var revokeHtml = "";
+    if (d.from_linked_account && (d.owner_login || d.owner_name)) {
+      var who = escapeHtml(d.owner_login || d.owner_name || "");
+      linkedBadge =
+        '<div class="device-meta-row"><span class="label">Account</span><span class="value">Linked (' +
+        who +
+        ")</span></div>";
+    }
+    if (!d.from_linked_account) {
+      revokeHtml =
+        '<button type="button" class="btn-revoke" data-device-id="' +
+        escapeHtml(d.id) +
+        '">Revoke</button>';
+    }
+
     return (
       '<div class="device-card">' +
       '<div class="device-card-top">' +
-      '<div class="device-name">' + host + "</div>" +
-      '<button type="button" class="btn-revoke" data-device-id="' +
-      escapeHtml(d.id) +
-      '">Revoke</button>' +
+      '<div class="device-name">' +
+      host +
+      "</div>" +
+      revokeHtml +
       "</div>" +
       '<div class="device-meta">' +
       '<div class="device-meta-row"><span class="label">OS</span><span class="value">' + os + "</span></div>" +
       '<div class="device-meta-row"><span class="label">Arch</span><span class="value">' + arch + "</span></div>" +
       '<div class="device-meta-row"><span class="label">sidekar</span><span class="value">' + ver + "</span></div>" +
-      '<div class="device-meta-row"><span class="label">Last seen</span><span class="value">' + escapeHtml(lastDisplay) + "</span></div>" +
-      '<div class="device-meta-row"><span class="label">Authorized</span><span class="value">' + created + "</span></div>" +
+      metaTail +
+      linkedBadge +
       "</div>" +
       "</div>"
     );

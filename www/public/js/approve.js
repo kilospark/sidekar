@@ -1,9 +1,12 @@
 (function () {
   const form = document.getElementById("approve-form");
+  const formStage = document.getElementById("approve-form-stage");
   const authLoading = document.getElementById("auth-loading");
   const codeInput = document.getElementById("code-input");
   const submitBtn = document.getElementById("submit-btn");
   const message = document.getElementById("message");
+  const successEl = document.getElementById("approve-success");
+  const cardEl = document.getElementById("approve-card");
 
   // Check authentication
   fetch("/api/auth/session")
@@ -69,10 +72,9 @@
       })
       .then(function (result) {
         if (result.ok) {
-          message.textContent = "Device approved! You can close this page.";
-          message.className = "message success";
-          submitBtn.textContent = "Approved";
-          codeInput.disabled = true;
+          if (formStage) formStage.style.display = "none";
+          if (successEl) successEl.style.display = "block";
+          if (cardEl) cardEl.classList.add("approve-card-done");
         } else {
           message.textContent = result.data.error || "Approval failed";
           message.className = "message error";

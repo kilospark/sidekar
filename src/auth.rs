@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use std::io::BufRead;
+use std::io::Write;
 use std::time::Duration;
 
 const DEFAULT_API_URL: &str = "https://sidekar.dev";
@@ -37,8 +39,9 @@ pub fn save_token(token: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run the device authorization flow: request a device code, open the browser,
-/// poll until the user approves, then save the token.
+/// Run the device authorization flow: request a device code, prompt the user,
+/// then (after Enter) copy the code to the clipboard, open the browser, poll until
+/// the user approves, and save the token.
 pub async fn device_auth_flow() -> Result<()> {
     let base = api_base();
 
@@ -67,24 +70,33 @@ pub async fn device_auth_flow() -> Result<()> {
     let user_code = data["user_code"]
         .as_str()
         .context("Missing user_code in response")?;
-    let default_uri = format!("{base}/auth/device");
+    let default_uri = format!("{base}/approve");
     let verification_uri = data["verification_uri"].as_str().unwrap_or(&default_uri);
 
-    // Step 2: Show the code and open browser
     println!();
-    let inner = 39;
-    let code_line = format!("   Enter this code: {}", user_code);
-    let url_line = format!("   {}", verification_uri);
-    println!("  ┌{:─<inner$}┐", "");
-    println!("  │{:inner$}│", "");
-    println!("  │{:<inner$}│", code_line);
-    println!("  │{:inner$}│", "");
-    println!("  │{:<inner$}│", url_line);
-    println!("  │{:inner$}│", "");
-    println!("  └{:─<inner$}┘", "");
+    println!("Device code: {user_code}");
+    println!("Authorization page: {verification_uri}");
     println!();
 
-    open_browser(verification_uri);
+    let code = user_code.to_string();
+    let url = verification_uri.to_string();
+    let copied = tokio::task::spawn_blocking(move || {
+        print!("Press Enter to copy the device code to the clipboard and open that page in your browser. ");
+        let _ = std::io::stdout().flush();
+        let mut buf = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut buf);
+        let ok = copy_device_code_to_clipboard(&code);
+        open_browser(&url);
+        ok
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("stdin task failed: {e}"))?;
+
+    if copied {
+        println!("Copied to clipboard. Opened the authorization page.");
+    } else {
+        println!("Opened the authorization page. (Clipboard unavailable — paste the code from above.)");
+    }
 
     // Step 3: Poll for token
     println!("Waiting for authorization...");
@@ -171,12 +183,92 @@ async fn push_device_metadata(token: &str) -> Result<()> {
 }
 
 fn open_browser(url: &str) {
-    let cmd = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    let _ = std::process::Command::new(cmd).arg(url).spawn();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+/// Best-effort clipboard (device code is short, alphanumeric + hyphen).
+fn copy_device_code_to_clipboard(s: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return crate::desktop::input::set_clipboard_text(s).is_ok();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::{Command, Stdio};
+        if let Ok(mut child) = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(s.as_bytes());
+            }
+            if child.wait().map(|st| st.success()).unwrap_or(false) {
+                return true;
+            }
+        }
+        if let Ok(mut child) = Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(s.as_bytes());
+            }
+            if child.wait().map(|st| st.success()).unwrap_or(false) {
+                return true;
+            }
+        }
+        if let Ok(mut child) = Command::new("xsel")
+            .args(["--clipboard", "--input"])
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(s.as_bytes());
+            }
+            return child.wait().map(|st| st.success()).unwrap_or(false);
+        }
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Device codes use only A-Z, digits, hyphen.
+        let quoted = s.replace('\'', "''");
+        return std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("Set-Clipboard -Value '{}'", quoted),
+            ])
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false);
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    )))]
+    {
+        let _ = s;
+        false
+    }
 }
 
 /// Produce an ISO 8601 UTC timestamp string (e.g. "2026-03-23T12:00:00Z")

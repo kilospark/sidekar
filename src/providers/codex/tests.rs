@@ -1,4 +1,4 @@
-use super::{apply_usage, build_request_body, CodexTransport};
+use super::{apply_usage, build_request_body, CodexTransport, PendingToolCall};
 use crate::providers::{ChatMessage, ContentBlock, RateLimitSnapshot, Role, StreamConfig, Usage};
 use serde_json::json;
 
@@ -298,4 +298,47 @@ fn overlay_keeps_openai_tokens_when_stream_adds_plan_util() {
     let m = RateLimitSnapshot::overlay_option(Some(header), Some(stream)).expect("merged");
     assert_eq!(m.util_5h_pct, Some(42));
     assert_eq!(m.tokens_remaining, Some(400));
+}
+
+#[test]
+fn resolve_tool_arguments_prefers_streamed_json_when_item_is_placeholder() {
+    let item = json!({
+        "type": "function_call",
+        "arguments": "{}"
+    });
+    let pending = PendingToolCall {
+        call_id: "c1".into(),
+        index: 0,
+        partial_json: r#"{"cmd":"echo hello\nworld"}"#.into(),
+        name: "ExecSession".into(),
+    };
+    let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
+    assert_eq!(args["cmd"], "echo hello\nworld");
+}
+
+#[test]
+fn resolve_tool_arguments_uses_nonempty_inline_object_before_pending() {
+    let item = json!({
+        "type": "function_call",
+        "arguments": {"cmd": "ls", "session_id": ""}
+    });
+    let pending = PendingToolCall {
+        call_id: "c1".into(),
+        index: 0,
+        partial_json: r#"{"should":"be_ignored"}"#.into(),
+        name: "ExecSession".into(),
+    };
+    let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
+    assert_eq!(args["cmd"], "ls");
+}
+
+#[test]
+fn resolve_tool_arguments_parses_inline_object_field() {
+    let item = json!({
+        "type": "function_call",
+        "arguments": {"path": "/tmp/x", "contents": "many\nlines"}
+    });
+    let args = super::resolve_codex_tool_arguments(&item, None);
+    assert_eq!(args["path"], "/tmp/x");
+    assert_eq!(args["contents"], "many\nlines");
 }

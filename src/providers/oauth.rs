@@ -1265,6 +1265,83 @@ struct TokenResponse {
 // Local callback server (shared)
 // ---------------------------------------------------------------------------
 
+fn sidekar_public_web_origin() -> String {
+    std::env::var("SIDEKAR_API_URL")
+        .unwrap_or_else(|_| "https://sidekar.dev".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn escape_html_attr_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Success page for OAuth redirect to localhost — matches `www/public/ext-callback.html`.
+fn oauth_local_callback_success_html() -> String {
+    let origin = sidekar_public_web_origin();
+    format!(
+        r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Sidekar — Credential connected</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="{origin}/css/auth-complete.css"/>
+</head>
+<body class="auth-complete-page">
+  <div class="auth-complete-card">
+    <div class="auth-complete-icon">&#10003;</div>
+    <h1 class="auth-complete-title">Credential connected</h1>
+    <p class="auth-complete-subtitle">You can close this tab and return to the terminal.</p>
+  </div>
+  <script>window.close()</script>
+</body>
+</html>"##,
+        origin = origin
+    )
+}
+
+fn oauth_local_callback_error_html(message: &str) -> String {
+    let origin = sidekar_public_web_origin();
+    let safe = escape_html_attr_text(message);
+    format!(
+        r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Sidekar — Sign-in failed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="{origin}/css/auth-complete.css"/>
+</head>
+<body class="auth-complete-page">
+  <div class="auth-complete-card">
+    <div class="auth-complete-icon-error">&#10007;</div>
+    <h1 class="auth-complete-title">Sign-in failed</h1>
+    <p class="auth-complete-subtitle">{safe}</p>
+  </div>
+</body>
+</html>"##,
+        origin = origin,
+        safe = safe
+    )
+}
+
 async fn start_callback_server(
     port: u16,
     expected_state: String,
@@ -1318,9 +1395,11 @@ async fn start_callback_server(
             let code = params.get("code").copied().unwrap_or("");
 
             if state != expected_state || code.is_empty() {
-                let body = "Authentication failed: invalid state or missing code.";
+                let body = oauth_local_callback_error_html(
+                    "Authentication failed: invalid state or missing code.",
+                );
                 let resp = format!(
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
                     body.len(),
                     body
                 );
@@ -1328,13 +1407,9 @@ async fn start_callback_server(
                 continue;
             }
 
-            let body = "<!DOCTYPE html><html><body>\
-                <h2>Logged in!</h2>\
-                <p>You can close this tab and return to the terminal.</p>\
-                <script>window.close()</script>\
-                </body></html>";
+            let body = oauth_local_callback_success_html();
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
                 body
             );

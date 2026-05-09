@@ -1,3 +1,4 @@
+mod account_links;
 mod auth;
 mod bridge;
 mod registry;

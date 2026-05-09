@@ -91,12 +91,19 @@
     var viewers = s.viewers != null ? s.viewers : 0;
     var connectedAt = s.connected_at ? relativeTime(new Date(s.connected_at)) : "-";
     var nickHtml = nick ? ' <span class="agent-nick">' + nick + "</span>" : "";
+    var collabBadge = "";
+    if (s.from_linked_account && (s.owner_login || s.owner_name)) {
+      var oc = escapeHtml(s.owner_login || s.owner_name || "");
+      collabBadge = ' <span class="agent-badge" title="Hosted under a linked Sidekar account">' + oc + "</span>";
+    }
 
     return (
       '<div class="session-card" data-session-id="' + escapeHtml(s.id) + '">' +
       '<div class="session-name">' +
-      name + nickHtml +
+      name +
+      nickHtml +
       ' <span class="agent-badge">' + agentType + "</span>" +
+      collabBadge +
       "</div>" +
       '<div class="session-meta">' +
       '<div class="session-meta-row"><span class="label">host</span><span class="value">' + hostname + "</span></div>" +

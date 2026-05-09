@@ -210,6 +210,10 @@ main.container { padding: 32px 24px; }
       showToast(params.get("linked").charAt(0).toUpperCase() + params.get("linked").slice(1) + " account linked successfully");
       window.history.replaceState({}, "", "/settings");
     }
+    if (params.get("collaborator")) {
+      if (params.get("collaborator") === "linked") showToast("Collaborator account linked");
+      window.history.replaceState({}, "", "/settings");
+    }
     if (params.get("error")) {
       showToast("Error: " + params.get("error"));
       window.history.replaceState({}, "", "/settings");
@@ -240,26 +244,34 @@ main.container { padding: 32px 24px; }
     });
 
     function loadSettings() {
-      return fetch("/api/auth/session?linked")
-        .then(function(res) {
+      return Promise.all([
+        fetch("/api/auth/session?linked").then(function(res) {
           if (res.status === 401) {
             window.location.href = "/login?redirect=/settings";
             return null;
           }
           if (!res.ok) throw new Error("Failed to load settings");
           return res.json();
-        })
-        .then(function(data) {
-          if (!data) return;
-          renderSettings(data);
+        }),
+        fetch("/api/account-links").then(function(res) {
+          if (res.status === 401) {
+            return { can_see: [], can_see_you: [] };
+          }
+          if (!res.ok) return { can_see: [], can_see_you: [] };
+          return res.json();
+        }),
+      ])
+        .then(function(pairs) {
+          if (!pairs[0]) return null;
+          renderSettings(pairs[0], pairs[1] || { can_see: [], can_see_you: [] });
         })
         .catch(function() {
           content.innerHTML = '<div class="empty-state"><h2>Failed to load settings</h2></div>';
         });
     }
 
-    function renderSettings(data) {
-      var html = '<div class="settings-section"><h2>Linked Accounts</h2>';
+    function renderSettings(data, collaborators) {
+      var html = '<div class="settings-section"><h2>Identity providers</h2>';
 
       // Show linked providers
       data.linked.forEach(function(p) {
@@ -289,6 +301,71 @@ main.container { padding: 32px 24px; }
 
       html += '</div>';
 
+      html += '<div class="settings-section"><h2>Collaborator accounts</h2>';
+      html +=
+        '<p style="color:var(--text-muted);font-size:13px;line-height:1.5;margin:-8px 0 16px;max-width:640px">' +
+        "<b>Invites are one-way.</b> When you create a code and someone accepts it while signed into their account, " +
+        "<i>they</i> can see <i>your</i> devices and relay sessions—not the other way around. " +
+        "For mutual access, repeat the flow in the opposite direction." +
+        "</p>";
+
+      html += '<h3 style="font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin:20px 0 12px;">Can see your sessions &amp; devices</h3>';
+      html += '<p style="color:var(--text-muted);font-size:12px;margin:-8px 0 12px;">These accounts accepted your invite and can see your devices and relay sessions.</p>';
+      (collaborators.can_see_you || []).forEach(function(c) {
+        var label = escapeHtml(c.login || c.name || c.id);
+        var sub = c.name && c.login && c.name !== c.login ? '<span class="provider-detail">' + escapeHtml(c.name) + "</span>" : "";
+        var um = escapeHtml(c.unlink_mode || "grantee");
+        var uv = escapeHtml(c.unlink_value || c.id);
+        html +=
+          '<div class="provider-row">' +
+          '<div class="provider-info">' +
+          '<span class="provider-name">' + label + "</span>" +
+          sub +
+          "</div>" +
+          '<button type="button" class="btn-link-provider collab-unlink-btn" data-unlink-mode="' + um + '" data-unlink-value="' + uv + '">Revoke access</button>' +
+          "</div>";
+      });
+      if ((collaborators.can_see_you || []).length === 0) {
+        html += '<p style="color:var(--text-muted);font-size:14px;margin-bottom:8px;">No one else has access.</p>';
+      }
+
+      html += '<h3 style="font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin:24px 0 12px;">Sessions &amp; devices you can see</h3>';
+      html += '<p style="color:var(--text-muted);font-size:12px;margin:-8px 0 12px;">These accounts shared an invite code with you—you can see their devices and relay sessions.</p>';
+      (collaborators.can_see || []).forEach(function(c) {
+        var label = escapeHtml(c.login || c.name || c.id);
+        var sub = c.name && c.login && c.name !== c.login ? '<span class="provider-detail">' + escapeHtml(c.name) + "</span>" : "";
+        var um = escapeHtml(c.unlink_mode || "grantor");
+        var uv = escapeHtml(c.unlink_value || c.id);
+        html +=
+          '<div class="provider-row">' +
+          '<div class="provider-info">' +
+          '<span class="provider-name">' + label + "</span>" +
+          sub +
+          "</div>" +
+          '<button type="button" class="btn-link-provider collab-unlink-btn" data-unlink-mode="' + um + '" data-unlink-value="' + uv + '">Remove access</button>' +
+          "</div>";
+      });
+      if ((collaborators.can_see || []).length === 0) {
+        html += '<p style="color:var(--text-muted);font-size:14px;margin-bottom:8px;">You only see your own account here unless someone shares a code with you.</p>';
+      }
+
+      html +=
+        '<div class="provider-row" style="flex-wrap:wrap;gap:10px;align-items:flex-start;">' +
+        '<div class="provider-info" style="flex-direction:column;align-items:flex-start;gap:8px;">' +
+        '<button type="button" class="btn-link-provider" id="collab-invite-btn">Create invite code</button>' +
+        '<span class="provider-detail">Valid 15 minutes. The person who accepts can see <b>your</b> devices and relay sessions.</span>' +
+        "</div></div>" +
+        '<div id="collab-invite-out" style="margin-top:4px;margin-bottom:8px;"></div>' +
+        '<div class="provider-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;">' +
+        '<div style="flex:1;min-width:180px;">' +
+        '<label for="collab-code-in" style="font-size:12px;color:var(--text-muted);">Accept invite code</label><br/>' +
+        '<input id="collab-code-in" type="text" maxlength="32" autocomplete="off" placeholder="paste code" ' +
+        'style="margin-top:6px;width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--border);font-family:var(--mono);font-size:13px;background:var(--bg);color:var(--text);">' +
+        "</div>" +
+        '<button type="button" class="btn-link-provider" id="collab-accept-btn">Accept</button>' +
+        "</div>" +
+        "</div>";
+
       if (data.email) {
         html += '<div class="settings-section"><h2>Account</h2>' +
           '<div class="provider-row"><div class="provider-info">' +
@@ -310,8 +387,105 @@ main.container { padding: 32px 24px; }
         '<span class="provider-name">Loading…</span></div></div></div>';
 
       content.innerHTML = html;
+      wireCollaboratorHandlers();
       loadTelegram();
       loadSlack();
+    }
+
+    function wireCollaboratorHandlers() {
+      var inviteBtn = document.getElementById("collab-invite-btn");
+      var inviteOut = document.getElementById("collab-invite-out");
+      var acceptBtn = document.getElementById("collab-accept-btn");
+      var codeIn = document.getElementById("collab-code-in");
+
+      if (inviteBtn && inviteOut) {
+        inviteBtn.addEventListener("click", function() {
+          inviteBtn.disabled = true;
+          fetch("/api/account-links", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "invite" }),
+          })
+            .then(function(r) {
+              if (!r.ok) throw new Error("invite failed");
+              return r.json();
+            })
+            .then(function(d) {
+              inviteOut.innerHTML =
+                '<div class="provider-row" style="flex-direction:column;align-items:flex-start;gap:6px">' +
+                '<div><b>Code:</b> <code style="font-family:var(--mono);font-size:13px">' +
+                escapeHtml(d.code || "") +
+                "</code></div>" +
+                '<div style="font-size:13px;color:var(--text-muted)">Expires ' +
+                escapeHtml(d.expires_at || "") +
+                "</div></div>";
+            })
+            .catch(function() {
+              showToast("Could not create invite");
+            })
+            .then(function() {
+              inviteBtn.disabled = false;
+            });
+        });
+      }
+
+      if (acceptBtn && codeIn) {
+        acceptBtn.addEventListener("click", function() {
+          var raw = (codeIn.value || "").trim().toLowerCase();
+          if (!raw) {
+            showToast("Enter a code");
+            return;
+          }
+          acceptBtn.disabled = true;
+          fetch("/api/account-links", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "accept", code: raw }),
+          })
+            .then(function(r) {
+              return r.json().then(function(j) {
+                if (!r.ok) throw new Error((j && j.error) || "Accept failed");
+                return j;
+              });
+            })
+            .then(function() {
+              codeIn.value = "";
+              showToast("Collaborator linked");
+              loadSettings();
+            })
+            .catch(function(e) {
+              showToast(e.message || "Accept failed");
+            })
+            .then(function() {
+              acceptBtn.disabled = false;
+            });
+        });
+      }
+
+      var unlinkBtns = document.querySelectorAll(".collab-unlink-btn");
+      for (var u = 0; u < unlinkBtns.length; u++) {
+        unlinkBtns[u].addEventListener("click", function() {
+          var mode = this.getAttribute("data-unlink-mode");
+          var val = this.getAttribute("data-unlink-value");
+          if (!mode || !val || !window.confirm("Remove this collaborator link?")) return;
+          var btn = this;
+          btn.disabled = true;
+          var qs =
+            mode === "grantee"
+              ? "grantee=" + encodeURIComponent(val)
+              : "grantor=" + encodeURIComponent(val);
+          fetch("/api/account-links?" + qs, { method: "DELETE" })
+            .then(function(r) {
+              if (!r.ok) throw new Error();
+              showToast("Updated");
+              loadSettings();
+            })
+            .catch(function() {
+              btn.disabled = false;
+              showToast("Unlink failed");
+            });
+        });
+      }
     }
 
     function loadTelegram() {

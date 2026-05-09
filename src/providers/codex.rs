@@ -388,11 +388,12 @@ async fn parse_sse_stream(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let partial_json = item
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let partial_json_raw = codex_arguments_field_to_string(item.get("arguments"));
+                        let partial_json = if is_placeholder_arguments_json(&partial_json_raw) {
+                            String::new()
+                        } else {
+                            partial_json_raw
+                        };
                         let index = next_tool_index;
                         next_tool_index += 1;
                         let _ = tx.send(StreamEvent::ToolCallStart {
@@ -447,11 +448,10 @@ async fn parse_sse_stream(
 
                 "response.function_call_arguments.done" => {
                     if let Some(call) = get_pending_tool_call_mut(&mut pending_tool_calls, &data) {
-                        call.partial_json = data
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&call.partial_json)
-                            .to_string();
+                        let from_done = codex_arguments_field_to_string(data.get("arguments"));
+                        if !from_done.is_empty() && !is_placeholder_arguments_json(&from_done) {
+                            call.partial_json = from_done;
+                        }
                     }
                 }
 
@@ -491,14 +491,8 @@ async fn parse_sse_stream(
                             .map(str::to_string)
                             .or_else(|| pending.as_ref().map(|call| call.name.clone()))
                             .unwrap_or_default();
-                        let args_str = item
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .filter(|args| !args.is_empty())
-                            .map(str::to_string)
-                            .or_else(|| pending.as_ref().map(|call| call.partial_json.clone()))
-                            .unwrap_or_else(|| "{}".to_string());
-                        let arguments: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
+                        let arguments =
+                            resolve_codex_tool_arguments(item, pending.as_ref());
                         // Always store both IDs so we can reconstruct the request
                         let stored_id = if item_id.is_empty() || item_id == call_id {
                             call_id.clone()
@@ -605,6 +599,61 @@ struct PendingToolCall {
     index: usize,
     partial_json: String,
     name: String,
+}
+
+/// Normalize `function_call.arguments` from the Responses API into a string we
+/// merge with `function_call_arguments.delta` chunks. The field can be a JSON
+/// string, object, array, or absent.
+fn codex_arguments_field_to_string(args: Option<&Value>) -> String {
+    match args {
+        None => String::new(),
+        Some(Value::String(s)) => s.to_string(),
+        Some(v) => serde_json::to_string(v).unwrap_or_default(),
+    }
+}
+
+fn is_placeholder_arguments_json(s: &str) -> bool {
+    matches!(s.trim(), "" | "{}")
+}
+
+/// Build the final tool `arguments` value for execution. Prefer a non-empty
+/// inline object; otherwise merge `item.arguments` with streamed `partial_json`.
+///
+/// The API sometimes finishes with `arguments: "{}"` or an empty object while
+/// the real payload only arrived via `response.function_call_arguments.delta`
+/// (common for large / multiline JSON). Previously we took the placeholder and
+/// executed tools with `{}`, producing "missing path" / "cmd required".
+fn resolve_codex_tool_arguments(item: &Value, pending: Option<&PendingToolCall>) -> Value {
+    if let Some(Value::Object(m)) = item.get("arguments") {
+        if !m.is_empty() {
+            return Value::Object(m.clone());
+        }
+    }
+
+    let from_item = codex_arguments_field_to_string(item.get("arguments"));
+    let from_pending = pending.map(|p| p.partial_json.as_str()).unwrap_or("");
+
+    let pick = if is_placeholder_arguments_json(&from_item)
+        && !is_placeholder_arguments_json(from_pending)
+    {
+        from_pending.trim().to_string()
+    } else if !is_placeholder_arguments_json(&from_item) {
+        from_item.trim().to_string()
+    } else if !from_pending.trim().is_empty() {
+        from_pending.trim().to_string()
+    } else {
+        return json!({});
+    };
+
+    serde_json::from_str(&pick).unwrap_or_else(|e| {
+        let prefix: String = pick.chars().take(500).collect();
+        crate::broker::try_log_error(
+            "codex-transport",
+            "function_call arguments JSON parse failed",
+            Some(&format!("{e}; args_prefix={prefix}")),
+        );
+        json!({})
+    })
 }
 
 /// Extract encrypted reasoning items from `response.output[]` in the
@@ -1342,11 +1391,12 @@ where
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let partial_json = item
-                        .get("arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let partial_json_raw = codex_arguments_field_to_string(item.get("arguments"));
+                    let partial_json = if is_placeholder_arguments_json(&partial_json_raw) {
+                        String::new()
+                    } else {
+                        partial_json_raw
+                    };
                     let index = next_tool_index;
                     next_tool_index += 1;
                     let _ = tx.send(StreamEvent::ToolCallStart {
@@ -1401,11 +1451,10 @@ where
 
             "response.function_call_arguments.done" => {
                 if let Some(call) = get_pending_tool_call_mut(&mut pending_tool_calls, &data) {
-                    call.partial_json = data
-                        .get("arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&call.partial_json)
-                        .to_string();
+                    let from_done = codex_arguments_field_to_string(data.get("arguments"));
+                    if !from_done.is_empty() && !is_placeholder_arguments_json(&from_done) {
+                        call.partial_json = from_done;
+                    }
                 }
             }
 
@@ -1445,14 +1494,7 @@ where
                         .map(str::to_string)
                         .or_else(|| pending.as_ref().map(|call| call.name.clone()))
                         .unwrap_or_default();
-                    let args_str = item
-                        .get("arguments")
-                        .and_then(|v| v.as_str())
-                        .filter(|args| !args.is_empty())
-                        .map(str::to_string)
-                        .or_else(|| pending.as_ref().map(|call| call.partial_json.clone()))
-                        .unwrap_or_else(|| "{}".to_string());
-                    let arguments: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
+                    let arguments = resolve_codex_tool_arguments(item, pending.as_ref());
                     let stored_id = if item_id.is_empty() || item_id == call_id {
                         call_id.clone()
                     } else {
