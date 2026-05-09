@@ -309,6 +309,7 @@ fn resolve_tool_arguments_prefers_streamed_json_when_item_is_placeholder() {
         call_id: "c1".into(),
         index: 0,
         partial_json: r#"{"cmd":"echo hello\nworld"}"#.into(),
+        done_json: None,
         name: "ExecSession".into(),
     };
     let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
@@ -325,6 +326,7 @@ fn resolve_tool_arguments_uses_nonempty_inline_object_before_pending() {
         call_id: "c1".into(),
         index: 0,
         partial_json: r#"{"should":"be_ignored"}"#.into(),
+        done_json: None,
         name: "ExecSession".into(),
     };
     let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
@@ -340,4 +342,58 @@ fn resolve_tool_arguments_parses_inline_object_field() {
     let args = super::resolve_codex_tool_arguments(&item, None);
     assert_eq!(args["path"], "/tmp/x");
     assert_eq!(args["contents"], "many\nlines");
+}
+
+#[test]
+fn resolve_tool_arguments_falls_back_to_streamed_json_when_inline_string_is_truncated() {
+    let item = json!({
+        "type": "function_call",
+        "arguments": "{\"path\":\"/tmp/report.md\""
+    });
+    let pending = PendingToolCall {
+        call_id: "c1".into(),
+        index: 0,
+        partial_json: r#"{"path":"/tmp/report.md","content":"line 1\nline 2\n$(whoami)"}"#.into(),
+        done_json: None,
+        name: "Write".into(),
+    };
+    let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
+    assert_eq!(args["path"], "/tmp/report.md");
+    assert_eq!(args["content"], "line 1\nline 2\n$(whoami)");
+}
+
+#[test]
+fn resolve_tool_arguments_prefers_more_complete_streamed_json_over_shorter_inline_json() {
+    let item = json!({
+        "type": "function_call",
+        "arguments": "{\"path\":\"/tmp/report.md\"}"
+    });
+    let pending = PendingToolCall {
+        call_id: "c1".into(),
+        index: 0,
+        partial_json: r#"{"path":"/tmp/report.md","content":"{\"k\":\"v\"}\n```sh\necho hi\n```"}"#
+            .into(),
+        done_json: None,
+        name: "Write".into(),
+    };
+    let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
+    assert_eq!(args["path"], "/tmp/report.md");
+    assert_eq!(args["content"], "{\"k\":\"v\"}\n```sh\necho hi\n```");
+}
+
+#[test]
+fn resolve_tool_arguments_does_not_let_done_event_overwrite_valid_streamed_json() {
+    let item = json!({
+        "type": "function_call",
+        "arguments": "{}"
+    });
+    let pending = PendingToolCall {
+        call_id: "c1".into(),
+        index: 0,
+        partial_json: r#"{"command":"cat <<'EOF'\nhi\nEOF"}"#.into(),
+        done_json: Some("{\"command\":\"cat <<'EOF'".into()),
+        name: "Bash".into(),
+    };
+    let args = super::resolve_codex_tool_arguments(&item, Some(&pending));
+    assert_eq!(args["command"], "cat <<'EOF'\nhi\nEOF");
 }

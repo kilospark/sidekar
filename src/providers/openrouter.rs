@@ -348,7 +348,8 @@ fn ingest_openai_sse_reasoning_from_message(buf: &mut String, msg: &Value) {
 struct PendingToolCall {
     id: String,
     name: String,
-    arguments: String,
+    streamed_arguments: String,
+    final_arguments: Option<String>,
     index: usize,
 }
 
@@ -372,6 +373,83 @@ impl Default for OpenAiCompletionAccum {
             pending_tool_calls: Vec::new(),
         }
     }
+}
+
+fn openai_compat_arguments_field_to_string(args: Option<&Value>) -> String {
+    match args {
+        None => String::new(),
+        Some(Value::String(s)) => s.to_string(),
+        Some(v) => serde_json::to_string(v).unwrap_or_default(),
+    }
+}
+
+fn ensure_pending_tool_call(
+    accum: &mut OpenAiCompletionAccum,
+    tc_index: usize,
+) -> &mut PendingToolCall {
+    while accum.pending_tool_calls.len() <= tc_index {
+        accum.pending_tool_calls.push(PendingToolCall {
+            id: String::new(),
+            name: String::new(),
+            streamed_arguments: String::new(),
+            final_arguments: None,
+            index: accum.pending_tool_calls.len(),
+        });
+    }
+    accum.pending_tool_calls[tc_index].index = tc_index;
+    &mut accum.pending_tool_calls[tc_index]
+}
+
+fn parse_openai_compat_tool_arguments(tc: &PendingToolCall) -> Value {
+    let mut best: Option<(usize, Value)> = None;
+
+    for raw in [
+        tc.final_arguments.as_deref().unwrap_or(""),
+        tc.streamed_arguments.as_str(),
+    ] {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "{}" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            let score = match &value {
+                Value::Object(map) => 3 + map.len(),
+                Value::Array(items) => 2 + items.len(),
+                Value::Null => 0,
+                _ => 1,
+            } * 1_000
+                + trimmed.len();
+            let replace = best
+                .as_ref()
+                .map(|(best_score, _)| score > *best_score)
+                .unwrap_or(true);
+            if replace {
+                best = Some((score, value));
+            }
+        }
+    }
+
+    if let Some((_, value)) = best {
+        return value;
+    }
+
+    let prefix: String = [
+        tc.final_arguments.as_deref().unwrap_or(""),
+        tc.streamed_arguments.as_str(),
+    ]
+    .iter()
+    .find(|candidate| !candidate.trim().is_empty())
+    .copied()
+    .unwrap_or_default()
+    .chars()
+    .take(500)
+    .collect();
+    crate::broker::try_log_error(
+        "openai-compat-transport",
+        "tool_call arguments JSON parse failed",
+        Some(&format!("tool={} args_prefix={prefix}", tc.name)),
+    );
+    json!({})
 }
 
 fn ingest_openai_completion_chunk_payload(
@@ -422,6 +500,35 @@ fn ingest_openai_completion_chunk_payload(
                 accum.reasoning_buf.clear();
                 accum.reasoning_buf.push_str(&snap);
             }
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                for (fallback_index, tc) in tool_calls.iter().enumerate() {
+                    let tc_index = tc
+                        .get("index")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize)
+                        .unwrap_or(fallback_index);
+                    let slot = ensure_pending_tool_call(accum, tc_index);
+                    if let Some(id) = tc.get("id").and_then(|v| v.as_str())
+                        && !id.is_empty()
+                    {
+                        slot.id = id.to_string();
+                    }
+                    if let Some(name) = tc
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        && !name.is_empty()
+                    {
+                        slot.name = name.to_string();
+                    }
+                    let final_args = openai_compat_arguments_field_to_string(
+                        tc.get("function").and_then(|f| f.get("arguments")),
+                    );
+                    if !final_args.trim().is_empty() && final_args.trim() != "{}" {
+                        slot.final_arguments = Some(final_args);
+                    }
+                }
+            }
         }
 
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
@@ -441,24 +548,10 @@ fn ingest_openai_completion_chunk_payload(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-
-                    while accum.pending_tool_calls.len() <= tc_index {
-                        accum.pending_tool_calls.push(PendingToolCall {
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: String::new(),
-                            index: accum.pending_tool_calls.len(),
-                        });
-                    }
-                    let prior_args =
-                        std::mem::take(&mut accum.pending_tool_calls[tc_index].arguments);
-                    let merged_args = format!("{prior_args}{initial_args}");
-                    accum.pending_tool_calls[tc_index] = PendingToolCall {
-                        id: id.to_string(),
-                        name: name.clone(),
-                        arguments: merged_args,
-                        index: tc_index,
-                    };
+                    let slot = ensure_pending_tool_call(accum, tc_index);
+                    slot.id = id.to_string();
+                    slot.name = name.clone();
+                    slot.streamed_arguments.push_str(&initial_args);
 
                     let _ = tx.send(StreamEvent::ToolCallStart {
                         index: tc_index,
@@ -476,17 +569,8 @@ fn ingest_openai_completion_chunk_payload(
                     .and_then(|f| f.get("arguments"))
                     .and_then(|v| v.as_str())
                 {
-                    while accum.pending_tool_calls.len() <= tc_index {
-                        accum.pending_tool_calls.push(PendingToolCall {
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: String::new(),
-                            index: accum.pending_tool_calls.len(),
-                        });
-                    }
-                    accum.pending_tool_calls[tc_index].index = tc_index;
-                    accum.pending_tool_calls[tc_index]
-                        .arguments
+                    ensure_pending_tool_call(accum, tc_index)
+                        .streamed_arguments
                         .push_str(args_delta);
                     let _ = tx.send(StreamEvent::ToolCallDelta {
                         index: tc_index,
@@ -521,7 +605,7 @@ fn finalize_openai_completion_accum(
             continue;
         }
         let _ = tx.send(StreamEvent::ToolCallEnd { index: tc.index });
-        let arguments: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+        let arguments = parse_openai_compat_tool_arguments(tc);
         content_blocks.push(ContentBlock::ToolCall {
             id: tc.id.clone(),
             name: tc.name.clone(),

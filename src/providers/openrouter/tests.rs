@@ -1,6 +1,10 @@
-use super::{apply_usage, build_request_body};
-use crate::providers::{ChatMessage, ContentBlock, Role, Usage};
+use super::{
+    OpenAiCompletionAccum, PendingToolCall, apply_usage, build_request_body,
+    ingest_openai_completion_chunk_payload, parse_openai_compat_tool_arguments,
+};
+use crate::providers::{ChatMessage, ContentBlock, Role, StreamEvent, Usage};
 use serde_json::json;
+use tokio::sync::mpsc;
 
 #[test]
 fn build_request_body_adds_openrouter_cache_control_for_claude() {
@@ -159,4 +163,65 @@ fn deepseek_tool_assistant_maps_pre_tool_plain_text_into_reasoning_content() {
     let messages = body.get("messages").and_then(|m| m.as_array()).unwrap();
     assert_eq!(messages[0]["reasoning_content"], "planning excerpt");
     assert_eq!(messages[0]["content"], "planning excerpt");
+}
+
+#[test]
+fn parse_openai_compat_tool_arguments_prefers_final_snapshot_over_truncated_stream() {
+    let tc = PendingToolCall {
+        id: "call_1".into(),
+        name: "Bash".into(),
+        streamed_arguments: "{\"command\":\"cat <<'EOF'".into(),
+        final_arguments: Some("{\"command\":\"cat <<'EOF'\\nhi\\nEOF\"}".into()),
+        index: 0,
+    };
+    let args = parse_openai_compat_tool_arguments(&tc);
+    assert_eq!(args["command"], "cat <<'EOF'\nhi\nEOF");
+}
+
+#[test]
+fn parse_openai_compat_tool_arguments_prefers_more_complete_stream_over_short_final_snapshot() {
+    let tc = PendingToolCall {
+        id: "call_1".into(),
+        name: "Write".into(),
+        streamed_arguments:
+            r#"{"path":"/tmp/report.md","content":"{\"k\":1}\n```sh\necho hi\n```"}"#.into(),
+        final_arguments: Some("{\"path\":\"/tmp/report.md\"}".into()),
+        index: 0,
+    };
+    let args = parse_openai_compat_tool_arguments(&tc);
+    assert_eq!(args["path"], "/tmp/report.md");
+    assert_eq!(args["content"], "{\"k\":1}\n```sh\necho hi\n```");
+}
+
+#[test]
+fn ingest_openai_completion_chunk_payload_captures_final_message_tool_call_arguments() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
+    let mut accum = OpenAiCompletionAccum::default();
+    let chunk = json!({
+        "choices": [{
+            "delta": {},
+            "message": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {
+                        "name": "ExecSession",
+                        "arguments": "{\"cmd\":\"printf 'hi\\nthere'\"}"
+                    }
+                }]
+            }
+        }]
+    });
+    ingest_openai_completion_chunk_payload(&chunk, &mut accum, &tx).expect("ingest");
+    let tc = &accum.pending_tool_calls[0];
+    assert_eq!(tc.id, "call_1");
+    assert_eq!(tc.name, "ExecSession");
+    assert_eq!(
+        tc.final_arguments.as_deref(),
+        Some("{\"cmd\":\"printf 'hi\\nthere'\"}")
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "message snapshot should not emit stream events by itself"
+    );
 }

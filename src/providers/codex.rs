@@ -413,6 +413,7 @@ async fn parse_sse_stream(
                                 call_id,
                                 index,
                                 partial_json,
+                                done_json: None,
                                 name: name.clone(),
                             },
                         );
@@ -450,7 +451,7 @@ async fn parse_sse_stream(
                     if let Some(call) = get_pending_tool_call_mut(&mut pending_tool_calls, &data) {
                         let from_done = codex_arguments_field_to_string(data.get("arguments"));
                         if !from_done.is_empty() && !is_placeholder_arguments_json(&from_done) {
-                            call.partial_json = from_done;
+                            call.done_json = Some(from_done);
                         }
                     }
                 }
@@ -597,6 +598,7 @@ struct PendingToolCall {
     call_id: String,
     index: usize,
     partial_json: String,
+    done_json: Option<String>,
     name: String,
 }
 
@@ -615,44 +617,124 @@ fn is_placeholder_arguments_json(s: &str) -> bool {
     matches!(s.trim(), "" | "{}")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum ArgumentsCandidateSource {
+    InlineObject,
+    InlineString,
+    DoneEvent,
+    Streamed,
+}
+
+#[derive(Debug)]
+struct ParsedArgumentsCandidate {
+    source: ArgumentsCandidateSource,
+    raw_len: usize,
+    value: Value,
+}
+
+fn push_parsed_arguments_candidate(
+    candidates: &mut Vec<ParsedArgumentsCandidate>,
+    source: ArgumentsCandidateSource,
+    raw: &str,
+) {
+    let trimmed = raw.trim();
+    if is_placeholder_arguments_json(trimmed) {
+        return;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        candidates.push(ParsedArgumentsCandidate {
+            source,
+            raw_len: trimmed.len(),
+            value,
+        });
+    }
+}
+
+fn parsed_arguments_candidate_score(candidate: &ParsedArgumentsCandidate) -> (usize, usize, usize) {
+    let shape_score = match &candidate.value {
+        Value::Object(map) => 3 + map.len(),
+        Value::Array(items) => 2 + items.len(),
+        Value::Null => 0,
+        _ => 1,
+    };
+    let source_score = match candidate.source {
+        ArgumentsCandidateSource::InlineObject => 1,
+        ArgumentsCandidateSource::InlineString => 2,
+        ArgumentsCandidateSource::DoneEvent => 3,
+        ArgumentsCandidateSource::Streamed => 4,
+    };
+    (shape_score, candidate.raw_len, source_score)
+}
+
 /// Build the final tool `arguments` value for execution. Prefer a non-empty
-/// inline object; otherwise merge `item.arguments` with streamed `partial_json`.
+/// valid argument payload from inline fields, `function_call_arguments.done`, or
+/// streamed `function_call_arguments.delta`.
 ///
 /// The API sometimes finishes with `arguments: "{}"` or an empty object while
 /// the real payload only arrived via `response.function_call_arguments.delta`
-/// (common for large / multiline JSON). Previously we took the placeholder and
-/// executed tools with `{}`, producing "missing path" / "cmd required".
+/// (common for large / multiline JSON). It can also emit a non-empty but
+/// truncated inline string for large payloads. We therefore parse every
+/// candidate we observed and keep the most complete valid JSON value.
 fn resolve_codex_tool_arguments(item: &Value, pending: Option<&PendingToolCall>) -> Value {
-    if let Some(Value::Object(m)) = item.get("arguments") {
-        if !m.is_empty() {
-            return Value::Object(m.clone());
+    let mut candidates = Vec::new();
+
+    if let Some(Value::Object(map)) = item.get("arguments")
+        && !map.is_empty()
+    {
+        candidates.push(ParsedArgumentsCandidate {
+            source: ArgumentsCandidateSource::InlineObject,
+            raw_len: serde_json::to_string(map).map(|s| s.len()).unwrap_or(0),
+            value: Value::Object(map.clone()),
+        });
+    } else {
+        push_parsed_arguments_candidate(
+            &mut candidates,
+            ArgumentsCandidateSource::InlineString,
+            &codex_arguments_field_to_string(item.get("arguments")),
+        );
+    }
+
+    if let Some(pending) = pending {
+        if let Some(done_json) = pending.done_json.as_deref() {
+            push_parsed_arguments_candidate(
+                &mut candidates,
+                ArgumentsCandidateSource::DoneEvent,
+                done_json,
+            );
         }
+        push_parsed_arguments_candidate(
+            &mut candidates,
+            ArgumentsCandidateSource::Streamed,
+            &pending.partial_json,
+        );
+    }
+
+    if let Some(best) = candidates
+        .into_iter()
+        .max_by_key(parsed_arguments_candidate_score)
+    {
+        return best.value;
     }
 
     let from_item = codex_arguments_field_to_string(item.get("arguments"));
-    let from_pending = pending.map(|p| p.partial_json.as_str()).unwrap_or("");
-
-    let pick = if is_placeholder_arguments_json(&from_item)
-        && !is_placeholder_arguments_json(from_pending)
-    {
-        from_pending.trim().to_string()
-    } else if !is_placeholder_arguments_json(&from_item) {
-        from_item.trim().to_string()
-    } else if !from_pending.trim().is_empty() {
-        from_pending.trim().to_string()
-    } else {
-        return json!({});
-    };
-
-    serde_json::from_str(&pick).unwrap_or_else(|e| {
-        let prefix: String = pick.chars().take(500).collect();
-        crate::broker::try_log_error(
-            "codex-transport",
-            "function_call arguments JSON parse failed",
-            Some(&format!("{e}; args_prefix={prefix}")),
-        );
-        json!({})
-    })
+    let from_done = pending
+        .and_then(|call| call.done_json.as_deref())
+        .unwrap_or_default();
+    let from_pending = pending.map(|call| call.partial_json.as_str()).unwrap_or("");
+    let prefix: String = [from_item.as_str(), from_done, from_pending]
+        .iter()
+        .find(|candidate| !candidate.trim().is_empty())
+        .copied()
+        .unwrap_or_default()
+        .chars()
+        .take(500)
+        .collect();
+    crate::broker::try_log_error(
+        "codex-transport",
+        "function_call arguments JSON parse failed",
+        Some(&format!("args_prefix={prefix}")),
+    );
+    json!({})
 }
 
 /// Extract encrypted reasoning items from `response.output[]` in the
@@ -1423,6 +1505,7 @@ where
                             call_id,
                             index,
                             partial_json,
+                            done_json: None,
                             name,
                         },
                     );
@@ -1460,7 +1543,7 @@ where
                 if let Some(call) = get_pending_tool_call_mut(&mut pending_tool_calls, &data) {
                     let from_done = codex_arguments_field_to_string(data.get("arguments"));
                     if !from_done.is_empty() && !is_placeholder_arguments_json(&from_done) {
-                        call.partial_json = from_done;
+                        call.done_json = Some(from_done);
                     }
                 }
             }
