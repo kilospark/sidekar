@@ -125,6 +125,18 @@ pub fn sync_transcript_mutation_side_effects(session_id: &str) -> Result<()> {
     transcript_hooks::on_transcript_mutation(session_id)
 }
 
+fn cancelled_turn_rollback_len(
+    turn_start_len: usize,
+    pre_len: usize,
+    had_staged_user: bool,
+) -> usize {
+    if had_staged_user {
+        turn_start_len
+    } else {
+        pre_len
+    }
+}
+
 /// REPL options parsed from CLI flags.
 pub struct ReplOptions {
     pub prompt: Option<String>,
@@ -679,6 +691,8 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             ));
         }
 
+        let turn_start_len = history.len();
+
         // Add user message (if any) — persisted only after a successful agent turn (see below).
         let mut had_staged_user = false;
         if let Some(content) = staged_user_content {
@@ -805,15 +819,16 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let did_compact = match run_result {
             Ok(c) => c,
             Err(e) if e.is::<crate::agent::Cancelled>() => {
-                let had_partial_turn = history.len() > pre_len;
-                history.truncate(pre_len);
-                if had_partial_turn {
-                    // Local transcript dropped assistant/tool rows — drop provider
-                    // continuation too (esp. Codex WS) or next request replays server state
-                    // for turn user thought they cancelled.
-                    prev_resp_id = None;
-                    cached_ws = None;
-                }
+                let rollback_len =
+                    cancelled_turn_rollback_len(turn_start_len, pre_len, had_staged_user);
+                history.truncate(rollback_len);
+                // Cancelled turns must not survive in model-side state, even when
+                // the interrupt landed before any assistant/tool rows were
+                // appended locally. Otherwise the next prompt can still carry the
+                // cancelled user request in live history or reuse a continuation
+                // chain that the user explicitly abandoned.
+                prev_resp_id = None;
+                cached_ws = None;
                 tunnel_println("\x1b[33m[cancelled]\x1b[0m");
                 false
             }
@@ -905,4 +920,27 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     tunnel_println(&format!("\n\x1b[2m{resume_cmd}\x1b[0m"));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cancel_turn_tests {
+    use super::cancelled_turn_rollback_len;
+
+    #[test]
+    fn cancelled_typed_turn_rolls_back_user_prompt_too() {
+        assert_eq!(
+            cancelled_turn_rollback_len(5, 6, true),
+            5,
+            "cancelled typed prompt must not survive into next turn context"
+        );
+    }
+
+    #[test]
+    fn cancelled_non_user_turn_keeps_existing_history_boundary() {
+        assert_eq!(
+            cancelled_turn_rollback_len(5, 5, false),
+            5,
+            "bus-only or no-input turns should not discard prior history"
+        );
+    }
 }
