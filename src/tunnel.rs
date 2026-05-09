@@ -61,12 +61,26 @@ pub fn has_output_tunnel() -> bool {
 pub fn tunnel_println(text: &str) {
     // Normalize embedded newlines to \r\n, then append a final \r\n
     let normalized = text.replace("\r\n", "\n").replace('\n', "\r\n");
-    print!("{normalized}\r\n");
-    let _ = std::io::stdout().flush();
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(normalized.as_bytes());
+    let _ = stdout.write_all(b"\r\n");
+    let _ = stdout.flush();
     if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
         let mut data = normalized.into_bytes();
         data.extend_from_slice(b"\r\n");
         tx.send_data(data);
+    }
+}
+
+/// Prompt-style output: stdout write with no trailing newline, mirrored to relay
+/// when registered. Prefer this over Rust's `print!` for any REPL user-visible text
+/// so web viewers stay in sync with local terminals (`tunnel_println` for full lines).
+pub fn tunnel_print(text: &str) {
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(text.as_bytes());
+    let _ = stdout.flush();
+    if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
+        tx.send_data(text.as_bytes().to_vec());
     }
 }
 

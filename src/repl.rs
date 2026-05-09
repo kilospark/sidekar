@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::collections::hash_map::Entry;
-use std::io::{self, BufRead, Write};
 
 pub mod credential_login;
 mod codex_footer;
@@ -570,6 +569,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 loaded_skills: &loaded_skills,
                 history: &history,
                 editor_input_history_len: line_editor.input_history_len(),
+                tunnel_input_fd,
             };
             if let Some(result) = handle_slash_command(&slash_ctx) {
                 match apply_slash_result(

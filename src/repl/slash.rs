@@ -1,6 +1,7 @@
 use super::renderer::EventRenderer;
 use super::status::StatusQuotaSection;
 use super::*;
+use crate::tunnel::{tunnel_print, tunnel_println};
 
 // ---------------------------------------------------------------------------
 // Slash commands
@@ -55,6 +56,8 @@ pub(super) struct SlashContext<'a> {
     /// growth; passed as a length rather than a slice to avoid moving
     /// the editor's state across the slash boundary.
     pub editor_input_history_len: usize,
+    /// When `/relay on`, the same stdin+tunnel input FD as the main REPL loop.
+    pub tunnel_input_fd: Option<i32>,
 }
 
 /// Default tail window when `/history` is run without `full` or `N`.
@@ -150,13 +153,12 @@ pub(super) enum StdinMenuIndex {
     NotANumber,
 }
 
-fn read_stdin_menu_index(prompt: &str) -> StdinMenuIndex {
-    print!("{prompt}");
-    let _ = io::stdout().flush();
-    let mut line = String::new();
-    if io::stdin().lock().read_line(&mut line).is_err() {
-        return StdinMenuIndex::EofOrReadError;
-    }
+fn read_stdin_menu_index(prompt: &str, tunnel_input_fd: Option<i32>) -> StdinMenuIndex {
+    tunnel_print(prompt);
+    let line = match super::editor::read_line_stdio_or_tunnel(tunnel_input_fd) {
+        Ok(l) => l,
+        Err(_) => return StdinMenuIndex::EofOrReadError,
+    };
     let choice = line.trim();
     if choice.is_empty() {
         return StdinMenuIndex::Blank;
@@ -315,7 +317,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                             }
                         }
                     }
-                    match read_stdin_menu_index("Enter number or Enter: ") {
+                    match read_stdin_menu_index("Enter number or Enter: ", ctx.tunnel_input_fd) {
                         StdinMenuIndex::Blank => {
                             tunnel_println("\x1b[2mStaying current.\x1b[0m");
                             SlashResult::Continue
@@ -375,7 +377,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}{marker}"));
                         }
-                        match read_stdin_menu_index("Enter number or Enter: ") {
+                        match read_stdin_menu_index("Enter number or Enter: ", ctx.tunnel_input_fd) {
                             StdinMenuIndex::Blank => {
                                 tunnel_println("\x1b[2mStaying current.\x1b[0m");
                                 SlashResult::Continue
@@ -439,7 +441,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}"));
                         }
-                        match read_stdin_menu_index("Enter number or Enter to cancel: ") {
+                        match read_stdin_menu_index("Enter number or Enter to cancel: ", ctx.tunnel_input_fd) {
                             StdinMenuIndex::Index(idx) => {
                                 if let Some((name, _)) = creds.get(idx) {
                                     let kv_key = providers::oauth::kv_key_for(name);
@@ -1197,8 +1199,13 @@ pub(super) async fn apply_slash_result(
                 }
                 SlashAsync::InteractiveSelectModel => {
                     let cn = cred_name.as_deref().unwrap_or("?");
-                    if let Some(selected) =
-                        interactive_select_model(prov, cn, model.as_deref()).await
+                    if let Some(selected) = interactive_select_model(
+                        prov,
+                        cn,
+                        model.as_deref(),
+                        *tunnel_input_fd,
+                    )
+                    .await
                     {
                         *model = Some(selected);
                     }
@@ -1210,6 +1217,7 @@ pub(super) async fn apply_slash_result(
             match crate::repl::credential_login::perform_credential_add(
                 &tokens,
                 crate::repl::credential_login::InteractiveOutput::Repl,
+                *tunnel_input_fd,
             )
             .await
             {
@@ -1353,7 +1361,7 @@ pub(super) async fn apply_slash_result(
                             tunnel_println(&format!("      \x1b[2m{cwd_disp}\x1b[0m"));
                         }
                     }
-                    match read_stdin_menu_index("Enter number or Enter: ") {
+                    match read_stdin_menu_index("Enter number or Enter: ", *tunnel_input_fd) {
                         StdinMenuIndex::Blank => {
                             tunnel_println("\x1b[2mCancelled.\x1b[0m");
                         }
@@ -1696,6 +1704,7 @@ pub(super) async fn interactive_select_model(
     prov: &Provider,
     cred_name: &str,
     current_model: Option<&str>,
+    tunnel_input_fd: Option<i32>,
 ) -> Option<String> {
     let pt = prov.provider_type();
     tunnel_println(&format!(
@@ -1706,15 +1715,12 @@ pub(super) async fn interactive_select_model(
         Err(err) => {
             tunnel_println(&format!("\x1b[31mError listing models: {err}\x1b[0m"));
             tunnel_println("Type a model name directly (or Enter to cancel):");
-            print!("> ");
-            let _ = io::stdout().flush();
-            let mut line = String::new();
-            if io::stdin().lock().read_line(&mut line).is_ok() {
-                let name = line.trim();
-                if !name.is_empty() {
-                    tunnel_println(&format!("\x1b[32mModel set: {name}\x1b[0m"));
-                    return Some(name.to_string());
-                }
+            tunnel_print("> ");
+            let line = super::editor::read_line_stdio_or_tunnel(tunnel_input_fd).ok()?;
+            let name = line.trim();
+            if !name.is_empty() {
+                tunnel_println(&format!("\x1b[32mModel set: {name}\x1b[0m"));
+                return Some(name.to_string());
             }
             return None;
         }
@@ -1722,15 +1728,12 @@ pub(super) async fn interactive_select_model(
     if models.is_empty() {
         tunnel_println("No models returned by provider.");
         tunnel_println("Type a model name directly (or Enter to cancel):");
-        print!("> ");
-        let _ = io::stdout().flush();
-        let mut line = String::new();
-        if io::stdin().lock().read_line(&mut line).is_ok() {
-            let name = line.trim();
-            if !name.is_empty() {
-                tunnel_println(&format!("\x1b[32mModel set: {name}\x1b[0m"));
-                return Some(name.to_string());
-            }
+        tunnel_print("> ");
+        let line = super::editor::read_line_stdio_or_tunnel(tunnel_input_fd).ok()?;
+        let name = line.trim();
+        if !name.is_empty() {
+            tunnel_println(&format!("\x1b[32mModel set: {name}\x1b[0m"));
+            return Some(name.to_string());
         }
         return None;
     }
@@ -1760,30 +1763,27 @@ pub(super) async fn interactive_select_model(
             }
         }
     }
-    print!("Enter number (or Enter to keep current): ");
-    let _ = io::stdout().flush();
-    let mut line = String::new();
-    if io::stdin().lock().read_line(&mut line).is_ok() {
-        let choice = line.trim();
-        if choice.is_empty() {
-            if !current.is_empty() {
-                tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
-            }
-            return None;
-        } else if let Ok(idx) = choice.parse::<usize>() {
-            if let Some(m) = models.get(idx) {
-                tunnel_println(&format!(
-                    "\x1b[32mModel set: {} \x1b[0m({})",
-                    m.id, m.display_name
-                ));
-                return Some(m.id.clone());
-            }
-            tunnel_println("Invalid index.");
-        } else {
-            // Not a number — treat as a model name typed directly.
-            tunnel_println(&format!("\x1b[32mModel set: {choice}\x1b[0m"));
-            return Some(choice.to_string());
+    tunnel_print("Enter number (or Enter to keep current): ");
+    let line = super::editor::read_line_stdio_or_tunnel(tunnel_input_fd).ok()?;
+    let choice = line.trim();
+    if choice.is_empty() {
+        if !current.is_empty() {
+            tunnel_println("\x1b[2mKeeping current model.\x1b[0m");
         }
+        return None;
+    } else if let Ok(idx) = choice.parse::<usize>() {
+        if let Some(m) = models.get(idx) {
+            tunnel_println(&format!(
+                "\x1b[32mModel set: {} \x1b[0m({})",
+                m.id, m.display_name
+            ));
+            return Some(m.id.clone());
+        }
+        tunnel_println("Invalid index.");
+    } else {
+        // Not a number — treat as a model name typed directly.
+        tunnel_println(&format!("\x1b[32mModel set: {choice}\x1b[0m"));
+        return Some(choice.to_string());
     }
     None
 }
@@ -1820,7 +1820,6 @@ pub(super) async fn run_compact(
     } else {
         tunnel_println("\x1b[2m[nothing to compact]\x1b[0m");
     }
-    let _ = io::stdout().flush();
 }
 
 pub async fn build_provider(cred_name: &str) -> Result<Provider> {

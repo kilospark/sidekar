@@ -64,16 +64,24 @@ fn output_prompt(output: InteractiveOutput, text: &str) {
             eprint!("{text}");
             let _ = std::io::stderr().flush();
         }
-        InteractiveOutput::Repl => {
-            print!("{text}");
-            let _ = std::io::stdout().flush();
-            crate::tunnel::tunnel_send(text.as_bytes().to_vec());
-        }
+        InteractiveOutput::Repl => crate::tunnel::tunnel_print(text),
     }
+}
+
+fn relay_line_read(
+    output: InteractiveOutput,
+    relay_input_fd: Option<i32>,
+) -> Result<String> {
+    let tunnel_fd = match output {
+        InteractiveOutput::Cli => None,
+        InteractiveOutput::Repl => relay_input_fd,
+    };
+    super::editor::read_line_stdio_or_tunnel(tunnel_fd).map_err(|e| anyhow!(e))
 }
 
 fn prompt_required(
     output: InteractiveOutput,
+    relay_input_fd: Option<i32>,
     label: &str,
     default: Option<&str>,
 ) -> Result<String> {
@@ -81,9 +89,7 @@ fn prompt_required(
         Some(default) => output_prompt(output, &format!("{label} [{default}]: ")),
         None => output_prompt(output, &format!("{label}: ")),
     }
-    let mut value = String::new();
-    std::io::stdin()
-        .read_line(&mut value)
+    let value = relay_line_read(output, relay_input_fd)
         .with_context(|| format!("failed to read {label}"))?;
     let value = value.trim();
     let value = if value.is_empty() {
@@ -97,11 +103,13 @@ fn prompt_required(
     Ok(value.to_string())
 }
 
-fn prompt_optional(output: InteractiveOutput, label: &str) -> Result<Option<String>> {
+fn prompt_optional(
+    output: InteractiveOutput,
+    relay_input_fd: Option<i32>,
+    label: &str,
+) -> Result<Option<String>> {
     output_prompt(output, &format!("{label}: "));
-    let mut value = String::new();
-    std::io::stdin()
-        .read_line(&mut value)
+    let value = relay_line_read(output, relay_input_fd)
         .with_context(|| format!("failed to read {label}"))?;
     let value = value.trim();
     if value.is_empty() {
@@ -118,6 +126,7 @@ fn open_browser_hint(url: &str) {
 pub async fn perform_credential_add(
     tokens: &[String],
     output: InteractiveOutput,
+    relay_input_fd: Option<i32>,
 ) -> Result<String> {
     let provider = match tokens.first().map(|s| s.as_str()) {
         Some(n) => n,
@@ -133,12 +142,13 @@ pub async fn perform_credential_add(
         let display_name = name.to_string();
         let base_url = match tokens.get(2).map(|s| s.as_str()) {
             Some(url) if !url.trim().is_empty() => url.trim().to_string(),
-            _ => prompt_required(output, "Base URL", None)?,
+            _ => prompt_required(output, relay_input_fd, "Base URL", None)?,
         };
         let api_key = match tokens.get(3).map(|s| s.as_str()) {
             Some(key) if !key.trim().is_empty() => key.trim().to_string(),
             _ => prompt_required(
                 output,
+                relay_input_fd,
                 "API key (adc = GCP Application Default Credentials)",
                 None,
             )?,
@@ -225,7 +235,7 @@ pub async fn perform_credential_add(
         "openrouter" => {
             output_line(output, "No OpenRouter credentials found.");
             output_line(output, "Get an API key from https://openrouter.ai/keys");
-            let key = prompt_required(output, "API key", None)?;
+            let key = prompt_required(output, relay_input_fd, "API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
                 "openrouter",
@@ -238,7 +248,7 @@ pub async fn perform_credential_add(
         "opencode-zen" => {
             output_line(output, "No OpenCode Zen credentials found. Opening https://opencode.ai/auth ...");
             open_browser_hint("https://opencode.ai/auth");
-            let key = prompt_required(output, "Paste API key", None)?;
+            let key = prompt_required(output, relay_input_fd, "Paste API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
                 "opencode-zen",
@@ -254,7 +264,7 @@ pub async fn perform_credential_add(
                 "No OpenCode Go credentials found. Opening https://opencode.ai/auth ...",
             );
             open_browser_hint("https://opencode.ai/auth");
-            let key = prompt_required(output, "Paste API key", None)?;
+            let key = prompt_required(output, relay_input_fd, "Paste API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
                 "opencode-go",
@@ -267,7 +277,7 @@ pub async fn perform_credential_add(
         "grok" => {
             output_line(output, "No Grok credentials found. Opening https://console.x.ai/ ...");
             open_browser_hint("https://console.x.ai/");
-            let key = prompt_required(output, "API key", None)?;
+            let key = prompt_required(output, relay_input_fd, "API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
                 "grok",
@@ -283,7 +293,7 @@ pub async fn perform_credential_add(
                 "No Gemini credentials found. Opening https://aistudio.google.com/apikey ...",
             );
             open_browser_hint("https://aistudio.google.com/apikey");
-            let key = prompt_required(output, "API key", None)?;
+            let key = prompt_required(output, relay_input_fd, "API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
                 "gemini",
@@ -299,7 +309,7 @@ pub async fn perform_credential_add(
                 "Cursor uses your API key against the backend Sidekar already logs (default https://api2.cursor.sh). Full REPL streaming needs Rust protobuf for `agent.v1.AgentService/Run` — see src/providers/cursor.rs header.",
             );
             open_browser_hint("https://cursor.com/docs");
-            let key = prompt_required(output, "Cursor API key", None)?;
+            let key = prompt_required(output, relay_input_fd, "Cursor API key", None)?;
             crate::providers::oauth::save_api_key_credential(
                 &kv_key,
                 "cursor",
@@ -314,9 +324,10 @@ pub async fn perform_credential_add(
                 output,
                 "Bedrock uses IAM via AWS SDK default chain (environment, ~/.aws/credentials, SSO, …).",
             );
-            let region = prompt_required(output, "AWS region", Some("us-east-1"))?;
+            let region = prompt_required(output, relay_input_fd, "AWS region", Some("us-east-1"))?;
             let profile = prompt_optional(
                 output,
+                relay_input_fd,
                 "AWS named profile (optional, Enter → default credential chain)",
             )?;
             crate::providers::oauth::save_bedrock_credential(
@@ -337,9 +348,10 @@ pub async fn perform_credential_add(
                 output,
                 "Vertex OpenAI-compat uses `gcloud auth print-access-token` as Bearer. Run `gcloud auth login` if needed.",
             );
-            let project = prompt_required(output, "GCP project id", None)?;
+            let project = prompt_required(output, relay_input_fd, "GCP project id", None)?;
             let location = prompt_required(
                 output,
+                relay_input_fd,
                 "Vertex location (region), e.g. us-central1 or global",
                 Some("us-central1"),
             )?;

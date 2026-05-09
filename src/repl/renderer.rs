@@ -2,6 +2,7 @@ use super::spinner::Spinner;
 use super::*;
 use crate::providers::ContentBlock;
 use crate::providers::RateLimitSnapshot;
+use std::io::Write;
 
 // ---------------------------------------------------------------------------
 // Stream event rendering
@@ -118,7 +119,7 @@ impl EventRenderer {
         }
         self.clear_partial_preview();
         emit_lines_batched(&lines);
-        let _ = io::stdout().flush();
+        let _ = std::io::stdout().flush();
     }
 
     /// Refresh the trailing-line preview. Throttled to `PREVIEW_MIN_INTERVAL`
@@ -142,7 +143,7 @@ impl EventRenderer {
         match self.md.preview_partial_line() {
             Some(line) => {
                 emit_transient_status(&line);
-                let _ = io::stdout().flush();
+                let _ = std::io::stdout().flush();
                 self.partial_visible = true;
             }
             None => self.clear_partial_preview(),
@@ -152,7 +153,7 @@ impl EventRenderer {
     fn clear_partial_preview(&mut self) {
         if self.partial_visible {
             clear_transient_status();
-            let _ = io::stdout().flush();
+            let _ = std::io::stdout().flush();
             self.partial_visible = false;
         }
         self.last_preview_at = None;
@@ -237,7 +238,7 @@ impl EventRenderer {
                 self.flush_thinking_before_assistant_body();
                 let lines = self.md.finalize();
                 emit_lines_batched(&lines);
-                let _ = io::stdout().flush();
+                let _ = std::io::stdout().flush();
                 match self.tool_args.entry(*index) {
                     Entry::Vacant(v) => {
                         v.insert((name.clone(), String::new()));
@@ -269,7 +270,7 @@ impl EventRenderer {
                     self.emitln(&format!(
                         "\n\x1b[2m└─\x1b[0m \x1b[36m{display_name}\x1b[0m \x1b[2m{detail}\x1b[0m"
                     ));
-                    let _ = io::stdout().flush();
+                    let _ = std::io::stdout().flush();
                 }
                 // Restart spinner while tool executes and next API call happens
                 self.stop_spinner();
@@ -285,7 +286,7 @@ impl EventRenderer {
                 }
                 let lines = self.md.finalize();
                 emit_lines_batched(&lines);
-                let _ = io::stdout().flush();
+                let _ = std::io::stdout().flush();
                 // Always-on dim footer: tokens + optional cache + quota (headers, stream
                 // `rate_limits`, cached `wham/usage` for Codex). Quota stress → yellow/red.
                 let u = &message.usage;
@@ -338,7 +339,7 @@ impl EventRenderer {
                         }
                     }
                 }
-                let _ = io::stdout().flush();
+                let _ = std::io::stdout().flush();
             }
             StreamEvent::Error { message } => {
                 self.stop_spinner();
@@ -346,7 +347,7 @@ impl EventRenderer {
                 self.flush_thinking_complete_lines();
                 self.flush_thinking_remainder_as_line();
                 self.emitln(&format!("\n\x1b[31mError: {message}\x1b[0m"));
-                let _ = io::stdout().flush();
+                let _ = std::io::stdout().flush();
             }
         }
     }

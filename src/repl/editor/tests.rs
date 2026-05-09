@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn drain_editor_pending_submit_pops_followup_turn_merge() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    editor.pending_followups.push_back(SubmittedLine {
+        text: "while agent ran".into(),
+        image_paths: Vec::new(),
+    });
+    editor.drain_pending_followups_as_submit();
+    let line = drain_editor_pending_submit(&mut editor).expect("queued follow-up submit");
+    assert_eq!(line.text, "while agent ran");
+    assert!(
+        drain_editor_pending_submit(&mut editor).is_none(),
+        "queue should drain in one shot"
+    );
+}
+
+#[test]
 fn process_input_bytes_emits_every_line_in_one_chunk() {
     let mut editor = LineEditor::with_history(Vec::new());
     let mut lines = Vec::new();
