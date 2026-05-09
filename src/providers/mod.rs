@@ -75,16 +75,6 @@ pub fn shared_mitm_proxy_port() -> Option<u16> {
     g.as_ref().map(|a| a.port)
 }
 
-/// Attached MITM port + CA PEM path for subprocess env (`NODE_EXTRA_CA_CERTS`,
-/// `HTTPS_PROXY`, etc.). Parent REPL keeps process env unchanged; spawn helpers
-/// merge these when bridging non-reqwest subprocesses.
-pub(super) fn attached_mitm_for_child_env() -> Option<(u16, PathBuf)> {
-    let g = ATTACHED_MITM_PROXY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    g.as_ref().map(|a| (a.port, a.ca_pem_path.clone()))
-}
-
 /// Build a reqwest client for streaming provider API calls. When an MITM
 /// proxy is attached, the client routes through it and trusts its ephemeral CA.
 pub(crate) fn build_streaming_client(
