@@ -1,8 +1,17 @@
 import { getUser, getRawSessionToken, clearSessionCookie } from "../_auth.js";
 import { getDb } from "../_db.js";
+import { handleCollaboratorsRequest } from "../_collaboratorApi.js";
 import { ObjectId } from "mongodb";
 
 export default async function handler(req, res) {
+  if (req.query.collaborators !== undefined) {
+    const jwt = await getUser(req);
+    if (!jwt?.sub) {
+      return res.status(401).json({ error: "not authenticated" });
+    }
+    return handleCollaboratorsRequest(req, res, jwt.sub);
+  }
+
   if (req.method === "GET") {
     if (req.query.linked !== undefined) {
       const jwt = await getUser(req);

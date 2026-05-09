@@ -1,5 +1,4 @@
 import { ObjectId } from "mongodb";
-import { getUser } from "./_auth.js";
 import { getDb } from "./_db.js";
 import { ensureAccountLinksIndexes } from "./_linkedAccounts.js";
 import { randomBytes } from "crypto";
@@ -23,16 +22,18 @@ function pushUniqueById(arr, row) {
   arr.push(row);
 }
 
-export default async function handler(req, res) {
-  const user = await getUser(req);
-  if (!user?.sub) {
-    return res.status(401).json({ error: "not authenticated" });
-  }
+/**
+ * Collaborator grants (JWT user only). Used from `/api/auth/session?collaborators`.
+ *
+ * GET — list `{ can_see, can_see_you }`
+ * PUT — JSON `{ action: "invite"|"accept", code? }`
+ * DELETE — `?grantee=id` | `?grantor=id`
+ */
+export async function handleCollaboratorsRequest(req, res, jwtSub) {
+  const selfId = new ObjectId(jwtSub);
 
   const db = await getDb();
   await ensureAccountLinksIndexes(db);
-
-  const selfId = new ObjectId(user.sub);
 
   if (req.method === "GET") {
     const outgoing = await db
@@ -82,7 +83,7 @@ export default async function handler(req, res) {
     return res.json({ can_see, can_see_you });
   }
 
-  if (req.method === "POST") {
+  if (req.method === "PUT") {
     let body = req.body || {};
     if (typeof body === "string") {
       try {

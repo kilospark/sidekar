@@ -253,7 +253,7 @@ main.container { padding: 32px 24px; }
           if (!res.ok) throw new Error("Failed to load settings");
           return res.json();
         }),
-        fetch("/api/account-links").then(function(res) {
+        fetch("/api/auth/session?collaborators").then(function(res) {
           if (res.status === 401) {
             return { can_see: [], can_see_you: [] };
           }
@@ -401,8 +401,8 @@ main.container { padding: 32px 24px; }
       if (inviteBtn && inviteOut) {
         inviteBtn.addEventListener("click", function() {
           inviteBtn.disabled = true;
-          fetch("/api/account-links", {
-            method: "POST",
+          fetch("/api/auth/session?collaborators", {
+            method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "invite" }),
           })
@@ -437,8 +437,8 @@ main.container { padding: 32px 24px; }
             return;
           }
           acceptBtn.disabled = true;
-          fetch("/api/account-links", {
-            method: "POST",
+          fetch("/api/auth/session?collaborators", {
+            method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "accept", code: raw }),
           })
@@ -474,7 +474,7 @@ main.container { padding: 32px 24px; }
             mode === "grantee"
               ? "grantee=" + encodeURIComponent(val)
               : "grantor=" + encodeURIComponent(val);
-          fetch("/api/account-links?" + qs, { method: "DELETE" })
+          fetch("/api/auth/session?collaborators&" + qs, { method: "DELETE" })
             .then(function(r) {
               if (!r.ok) throw new Error();
               showToast("Updated");
