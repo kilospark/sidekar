@@ -147,4 +147,3 @@ fn format_reset_time(epoch_secs: u64) -> Option<String> {
         Some(format!("{}h{}m", delta / 3600, (delta % 3600) / 60))
     }
 }
-

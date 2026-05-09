@@ -616,12 +616,9 @@ fn exec_edit(args: &Value) -> Result<String> {
         return exec_edit_patch(path, patch_text);
     }
 
-    let old_string = args
-        .get("old_string")
-        .and_then(|v| v.as_str())
-        .context(
-            "edit: replace mode requires `old_string`, or pass non-empty `patch` for unified-diff mode",
-        )?;
+    let old_string = args.get("old_string").and_then(|v| v.as_str()).context(
+        "edit: replace mode requires `old_string`, or pass non-empty `patch` for unified-diff mode",
+    )?;
     let new_string = args
         .get("new_string")
         .and_then(|v| v.as_str())

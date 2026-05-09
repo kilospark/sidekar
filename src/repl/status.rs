@@ -90,9 +90,7 @@ pub(super) struct TurnStatusSnapshot {
 pub(super) fn capture_turn_status_snapshot(
     turn_stats: &std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>,
 ) -> TurnStatusSnapshot {
-    let ts = turn_stats
-        .lock()
-        .expect("turn_stats mutex poisoned");
+    let ts = turn_stats.lock().expect("turn_stats mutex poisoned");
     TurnStatusSnapshot {
         cumulative: ts.cumulative.clone(),
         last: ts.last.clone(),
@@ -116,20 +114,17 @@ pub(super) fn build_status_view<'a>(
 ) -> StatusView<'a> {
     let cw = crate::providers::cached_context_window(model);
     let tokens_estimate = crate::agent::compaction::estimate_tokens_public(history);
-    let credential_lock_remaining =
-        if cred_name.is_empty() || cred_name == "(none)" {
-            None
-        } else {
-            crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(
-                cred_name,
-            ))
+    let credential_lock_remaining = if cred_name.is_empty() || cred_name == "(none)" {
+        None
+    } else {
+        crate::providers::session_lock::read_locked(&crate::providers::oauth::kv_key_for(cred_name))
             .map(|until| {
                 std::time::Duration::from_secs(
                     until.saturating_sub(crate::providers::session_lock::current_epoch()),
                 )
             })
             .filter(|d| !d.is_zero())
-        };
+    };
     StatusView {
         session_id,
         cwd,

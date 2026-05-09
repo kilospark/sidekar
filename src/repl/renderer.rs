@@ -10,7 +10,10 @@ use std::io::Write;
 
 /// Emit one line of model reasoning — dim + italic so it reads softer than answer text.
 fn emit_dim_thinking_line(line: &str) {
-    let sanitized: String = line.chars().map(|c| if c == '\r' { ' ' } else { c }).collect();
+    let sanitized: String = line
+        .chars()
+        .map(|c| if c == '\r' { ' ' } else { c })
+        .collect();
     let styled = format!("\x1b[2m\x1b[3m{sanitized}\x1b[0m\r\n");
     emit_shared_output(&styled);
 }
@@ -291,11 +294,7 @@ impl EventRenderer {
                 // `rate_limits`, cached `wham/usage` for Codex). Quota stress → yellow/red.
                 let u = &message.usage;
                 let merged_rl = if let Some(ref cf) = self.codex_footer {
-                    let cached = cf
-                        .cache
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.snapshot.clone());
+                    let cached = cf.cache.lock().ok().and_then(|g| g.snapshot.clone());
                     let merged =
                         RateLimitSnapshot::overlay_option(cached, message.rate_limit.clone());
                     if let Ok(mut g) = cf.cache.lock() {
@@ -310,10 +309,7 @@ impl EventRenderer {
                 let body = if u.cache_read_tokens > 0 || u.cache_write_tokens > 0 {
                     format!(
                         "{} in / {} out / {} cache read / {} cache write tokens",
-                        u.input_tokens,
-                        u.output_tokens,
-                        u.cache_read_tokens,
-                        u.cache_write_tokens
+                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
                     )
                 } else {
                     format!("{} in / {} out tokens", u.input_tokens, u.output_tokens)

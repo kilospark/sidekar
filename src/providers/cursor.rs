@@ -42,7 +42,11 @@ fn connect_unary_envelope(payload: &[u8]) -> Vec<u8> {
     v
 }
 
-async fn exchange_access_token(client: &reqwest::Client, api_key: &str, base: &str) -> Result<String> {
+async fn exchange_access_token(
+    client: &reqwest::Client,
+    api_key: &str,
+    base: &str,
+) -> Result<String> {
     let url = format!("{base}/auth/exchange_user_api_key");
     let resp = client
         .post(&url)

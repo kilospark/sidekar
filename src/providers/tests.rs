@@ -342,12 +342,7 @@ fn model_list_display_suffix_hides_arn_like_bedrock_label_when_verbose_off() {
 fn model_list_display_suffix_keeps_human_bedrock_label_when_verbose_off() {
     let prev = super::is_verbose();
     super::set_verbose(false);
-    let s = super::model_list_display_suffix(
-        "bedrock",
-        "anthropic.foo",
-        "Claude Sonnet",
-        200_000,
-    );
+    let s = super::model_list_display_suffix("bedrock", "anthropic.foo", "Claude Sonnet", 200_000);
     assert_eq!(s, "Claude Sonnet, 200k ctx");
     super::set_verbose(prev);
 }

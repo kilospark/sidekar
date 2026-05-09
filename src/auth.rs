@@ -95,7 +95,9 @@ pub async fn device_auth_flow() -> Result<()> {
     if copied {
         println!("Copied to clipboard. Opened the authorization page.");
     } else {
-        println!("Opened the authorization page. (Clipboard unavailable — paste the code from above.)");
+        println!(
+            "Opened the authorization page. (Clipboard unavailable — paste the code from above.)"
+        );
     }
 
     // Step 3: Poll for token
@@ -260,11 +262,7 @@ fn copy_device_code_to_clipboard(s: &str) -> bool {
             .map(|st| st.success())
             .unwrap_or(false);
     }
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "windows"
-    )))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = s;
         false

@@ -195,10 +195,7 @@ pub async fn stream_vertex_anthropic_partner(
     let mut body_val = serde_json::to_value(&body)?;
     if let Some(obj) = body_val.as_object_mut() {
         obj.remove("model");
-        obj.insert(
-            "anthropic_version".to_string(),
-            json!("vertex-2023-10-16"),
-        );
+        obj.insert("anthropic_version".to_string(), json!("vertex-2023-10-16"));
     }
     let body_json = serde_json::to_string(&body_val)?;
 

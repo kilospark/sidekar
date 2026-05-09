@@ -2220,11 +2220,23 @@ fn string_from_pending_no_newline(pending: &mut Vec<u8>) -> String {
     String::from_utf8_lossy(&line).into_owned()
 }
 
+#[inline]
+fn reject_ctrl_c(chunk: &[u8]) -> io::Result<()> {
+    if chunk.contains(&0x03) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Ctrl+C cancelled line input",
+        ));
+    }
+    Ok(())
+}
+
 /// Read until the first `\n`, or EOF on stdin with a partial line buffered.
 ///
 /// When `tunnel_fd` is `None`, uses standard line-buffered stdin (same as a raw
-/// `read_line`). When relay is active, polls stdin (TTY raw) and the tunnel input
-/// FD like [`read_input_or_bus`], so remote viewers can answer menus and prompts.
+/// `read_line`). When relay is active, polls stdin (TTY, canonical) and the tunnel
+/// input FD so remote viewers can answer menus and prompts without switching the
+/// local terminal out of line discipline (echo and Ctrl+C stay normal).
 pub(crate) fn read_line_stdio_or_tunnel(tunnel_fd: Option<i32>) -> io::Result<String> {
     if tunnel_fd.is_none() {
         let mut line = String::new();
@@ -2232,30 +2244,28 @@ pub(crate) fn read_line_stdio_or_tunnel(tunnel_fd: Option<i32>) -> io::Result<St
         return Ok(line);
     }
 
-    let _raw = RawModeGuard::enter().ok();
-    let stdin_fd = _raw.as_ref().map(|_| libc::STDIN_FILENO);
+    // Do not switch the TTY here. `read_input_or_bus` already restored the terminal
+    // to canonical mode before slash handlers run. Applying `RawModeGuard` for menus
+    // turned off echo and ISIG (`cfmakeraw`), so keystrokes disappeared and Ctrl+C no
+    // longer behaved like menus used to—we only multiplex stdin + tunnel fds.
+    let stdin_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } != 0;
+    let stdin_poll_fd = stdin_tty.then_some(libc::STDIN_FILENO);
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 256];
 
     loop {
-        let mut fds_arr = build_input_pollfds(stdin_fd, tunnel_fd);
+        let mut fds_arr = build_input_pollfds(stdin_poll_fd, tunnel_fd);
         if fds_arr.is_empty() {
             fds_arr = build_input_pollfds(None, tunnel_fd);
         }
         if fds_arr.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "relay line read: no pollable fds (need TTY raw mode or tunnel-only fd)",
+                "relay line read: no pollable fds (need TTY stdin or tunnel fd)",
             ));
         }
 
-        let ready = unsafe {
-            libc::poll(
-                fds_arr.as_mut_ptr(),
-                fds_arr.len() as libc::nfds_t,
-                -1,
-            )
-        };
+        let ready = unsafe { libc::poll(fds_arr.as_mut_ptr(), fds_arr.len() as libc::nfds_t, -1) };
         if ready < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
@@ -2270,46 +2280,71 @@ pub(crate) fn read_line_stdio_or_tunnel(tunnel_fd: Option<i32>) -> io::Result<St
                 continue;
             }
 
-            let is_stdin = stdin_fd == Some(pollfd.fd);
+            let is_stdin = stdin_poll_fd == Some(pollfd.fd);
 
-            loop {
-                let n = unsafe {
-                    libc::read(
-                        pollfd.fd,
-                        buf.as_mut_ptr().cast::<libc::c_void>(),
-                        buf.len(),
-                    )
-                };
-                if n < 0 {
-                    let err = io::Error::last_os_error();
-                    if err.kind() == io::ErrorKind::Interrupted {
-                        continue;
+            if is_stdin {
+                // Mirror `read_input_or_bus`: use `Stdin`, not libc::read(0).
+                // Mixing raw fd reads with `io::stdin()`'s lock/buffer strands
+                // bytes and makes credential/model menus appear “dead”.
+                loop {
+                    match io::stdin().read(&mut buf) {
+                        Ok(0) => {
+                            if pending.is_empty() {
+                                return Ok(String::new());
+                            }
+                            return Ok(string_from_pending_no_newline(&mut pending));
+                        }
+                        Ok(n) => {
+                            reject_ctrl_c(&buf[..n])?;
+                            pending.extend_from_slice(&buf[..n]);
+                            if let Some(line) = take_line_through_newline(&mut pending) {
+                                pending.clear();
+                                return Ok(format!("{line}\n"));
+                            }
+                            if n < buf.len() {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) => return Err(e),
                     }
-                    if err.kind() == io::ErrorKind::WouldBlock {
+                }
+            } else {
+                loop {
+                    let n = unsafe {
+                        libc::read(
+                            pollfd.fd,
+                            buf.as_mut_ptr().cast::<libc::c_void>(),
+                            buf.len(),
+                        )
+                    };
+                    if n < 0 {
+                        let err = io::Error::last_os_error();
+                        if err.kind() == io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        if err.kind() == io::ErrorKind::WouldBlock {
+                            break;
+                        }
+                        return Err(err);
+                    }
+                    if n == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "relay input closed before end of line",
+                        ));
+                    }
+                    let n = n as usize;
+                    reject_ctrl_c(&buf[..n])?;
+                    pending.extend_from_slice(&buf[..n]);
+                    if let Some(line) = take_line_through_newline(&mut pending) {
+                        pending.clear();
+                        return Ok(format!("{line}\n"));
+                    }
+                    if n < buf.len() {
                         break;
                     }
-                    return Err(err);
-                }
-                if n == 0 {
-                    if is_stdin {
-                        if pending.is_empty() {
-                            return Ok(String::new());
-                        }
-                        return Ok(string_from_pending_no_newline(&mut pending));
-                    }
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "relay input closed before end of line",
-                    ));
-                }
-                pending.extend_from_slice(&buf[..n as usize]);
-                if let Some(line) = take_line_through_newline(&mut pending) {
-                    pending.clear();
-                    return Ok(format!("{line}\n"));
-                }
-                // Drained this fd; if POLLIN might have more, read again.
-                if (n as usize) < buf.len() {
-                    break;
                 }
             }
         }

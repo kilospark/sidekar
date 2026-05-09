@@ -3,8 +3,8 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::{
-    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason, StreamConfig,
-    StreamEvent, ToolDef, Usage,
+    AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason,
+    StreamConfig, StreamEvent, ToolDef, Usage,
 };
 
 /// Streaming call to OpenRouter's OpenAI-compatible chat completions API.
@@ -42,7 +42,8 @@ pub async fn stream_with_provider(
     tools: &[ToolDef],
     _prompt_cache_key: Option<&str>,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-    if let Some(partner_base) = super::vertex::openapi_base_to_anthropic_partner_base(base_url, model)
+    if let Some(partner_base) =
+        super::vertex::openapi_base_to_anthropic_partner_base(base_url, model)
     {
         return super::anthropic::stream_vertex_anthropic_partner(
             api_key,
@@ -807,7 +808,10 @@ pub async fn fetch_openrouter_key_limits_body(api_key: &str) -> Result<String, S
         "limit",
         &json_optional_limit_display(data.get("limit")),
     ));
-    out.push_str(&gw_limits_row("usage", &json_usage_display(data.get("usage"))));
+    out.push_str(&gw_limits_row(
+        "usage",
+        &json_usage_display(data.get("usage")),
+    ));
     out.push_str(&gw_limits_row(
         "usage (today UTC)",
         &json_usage_display(data.get("usage_daily")),

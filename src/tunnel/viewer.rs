@@ -56,18 +56,11 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
         );
     }
 
-    let resolve: ResolveResp = resp
-        .json()
-        .await
-        .context("parse relay resolve JSON")?;
+    let resolve: ResolveResp = resp.json().await.context("parse relay resolve JSON")?;
 
     let ws_origin = origin_to_ws_origin(&resolve.owner_origin)
         .with_context(|| format!("bad owner_origin {:?}", resolve.owner_origin))?;
-    let ws_url = format!(
-        "{}/session/{}",
-        ws_origin.trim_end_matches('/'),
-        enc
-    );
+    let ws_url = format!("{}/session/{}", ws_origin.trim_end_matches('/'), enc);
 
     let mut request = ws_url
         .as_str()
@@ -80,12 +73,11 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
             .context("invalid Authorization header value for viewer WS")?,
     );
 
-    let (mut ws_write, mut ws_read) =
-        tokio_tungstenite::connect_async(request)
-            .await
-            .with_context(|| format!("WebSocket viewer connect failed: {ws_url}"))?
-            .0
-            .split();
+    let (mut ws_write, mut ws_read) = tokio_tungstenite::connect_async(request)
+        .await
+        .with_context(|| format!("WebSocket viewer connect failed: {ws_url}"))?
+        .0
+        .split();
 
     struct RawRestore {
         saved: libc::termios,

@@ -46,7 +46,10 @@ impl CodexWhamFooterCache {
     }
 }
 
-pub(super) fn spawn_wham_quota_refresh(bindings: CodexFooterBindings, main_line_already_had_quota: bool) {
+pub(super) fn spawn_wham_quota_refresh(
+    bindings: CodexFooterBindings,
+    main_line_already_had_quota: bool,
+) {
     tokio::spawn(async move {
         let Ok(v) = crate::providers::codex::fetch_codex_plan_quota_json(
             bindings.api_key.as_str(),
@@ -56,7 +59,8 @@ pub(super) fn spawn_wham_quota_refresh(bindings: CodexFooterBindings, main_line_
         else {
             return;
         };
-        let Some(fresh) = crate::providers::codex::rate_limit_snapshot_from_codex_quota_json(&v) else {
+        let Some(fresh) = crate::providers::codex::rate_limit_snapshot_from_codex_quota_json(&v)
+        else {
             return;
         };
         let updated = {

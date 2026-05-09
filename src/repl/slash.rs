@@ -157,6 +157,7 @@ fn read_stdin_menu_index(prompt: &str, tunnel_input_fd: Option<i32>) -> StdinMen
     tunnel_print(prompt);
     let line = match super::editor::read_line_stdio_or_tunnel(tunnel_input_fd) {
         Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return StdinMenuIndex::Blank,
         Err(_) => return StdinMenuIndex::EofOrReadError,
     };
     let choice = line.trim();
@@ -377,7 +378,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}{marker}"));
                         }
-                        match read_stdin_menu_index("Enter number or Enter: ", ctx.tunnel_input_fd) {
+                        match read_stdin_menu_index("Enter number or Enter: ", ctx.tunnel_input_fd)
+                        {
                             StdinMenuIndex::Blank => {
                                 tunnel_println("\x1b[2mStaying current.\x1b[0m");
                                 SlashResult::Continue
@@ -441,7 +443,10 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 .unwrap_or_default();
                             tunnel_println(&format!("  [{i}] {name} ({provider}){email}"));
                         }
-                        match read_stdin_menu_index("Enter number or Enter to cancel: ", ctx.tunnel_input_fd) {
+                        match read_stdin_menu_index(
+                            "Enter number or Enter to cancel: ",
+                            ctx.tunnel_input_fd,
+                        ) {
                             StdinMenuIndex::Index(idx) => {
                                 if let Some((name, _)) = creds.get(idx) {
                                     let kv_key = providers::oauth::kv_key_for(name);
@@ -665,7 +670,9 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                         "off"
                     };
                     tunnel_println(&format!("Relay: {state}"));
-                    tunnel_println("\x1b[2m/relay list — remote terminals · attach <session_id>\x1b[0m");
+                    tunnel_println(
+                        "\x1b[2m/relay list — remote terminals · attach <session_id>\x1b[0m",
+                    );
                     SlashResult::Continue
                 }
                 _ => {
@@ -1077,9 +1084,7 @@ async fn quota_section_fetch(
                 Err(e) => {
                     return Some(StatusQuotaSection {
                         title: "OpenRouter".into(),
-                        body: format!(
-                            "  \x1b[33mcould not resolve API key: {e:#}\x1b[0m\n"
-                        ),
+                        body: format!("  \x1b[33mcould not resolve API key: {e:#}\x1b[0m\n"),
                     });
                 }
             };
@@ -1094,7 +1099,9 @@ async fn quota_section_fetch(
                 }),
             }
         }
-        Provider::OpenAiCompat { api_key, base_url, .. } => {
+        Provider::OpenAiCompat {
+            api_key, base_url, ..
+        } => {
             if !base_url.to_ascii_lowercase().contains("openrouter.ai") {
                 return None;
             }
@@ -1103,9 +1110,7 @@ async fn quota_section_fetch(
                 Err(e) => {
                     return Some(StatusQuotaSection {
                         title: "OpenRouter".into(),
-                        body: format!(
-                            "  \x1b[33mcould not resolve API key: {e:#}\x1b[0m\n"
-                        ),
+                        body: format!("  \x1b[33mcould not resolve API key: {e:#}\x1b[0m\n"),
                     });
                 }
             };
@@ -1199,13 +1204,8 @@ pub(super) async fn apply_slash_result(
                 }
                 SlashAsync::InteractiveSelectModel => {
                     let cn = cred_name.as_deref().unwrap_or("?");
-                    if let Some(selected) = interactive_select_model(
-                        prov,
-                        cn,
-                        model.as_deref(),
-                        *tunnel_input_fd,
-                    )
-                    .await
+                    if let Some(selected) =
+                        interactive_select_model(prov, cn, model.as_deref(), *tunnel_input_fd).await
                     {
                         *model = Some(selected);
                     }
@@ -1290,29 +1290,30 @@ pub(super) async fn apply_slash_result(
             if crate::auth::auth_token().is_none() {
                 tunnel_println("\x1b[31mNot logged in. Run: sidekar device login\x1b[0m");
             } else {
-                let rows = match tokio::task::spawn_blocking(|| {
-                    crate::transport::fetch_relay_sessions()
-                })
-                .await
-                {
-                    Ok(Ok(r)) => r,
-                    Ok(Err(e)) => {
-                        tunnel_println(&format!(
-                            "\x1b[31mFailed to list relay sessions: {e:#}\x1b[0m"
-                        ));
-                        return Ok(SlashAction::Continue);
-                    }
-                    Err(e) => {
-                        tunnel_println(&format!("\x1b[31mList task failed: {e}\x1b[0m"));
-                        return Ok(SlashAction::Continue);
-                    }
-                };
+                let rows =
+                    match tokio::task::spawn_blocking(|| crate::transport::fetch_relay_sessions())
+                        .await
+                    {
+                        Ok(Ok(r)) => r,
+                        Ok(Err(e)) => {
+                            tunnel_println(&format!(
+                                "\x1b[31mFailed to list relay sessions: {e:#}\x1b[0m"
+                            ));
+                            return Ok(SlashAction::Continue);
+                        }
+                        Err(e) => {
+                            tunnel_println(&format!("\x1b[31mList task failed: {e}\x1b[0m"));
+                            return Ok(SlashAction::Continue);
+                        }
+                    };
                 if rows.is_empty() {
                     tunnel_println(
                         "No remote relay sessions (no tunnel hosts heartbeating for your account).",
                     );
                 } else {
-                    tunnel_println("Pick a session to attach (\x1b[2mCtrl+] to detach once connected\x1b[0m):");
+                    tunnel_println(
+                        "Pick a session to attach (\x1b[2mCtrl+] to detach once connected\x1b[0m):",
+                    );
                     for (i, s) in rows.iter().enumerate() {
                         let local = relay_attach_is_local_tunnel(&s.id, tunnel_tx);
                         let id8 = s.id.chars().take(8).collect::<String>();
@@ -1336,18 +1337,11 @@ pub(super) async fn apply_slash_result(
                         } else {
                             s.hostname.as_str()
                         };
-                        let cwd_disp = truncate_inline(
-                            s.cwd.as_str().trim(),
-                            52,
-                        );
+                        let cwd_disp = truncate_inline(s.cwd.as_str().trim(), 52);
                         tunnel_println(&format!(
                             "  [{i}] {id8}  {name}  {agent}  @{nick}  {host}  · \x1b[2m{} viewer(s){}\x1b[0m",
                             s.viewers,
-                            if local {
-                                "  · this REPL (skip)"
-                            } else {
-                                ""
-                            },
+                            if local { "  · this REPL (skip)" } else { "" },
                         ));
                         if let Some(ref o) = s.owner_origin {
                             if !o.is_empty() {
@@ -1797,7 +1791,10 @@ pub(super) async fn run_compact(
     turn_stats: Option<&std::sync::Arc<std::sync::Mutex<super::turn_stats::TurnStats>>>,
 ) {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone(), None)));
+    let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(
+        cancel.clone(),
+        None,
+    )));
     let renderer_for_events = renderer.clone();
     let on_event: crate::agent::StreamCallback = Box::new(move |event: &StreamEvent| {
         if let Ok(mut guard) = renderer_for_events.lock() {

@@ -56,7 +56,8 @@ pub(super) fn format_debug_bundle(
                     let key = crate::providers::oauth::kv_key_for(cred_name);
                     match crate::providers::oauth::load_credentials(&key) {
                         Ok(Some(creds)) => {
-                            if let Some(p) = creds.metadata.get("gcp_project").and_then(|v| v.as_str())
+                            if let Some(p) =
+                                creds.metadata.get("gcp_project").and_then(|v| v.as_str())
                             {
                                 lines.push(format!("gcp_project={p:?}"));
                             }

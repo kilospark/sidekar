@@ -82,8 +82,7 @@ pub(super) fn attached_mitm_for_child_env() -> Option<(u16, PathBuf)> {
     let g = ATTACHED_MITM_PROXY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    g.as_ref()
-        .map(|a| (a.port, a.ca_pem_path.clone()))
+    g.as_ref().map(|a| (a.port, a.ca_pem_path.clone()))
 }
 
 /// Build a reqwest client for streaming provider API calls. When an MITM
@@ -1702,7 +1701,8 @@ async fn fetch_opencode_public_model_list(
 }
 
 async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "OpenCode Zen", true).await
+    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "OpenCode Zen", true)
+        .await
 }
 
 async fn fetch_opencode_go_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
@@ -1761,8 +1761,8 @@ pub enum Provider {
         region: String,
         aws_profile: Option<String>,
     },
-/// Cursor — **Rust client toward `CURSOR_BACKEND` (`api2.cursor.sh`)**. Chat streaming still
-/// needs checked-in protobuf for `agent.v1.AgentService/Run` (BiDi); see `cursor.rs` module docs.
+    /// Cursor — **Rust client toward `CURSOR_BACKEND` (`api2.cursor.sh`)**. Chat streaming still
+    /// needs checked-in protobuf for `agent.v1.AgentService/Run` (BiDi); see `cursor.rs` module docs.
     Cursor {
         api_key: String,
         credential: Option<String>,
@@ -1880,7 +1880,10 @@ impl Provider {
     }
 
     pub fn cursor(api_key: String, credential: Option<String>) -> Self {
-        Provider::Cursor { api_key, credential }
+        Provider::Cursor {
+            api_key,
+            credential,
+        }
     }
 
     pub fn api_key(&self) -> &str {
@@ -1914,7 +1917,8 @@ impl Provider {
             Provider::Codex { .. } => true,
             Provider::Anthropic { api_key, .. } => api_key.contains("sk-ant-oat"),
             Provider::OpenAiCompat { api_key, .. } => {
-                api_key == oauth::OPENAI_COMPAT_GCP_ADC || api_key == oauth::OPENAI_COMPAT_GCLOUD_CLI
+                api_key == oauth::OPENAI_COMPAT_GCP_ADC
+                    || api_key == oauth::OPENAI_COMPAT_GCLOUD_CLI
             }
             _ => false,
         }
@@ -1925,7 +1929,9 @@ impl Provider {
             Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai/zen/go") => {
                 "opencode-go"
             }
-            Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai") => "opencode-zen",
+            Provider::Anthropic { base_url, .. } if base_url.contains("opencode.ai") => {
+                "opencode-zen"
+            }
             Provider::Anthropic { .. } => "anthropic",
             Provider::Codex { .. } => "codex",
             Provider::OpenRouter { .. } => "openrouter",
@@ -2271,15 +2277,9 @@ impl Provider {
             }
             Provider::Cursor { api_key, .. } => {
                 let key = api_key_override.unwrap_or(api_key);
-                let rx = cursor::stream(
-                    key,
-                    model,
-                    system_prompt,
-                    messages,
-                    tools,
-                    prompt_cache_key,
-                )
-                .await?;
+                let rx =
+                    cursor::stream(key, model, system_prompt, messages, tools, prompt_cache_key)
+                        .await?;
                 Ok(no_ws_reclaim(rx))
             }
         }

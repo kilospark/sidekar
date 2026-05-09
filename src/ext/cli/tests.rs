@@ -47,6 +47,12 @@ fn ext_new_tab_focus_sets_json_flag() {
 
 #[test]
 fn ext_new_tab_default_no_focus_flag() {
-    let cmd = build_command("new-tab", &[String::from("https://example.com")], None, false).unwrap();
+    let cmd = build_command(
+        "new-tab",
+        &[String::from("https://example.com")],
+        None,
+        false,
+    )
+    .unwrap();
     assert!(cmd.get("focus").is_none());
 }

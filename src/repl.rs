@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::collections::hash_map::Entry;
 
-pub mod credential_login;
 mod codex_footer;
+pub mod credential_login;
 mod debug_export;
 mod editor;
 mod event_forward;
@@ -338,8 +338,10 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             }),
             _ => None,
         };
-        let renderer =
-            std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(cancel.clone(), codex_footer_once)));
+        let renderer = std::sync::Arc::new(std::sync::Mutex::new(EventRenderer::new(
+            cancel.clone(),
+            codex_footer_once,
+        )));
         let renderer_for_events = renderer.clone();
         // Forwarder is lock-free (atomic state), shared by Arc so the
         // per-event callback doesn't acquire a second mutex. Hot-path
@@ -874,9 +876,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     let journal_exit_flush = journal_ctx.is_some() && crate::runtime::journal();
     if journal_exit_flush {
-        repl_status_dim(
-            "Session journal: exit flush running (blocks on model until complete)…",
-        );
+        repl_status_dim("Session journal: exit flush running (blocks on model until complete)…");
     }
     maybe_run_final_journal(journal_ctx.as_ref()).await;
     if journal_exit_flush {

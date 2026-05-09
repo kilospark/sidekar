@@ -481,8 +481,7 @@ mod tests {
             &cfg,
         )
         .expect("body");
-        let v: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("body must be JSON");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("body must be JSON");
         assert!(
             v.get("stream").is_none(),
             "InvokeModelWithResponseStream uses route for streaming; top-level \"stream\" is rejected ({v})"
@@ -512,7 +511,10 @@ mod tests {
         )
         .expect("body");
         let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        let max = v.get("max_tokens").and_then(|x| x.as_u64()).expect("max_tokens");
+        let max = v
+            .get("max_tokens")
+            .and_then(|x| x.as_u64())
+            .expect("max_tokens");
         assert!(max < 64_000, "expected clamp from 64k, got {max}");
     }
 
@@ -548,7 +550,10 @@ mod tests {
         )
         .expect("body");
         let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        let max = v.get("max_tokens").and_then(|x| x.as_u64()).expect("max_tokens");
+        let max = v
+            .get("max_tokens")
+            .and_then(|x| x.as_u64())
+            .expect("max_tokens");
         assert!(max < 64_000, "tool bulk must lower max_tokens, got {max}");
     }
 }

@@ -142,8 +142,7 @@ pub fn delete_all_journals_for_session(session_id: &str) -> Result<usize> {
     let conn = broker::open()?;
     let tx = conn.unchecked_transaction()?;
     let ids: Vec<i64> = {
-        let mut stmt =
-            tx.prepare("SELECT id FROM session_journals WHERE session_id = ?1")?;
+        let mut stmt = tx.prepare("SELECT id FROM session_journals WHERE session_id = ?1")?;
         stmt.query_map(params![session_id], |row| row.get::<_, i64>(0))?
             .filter_map(|r| r.ok())
             .collect()

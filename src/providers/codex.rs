@@ -292,7 +292,6 @@ fn build_request_body(
     // requires emitting only **new** input items on continuation turns (not implemented yet).
     // `previous_response_id` remains plumbed through for that follow-up.
 
-
     if let Some(key) = prompt_cache_key.filter(|key| !key.is_empty()) {
         body["prompt_cache_key"] = json!(key);
     }
@@ -388,7 +387,8 @@ async fn parse_sse_stream(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let partial_json_raw = codex_arguments_field_to_string(item.get("arguments"));
+                        let partial_json_raw =
+                            codex_arguments_field_to_string(item.get("arguments"));
                         let partial_json = if is_placeholder_arguments_json(&partial_json_raw) {
                             String::new()
                         } else {
@@ -491,8 +491,7 @@ async fn parse_sse_stream(
                             .map(str::to_string)
                             .or_else(|| pending.as_ref().map(|call| call.name.clone()))
                             .unwrap_or_default();
-                        let arguments =
-                            resolve_codex_tool_arguments(item, pending.as_ref());
+                        let arguments = resolve_codex_tool_arguments(item, pending.as_ref());
                         // Always store both IDs so we can reconstruct the request
                         let stored_id = if item_id.is_empty() || item_id == call_id {
                             call_id.clone()
@@ -834,7 +833,9 @@ pub fn rate_limit_snapshot_from_codex_quota_json(data: &Value) -> Option<RateLim
     snap.into_option()
 }
 
-pub(crate) fn rate_limit_snapshot_from_codex_completed_event(data: &Value) -> Option<RateLimitSnapshot> {
+pub(crate) fn rate_limit_snapshot_from_codex_completed_event(
+    data: &Value,
+) -> Option<RateLimitSnapshot> {
     if let Some(r) = data.get("response") {
         if let Some(s) = rate_limit_snapshot_from_codex_quota_json(r) {
             return Some(s);
@@ -856,7 +857,10 @@ fn merged_codex_rate_limit_for_done(
 // ---------------------------------------------------------------------------
 
 /// Raw JSON from `wham/usage` (same shape as stream `rate_limits` in many builds).
-pub async fn fetch_codex_plan_quota_json(access_token: &str, account_id: &str) -> Result<Value, String> {
+pub async fn fetch_codex_plan_quota_json(
+    access_token: &str,
+    account_id: &str,
+) -> Result<Value, String> {
     if access_token.is_empty() {
         return Err("missing Codex access token".into());
     }
@@ -891,7 +895,10 @@ pub async fn fetch_codex_plan_quota_json(access_token: &str, account_id: &str) -
 ///
 /// Endpoint is not part of OpenAI's published Responses reference; Community +
 /// Codex CLI tooling rely on it for quota summaries.
-pub async fn fetch_codex_plan_quota_body(access_token: &str, account_id: &str) -> Result<String, String> {
+pub async fn fetch_codex_plan_quota_body(
+    access_token: &str,
+    account_id: &str,
+) -> Result<String, String> {
     let v = fetch_codex_plan_quota_json(access_token, account_id).await?;
     format_codex_wham_usage_body(&v).ok_or_else(|| {
         let snippet = serde_json::to_string(&v).unwrap_or_default();
@@ -960,7 +967,11 @@ fn codex_reset_epoch_secs(window: &serde_json::Map<String, Value>) -> Option<u64
         .get("reset_time_ms")
         .or_else(|| window.get("reset_at"))
         .and_then(|v| v.as_u64())?;
-    Some(if raw > 100_000_000_000 { raw / 1000 } else { raw })
+    Some(if raw > 100_000_000_000 {
+        raw / 1000
+    } else {
+        raw
+    })
 }
 
 fn format_codex_quota_reset_countdown(epoch_secs: u64) -> String {
@@ -1026,11 +1037,7 @@ fn format_codex_wham_usage_body(data: &Value) -> Option<String> {
     if let Some(w) = weekly {
         out.push_str(&format_codex_limit_line("weekly window", w));
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 // ---------------------------------------------------------------------------

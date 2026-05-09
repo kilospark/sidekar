@@ -490,10 +490,7 @@ async fn edit_rejects_empty_old_string() {
     )
     .await
     .expect_err("empty old_string");
-    assert!(
-        format!("{err:#}").contains("must not be empty"),
-        "{err:#}"
-    );
+    assert!(format!("{err:#}").contains("must not be empty"), "{err:#}");
     let _ = std::fs::remove_file(&path);
 }
 

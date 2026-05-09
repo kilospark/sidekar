@@ -217,11 +217,7 @@ impl sidekar::output::CommandOutput for ModelsListOutput {
                 m.display_name.as_str(),
                 m.context_window,
             );
-            writeln!(
-                w,
-                "  \x1b[36m{}\x1b[0m  \x1b[2m{}\x1b[0m",
-                m.id, dim
-            )?;
+            writeln!(w, "  \x1b[36m{}\x1b[0m  \x1b[2m{}\x1b[0m", m.id, dim)?;
             if sidekar::providers::is_verbose() {
                 if let Some(ref fm) = m.bedrock_foundation_model_arn {
                     writeln!(w, "      \x1b[2mfoundation-model ARN: {fm}\x1b[0m")?;
@@ -432,30 +428,33 @@ fn transcript_cli_list(tail: &[String]) -> Result<()> {
     }
 
     let rows_full = sidekar::session::list_message_entries(&sid)?;
-    let (slice, start_idx, note): (&[sidekar::session::MessageEntrySummary], usize, Option<String>) =
-        if full {
-            (&rows_full, 0, None)
-        } else if let Some(n) = limit {
-            let take = n.min(rows_full.len());
-            let start = rows_full.len().saturating_sub(take);
-            (
-                &rows_full[start..],
-                start,
-                Some(format!("Last {take} of {} messages.", rows_full.len())),
-            )
-        } else if rows_full.len() <= CAP {
-            (&rows_full, 0, None)
-        } else {
-            let start = rows_full.len() - CAP;
-            (
-                &rows_full[start..],
-                start,
-                Some(format!(
-                    "Showing last {CAP} of {} messages (use --full for all).",
-                    rows_full.len()
-                )),
-            )
-        };
+    let (slice, start_idx, note): (
+        &[sidekar::session::MessageEntrySummary],
+        usize,
+        Option<String>,
+    ) = if full {
+        (&rows_full, 0, None)
+    } else if let Some(n) = limit {
+        let take = n.min(rows_full.len());
+        let start = rows_full.len().saturating_sub(take);
+        (
+            &rows_full[start..],
+            start,
+            Some(format!("Last {take} of {} messages.", rows_full.len())),
+        )
+    } else if rows_full.len() <= CAP {
+        (&rows_full, 0, None)
+    } else {
+        let start = rows_full.len() - CAP;
+        (
+            &rows_full[start..],
+            start,
+            Some(format!(
+                "Showing last {CAP} of {} messages (use --full for all).",
+                rows_full.len()
+            )),
+        )
+    };
 
     let mut lines = Vec::<String>::new();
     lines.push(format!(

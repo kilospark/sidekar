@@ -45,7 +45,8 @@ pub async fn cloud_platform_access_token() -> Result<String> {
     }
 
     let (token, expires_in) = fetch_token_uncached().await?;
-    let ttl = Duration::from_secs(expires_in.max(120) as u64).saturating_sub(Duration::from_secs(90));
+    let ttl =
+        Duration::from_secs(expires_in.max(120) as u64).saturating_sub(Duration::from_secs(90));
     *guard = Some(Cached {
         token: token.clone(),
         refresh_after: Instant::now() + ttl,
@@ -135,8 +136,8 @@ async fn parse_adc_file(path: &Path) -> Result<CredentialSource> {
     let bytes = tokio::fs::read(path)
         .await
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let adc: AdcJson =
-        serde_json::from_slice(&bytes).with_context(|| format!("invalid JSON in {}", path.display()))?;
+    let adc: AdcJson = serde_json::from_slice(&bytes)
+        .with_context(|| format!("invalid JSON in {}", path.display()))?;
     Ok(match adc {
         AdcJson::AuthorizedUser {
             client_id,
@@ -154,7 +155,8 @@ async fn parse_adc_file(path: &Path) -> Result<CredentialSource> {
         } => CredentialSource::ServiceAccount(ServiceAccount {
             client_email,
             private_key,
-            token_uri: token_uri.unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()),
+            token_uri: token_uri
+                .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()),
         }),
     })
 }
@@ -227,10 +229,7 @@ async fn exchange_service_account(sa: &ServiceAccount) -> Result<(String, i64)> 
     let jwt = encode(&header, &claims, &key).context("encode service-account JWT")?;
 
     let mut form = HashMap::new();
-    form.insert(
-        "grant_type",
-        "urn:ietf:params:oauth:grant-type:jwt-bearer",
-    );
+    form.insert("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
     form.insert("assertion", jwt.as_str());
 
     let client = http_client().await?;
@@ -303,9 +302,7 @@ mod tests {
         });
         let v: AdcJson = serde_json::from_value(j).unwrap();
         match v {
-            AdcJson::AuthorizedUser {
-                refresh_token, ..
-            } => assert_eq!(refresh_token, "rt"),
+            AdcJson::AuthorizedUser { refresh_token, .. } => assert_eq!(refresh_token, "rt"),
             _ => panic!("wrong variant"),
         }
     }

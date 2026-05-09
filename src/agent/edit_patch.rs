@@ -60,7 +60,9 @@ fn parse_patch(patch_text: &str) -> Result<Vec<Hunk>> {
         bail!("patch: creating new files is not supported here — use Write");
     }
 
-    let plus = lines.next().context("patch: missing `+++` line after `---`")?;
+    let plus = lines
+        .next()
+        .context("patch: missing `+++` line after `---`")?;
     if !plus.starts_with("+++ ") {
         bail!(
             "patch: expected `+++ ` line after `---`, got {:?}",

@@ -144,10 +144,7 @@ pub(super) fn inject_bus_messages(
         broker::try_log_event("info", "inbox", "received", Some(&inbox_detail));
         let display = format!(
             "{}[bus] {} says: {}{}",
-            BUS_CONSOLE_LINE,
-            msg.sender,
-            msg.body,
-            BUS_CONSOLE_RESET,
+            BUS_CONSOLE_LINE, msg.sender, msg.body, BUS_CONSOLE_RESET,
         );
         tunnel_println(&display);
         let steering = ChatMessage {

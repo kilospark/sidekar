@@ -1175,11 +1175,8 @@ mod tests {
     /// Regression: model IDs include `:0`-style suffixes; `http::Uri` must not treat `:0` as a port.
     #[test]
     fn invoke_url_http_uri_path_preserves_colon_in_model_segment() {
-        let url = bedrock_invoke_url(
-            "us-east-1",
-            "anthropic.claude-3-5-sonnet-20240620-v1:0",
-        )
-        .expect("invoke URL");
+        let url = bedrock_invoke_url("us-east-1", "anthropic.claude-3-5-sonnet-20240620-v1:0")
+            .expect("invoke URL");
         let full = url.as_str();
         let uri: http::Uri = full.parse().expect("parse bedrock runtime URL");
         assert_eq!(
@@ -1205,9 +1202,15 @@ mod tests {
 
     #[test]
     fn geo_inference_prefix_maps_most_ap_regions_to_apac() {
-        assert_eq!(super::bedrock_geo_inference_prefix("ap-southeast-2"), "apac");
+        assert_eq!(
+            super::bedrock_geo_inference_prefix("ap-southeast-2"),
+            "apac"
+        );
         assert_eq!(super::bedrock_geo_inference_prefix("ap-south-1"), "apac");
-        assert_eq!(super::bedrock_geo_inference_prefix("ap-southeast-1"), "apac");
+        assert_eq!(
+            super::bedrock_geo_inference_prefix("ap-southeast-1"),
+            "apac"
+        );
     }
 
     #[test]

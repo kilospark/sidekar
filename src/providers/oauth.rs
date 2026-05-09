@@ -90,7 +90,9 @@ async fn gcloud_cli_access_token_uncached() -> Result<String> {
     )
     .await
     .context("gcloud auth print-access-token timed out after 45s")?
-    .context("failed to spawn `gcloud` — install Google Cloud SDK and ensure `gcloud` is on PATH")?;
+    .context(
+        "failed to spawn `gcloud` — install Google Cloud SDK and ensure `gcloud` is on PATH",
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -348,9 +350,7 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
     if provider_type == "oac" {
         let kv_key = kv_key_for(cred_name);
         let creds = load_credentials(&kv_key)?.with_context(|| {
-            format!(
-                "no stored credentials for OpenAI-compat credential '{cred_name}'"
-            )
+            format!("no stored credentials for OpenAI-compat credential '{cred_name}'")
         })?;
         if creds.metadata.get("auth").and_then(|v| v.as_str()) != Some("gcp_adc") {
             anyhow::bail!(
@@ -390,7 +390,13 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
 /// Get a valid Anthropic API token. If `nickname` is provided, use that credential set.
 pub async fn get_anthropic_token(nickname: Option<&str>) -> Result<String> {
     let kv_key = resolve_kv_key(nickname, KV_KEY_ANTHROPIC);
-    get_token(&kv_key, "ANTHROPIC_API_KEY", "Anthropic", refresh_token_anthropic).await
+    get_token(
+        &kv_key,
+        "ANTHROPIC_API_KEY",
+        "Anthropic",
+        refresh_token_anthropic,
+    )
+    .await
 }
 
 fn codex_account_id_from_kv(kv_key: &str) -> Result<String> {
@@ -745,11 +751,7 @@ fn save_static_token(kv_key: &str, api_key: &str, metadata: serde_json::Value) -
 
 /// Generic token retrieval: stored creds → env var → error.
 #[allow(clippy::type_complexity)]
-async fn get_api_key_token(
-    kv_key: &str,
-    env_vars: &[&str],
-    provider_name: &str,
-) -> Result<String> {
+async fn get_api_key_token(kv_key: &str, env_vars: &[&str], provider_name: &str) -> Result<String> {
     if let Some(creds) = load_credentials(kv_key)? {
         return Ok(creds.access_token);
     }
@@ -1062,7 +1064,10 @@ pub(crate) async fn finish_codex_login(login: InteractiveOAuthLogin) -> Result<(
     let (kv_key, mut creds) = complete_interactive_login(login).await?;
     creds.metadata = codex_credentials_metadata(&creds.access_token);
     save_credentials(&kv_key, &creds)?;
-    Ok((creds.access_token.clone(), codex_account_id_from_kv(&kv_key)?))
+    Ok((
+        creds.access_token.clone(),
+        codex_account_id_from_kv(&kv_key)?,
+    ))
 }
 
 async fn complete_interactive_login(
@@ -1584,10 +1589,22 @@ mod tests {
 
     #[test]
     fn credential_provider_display_labels_distinct_opencode_and_vertex() {
-        assert_eq!(credential_provider_display_label("opencode"), "opencode-zen");
-        assert_eq!(credential_provider_display_label("opencode-zen"), "opencode-zen");
-        assert_eq!(credential_provider_display_label("opencode-go"), "opencode-go");
-        assert_eq!(credential_provider_display_label("gcp"), "vertex (GCP Vertex)");
+        assert_eq!(
+            credential_provider_display_label("opencode"),
+            "opencode-zen"
+        );
+        assert_eq!(
+            credential_provider_display_label("opencode-zen"),
+            "opencode-zen"
+        );
+        assert_eq!(
+            credential_provider_display_label("opencode-go"),
+            "opencode-go"
+        );
+        assert_eq!(
+            credential_provider_display_label("gcp"),
+            "vertex (GCP Vertex)"
+        );
     }
 
     #[test]

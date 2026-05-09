@@ -5,12 +5,8 @@ use super::*;
 #[derive(Debug, Clone)]
 enum BusDeliveryRoute {
     SameChannel,
-    CrossChannelBroker {
-        recipient_session: Option<String>,
-    },
-    Relay {
-        hostname: String,
-    },
+    CrossChannelBroker { recipient_session: Option<String> },
+    Relay { hostname: String },
 }
 
 #[derive(Debug, Clone)]

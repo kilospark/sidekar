@@ -391,9 +391,7 @@ pub async fn handle_ext(args: &[String], override_tab_id: &Option<String>) -> Re
         eprintln!("  watch <selector>             Watch DOM element text");
         eprintln!("  unwatch [watchId]            Remove watcher(s)");
         eprintln!("  watchers                     List DOM watchers");
-        eprintln!(
-            "  monitor <start|stop|status>  Tab title monitor (Chrome extension tab IDs)"
-        );
+        eprintln!("  monitor <start|stop|status>  Tab title monitor (Chrome extension tab IDs)");
         eprintln!("  dev-extract                  Extract embedded extension ZIP");
         eprintln!();
         eprintln!("Management:");
@@ -413,7 +411,9 @@ pub async fn handle_ext(args: &[String], override_tab_id: &Option<String>) -> Re
                 .map(|s| s.as_str())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    anyhow::anyhow!("Usage: sidekar ext monitor <start|stop|status> [tab_id...|all]")
+                    anyhow::anyhow!(
+                        "Usage: sidekar ext monitor <start|stop|status> [tab_id...|all]"
+                    )
                 })?;
             let tail: Vec<String> = args.iter().skip(2).cloned().collect();
             match msub {

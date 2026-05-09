@@ -68,15 +68,18 @@ fn output_prompt(output: InteractiveOutput, text: &str) {
     }
 }
 
-fn relay_line_read(
-    output: InteractiveOutput,
-    relay_input_fd: Option<i32>,
-) -> Result<String> {
+fn relay_line_read(output: InteractiveOutput, relay_input_fd: Option<i32>) -> Result<String> {
     let tunnel_fd = match output {
         InteractiveOutput::Cli => None,
         InteractiveOutput::Repl => relay_input_fd,
     };
-    super::editor::read_line_stdio_or_tunnel(tunnel_fd).map_err(|e| anyhow!(e))
+    super::editor::read_line_stdio_or_tunnel(tunnel_fd).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::Interrupted {
+            anyhow!("Cancelled.")
+        } else {
+            anyhow!(e)
+        }
+    })
 }
 
 fn prompt_required(
@@ -135,10 +138,7 @@ pub async fn perform_credential_add(
 
     // openai-compat is positional: openai-compat <nickname> <url> [api_key]
     if provider == "openai-compat" {
-        let name = tokens
-            .get(1)
-            .map(|s| s.as_str())
-            .unwrap_or("openai-compat");
+        let name = tokens.get(1).map(|s| s.as_str()).unwrap_or("openai-compat");
         let display_name = name.to_string();
         let base_url = match tokens.get(2).map(|s| s.as_str()) {
             Some(url) if !url.trim().is_empty() => url.trim().to_string(),
@@ -164,7 +164,10 @@ pub async fn perform_credential_add(
                     &api_key,
                 )?
             };
-        output_line(output, &format!("OpenAI-compat credential saved for '{name}'."));
+        output_line(
+            output,
+            &format!("OpenAI-compat credential saved for '{name}'."),
+        );
         return Ok(format!(
             "Logged in as '{name}' ({} at {}).",
             creds.name, creds.base_url
@@ -192,7 +195,10 @@ pub async fn perform_credential_add(
 
     match provider_type {
         "anthropic" => {
-            output_line(output, "No Anthropic credentials found. Starting OAuth login...");
+            output_line(
+                output,
+                "No Anthropic credentials found. Starting OAuth login...",
+            );
             let login = crate::providers::oauth::begin_anthropic_login(Some(nickname)).await?;
             output_line(output, "");
             output_line(
@@ -209,7 +215,10 @@ pub async fn perform_credential_add(
             Ok(format!("Logged in as '{nickname}' (Claude OAuth)."))
         }
         "codex" => {
-            output_line(output, "No Codex credentials found. Starting OAuth login...");
+            output_line(
+                output,
+                "No Codex credentials found. Starting OAuth login...",
+            );
             let login = crate::providers::oauth::begin_codex_login(Some(nickname)).await?;
             output_line(output, "");
             output_line(
@@ -246,7 +255,10 @@ pub async fn perform_credential_add(
             Ok(format!("Logged in as '{nickname}' (OpenRouter)."))
         }
         "opencode-zen" => {
-            output_line(output, "No OpenCode Zen credentials found. Opening https://opencode.ai/auth ...");
+            output_line(
+                output,
+                "No OpenCode Zen credentials found. Opening https://opencode.ai/auth ...",
+            );
             open_browser_hint("https://opencode.ai/auth");
             let key = prompt_required(output, relay_input_fd, "Paste API key", None)?;
             crate::providers::oauth::save_api_key_credential(
@@ -275,7 +287,10 @@ pub async fn perform_credential_add(
             Ok(format!("Logged in as '{nickname}' (OpenCode Go)."))
         }
         "grok" => {
-            output_line(output, "No Grok credentials found. Opening https://console.x.ai/ ...");
+            output_line(
+                output,
+                "No Grok credentials found. Opening https://console.x.ai/ ...",
+            );
             open_browser_hint("https://console.x.ai/");
             let key = prompt_required(output, relay_input_fd, "API key", None)?;
             crate::providers::oauth::save_api_key_credential(
@@ -358,7 +373,9 @@ pub async fn perform_credential_add(
             crate::providers::oauth::save_gcp_vertex_credential(nickname, &project, &location)?;
             output_line(
                 output,
-                &format!("Saved GCP Vertex config to `{kv_key}` (OpenAI-compat base URL in metadata)."),
+                &format!(
+                    "Saved GCP Vertex config to `{kv_key}` (OpenAI-compat base URL in metadata)."
+                ),
             );
             Ok(format!(
                 "Logged in as '{nickname}' (GCP Vertex, project {project}, {location})."

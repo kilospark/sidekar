@@ -1,4 +1,4 @@
-use super::{apply_usage, build_request_body, CodexTransport, PendingToolCall};
+use super::{CodexTransport, PendingToolCall, apply_usage, build_request_body};
 use crate::providers::{ChatMessage, ContentBlock, RateLimitSnapshot, Role, StreamConfig, Usage};
 use serde_json::json;
 
@@ -279,8 +279,7 @@ fn completed_event_reads_response_rate_limits() {
             },
         },
     });
-    let snap =
-        super::rate_limit_snapshot_from_codex_completed_event(&evt).expect("parse event");
+    let snap = super::rate_limit_snapshot_from_codex_completed_event(&evt).expect("parse event");
     assert_eq!(snap.util_5h_pct, Some(50));
 }
 
