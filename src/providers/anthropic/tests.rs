@@ -1,6 +1,12 @@
-use super::{CCH_PLACEHOLDER, build_request_body, compute_fingerprint, sign_request_body};
-use crate::providers::{ChatMessage, ContentBlock, Role, StreamConfig, ToolDef};
+use super::{
+    AnthropicStreamState, CCH_PLACEHOLDER, build_request_body, compute_fingerprint,
+    handle_anthropic_event, sign_request_body,
+};
+use crate::providers::{
+    ChatMessage, ContentBlock, RateLimitSnapshot, Role, StreamConfig, StreamEvent, ToolDef,
+};
 use serde_json::json;
+use tokio::sync::mpsc;
 
 fn test_config() -> StreamConfig {
     StreamConfig::default()
@@ -275,4 +281,99 @@ fn bedrock_invoke_body_strips_stream_field() {
         v.get("anthropic_version"),
         Some(&json!("bedrock-2023-05-31"))
     );
+}
+
+#[test]
+fn anthropic_stream_keeps_tool_json_by_index_when_blocks_interleave() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
+    let mut state = AnthropicStreamState::new();
+    let rl: Option<RateLimitSnapshot> = None;
+
+    handle_anthropic_event(
+        "content_block_start",
+        &json!({
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Write"}
+        }),
+        &rl,
+        &tx,
+        &mut state,
+    );
+    handle_anthropic_event(
+        "content_block_start",
+        &json!({
+            "index": 0,
+            "content_block": {"type": "text"}
+        }),
+        &rl,
+        &tx,
+        &mut state,
+    );
+    handle_anthropic_event(
+        "content_block_delta",
+        &json!({
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "working"}
+        }),
+        &rl,
+        &tx,
+        &mut state,
+    );
+    handle_anthropic_event(
+        "content_block_delta",
+        &json!({
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"path\":\"/tmp/x\",\"content\":\"hello\"}"}
+        }),
+        &rl,
+        &tx,
+        &mut state,
+    );
+    handle_anthropic_event(
+        "content_block_stop",
+        &json!({"index": 0}),
+        &rl,
+        &tx,
+        &mut state,
+    );
+    handle_anthropic_event(
+        "content_block_stop",
+        &json!({"index": 1}),
+        &rl,
+        &tx,
+        &mut state,
+    );
+
+    assert!(matches!(
+        state.content_blocks.first(),
+        Some(ContentBlock::Text { text }) if text == "working"
+    ));
+    assert!(matches!(
+        state.content_blocks.get(1),
+        Some(ContentBlock::ToolCall { name, arguments, .. })
+            if name == "Write"
+                && arguments.get("path").and_then(|v| v.as_str()) == Some("/tmp/x")
+                && arguments.get("content").and_then(|v| v.as_str()) == Some("hello")
+    ));
+
+    let mut saw_start = false;
+    let mut saw_delta = false;
+    let mut saw_end = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            StreamEvent::ToolCallStart { index, id, name } => {
+                saw_start = index == 1 && id == "toolu_1" && name == "Write";
+            }
+            StreamEvent::ToolCallDelta { index, delta } => {
+                saw_delta = index == 1 && delta.contains("\"path\"");
+            }
+            StreamEvent::ToolCallEnd { index } => {
+                saw_end = index == 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_start);
+    assert!(saw_delta);
+    assert!(saw_end);
 }

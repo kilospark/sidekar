@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 use futures_util::{StreamExt, pin_mut};
@@ -688,13 +688,7 @@ struct AnthropicStreamState {
     usage: Usage,
     stop_reason: StopReason,
     model_id: String,
-    current_block_type: Option<BlockType>,
-    text_accum: String,
-    thinking_accum: String,
-    thinking_signature: String,
-    tool_json_accum: String,
-    tool_id: String,
-    tool_name: String,
+    pending_blocks: HashMap<usize, PendingBlock>,
 }
 
 impl AnthropicStreamState {
@@ -704,15 +698,25 @@ impl AnthropicStreamState {
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             model_id: String::new(),
-            current_block_type: None,
-            text_accum: String::new(),
-            thinking_accum: String::new(),
-            thinking_signature: String::new(),
-            tool_json_accum: String::new(),
-            tool_id: String::new(),
-            tool_name: String::new(),
+            pending_blocks: HashMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+enum PendingBlock {
+    Text {
+        text: String,
+    },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input_json: String,
+    },
 }
 
 fn handle_anthropic_event(
@@ -750,36 +754,48 @@ fn handle_anthropic_event(
             if let Some(block) = data.get("content_block") {
                 match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                     "text" => {
-                        state.current_block_type = Some(BlockType::Text);
-                        state.text_accum.clear();
+                        state.pending_blocks.insert(
+                            index,
+                            PendingBlock::Text {
+                                text: String::new(),
+                            },
+                        );
                     }
                     "thinking" => {
-                        state.current_block_type = Some(BlockType::Thinking);
-                        state.thinking_accum.clear();
-                        state.thinking_signature.clear();
+                        state.pending_blocks.insert(
+                            index,
+                            PendingBlock::Thinking {
+                                thinking: String::new(),
+                                signature: String::new(),
+                            },
+                        );
                     }
                     "tool_use" => {
-                        state.current_block_type = Some(BlockType::ToolUse);
-                        state.tool_json_accum.clear();
-                        state.tool_id = block
+                        let tool_id = block
                             .get("id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        state.tool_name = block
+                        let tool_name = block
                             .get("name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
+                        state.pending_blocks.insert(
+                            index,
+                            PendingBlock::ToolUse {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                input_json: String::new(),
+                            },
+                        );
                         let _ = tx.send(StreamEvent::ToolCallStart {
                             index,
-                            id: state.tool_id.clone(),
-                            name: state.tool_name.clone(),
+                            id: tool_id,
+                            name: tool_name,
                         });
                     }
-                    _ => {
-                        state.current_block_type = None;
-                    }
+                    _ => {}
                 }
             }
         }
@@ -789,24 +805,35 @@ fn handle_anthropic_event(
             if let Some(delta) = data.get("delta") {
                 match delta.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                     "text_delta" => {
-                        if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                            state.text_accum.push_str(text);
+                        if let Some(text) = delta.get("text").and_then(|v| v.as_str())
+                            && let Some(PendingBlock::Text { text: accum }) =
+                                state.pending_blocks.get_mut(&index)
+                        {
+                            accum.push_str(text);
                             let _ = tx.send(StreamEvent::TextDelta {
                                 delta: text.to_string(),
                             });
                         }
                     }
                     "thinking_delta" => {
-                        if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
-                            state.thinking_accum.push_str(text);
+                        if let Some(text) = delta.get("thinking").and_then(|v| v.as_str())
+                            && let Some(PendingBlock::Thinking {
+                                thinking: accum, ..
+                            }) = state.pending_blocks.get_mut(&index)
+                        {
+                            accum.push_str(text);
                             let _ = tx.send(StreamEvent::ThinkingDelta {
                                 delta: text.to_string(),
                             });
                         }
                     }
                     "input_json_delta" => {
-                        if let Some(json_str) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                            state.tool_json_accum.push_str(json_str);
+                        if let Some(json_str) = delta.get("partial_json").and_then(|v| v.as_str())
+                            && let Some(PendingBlock::ToolUse {
+                                input_json: accum, ..
+                            }) = state.pending_blocks.get_mut(&index)
+                        {
+                            accum.push_str(json_str);
                             let _ = tx.send(StreamEvent::ToolCallDelta {
                                 index,
                                 delta: json_str.to_string(),
@@ -814,8 +841,11 @@ fn handle_anthropic_event(
                         }
                     }
                     "signature_delta" => {
-                        if let Some(sig) = delta.get("signature").and_then(|v| v.as_str()) {
-                            state.thinking_signature.push_str(sig);
+                        if let Some(sig) = delta.get("signature").and_then(|v| v.as_str())
+                            && let Some(PendingBlock::Thinking { signature, .. }) =
+                                state.pending_blocks.get_mut(&index)
+                        {
+                            signature.push_str(sig);
                         }
                     }
                     _ => {}
@@ -825,32 +855,36 @@ fn handle_anthropic_event(
 
         "content_block_stop" => {
             let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            match state.current_block_type {
-                Some(BlockType::Text) => {
-                    state.content_blocks.push(ContentBlock::Text {
-                        text: std::mem::take(&mut state.text_accum),
-                    });
+            match state.pending_blocks.remove(&index) {
+                Some(PendingBlock::Text { text }) => {
+                    state.content_blocks.push(ContentBlock::Text { text });
                 }
-                Some(BlockType::Thinking) => {
+                Some(PendingBlock::Thinking {
+                    thinking,
+                    signature,
+                }) => {
                     state.content_blocks.push(ContentBlock::Thinking {
-                        thinking: std::mem::take(&mut state.thinking_accum),
-                        signature: std::mem::take(&mut state.thinking_signature),
+                        thinking,
+                        signature,
                     });
                 }
-                Some(BlockType::ToolUse) => {
-                    let arguments =
-                        serde_json::from_str(&state.tool_json_accum).unwrap_or_else(|e| {
-                            let prefix: String = state.tool_json_accum.chars().take(500).collect();
-                            crate::broker::try_log_error(
-                                "anthropic-transport",
-                                "tool_use input_json parse failed",
-                                Some(&format!("{e}; args_prefix={prefix}")),
-                            );
-                            json!({})
-                        });
+                Some(PendingBlock::ToolUse {
+                    id,
+                    name,
+                    input_json,
+                }) => {
+                    let arguments = serde_json::from_str(&input_json).unwrap_or_else(|e| {
+                        let prefix: String = input_json.chars().take(500).collect();
+                        crate::broker::try_log_error(
+                            "anthropic-transport",
+                            "tool_use input_json parse failed",
+                            Some(&format!("{e}; args_prefix={prefix}")),
+                        );
+                        json!({})
+                    });
                     state.content_blocks.push(ContentBlock::ToolCall {
-                        id: std::mem::take(&mut state.tool_id),
-                        name: std::mem::take(&mut state.tool_name),
+                        id,
+                        name,
                         arguments,
                         thought_signature: None,
                     });
@@ -858,7 +892,6 @@ fn handle_anthropic_event(
                 }
                 None => {}
             }
-            state.current_block_type = None;
         }
 
         "message_delta" => {
@@ -987,13 +1020,6 @@ where
     }
 
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy)]
-enum BlockType {
-    Text,
-    Thinking,
-    ToolUse,
 }
 
 fn to_claude_code_tool_name(name: &str) -> String {

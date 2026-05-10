@@ -16,6 +16,8 @@ static GIT_GLOBAL_OPT: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("invalid git option regex")
 });
+static PYTEST_CMD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(^|\s)pytest(\s|$)").expect("invalid pytest regex"));
 static ANSI_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("invalid ansi regex"));
 
@@ -57,6 +59,9 @@ pub fn classify_command(command: &str) -> Classification {
 
 pub fn compact_output(command: &str, output: &str) -> String {
     let normalized = command.trim();
+    if should_preserve_raw_output(normalized) {
+        return ANSI_RE.replace_all(output, "").to_string();
+    }
     let mut current = output.to_string();
 
     if let Some(filter) = FILTERS
@@ -108,6 +113,18 @@ pub fn compact_output(command: &str, output: &str) -> String {
     }
 
     generic_compact(output)
+}
+
+fn should_preserve_raw_output(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    if !PYTEST_CMD_RE.is_match(&lower) {
+        return false;
+    }
+    lower == "-s"
+        || lower.contains(" -s")
+        || lower.starts_with("-s ")
+        || lower.contains(" --capture=no")
+        || lower.contains(" --capture no")
 }
 
 /// Max lines for unrecognized commands. Budget is split 50/50 between

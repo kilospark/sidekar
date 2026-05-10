@@ -31,3 +31,50 @@ Untracked files:
     assert!(compacted.contains("new-file.rs"));
     assert!(!compacted.contains("On branch"));
 }
+
+#[test]
+fn preserves_pytest_stdout_when_capture_is_disabled() {
+    let raw = "\
+============================= test session starts ==============================
+collected 1 item
+
+tests/test_demo.py debug: alpha
+tests/test_demo.py debug: beta
+.                                                                        [100%]
+
+============================== 1 passed in 0.12s ===============================
+";
+    let compacted = compact_output("pytest -s", raw);
+    assert!(compacted.contains("debug: alpha"));
+    assert!(compacted.contains("debug: beta"));
+    assert!(compacted.contains("1 passed in 0.12s"));
+}
+
+#[test]
+fn preserves_runner_prefixed_pytest_stdout_when_capture_is_disabled() {
+    let raw = "\
+tests/test_demo.py debug: alpha
+tests/test_demo.py debug: beta
+============================== 1 passed in 0.12s ===============================
+";
+    let compacted = compact_output("uv run pytest --capture=no", raw);
+    assert!(compacted.contains("debug: alpha"));
+    assert!(compacted.contains("debug: beta"));
+}
+
+#[test]
+fn compacts_pytest_output_when_capture_is_enabled() {
+    let raw = "\
+============================= test session starts ==============================
+collected 1 item
+
+tests/test_demo.py .                                                      [100%]
+
+============================== 1 passed in 0.12s ===============================
+";
+    let compacted = compact_output("pytest", raw);
+    assert_eq!(
+        compacted,
+        "============================== 1 passed in 0.12s ==============================="
+    );
+}

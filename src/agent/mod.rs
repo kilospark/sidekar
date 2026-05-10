@@ -116,11 +116,14 @@ pub async fn run(
 
         // Auto-compact if context is getting large. Compaction rewrites
         // history so the server-side chain is no longer valid.
-        let compacted =
-            compaction::maybe_compact(provider, model, history, context_window, &on_event).await;
-        if compacted {
-            did_compact = true;
-            *previous_response_id = None;
+        if !in_tool_loop {
+            let compacted =
+                compaction::maybe_compact(provider, model, history, context_window, &on_event)
+                    .await;
+            if compacted {
+                did_compact = true;
+                *previous_response_id = None;
+            }
         }
 
         if !in_tool_loop {
