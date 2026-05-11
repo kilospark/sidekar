@@ -377,3 +377,41 @@ fn anthropic_stream_keeps_tool_json_by_index_when_blocks_interleave() {
     assert!(saw_delta);
     assert!(saw_end);
 }
+
+#[test]
+fn anthropic_stream_uses_tool_input_from_start_block_when_no_deltas_arrive() {
+    let (tx, _rx) = mpsc::unbounded_channel::<StreamEvent>();
+    let mut state = AnthropicStreamState::new();
+    let rl: Option<RateLimitSnapshot> = None;
+
+    handle_anthropic_event(
+        "content_block_start",
+        &json!({
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_2",
+                "name": "Write",
+                "input": {"path":"/tmp/y","content":"from-start"}
+            }
+        }),
+        &rl,
+        &tx,
+        &mut state,
+    );
+    handle_anthropic_event(
+        "content_block_stop",
+        &json!({"index": 0}),
+        &rl,
+        &tx,
+        &mut state,
+    );
+
+    assert!(matches!(
+        state.content_blocks.first(),
+        Some(ContentBlock::ToolCall { name, arguments, .. })
+            if name == "Write"
+                && arguments.get("path").and_then(|v| v.as_str()) == Some("/tmp/y")
+                && arguments.get("content").and_then(|v| v.as_str()) == Some("from-start")
+    ));
+}

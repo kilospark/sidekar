@@ -715,8 +715,58 @@ enum PendingBlock {
     ToolUse {
         id: String,
         name: String,
+        initial_input: Option<Value>,
         input_json: String,
     },
+}
+
+fn is_empty_tool_input(value: &Value) -> bool {
+    matches!(value, Value::Object(map) if map.is_empty())
+}
+
+fn parsed_tool_input_score(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => 3 + map.len(),
+        Value::Array(items) => 2 + items.len(),
+        Value::Null => 0,
+        _ => 1,
+    }
+}
+
+fn resolve_anthropic_tool_input(initial_input: Option<Value>, input_json: &str) -> Value {
+    let mut best: Option<(usize, Value)> = None;
+
+    if let Some(value) = initial_input
+        && !is_empty_tool_input(&value)
+    {
+        let raw_len = serde_json::to_string(&value).map(|s| s.len()).unwrap_or(0);
+        best = Some(((parsed_tool_input_score(&value) * 1_000) + raw_len, value));
+    }
+
+    let trimmed = input_json.trim();
+    if !trimmed.is_empty() {
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+            && !is_empty_tool_input(&value)
+        {
+            let score = (parsed_tool_input_score(&value) * 1_000) + trimmed.len();
+            let replace = best
+                .as_ref()
+                .map(|(best_score, _)| score > *best_score)
+                .unwrap_or(true);
+            if replace {
+                best = Some((score, value));
+            }
+        } else {
+            let prefix: String = trimmed.chars().take(500).collect();
+            crate::broker::try_log_error(
+                "anthropic-transport",
+                "tool_use input_json parse failed",
+                Some(&format!("args_prefix={prefix}")),
+            );
+        }
+    }
+
+    best.map(|(_, value)| value).unwrap_or_else(|| json!({}))
 }
 
 fn handle_anthropic_event(
@@ -786,6 +836,7 @@ fn handle_anthropic_event(
                             PendingBlock::ToolUse {
                                 id: tool_id.clone(),
                                 name: tool_name.clone(),
+                                initial_input: block.get("input").cloned(),
                                 input_json: String::new(),
                             },
                         );
@@ -871,17 +922,10 @@ fn handle_anthropic_event(
                 Some(PendingBlock::ToolUse {
                     id,
                     name,
+                    initial_input,
                     input_json,
                 }) => {
-                    let arguments = serde_json::from_str(&input_json).unwrap_or_else(|e| {
-                        let prefix: String = input_json.chars().take(500).collect();
-                        crate::broker::try_log_error(
-                            "anthropic-transport",
-                            "tool_use input_json parse failed",
-                            Some(&format!("{e}; args_prefix={prefix}")),
-                        );
-                        json!({})
-                    });
+                    let arguments = resolve_anthropic_tool_input(initial_input, &input_json);
                     state.content_blocks.push(ContentBlock::ToolCall {
                         id,
                         name,
