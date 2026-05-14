@@ -2,6 +2,16 @@ use crate::*;
 use qrcode::{EcLevel, QrCode};
 use totp_rs::{Algorithm, Secret, TOTP};
 
+fn validate_secret_length(secret_bytes: &[u8]) -> Result<()> {
+    if secret_bytes.len() < 10 {
+        bail!(
+            "Invalid TOTP: shared secret too short: need at least 80 bits, got {} bits",
+            secret_bytes.len() * 8
+        );
+    }
+    Ok(())
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -65,16 +75,28 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .to_bytes()
         .map_err(|e| anyhow::anyhow!("Invalid secret (expected base32): {}", e))?;
 
+    validate_secret_length(&secret_bytes)?;
+
     let totp = TOTP::new(
         algo,
         digits as usize,
         1,
         period as u64,
-        secret_bytes,
+        secret_bytes.clone(),
         None,
         (*account).to_string(),
     )
-    .map_err(|e| anyhow::anyhow!("Invalid TOTP: {}", e))?;
+    .unwrap_or_else(|_| {
+        TOTP::new_unchecked(
+            algo,
+            digits as usize,
+            1,
+            period as u64,
+            secret_bytes.clone(),
+            None,
+            (*account).to_string(),
+        )
+    });
 
     let now = unix_now();
     let _ = totp.generate(now);
@@ -167,16 +189,28 @@ async fn cmd_totp_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .to_bytes()
         .map_err(|e| anyhow::anyhow!("Invalid stored secret: {}", e))?;
 
+    validate_secret_length(&secret_bytes)?;
+
     let totp = TOTP::new(
         algo,
         rec.digits as usize,
         1,
         rec.period as u64,
-        secret_bytes,
+        secret_bytes.clone(),
         None,
         rec.account.clone(),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to create TOTP: {}", e))?;
+    .unwrap_or_else(|_| {
+        TOTP::new_unchecked(
+            algo,
+            rec.digits as usize,
+            1,
+            rec.period as u64,
+            secret_bytes.clone(),
+            None,
+            rec.account.clone(),
+        )
+    });
 
     let now = unix_now();
     let code = totp.generate(now);
@@ -231,16 +265,28 @@ async fn cmd_totp_qr(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .to_bytes()
         .map_err(|e| anyhow::anyhow!("Invalid stored secret: {}", e))?;
 
+    validate_secret_length(&secret_bytes)?;
+
     let totp = TOTP::new(
         algo,
         rec.digits as usize,
         1,
         rec.period as u64,
-        secret_bytes,
+        secret_bytes.clone(),
         Some(rec.service.clone()),
         rec.account.clone(),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to create TOTP: {}", e))?;
+    .unwrap_or_else(|_| {
+        TOTP::new_unchecked(
+            algo,
+            rec.digits as usize,
+            1,
+            rec.period as u64,
+            secret_bytes.clone(),
+            Some(rec.service.clone()),
+            rec.account.clone(),
+        )
+    });
 
     let uri = totp.get_url();
 
