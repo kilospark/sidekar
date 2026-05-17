@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn bracketed_paste_multi_line_image_paths_attach_each() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    let paste = "file:///tmp/sidekar-mt-a.png\nfile:///tmp/sidekar-mt-b.png\n";
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(b"\x1b[200~");
+    chunk.extend_from_slice(paste.as_bytes());
+    chunk.extend_from_slice(b"\x1b[201~");
+    editor.process_input_bytes(&chunk, |_, _| {}).unwrap();
+    assert_eq!(editor.attached_images.len(), 2);
+    assert!(
+        editor.buffer.contains("[Image #1]"),
+        "buffer={:?}",
+        editor.buffer
+    );
+    assert!(editor.buffer.contains("[Image #2]"));
+}
+
+#[test]
 fn drain_editor_pending_submit_pops_followup_turn_merge() {
     let mut editor = LineEditor::with_history(Vec::new());
     editor.pending_followups.push_back(SubmittedLine {

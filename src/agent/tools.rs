@@ -113,7 +113,10 @@ cargo, npm, etc.) to reduce token usage on noisy output."
 1-indexed line numbers. Use this instead of `bash cat`/`head`/`tail`. \
 Supports pagination: set `offset` to start at a specific line and `limit` to \
 cap how many lines are returned — useful for large files. Binary files will \
-be rejected. Paths may be absolute or relative to the current working directory."
+be rejected (NUL-byte heuristic). Image/screenshot files produced by Sidekar \
+(`Screenshot saved to` / `Screenshot saved:` in tool output) are auto-attached as vision input on \
+the tool result — do not use Read to load those PNG/JPEG bytes. Paths may be \
+absolute or relative to the current working directory."
                 .into(),
             input_schema: json!({
                 "type": "object",

@@ -92,6 +92,7 @@ fn tool_round_trip_resolves_id_to_function_name() {
                 tool_use_id: "call_Bash_0".into(),
                 content: "a\nb\nc".into(),
                 is_error: false,
+                content_images: vec![],
             }],
         },
     ];
@@ -131,6 +132,7 @@ fn tool_result_error_wraps_in_error_field() {
                 tool_use_id: "call_Grep_0".into(),
                 content: "oops".into(),
                 is_error: true,
+                content_images: vec![],
             }],
         },
     ];
@@ -170,6 +172,7 @@ fn thought_signature_replayed_on_function_call_parts() {
                 tool_use_id: "call_Bash_0".into(),
                 content: "hi".into(),
                 is_error: false,
+                content_images: vec![],
             }],
         },
     ];
@@ -210,6 +213,7 @@ fn thought_signature_none_uses_skip_sentinel() {
                 tool_use_id: "call_Bash_0".into(),
                 content: "files".into(),
                 is_error: false,
+                content_images: vec![],
             }],
         },
     ];
@@ -377,6 +381,7 @@ fn cacheable_prefix_spans_tool_round_trip() {
                 tool_use_id: "call_Bash_0".into(),
                 content: "a".into(),
                 is_error: false,
+                content_images: vec![],
             }],
         },
         ChatMessage {
@@ -442,11 +447,13 @@ fn tool_id_synthesis_disambiguates_same_name_calls() {
                 tool_use_id: "call_Bash_0".into(),
                 content: "a\nb".into(),
                 is_error: false,
+                content_images: vec![],
             },
             ContentBlock::ToolResult {
                 tool_use_id: "call_Bash_1".into(),
                 content: "/home".into(),
                 is_error: false,
+                content_images: vec![],
             },
         ],
     };

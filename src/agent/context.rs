@@ -82,7 +82,17 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::Thinking { thinking, .. } => thinking.len(),
                     ContentBlock::Reasoning { text } => text.len(),
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
-                    ContentBlock::ToolResult { content, .. } => content.len(),
+                    ContentBlock::ToolResult {
+                        content,
+                        content_images,
+                        ..
+                    } => {
+                        content.len()
+                            + content_images
+                                .iter()
+                                .map(|i| i.data_base64.len())
+                                .sum::<usize>()
+                    }
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
                     ContentBlock::EncryptedReasoning {
                         encrypted_content, ..
@@ -151,16 +161,26 @@ fn age_old_tool_cycles(view: &mut [ChatMessage], keep: usize) {
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
+                    content_images,
                     ..
-                } if content.len() > AGING_MIN_BYTES => {
+                } if content.len() > AGING_MIN_BYTES
+                    || content_images
+                        .iter()
+                        .map(|i| i.data_base64.len())
+                        .sum::<usize>()
+                        > AGING_MIN_BYTES =>
+                {
                     let tool_name = id_to_name
                         .get(tool_use_id.as_str())
                         .map(|s| s.as_str())
                         .unwrap_or("unknown");
+                    let img_bytes: usize = content_images.iter().map(|i| i.data_base64.len()).sum();
                     *content = format!(
-                        "[tool output cleared — {} chars, tool: {tool_name}]",
-                        content.len()
+                        "[tool output cleared — {} text chars, {} image base64 chars, tool: {tool_name}]",
+                        content.len(),
+                        img_bytes
                     );
+                    content_images.clear();
                 }
                 ContentBlock::ToolCall { arguments, .. }
                     if arguments.to_string().len() > AGING_MIN_BYTES =>

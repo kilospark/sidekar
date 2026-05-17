@@ -439,6 +439,15 @@ pub enum Role {
     Assistant,
 }
 
+/// Inline image bytes bundled with a [`ContentBlock::ToolResult`] so vision
+/// models receive screenshot pixels without relying on the `Read` tool (binary
+/// files are rejected there).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolResultInlineImage {
+    pub media_type: String,
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
@@ -462,6 +471,8 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content_images: Vec<ToolResultInlineImage>,
     },
     /// Local image bytes as base64 (e.g. from REPL paste of an image path). Serialized per provider.
     /// `source_path` is the on-disk location for one-turn-only handoff: after a successful turn we

@@ -189,7 +189,16 @@ fn rough_bedrock_message_chars(system_prompt: &str, messages: &[ChatMessage]) ->
                 ContentBlock::ToolCall { arguments, .. } => {
                     arguments.to_string().len().saturating_add(96)
                 }
-                ContentBlock::ToolResult { content, .. } => content.len().saturating_add(48),
+                ContentBlock::ToolResult {
+                    content,
+                    content_images,
+                    ..
+                } => content.len().saturating_add(48).saturating_add(
+                    content_images
+                        .iter()
+                        .map(|i| i.data_base64.len().saturating_div(4).saturating_add(256))
+                        .sum(),
+                ),
                 ContentBlock::Image { data_base64, .. } => {
                     data_base64.len().saturating_div(4).saturating_add(256)
                 }

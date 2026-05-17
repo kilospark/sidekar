@@ -25,7 +25,17 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                     ContentBlock::Text { text } => text.len(),
                     ContentBlock::Thinking { thinking, .. } => thinking.len(),
                     ContentBlock::ToolCall { arguments, .. } => arguments.to_string().len(),
-                    ContentBlock::ToolResult { content, .. } => content.len(),
+                    ContentBlock::ToolResult {
+                        content,
+                        content_images,
+                        ..
+                    } => {
+                        content.len()
+                            + content_images
+                                .iter()
+                                .map(|i| i.data_base64.len())
+                                .sum::<usize>()
+                    }
                     ContentBlock::Image { data_base64, .. } => data_base64.len(),
                     ContentBlock::EncryptedReasoning {
                         encrypted_content, ..
@@ -139,8 +149,19 @@ fn phase1_clear_old_results(history: &mut [ChatMessage]) -> usize {
     for msg in history[..cutoff].iter_mut() {
         for block in msg.content.iter_mut() {
             match block {
-                ContentBlock::ToolResult { content, .. } if content.len() > 200 => {
+                ContentBlock::ToolResult {
+                    content,
+                    content_images,
+                    ..
+                } if content.len() > 200
+                    || content_images
+                        .iter()
+                        .map(|i| i.data_base64.len())
+                        .sum::<usize>()
+                        > 200 =>
+                {
                     *content = "[Cleared]".to_string();
+                    content_images.clear();
                     cleared += 1;
                 }
                 ContentBlock::ToolCall { arguments, .. } if arguments.to_string().len() > 200 => {

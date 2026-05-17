@@ -182,13 +182,33 @@ pub(super) fn openai_compat_chat_completion_body(
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
+                            content_images,
                             ..
                         } => {
                             flush_openrouter_user(&mut api_messages, &mut pending_user_parts);
+                            let tool_content: Value = if content_images.is_empty() {
+                                json!(content)
+                            } else {
+                                let mut parts = vec![json!({
+                                    "type": "text",
+                                    "text": content,
+                                })];
+                                for img in content_images {
+                                    let url = format!(
+                                        "data:{};base64,{}",
+                                        img.media_type, img.data_base64
+                                    );
+                                    parts.push(json!({
+                                        "type": "image_url",
+                                        "image_url": { "url": url },
+                                    }));
+                                }
+                                json!(parts)
+                            };
                             api_messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": super::sanitize_id_openai(tool_use_id),
-                                "content": content,
+                                "content": tool_content,
                             }));
                         }
                         _ => {}

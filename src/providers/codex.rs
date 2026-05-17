@@ -189,6 +189,7 @@ fn build_request_body(
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
+                            content_images,
                             ..
                         } => {
                             flush_codex_user_message(&mut input, &mut pending_parts);
@@ -198,6 +199,28 @@ fn build_request_body(
                                 "call_id": call_id,
                                 "output": content,
                             }));
+                            if !content_images.is_empty() {
+                                let mut iparts: Vec<Value> = Vec::new();
+                                iparts.push(json!({
+                                    "type": "input_text",
+                                    "text": "(Screenshot pixels attached below.)",
+                                }));
+                                for img in content_images {
+                                    let url = format!(
+                                        "data:{};base64,{}",
+                                        img.media_type, img.data_base64
+                                    );
+                                    iparts.push(json!({
+                                        "type": "input_image",
+                                        "image_url": url,
+                                    }));
+                                }
+                                input.push(json!({
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": iparts,
+                                }));
+                            }
                         }
                         _ => {}
                     }

@@ -418,6 +418,7 @@ pub(crate) fn build_request_body(
                             tool_use_id,
                             content,
                             is_error,
+                            content_images,
                         } => {
                             // Resolve id → function name via map built
                             // from the preceding assistant turn. If
@@ -445,6 +446,16 @@ pub(crate) fn build_request_body(
                                     "response": response,
                                 }
                             }));
+                            if !is_error {
+                                for img in content_images {
+                                    parts.push(json!({
+                                        "inlineData": {
+                                            "mimeType": img.media_type,
+                                            "data": img.data_base64,
+                                        }
+                                    }));
+                                }
+                            }
                         }
                         _ => {}
                     }

@@ -2,6 +2,7 @@ pub mod compaction;
 pub mod context;
 pub(crate) mod edit_patch;
 pub mod images;
+pub(crate) mod tool_attach;
 pub mod tools;
 #[cfg(unix)]
 pub mod unified_exec;
@@ -325,8 +326,14 @@ pub async fn run(
                 arguments_json,
             });
             let result = tools::execute(name, arguments, cancel).await;
-            let (content, is_error) = match result {
-                Ok(output) => (truncate_tool_output(&output, 50_000), false),
+            let (content, is_error, content_images) = match result {
+                Ok(output) => {
+                    let (text, imgs) =
+                        crate::agent::tool_attach::augment_tool_output_with_screenshot_images(
+                            output,
+                        );
+                    (truncate_tool_output(&text, 50_000), false, imgs)
+                }
                 Err(e) if e.is::<Cancelled>() => {
                     // Give the user explicit feedback that their Esc/Ctrl+C
                     // landed and the tool tree was killed — otherwise the
@@ -341,13 +348,14 @@ pub async fn run(
                         &format!("tool {name} failed"),
                         Some(&format!("{e:#}")),
                     );
-                    (format!("Error: {e:#}"), true)
+                    (format!("Error: {e:#}"), true, Vec::new())
                 }
             };
             result_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
                 content,
                 is_error,
+                content_images: if is_error { Vec::new() } else { content_images },
             });
         }
 

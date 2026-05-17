@@ -297,11 +297,13 @@ mod tests {
                     tool_use_id: "t-1".into(),
                     content: "fn login() { ... }".into(),
                     is_error: false,
+                    content_images: vec![],
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "t-1".into(),
                     content: "file not found".into(),
                     is_error: true,
+                    content_images: vec![],
                 },
             ],
         }];

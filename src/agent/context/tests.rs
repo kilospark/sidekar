@@ -45,6 +45,7 @@ fn tool_result_msg(id: &str, content: &str) -> ChatMessage {
             tool_use_id: id.to_string(),
             content: content.to_string(),
             is_error: false,
+            content_images: vec![],
         }],
     }
 }

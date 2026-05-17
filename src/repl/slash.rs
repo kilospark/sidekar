@@ -95,9 +95,15 @@ fn format_entry_content_for_history_show(content_json: &str) -> String {
                 tool_use_id,
                 content,
                 is_error,
+                content_images,
             } => {
+                let img_note = if content_images.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (+{} inline image(s))", content_images.len())
+                };
                 format!(
-                    "[tool_result] id={tool_use_id} error={is_error}\n{}",
+                    "[tool_result] id={tool_use_id} error={is_error}{img_note}\n{}",
                     truncate_inline(&content, 8000)
                 )
             }

@@ -133,6 +133,7 @@ fn last_prompt_snippet_extracts_first_text_block_and_truncates() {
             tool_use_id: "id".into(),
             content: "huge dump".into(),
             is_error: false,
+            content_images: vec![],
         },
         ContentBlock::Text {
             text: "why did that happen?".into(),
@@ -149,6 +150,7 @@ fn last_prompt_snippet_extracts_first_text_block_and_truncates() {
         tool_use_id: "id".into(),
         content: "dump".into(),
         is_error: false,
+        content_images: vec![],
     }];
     let sc = make(&serde_json::to_string(&blocks).unwrap());
     assert!(sc.last_prompt_snippet(30).is_none());

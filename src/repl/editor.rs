@@ -762,6 +762,15 @@ impl Default for LineEditor {
     }
 }
 
+/// True when `bytes` contains an ANSI bracketed-paste **end** marker (`CSI 201 ~`).
+/// Used to force a final redraw after stdin chunks: Terminal.app often buffers output
+/// until the drag-drop burst finishes, so intermediate redraws inside `feed_byte` may not paint.
+fn chunk_has_bracketed_paste_end(bytes: &[u8]) -> bool {
+    bytes
+        .windows(6)
+        .any(|w| w == [0x1b, b'[', b'2', b'0', b'1', b'~'])
+}
+
 impl LineEditor {
     pub(super) fn with_history(history: Vec<String>) -> Self {
         Self {
@@ -824,8 +833,9 @@ impl LineEditor {
         // during the chunk (e.g., one per `201~` end marker) land on stdout
         // but don't surface on screen until the next keypress. Re-emit once
         // the chunk is fully drained so the final frame is guaranteed to
-        // render.
-        if self.attached_images.len() != images_before {
+        // render. Also redraw whenever bracketed paste ends in this chunk,
+        // even if image count did not change (e.g., non-image paste).
+        if self.attached_images.len() != images_before || chunk_has_bracketed_paste_end(bytes) {
             self.redraw_inner();
         }
         Ok(())
@@ -849,6 +859,37 @@ impl LineEditor {
             self.preferred_col = None;
             return;
         }
+        // Multi-file drag often arrives as one bracketed paste with one path per line.
+        let lines: Vec<&str> = t
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if lines.len() > 1 {
+            let mut paths = Vec::with_capacity(lines.len());
+            let mut ok = true;
+            for line in &lines {
+                if line.len() >= 16_384 {
+                    ok = false;
+                    break;
+                }
+                match super::user_turn::normalize_pasted_path(line) {
+                    Some(pb) if looks_like_image_file(&pb) => paths.push(pb),
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && paths.len() == lines.len() {
+                for pb in paths {
+                    self.attach_image(pb);
+                }
+                self.redraw_inner();
+                return;
+            }
+        }
+
         // For paste-burst flushes, the user may have hit Enter before the
         // idle timeout, appending a trailing newline to the burst. Ignore any
         // leading/trailing whitespace when checking for a single-line image
@@ -860,6 +901,9 @@ impl LineEditor {
             && looks_like_image_file(&pb)
         {
             self.attach_image(pb);
+            // Paste-burst path has no bracketed-paste end marker; redraw here so
+            // `[Image #N]` shows before the next keystroke (Terminal.app coalescing).
+            self.redraw_inner();
             return;
         }
         self.detach_history_nav();

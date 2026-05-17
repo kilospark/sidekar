@@ -545,12 +545,34 @@ fn serialize_content_blocks(blocks: &[ContentBlock], oauth: bool) -> Vec<Value> 
                 tool_use_id,
                 content,
                 is_error,
-            } => Some(json!({
-                "type": "tool_result",
-                "tool_use_id": super::sanitize_id_anthropic(tool_use_id),
-                "content": content,
-                "is_error": is_error,
-            })),
+                content_images,
+            } => {
+                let content_wire = if content_images.is_empty() {
+                    json!(content)
+                } else {
+                    let mut parts: Vec<Value> = vec![json!({
+                        "type": "text",
+                        "text": content,
+                    })];
+                    for img in content_images {
+                        parts.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img.media_type,
+                                "data": img.data_base64,
+                            }
+                        }));
+                    }
+                    json!(parts)
+                };
+                Some(json!({
+                    "type": "tool_result",
+                    "tool_use_id": super::sanitize_id_anthropic(tool_use_id),
+                    "content": content_wire,
+                    "is_error": is_error,
+                }))
+            }
             ContentBlock::Image {
                 media_type,
                 data_base64,

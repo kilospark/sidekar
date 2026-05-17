@@ -134,10 +134,16 @@ pub(super) fn redact_history_in_place(history: &mut [crate::providers::ChatMessa
                         *text = redact(text);
                     }
                 }
-                ContentBlock::ToolResult { content, .. } => {
+                ContentBlock::ToolResult {
+                    content,
+                    content_images,
+                    ..
+                } => {
                     if PATTERN_SET.is_match(content) {
                         *content = redact(content);
                     }
+                    // Avoid huge pixel payloads in persisted journals.
+                    content_images.clear();
                 }
                 ContentBlock::ToolCall { .. }
                 | ContentBlock::Image { .. }
@@ -336,6 +342,7 @@ mod tests {
                     tool_use_id: "t-1".into(),
                     content: "Authorization: Bearer tok_12345.xyz".into(),
                     is_error: false,
+                    content_images: vec![],
                 },
             ],
         }];
