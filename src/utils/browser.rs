@@ -49,8 +49,10 @@ pub fn find_browser() -> Option<BrowserCandidate> {
     None
 }
 
-/// Find a browser matching a preferred name (case-insensitive substring match).
-/// Falls back to find_browser() if no match found.
+/// Find a browser matching a preferred name (case-insensitive substring match on the
+/// vendor label). Order: `CHROME_PATH` if it matches the preference, standard install
+/// paths (`all_browser_candidates`), then PATH/`which` on non-Windows — same shells
+/// `find_browser()` uses when no preference is set (Homebrew `google-chrome`, etc.).
 pub fn find_browser_by_name(preferred: &str) -> Option<BrowserCandidate> {
     let pref = preferred.to_lowercase();
 
@@ -63,14 +65,49 @@ pub fn find_browser_by_name(preferred: &str) -> Option<BrowserCandidate> {
         other => other,
     };
 
-    // Collect all candidates from find_browser's list and filter
+    let name_matches = |label: &str| label.to_lowercase().contains(needle);
+
+    if let Ok(chrome_path) = env::var("CHROME_PATH")
+        && Path::new(&chrome_path).exists()
+    {
+        let name = app_name_from_path(&chrome_path);
+        if name_matches(&name) {
+            return Some(BrowserCandidate {
+                path: chrome_path,
+                name,
+            });
+        }
+    }
+
     let all = all_browser_candidates();
     for (path, name) in &all {
-        if name.to_lowercase().contains(needle) && Path::new(path).exists() {
+        if name_matches(name) && Path::new(path).exists() {
             return Some(BrowserCandidate {
                 path: path.clone(),
                 name: name.clone(),
             });
+        }
+    }
+
+    if !cfg!(target_os = "windows") {
+        for (bin, name) in [
+            ("google-chrome-stable", "Google Chrome"),
+            ("google-chrome", "Google Chrome"),
+            ("chromium-browser", "Chromium"),
+            ("chromium", "Chromium"),
+            ("microsoft-edge-stable", "Microsoft Edge"),
+            ("microsoft-edge", "Microsoft Edge"),
+            ("brave-browser", "Brave Browser"),
+        ] {
+            if !name_matches(name) {
+                continue;
+            }
+            if let Some(path) = which_bin(bin) {
+                return Some(BrowserCandidate {
+                    path,
+                    name: name.to_string(),
+                });
+            }
         }
     }
 

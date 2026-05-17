@@ -287,7 +287,8 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 }
                 if find_browser_by_name(raw_value).is_none() {
                     bail!(
-                        "Browser '{raw_value}' not found. Available: chrome, edge, brave, arc, vivaldi, chromium, canary"
+                        "Browser '{raw_value}' not found. Known aliases: chrome, edge, brave, arc, vivaldi, chromium, canary. \
+                         Install under /Applications (macOS), set CHROME_PATH, or put `google-chrome`/`chromium` on PATH."
                     );
                 }
             }

@@ -189,7 +189,8 @@ pub(crate) async fn cmd_launch(ctx: &mut AppContext, args: &[String]) -> Result<
     let browser = if let Some(ref name) = preferred_browser {
         find_browser_by_name(name).ok_or_else(|| {
             anyhow!(
-                "Browser '{name}' not found. Available: chrome, edge, brave, arc, vivaldi, chromium"
+                "Browser '{name}' not found. Known aliases: chrome, edge, brave, arc, vivaldi, chromium. \
+                 Install under /Applications (macOS), set CHROME_PATH, or put `google-chrome`/`chromium` on PATH."
             )
         })?
     } else {
