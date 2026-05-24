@@ -266,7 +266,7 @@ pub(crate) async fn cmd_observe(ctx: &mut AppContext) -> Result<()> {
 pub(crate) async fn cmd_find(ctx: &mut AppContext, query: &str) -> Result<()> {
     if query.trim().is_empty() {
         bail!(
-            "Usage: sidekar find <query>\n       find --role <role> [name]\n       find --text <text>\n       find --label <label>\n       find --testid <id>"
+            "Usage: sidekar browser find <query>\n       find --role <role> [name]\n       find --text <text>\n       find --label <label>\n       find --testid <id>"
         );
     }
 

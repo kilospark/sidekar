@@ -23,7 +23,7 @@ impl AppContext {
         } else if self.override_tab_id.is_some() {
             SessionState::default()
         } else {
-            bail!("Unknown browser session: {session_id}. Use `sidekar browser-sessions list`.")
+            bail!("Unknown browser session: {session_id}. Use `sidekar browser sessions list`.")
         };
 
         if state.session_id.is_empty() {
@@ -166,7 +166,7 @@ pub fn list_browser_sessions(ctx: &AppContext) -> Result<Vec<BrowserSessionInfo>
 pub fn get_browser_session(ctx: &AppContext, session_id: &str) -> Result<BrowserSessionInfo> {
     let path = ctx.session_state_file(session_id);
     if !path.exists() {
-        bail!("Unknown browser session: {session_id}. Use `sidekar browser-sessions list`.")
+        bail!("Unknown browser session: {session_id}. Use `sidekar browser sessions list`.")
     }
     read_browser_session_state(&path)
 }

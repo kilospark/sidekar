@@ -4,9 +4,7 @@ use anyhow::{Context, Result, bail};
 use futures_util::{StreamExt, pin_mut};
 use serde::Serialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use xxhash_rust::xxh64::xxh64;
 
 use super::{
     AssistantResponse, ChatMessage, ContentBlock, RateLimitSnapshot, Role, StopReason,
@@ -14,10 +12,6 @@ use super::{
 };
 
 const CLAUDE_CODE_VERSION: &str = "2.1.87";
-const FINGERPRINT_SALT: &str = "59cf53e54c78";
-const CCH_PLACEHOLDER: &str = "cch=00000";
-const CCH_SEED: u64 = 0x6E52_736A_C806_831E;
-const CCH_MASK: u64 = 0xF_FFFF;
 
 /// Stream a response from the Anthropic Messages API.
 #[allow(clippy::too_many_arguments)]
@@ -52,10 +46,7 @@ pub async fn stream(
         config,
         is_oauth,
     );
-    let mut body_json = serde_json::to_string(&body)?;
-    if is_oauth && body_json.contains(CCH_PLACEHOLDER) {
-        body_json = sign_request_body(&body_json);
-    }
+    let body_json = serde_json::to_string(&body)?;
     // Claude Code's captured traffic hits `/v1/messages?beta=true`, not bare
     // `/v1/messages`. The `?beta=true` query flag is what actually activates
     // the beta features listed in `anthropic-beta` — including the
@@ -79,12 +70,9 @@ pub async fn stream(
         // `prompt-caching-scope-2026-01-05` gates the `cache_control.ephemeral.
         // scope` field. Without it, Anthropic returns 400
         // `system.N.cache_control.ephemeral.scope: Extra inputs are not
-        // permitted`. Claude Code sends this beta in its captured traffic,
-        // and it's what lets the cache survive the volatile per-request
-        // billing header (block 0, which changes every turn because `cch`
-        // is a body hash).
+        // permitted`.
         String::from(
-            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,prompt-caching-scope-2026-01-05",
+            "oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,prompt-caching-scope-2026-01-05",
         )
     } else {
         String::from("fine-grained-tool-streaming-2025-05-14")
@@ -96,7 +84,7 @@ pub async fn stream(
 
     if is_oauth {
         headers.insert("authorization", format!("Bearer {api_key}").parse()?);
-        headers.insert("user-agent", "claude-cli/2.1.87".parse()?);
+        headers.insert("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}").parse()?);
         headers.insert("x-app", "cli".parse()?);
     } else {
         headers.insert("x-api-key", api_key.parse()?);
@@ -370,7 +358,7 @@ fn build_request_body(
     };
 
     let mut request = AnthropicRequest {
-        system: build_system_blocks(system_prompt, messages, is_oauth),
+        system: build_system_blocks(system_prompt),
         model: model.to_string(),
         max_tokens: config.max_tokens,
         metadata,
@@ -382,32 +370,14 @@ fn build_request_body(
     request
 }
 
-fn build_system_blocks(
-    system_prompt: &str,
-    messages: &[ChatMessage],
-    is_oauth: bool,
-) -> Vec<Value> {
-    let mut blocks = Vec::new();
-
-    if is_oauth {
-        blocks.push(json!({
-            "type": "text",
-            "text": build_billing_header(messages),
-        }));
-        blocks.push(json!({
-            "type": "text",
-            "text": "You are Claude Code, Anthropic's official CLI for Claude."
-        }));
+fn build_system_blocks(system_prompt: &str) -> Vec<Value> {
+    if system_prompt.is_empty() {
+        return Vec::new();
     }
-
-    if !system_prompt.is_empty() {
-        blocks.push(json!({
-            "type": "text",
-            "text": system_prompt
-        }));
-    }
-
-    blocks
+    vec![json!({
+        "type": "text",
+        "text": system_prompt
+    })]
 }
 
 fn ephemeral_cache_marker(config: &StreamConfig, include_scope: bool) -> Value {
@@ -433,9 +403,8 @@ fn apply_cache_control(request: &mut AnthropicRequest, config: &StreamConfig) {
 
     // Place the stable breakpoint on the LAST TOOL definition, not on the
     // system block. Reason: Anthropic's minimum cacheable prefix is 1024
-    // tokens, and our REPL system prompt (≈380 tokens including the two
-    // fixed CC-identity blocks) falls below that threshold — the marker
-    // would be syntactically valid but silently discarded. Placing it on
+    // tokens, and a typical REPL system prompt falls below that threshold —
+    // the marker would be syntactically valid but silently discarded. Placing it on
     // the last tool extends the cached prefix to system + tools (≈1830
     // tokens for the REPL's 7-tool schema), which is safely above 1024 and
     // still stable across turns (tool defs never change mid-session).
@@ -620,52 +589,6 @@ struct AnthropicRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
-}
-
-fn build_billing_header(messages: &[ChatMessage]) -> String {
-    let fingerprint = compute_fingerprint_from_messages(messages, CLAUDE_CODE_VERSION);
-    format!(
-        "x-anthropic-billing-header: cc_version={CLAUDE_CODE_VERSION}.{fingerprint}; cc_entrypoint=cli; {CCH_PLACEHOLDER};"
-    )
-}
-
-fn compute_fingerprint_from_messages(messages: &[ChatMessage], version: &str) -> String {
-    let first_user_text = messages
-        .iter()
-        .find(|msg| matches!(msg.role, Role::User))
-        .and_then(|msg| {
-            msg.content.iter().find_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                ContentBlock::Image { .. } => Some("[image]"),
-                _ => None,
-            })
-        })
-        .unwrap_or("");
-
-    compute_fingerprint(first_user_text, version)
-}
-
-fn compute_fingerprint(message_text: &str, version: &str) -> String {
-    let chars = [4usize, 7, 20]
-        .into_iter()
-        .map(|i| message_text.chars().nth(i).unwrap_or('0'))
-        .collect::<String>();
-    let input = format!("{FINGERPRINT_SALT}{chars}{version}");
-    let hash = Sha256::digest(input.as_bytes());
-    hash.iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()[..3]
-        .to_string()
-}
-
-fn sign_request_body(body: &str) -> String {
-    let cch = compute_cch(body);
-    body.replacen(CCH_PLACEHOLDER, &format!("cch={cch}"), 1)
-}
-
-fn compute_cch(body: &str) -> String {
-    let hash = xxh64(body.as_bytes(), CCH_SEED) & CCH_MASK;
-    format!("{hash:05x}")
 }
 
 pub(super) fn build_bedrock_anthropic_messages_request_body(

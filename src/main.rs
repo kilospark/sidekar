@@ -137,8 +137,15 @@ async fn run(mut args: Vec<String>) -> Result<()> {
 
     // Global --profile <name>: select which managed Chrome profile to use.
     // Stripped from args here EXCEPT when the command consumes --profile
-    // itself (launch / ext / network), so per-command parsing keeps working.
-    let consumes_own_profile = matches!(command.as_str(), "launch" | "ext" | "network");
+    // itself (browser launch / browser network / ext / network), so per-command parsing keeps working.
+    let consumes_own_profile = match command.as_str() {
+        "ext" | "network" => true,
+        "browser" => matches!(
+            args.first().map(String::as_str),
+            Some("launch") | Some("network")
+        ),
+        _ => false,
+    };
     let global_profile: Option<String> = if !consumes_own_profile {
         if let Some(pos) = args.iter().position(|a| a == "--profile") {
             if pos + 1 < args.len() {
@@ -162,7 +169,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
     if matches!(command.as_str(), "-h" | "--help" | "help") {
         if let Some(subcmd) = args.first() {
-            print_command_help(subcmd);
+            if subcmd == "browser" && args.len() > 1 {
+                print_command_help(&args[1..].join(" "));
+            } else {
+                print_command_help(subcmd);
+            }
         } else {
             print_help();
         }
@@ -173,7 +184,19 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if args.iter().any(|a| a == "--help" || a == "-h")
         && should_handle_sidekar_help_flag(&raw_command, &command)
     {
-        print_command_help(&command);
+        if command == "browser" {
+            if let Some(sub) = args
+                .iter()
+                .find(|a| *a != "--help" && *a != "-h")
+                .map(String::as_str)
+            {
+                print_command_help(sub);
+            } else {
+                print_command_help("browser");
+            }
+        } else {
+            print_command_help(&command);
+        }
         return Ok(());
     }
     if command == "skill" {
@@ -223,9 +246,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
     if command == "session" {
         return top_level_cmds::handle_session(&args).await;
-    }
-    if command == "browser-sessions" {
-        return top_level_cmds::handle_browser_sessions(&args);
     }
     if command == "daemon" {
         return top_level_cmds::handle_daemon(&args).await;
@@ -333,39 +353,41 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             // No session — try reading port from default profile
             let port_file = ctx.chrome_port_file_for("default");
             let port_str = fs::read_to_string(&port_file)
-                .context("No running browser found. Run: sidekar launch")?;
+                .context("No running browser found. Run: sidekar browser launch")?;
             port_str
                 .trim()
                 .parse::<u16>()
-                .context("No running browser found. Run: sidekar launch")?
+                .context("No running browser found. Run: sidekar browser launch")?
         };
         ctx.cdp_port = port;
         // Validate Chrome is actually reachable on this port
         if get_debug_tabs(&ctx).await.is_err() {
-            bail!("No running browser found. Run: sidekar launch");
+            bail!("No running browser found. Run: sidekar browser launch");
         }
         // Isolated session ID — never reuses an existing session's state file
         let tab_id = ctx.override_tab_id.as_ref().unwrap();
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
-    } else if host_mode
-        && sidekar::command_requires_session(&command)
+    } else if command == "browser" && host_mode && sidekar::browser_requires_session(&args)
         && !is_sessionless_subcommand(&command, &args)
     {
-        // --host mode: route the command through the extension daemon, which
-        // talks to whichever Chrome (host or managed) the extension is
-        // attached to. Tab targeting via --tab is honored if provided.
-        if !sidekar::is_ext_routable_command(&command) {
+        let sub = args
+            .first()
+            .context("Usage: sidekar browser <subcommand> [args...]")?;
+        if !sidekar::browser_ext_routable(&args) {
             bail!(
-                "--host doesn't support `{command}` (no extension equivalent yet). \
+                "--host doesn't support `browser {sub}` (no extension equivalent yet). \
                  Drop --host to use managed Chrome, or run an --host-supported command."
             );
         }
+        let handler = sidekar::command_catalog::browser_subcommand_handler(sub)
+            .context("Unknown browser subcommand")?;
         let default_tab = override_tab_id
             .as_deref()
             .and_then(|s| s.parse::<u64>().ok());
-        return sidekar::ext::send_cli_command(&command, &args, default_tab).await;
-    } else if sidekar::command_requires_session(&command)
+        return sidekar::ext::send_cli_command(handler, &args[1..], default_tab).await;
+    } else if command == "browser"
+        && sidekar::browser_requires_session(&args)
         && !is_sessionless_subcommand(&command, &args)
     {
         // Managed mode + no session passed: first try to reuse the last
@@ -382,8 +404,12 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             // a fresh one cleanly.
             ctx.clear_current_session();
             let profile = global_profile.as_deref().unwrap_or("default");
-            let launch_args = vec!["--profile".to_string(), profile.to_string()];
-            sidekar::commands::dispatch(&mut ctx, "launch", &launch_args).await?;
+            let launch_args = vec![
+                "launch".to_string(),
+                "--profile".to_string(),
+                profile.to_string(),
+            ];
+            sidekar::commands::dispatch(&mut ctx, "browser", &launch_args).await?;
             // Discard launch's structured output — the caller asked for the
             // result of the actual command, not the launch banner.
             let _ = ctx.drain_output();
@@ -427,10 +453,11 @@ async fn run_command_file(ctx: &mut AppContext) -> Result<()> {
 /// Subcommands on session-requiring commands that don't actually need a
 /// browser session — e.g. `network passive` reads a daemon ring buffer.
 fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
-    matches!(
-        (command, args.first().map(String::as_str)),
-        ("network", Some("passive")) | ("network", Some("sse"))
-    )
+    command == "browser"
+        && matches!(
+            (args.first().map(String::as_str), args.get(1).map(String::as_str)),
+            (Some("network"), Some("passive")) | (Some("network"), Some("sse"))
+        )
 }
 
 fn tab_id_from_global_flag(override_tab_id: &Option<String>) -> Option<u64> {

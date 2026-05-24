@@ -1,41 +1,45 @@
-pub const COMMANDS: &[&str] = &[
-    "navigate",
-    "click",
-    "type",
-    "keyboard",
-    "fill",
-    "read",
-    "text",
-    "ax-tree",
-    "dom",
-    "screenshot",
-    "press",
-    "scroll",
-    "search",
-    "read-urls",
-    "batch",
-    "launch",
-    "connect",
-    "browser-sessions",
-    "run",
-    "desktop",
-    "tabs",
-    "tab",
-    "new-tab",
-    "close",
-    "back",
-    "forward",
-    "reload",
-    "observe",
-    "find",
-    "resolve",
-];
-
 pub fn get(command: &str) -> Option<&'static str> {
     Some(match command {
+        "browser" => {
+            "\
+sidekar browser <subcommand> [args...]
+
+  Browser automation via Chrome DevTools Protocol (CDP).
+
+  Session / chrome:
+    launch, connect, stealth, debug, navigate, back, forward, reload
+    tabs, tab, new-tab, close, activate, minimize, kill, frames, frame
+    screencast, sessions
+
+  Read / observe:
+    read, text, dom, ax-tree, observe, find, resolve, screenshot, pdf
+    search, read-urls, grid
+
+  Interact:
+    batch, click, hover, focus, clear, type, fill, keyboard, paste
+    clipboard, insert-text, select, upload, drag, dialog, wait-for
+    wait-for-nav, press, scroll, eval, media, animations, zoom, lock
+    unlock, mouse
+
+  Data / env:
+    cookies, console, network, block, viewport, download, storage
+    service-workers, security, geo, state, auth
+
+  Global flags (before `browser`):
+    --profile <name>   Managed Chrome profile (auto-launch on first use)
+    --host             Route via sidekar extension to your running Chrome
+    --tab <id>         Target a specific tab
+
+  Examples:
+    sidekar browser navigate example.com
+    sidekar browser click 3
+    sidekar browser ax-tree -i
+    sidekar --profile work browser navigate https://internal.app
+    sidekar --host browser read"
+        }
         "navigate" => {
             "\
-sidekar navigate <url> [--no-dismiss]
+sidekar browser navigate <url> [--no-dismiss]
 
   Navigate the active tab to <url>. Automatically adds https:// if no scheme.
   Auto-dismisses cookie consent banners and common popups after load.
@@ -49,14 +53,14 @@ sidekar navigate <url> [--no-dismiss]
     --no-dismiss   Skip automatic popup/banner dismissal
 
   Examples:
-    sidekar navigate example.com
-    sidekar navigate https://github.com/search?q=rust --no-dismiss
-    sidekar --profile work navigate https://internal.app
-    sidekar --host navigate https://news.example.com"
+    sidekar browser navigate example.com
+    sidekar browser navigate https://github.com/search?q=rust --no-dismiss
+    sidekar --profile work browser navigate https://internal.app
+    sidekar --host browser navigate https://news.example.com"
         }
         "click" => {
             "\
-sidekar click <target> [--mode=double|right|human]
+sidekar browser click <target> [--mode=double|right|human]
 
   Click an element. Waits up to 5s for it to appear, scrolls into view.
 
@@ -75,15 +79,15 @@ sidekar click <target> [--mode=double|right|human]
   (permission dialogs, extension popups) if not found in DOM.
 
   Examples:
-    sidekar click 3
-    sidekar click --text \"Sign in\"
-    sidekar click \"#submit-btn\"
-    sidekar click --mode=double 5
-    sidekar click 450,300"
+    sidekar browser click 3
+    sidekar browser click --text \"Sign in\"
+    sidekar browser click \"#submit-btn\"
+    sidekar browser click --mode=double 5
+    sidekar browser click 450,300"
         }
         "type" => {
             "\
-sidekar type <selector> <text> [--human]
+sidekar browser type <selector> <text> [--human]
 
   Focus the element matching <selector> and type <text> into it.
   Clears existing content first.
@@ -94,36 +98,36 @@ sidekar type <selector> <text> [--human]
   Use 'keyboard' instead for rich text editors where focus resets cursor.
 
   Examples:
-    sidekar type \"#search\" \"rust async\"
-    sidekar type 5 \"hello world\"
-    sidekar type --human \"#email\" \"user@example.com\""
+    sidekar browser type \"#search\" \"rust async\"
+    sidekar browser type 5 \"hello world\"
+    sidekar browser type --human \"#email\" \"user@example.com\""
         }
         "keyboard" => {
             "\
-sidekar keyboard <text>
+sidekar browser keyboard <text>
 
   Type text at the current caret position without focusing a new element.
   Essential for rich text editors (Slack, Google Docs, Notion) where
   'type' would reset the cursor position.
 
   Example:
-    sidekar click \".editor\"
-    sidekar keyboard \"Hello world\""
+    sidekar browser click \".editor\"
+    sidekar browser keyboard \"Hello world\""
         }
         "fill" => {
             "\
-sidekar fill <selector1> <value1> [selector2] [value2] ...
+sidekar browser fill <selector1> <value1> [selector2] [value2] ...
 
   Fill multiple form fields in one call. Alternating selector/value pairs.
   More efficient than multiple 'type' calls.
 
   Examples:
-    sidekar fill \"#email\" \"user@example.com\" \"#password\" \"secret\"
-    sidekar fill 3 \"Alice\" 5 \"alice@example.com\""
+    sidekar browser fill \"#email\" \"user@example.com\" \"#password\" \"secret\"
+    sidekar browser fill 3 \"Alice\" 5 \"alice@example.com\""
         }
         "read" => {
             "\
-sidekar read [selector] [--tokens=N]
+sidekar browser read [selector] [--tokens=N]
 
   Reader-mode text extraction. Strips navigation, sidebars, ads.
   Returns clean text with headings, lists, paragraphs.
@@ -134,13 +138,13 @@ sidekar read [selector] [--tokens=N]
     --tokens=N   Approximate token limit for output
 
   Examples:
-    sidekar read
-    sidekar read article --tokens=2000
-    sidekar read \".main-content\""
+    sidekar browser read
+    sidekar browser read article --tokens=2000
+    sidekar browser read \".main-content\""
         }
         "text" => {
             "\
-sidekar text [selector] [--tokens=N]
+sidekar browser text [selector] [--tokens=N]
 
   Full page text in reading order, interleaving static text with
   interactive elements (numbered refs). Like a screen reader view.
@@ -149,12 +153,12 @@ sidekar text [selector] [--tokens=N]
   Best for complex pages where you need both content and interaction targets.
 
   Examples:
-    sidekar text
-    sidekar text --tokens=3000"
+    sidekar browser text
+    sidekar browser text --tokens=3000"
         }
         "ax-tree" => {
             "\
-sidekar ax-tree [options] [selector]
+sidekar browser ax-tree [options] [selector]
 
   Accessibility tree — semantic roles and accessible names.
 
@@ -166,25 +170,25 @@ sidekar ax-tree [options] [selector]
   After -i, use ref numbers everywhere: click 3, type 5 \"hello\", screenshot --ref=7
 
   Examples:
-    sidekar ax-tree -i
-    sidekar ax-tree -i --diff
-    sidekar ax-tree --tokens=2000"
+    sidekar browser ax-tree -i
+    sidekar browser ax-tree -i --diff
+    sidekar browser ax-tree --tokens=2000"
         }
         "dom" => {
             "\
-sidekar dom [selector] [--tokens=N]
+sidekar browser dom [selector] [--tokens=N]
 
   Compact DOM tree with scripts, styles, SVGs stripped.
   Traverses open shadow roots. Scope with CSS selector.
 
   Examples:
-    sidekar dom
-    sidekar dom \"main\" --tokens=3000
-    sidekar dom \"#app\""
+    sidekar browser dom
+    sidekar browser dom \"main\" --tokens=3000
+    sidekar browser dom \"#app\""
         }
         "screenshot" => {
             "\
-sidekar screenshot [options]
+sidekar browser screenshot [options]
 
   Capture a screenshot of the page or a specific element.
 
@@ -200,15 +204,15 @@ sidekar screenshot [options]
     --pad=N            Padding around crop in pixels (default: 48)
 
   Examples:
-    sidekar screenshot
-    sidekar screenshot --ref=3
-    sidekar screenshot --annotate
-    sidekar screenshot --selector=\".modal\" --format=png
-    sidekar screenshot --full --output=/tmp/page.png"
+    sidekar browser screenshot
+    sidekar browser screenshot --ref=3
+    sidekar browser screenshot --annotate
+    sidekar browser screenshot --selector=\".modal\" --format=png
+    sidekar browser screenshot --full --output=/tmp/page.png"
         }
         "press" => {
             "\
-sidekar press <key>
+sidekar browser press <key>
 
   Press a key or key combination.
 
@@ -217,14 +221,14 @@ sidekar press <key>
   Mac note: Use Meta (not Ctrl) for app shortcuts. Meta+Alt+2 for Heading 2.
 
   Examples:
-    sidekar press Enter
-    sidekar press Ctrl+A
-    sidekar press Meta+V
-    sidekar press Shift+Enter"
+    sidekar browser press Enter
+    sidekar browser press Ctrl+A
+    sidekar browser press Meta+V
+    sidekar browser press Shift+Enter"
         }
         "scroll" => {
             "\
-sidekar scroll <target> [pixels]
+sidekar browser scroll <target> [pixels]
 
   Scroll the page or a specific container.
 
@@ -235,14 +239,14 @@ sidekar scroll <target> [pixels]
     <selector> up   Scroll within a container
 
   Examples:
-    sidekar scroll down
-    sidekar scroll down 800
-    sidekar scroll top
-    sidekar scroll \".chat-messages\" down"
+    sidekar browser scroll down
+    sidekar browser scroll down 800
+    sidekar browser scroll top
+    sidekar browser scroll \".chat-messages\" down"
         }
         "search" => {
             "\
-sidekar search <query> [--engine=E] [--tokens=N]
+sidekar browser search <query> [--engine=E] [--tokens=N]
 
   Web search via real browser. Navigates to search engine, submits query,
   extracts results with 'read'. Returns formatted results.
@@ -250,22 +254,22 @@ sidekar search <query> [--engine=E] [--tokens=N]
   Engines: google (default), bing, duckduckgo, or a custom URL (query appended)
 
   Examples:
-    sidekar search \"rust async programming\"
-    sidekar search --engine=bing \"weather forecast\""
+    sidekar browser search \"rust async programming\"
+    sidekar browser search --engine=bing \"weather forecast\""
         }
         "read-urls" => {
             "\
-sidekar read-urls <url1> <url2> ... [--tokens=N]
+sidekar browser read-urls <url1> <url2> ... [--tokens=N]
 
   Read multiple URLs in parallel. Opens each in a new tab,
   extracts content, returns combined results, closes tabs.
 
   Examples:
-    sidekar read-urls https://example.com https://example.org"
+    sidekar browser read-urls https://example.com https://example.org"
         }
         "batch" => {
             "\
-sidekar batch '<json>'
+sidekar browser batch '<json>'
 
   Execute multiple actions sequentially in one call.
 
@@ -274,7 +278,7 @@ sidekar batch '<json>'
   Smart waits: 500ms auto-added after state-changing actions.
 
   Example:
-    sidekar batch '{\"actions\":[
+    sidekar browser batch '{\"actions\":[
       {\"tool\":\"click\",\"target\":\"--text Continue\",\"retries\":2},
       {\"tool\":\"wait-for-nav\"},
       {\"tool\":\"screenshot\",\"output\":\"/tmp/result.png\"}
@@ -282,7 +286,7 @@ sidekar batch '<json>'
         }
         "launch" => {
             "\
-sidekar launch [options]
+sidekar browser launch [options]
 
   Launch a Chromium browser and create a session. Idempotent — if Chrome
   for the requested profile is already running, attaches instead of
@@ -299,27 +303,27 @@ sidekar launch [options]
     --headless       No visible window (all tools still work)
 
   See also:
-    sidekar --host <cmd> ...        Drive your already-running Chrome (no launch)
-    sidekar --profile <name> <cmd>  Managed Chrome with a named profile
+    sidekar --host browser <subcommand> ...        Drive your already-running Chrome (no launch)
+    sidekar --profile <name> browser <subcommand>  Managed Chrome with a named profile
 
   Examples:
-    sidekar launch
-    sidekar launch --browser=brave --profile=testing
-    sidekar launch --headless"
+    sidekar browser launch
+    sidekar browser launch --browser=brave --profile=testing
+    sidekar browser launch --headless"
         }
         "connect" => {
             "\
-sidekar connect
+sidekar browser connect
 
   Attach to an already-running browser debug port and create a new Sidekar session.
   Does not launch a new browser process.
 
   Example:
-    sidekar connect"
+    sidekar browser connect"
         }
-        "browser-sessions" => {
+        "sessions" => {
             "\
-sidekar browser-sessions <list|show> [sessionId]
+sidekar browser sessions <list|show> [sessionId]
 
   Inspect local browser sessions used by `sidekar run`.
 
@@ -328,8 +332,8 @@ sidekar browser-sessions <list|show> [sessionId]
     show <sessionId>   Show one browser session in detail
 
   Examples:
-    sidekar browser-sessions list
-    sidekar browser-sessions show a1b2c3d4"
+    sidekar browser sessions list
+    sidekar browser sessions show a1b2c3d4"
         }
         "run" => {
             "\
@@ -337,16 +341,16 @@ sidekar run <sessionId> [command args...]
 
   Run a command or command file against an explicit browser session.
 
-  Most callers don't need this — `sidekar <cmd>` auto-launches/attaches to
-  the default managed Chrome, and `sidekar --profile <name> <cmd>` uses a
+  Most callers don't need this — `sidekar browser <subcommand>` auto-launches/attaches to
+  the default managed Chrome, and `sidekar --profile <name> browser <subcommand>` uses a
   named profile. `run` is for cases where you want to dispatch into a
-  specific historical session ID (e.g. from `browser-sessions list`).
+  specific historical session ID (e.g. from `browser sessions list`).
 
   Without an inline command, Sidekar reads /tmp/sidekar-command-<sessionId>.json.
   With an inline command, Sidekar executes it directly against that session.
 
   Examples:
-    sidekar browser-sessions list
+    sidekar browser sessions list
     sidekar run a1b2c3d4 tabs
     sidekar run a1b2c3d4 click 7"
         }
@@ -363,9 +367,12 @@ sidekar desktop <subcommand> [args...]
     apps                                    List running apps
     windows   --app <name>|--pid <pid>      List windows
     find      --app <name>|--pid <pid> <query>
+    see       --app <name>|--pid <pid> [--annotate] [--width=N]
+    set-value --app <name>|--pid <pid> --on <@eN|query> <value>
+    perform-action --app <name>|--pid <pid> --on <@eN|query> --action <AXAction>
     click     --app <name>|--pid <pid> <query>
     press     [--app <name>|--pid <pid>] <key|combo>
-    type      [--app <name>|--pid <pid>] <text>
+    type      [--app <name>|--pid <pid>] [--profile human|linear] [--wpm N] [--delay MS] <text>
     paste     [--app <name>|--pid <pid>] <text>
     scroll    [--app <name>|--pid <pid>] <up|down|left|right> [amount] [page|line]
     launch    <app>
@@ -374,7 +381,13 @@ sidekar desktop <subcommand> [args...]
     trust                                   Check macOS permissions
     check-bg                                Verify SkyLight SPI availability
     clipboard <read|write> [text]
-    menu      [--app <name>|--pid <pid>]    List menu items
+    menu      [list] [--app <name>|--pid <pid>]     List menu items
+    menu      click --app <name> --path \"File > New\"
+    dialog    list|click|input|dismiss [--app|--pid]
+    window    list|focus|close|move|resize|set-bounds [--app|--pid] [--index N]
+    space     list|switch --to <1-9>|move-window [--app|--pid] [--to N]
+    drag      [--app|--pid] --from x,y --to x,y [--steps N]
+    menubar   list|click <title>
     monitor   <start|stop|stats|log|watch>
 
   Background input (SkyLight SPI, macOS 14+):
@@ -387,29 +400,32 @@ sidekar desktop <subcommand> [args...]
     sidekar desktop screenshot --app Safari
     sidekar desktop click --app Finder \"New Folder\"
     sidekar desktop type --app Chrome \"hello world\"
+    sidekar desktop type --app Chrome --profile human --wpm 120 \"hello world\"
+    sidekar desktop see --app Safari --annotate
+    sidekar desktop menu click --app Finder --path \"File > New Folder\"
     sidekar desktop press --app Chrome cmd+l
     sidekar desktop scroll --app Chrome down 5 page
     sidekar desktop check-bg"
         }
-        "tabs" => "sidekar tabs\n\n  List all tabs owned by this session.",
-        "tab" => "sidekar tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
-        "new-tab" => "sidekar new-tab [url]\n\n  Open a new tab, optionally navigating to URL.",
+        "tabs" => "sidekar browser tabs\n\n  List all tabs owned by this session.",
+        "tab" => "sidekar browser tab <id>\n\n  Switch to a tab by ID (from 'tabs' output).",
+        "new-tab" => "sidekar browser new-tab [url]\n\n  Open a new tab, optionally navigating to URL.",
         "close" => {
-            "sidekar close\n\n  Close the current tab. If tabs remain, select the next one explicitly with 'sidekar tab <id>'."
+            "sidekar browser close\n\n  Close the current tab. If tabs remain, select the next one explicitly with 'sidekar browser tab <id>'."
         }
-        "back" => "sidekar back\n\n  Go back in browser history.",
-        "forward" => "sidekar forward\n\n  Go forward in browser history.",
-        "reload" => "sidekar reload\n\n  Reload the current page.",
+        "back" => "sidekar browser back\n\n  Go back in browser history.",
+        "forward" => "sidekar browser forward\n\n  Go forward in browser history.",
+        "reload" => "sidekar browser reload\n\n  Reload the current page.",
         "observe" => {
-            "sidekar observe\n\n  Show interactive elements formatted as ready-to-use commands.\n  Generates ref map. Like 'ax-tree -i' but with command suggestions."
+            "sidekar browser observe\n\n  Show interactive elements formatted as ready-to-use commands.\n  Generates ref map. Like 'ax-tree -i' but with command suggestions."
         }
         "find" => {
             "\
-sidekar find <query>
-sidekar find --role <role> [name]
-sidekar find --text <visible text>
-sidekar find --label <label text>
-sidekar find --testid <data-testid>
+sidekar browser find <query>
+sidekar browser find --role <role> [name]
+sidekar browser find --text <visible text>
+sidekar browser find --label <label text>
+sidekar browser find --testid <data-testid>
 
   Find elements by fuzzy query or structured semantic locators.
 
@@ -421,14 +437,14 @@ sidekar find --testid <data-testid>
     --testid       Find by data-testid attribute (exact match)
 
   Examples:
-    sidekar find \"submit button\"
-    sidekar find --role button Submit
-    sidekar find --text \"Sign in\"
-    sidekar find --label Email
-    sidekar find --testid login-form"
+    sidekar browser find \"submit button\"
+    sidekar browser find --role button Submit
+    sidekar browser find --text \"Sign in\"
+    sidekar browser find --label Email
+    sidekar browser find --testid login-form"
         }
         "resolve" => {
-            "sidekar resolve <selector>\n\n  Get link/form target URL without clicking.\n  Returns href, action, formAction, src, onclick, target attributes.\n\n  Example: sidekar resolve 3"
+            "sidekar browser resolve <selector>\n\n  Get link/form target URL without clicking.\n  Returns href, action, formAction, src, onclick, target attributes.\n\n  Example: sidekar browser resolve 3"
         }
         _ => return None,
     })

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use super::types::DesktopElementPath;
+use super::types::{DesktopElementMatch, DesktopElementPath};
 
 /// Roles considered "interactive" — elements with these roles get refs.
 pub const INTERACTIVE_ROLES: &[&str] = &[
@@ -157,6 +157,32 @@ pub fn load_refs() {
         let mut map = ref_map().lock().unwrap();
         *map = loaded;
     }
+}
+
+/// Assign `@eN` refs for interactive elements and persist the map.
+pub fn assign_refs_for_pid(pid: i32, matches: &mut [DesktopElementMatch]) {
+    let mut refmap = ref_map().lock().unwrap();
+    refmap.clear_pid(pid);
+    for m in matches.iter_mut() {
+        if INTERACTIVE_ROLES.contains(&m.role.as_str()) || !m.actions.is_empty() {
+            let fh = m
+                .frame
+                .as_ref()
+                .map(|f| frame_hash(f.x, f.y, f.width, f.height));
+            let ref_id = refmap.allocate(RefEntry {
+                pid,
+                role: m.role.clone(),
+                title: m.title.clone(),
+                value: m.value.clone(),
+                actions: m.actions.clone(),
+                path: m.path.clone(),
+                frame_hash: fh,
+            });
+            m.ref_id = Some(ref_id);
+        }
+    }
+    drop(refmap);
+    save_refs();
 }
 
 /// Parse a ref id from a query string. Returns Some("@e3") if the query

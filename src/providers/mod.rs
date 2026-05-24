@@ -1953,9 +1953,7 @@ impl Provider {
     /// rejects it on message-content breakpoints (`messages.N.content.M.text.
     /// cache_control.ephemeral.scope: Extra inputs are not permitted`) but
     /// accepts it on system blocks — which is exactly how Claude Code's
-    /// captured traffic uses it. The scope flag is what lets the cache survive
-    /// the volatile per-request billing header (block 0, which changes every
-    /// turn because `cch` is a body hash).
+    /// captured traffic uses it.
     pub fn default_stream_config(&self) -> StreamConfig {
         match self {
             Provider::Anthropic { .. } => StreamConfig {

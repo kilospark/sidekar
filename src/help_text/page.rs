@@ -1,87 +1,45 @@
-pub const COMMANDS: &[&str] = &[
-    "eval",
-    "cookies",
-    "console",
-    "network",
-    "block",
-    "viewport",
-    "zoom",
-    "dialog",
-    "wait-for",
-    "wait-for-nav",
-    "select",
-    "upload",
-    "drag",
-    "paste",
-    "clipboard",
-    "insert-text",
-    "hover",
-    "focus",
-    "clear",
-    "storage",
-    "service-workers",
-    "security",
-    "media",
-    "animations",
-    "grid",
-    "pdf",
-    "download",
-    "frames",
-    "frame",
-    "lock",
-    "unlock",
-    "activate",
-    "minimize",
-    "kill",
-    "geo",
-    "mouse",
-    "state",
-    "auth",
-    "screencast",
-];
-
 pub fn get(command: &str) -> Option<&'static str> {
     Some(match command {
         "eval" => {
             "\
-sidekar eval <javascript>
+sidekar browser eval <javascript>
 
   Evaluate a JavaScript expression in the page context.
   Returns the result.
 
   Examples:
-    sidekar eval \"document.title\"
-    sidekar eval \"document.querySelectorAll('a').length\"
-    sidekar eval \"document.querySelector('#btn').click()\""
+    sidekar browser eval \"document.title\"
+    sidekar browser eval \"document.querySelectorAll('a').length\"
+    sidekar browser eval \"document.querySelector('#btn').click()\""
         }
         "cookies" => {
             "\
-sidekar cookies [action] [name] [value] [domain]
+sidekar browser cookies [action] [name] [value] [domain]
 
   Actions: get (default), set, delete, clear
 
   Examples:
-    sidekar cookies
-    sidekar cookies set session abc123
-    sidekar cookies delete tracking
-    sidekar cookies clear"
+    sidekar browser cookies
+    sidekar browser cookies set session abc123
+    sidekar browser cookies delete tracking
+    sidekar browser cookies clear"
         }
         "console" => {
             "\
-sidekar console [action]
+sidekar browser console [action]
 
   Actions:
     show (default)   Display current console messages
     listen           Stream console events (long-running)
 
   Examples:
-    sidekar console
-    sidekar console show
-    sidekar console listen"
+    sidekar browser console
+    sidekar browser console show
+    sidekar browser console listen"
         }
         "network" => {
             "\
-sidekar network [action] [args]
+sidekar browser network [action] [args]
 
   CDP-sourced actions (attach debugger, shows infobar):
     capture [secs] [filter]   Record requests with headers/timing (default 10s)
@@ -107,114 +65,114 @@ sidekar network [action] [args]
   modify them; use `network capture` when you need CDP-level completeness.
 
   Examples:
-    sidekar network capture 15
-    sidekar network passive log -n 20
-    sidekar network passive stats
-    sidekar network har /tmp/trace.har"
+    sidekar browser network capture 15
+    sidekar browser network passive log -n 20
+    sidekar browser network passive stats
+    sidekar browser network har /tmp/trace.har"
         }
         "block" => {
             "\
-sidekar block <patterns...>
+sidekar browser block <patterns...>
 
   Block resource types or URL patterns. Use 'off' to disable all.
   Resource types: images, css, fonts, media, scripts
 
   Examples:
-    sidekar block images fonts
-    sidekar block analytics.js
-    sidekar block off"
+    sidekar browser block images fonts
+    sidekar browser block analytics.js
+    sidekar browser block off"
         }
         "viewport" => {
             "\
-sidekar viewport <preset|width> [height]
+sidekar browser viewport <preset|width> [height]
 
   Presets: mobile (375x667), iphone (390x844), ipad (820x1180),
            tablet (768x1024), desktop (1280x800)
-  Or exact: sidekar viewport 1920 1080
+  Or exact: sidekar browser viewport 1920 1080
 
   Examples:
-    sidekar viewport mobile
-    sidekar viewport 1440 900"
+    sidekar browser viewport mobile
+    sidekar browser viewport 1440 900"
         }
         "zoom" => {
             "\
-sidekar zoom <level>
+sidekar browser zoom <level>
 
   Zoom: in (+25%), out (-25%), reset (100%), or exact number (25-200).
   Coordinate clicks auto-adjust. Use 'zoom out' before full-page screenshots.
 
   Examples:
-    sidekar zoom out
-    sidekar zoom 50
-    sidekar zoom reset"
+    sidekar browser zoom out
+    sidekar browser zoom 50
+    sidekar browser zoom reset"
         }
         "dialog" => {
             "\
-sidekar dialog <accept|dismiss> [prompt_text]
+sidekar browser dialog <accept|dismiss> [prompt_text]
 
   Set a one-shot handler for the next JavaScript dialog (alert/confirm/prompt).
   Must be called BEFORE the action that triggers the dialog.
 
   Examples:
-    sidekar dialog accept
-    sidekar dialog dismiss
-    sidekar dialog accept \"my input text\""
+    sidekar browser dialog accept
+    sidekar browser dialog dismiss
+    sidekar browser dialog accept \"my input text\""
         }
         "wait-for" => {
             "\
-sidekar wait-for <selector> [timeout_ms]
+sidekar browser wait-for <selector> [timeout_ms]
 
   Wait for an element to appear in the DOM (default timeout: 30s).
 
   Examples:
-    sidekar wait-for \".results\"
-    sidekar wait-for \"#modal\" 5000"
+    sidekar browser wait-for \".results\"
+    sidekar browser wait-for \"#modal\" 5000"
         }
         "wait-for-nav" => {
             "\
-sidekar wait-for-nav [timeout_ms]
+sidekar browser wait-for-nav [timeout_ms]
 
   Wait for navigation to complete (document.readyState === 'complete').
   Default timeout: 10s.
 
   Example:
-    sidekar wait-for-nav
-    sidekar wait-for-nav 15000"
+    sidekar browser wait-for-nav
+    sidekar browser wait-for-nav 15000"
         }
         "select" => {
-            "sidekar select <selector> <value> [value2...]\n\n  Select option(s) from a <select> element by value or label.\n\n  Example: sidekar select \"#country\" \"US\""
+            "sidekar browser select <selector> <value> [value2...]\n\n  Select option(s) from a <select> element by value or label.\n\n  Example: sidekar browser select \"#country\" \"US\""
         }
         "upload" => {
-            "sidekar upload <selector> <file> [file2...]\n\n  Upload file(s) to a file input element.\n\n  Example: sidekar upload \"input[type=file]\" /tmp/photo.jpg"
+            "sidekar browser upload <selector> <file> [file2...]\n\n  Upload file(s) to a file input element.\n\n  Example: sidekar browser upload \"input[type=file]\" /tmp/photo.jpg"
         }
         "drag" => {
-            "sidekar drag <from> <to>\n\n  Drag from one element to another.\n\n  Example: sidekar drag \"#item-1\" \"#drop-zone\""
+            "sidekar browser drag <from> <to>\n\n  Drag from one element to another.\n\n  Example: sidekar browser drag \"#item-1\" \"#drop-zone\""
         }
         "paste" => {
-            "sidekar paste <text>\n\n  Paste text via ClipboardEvent. Works with apps that intercept paste."
+            "sidekar browser paste <text>\n\n  Paste text via ClipboardEvent. Works with apps that intercept paste."
         }
         "clipboard" => {
             "\
-sidekar clipboard --html <html> [--text <text>]
+sidekar browser clipboard --html <html> [--text <text>]
 
   Write HTML to clipboard and paste via Cmd+V.
   Works with Google Docs, Sheets, Notion — apps that ignore synthetic paste.
 
   Examples:
-    sidekar clipboard --html \"<b>bold</b> text\"
-    sidekar clipboard --html \"<h1>Title</h1>\" --text \"Title\""
+    sidekar browser clipboard --html \"<b>bold</b> text\"
+    sidekar browser clipboard --html \"<h1>Title</h1>\" --text \"Title\""
         }
         "insert-text" => {
-            "sidekar insert-text <text>\n\n  Insert text at cursor via CDP Input.insertText.\n  Faster than keyboard for large text. No formatting — use clipboard for rich text."
+            "sidekar browser insert-text <text>\n\n  Insert text at cursor via CDP Input.insertText.\n  Faster than keyboard for large text. No formatting — use clipboard for rich text."
         }
         "hover" => {
-            "sidekar hover <target>\n\n  Hover over an element (same targeting as click: ref, --text, selector, x,y)."
+            "sidekar browser hover <target>\n\n  Hover over an element (same targeting as click: ref, --text, selector, x,y)."
         }
-        "focus" => "sidekar focus <selector>\n\n  Focus an element without clicking it.",
-        "clear" => "sidekar clear <selector>\n\n  Clear an input or contenteditable element.",
+        "focus" => "sidekar browser focus <selector>\n\n  Focus an element without clicking it.",
+        "clear" => "sidekar browser clear <selector>\n\n  Clear an input or contenteditable element.",
         "storage" => {
             "\
-sidekar storage <action> [key] [value] [--session]
+sidekar browser storage <action> [key] [value] [--session]
 
   Actions: get, set, remove, clear
   For 'clear': target can be 'everything' (storage + cache + cookies + SW)
@@ -223,77 +181,77 @@ sidekar storage <action> [key] [value] [--session]
     --session   Operate on sessionStorage instead of localStorage
 
   Examples:
-    sidekar storage get
-    sidekar storage set mykey myvalue
-    sidekar storage clear everything"
+    sidekar browser storage get
+    sidekar browser storage set mykey myvalue
+    sidekar browser storage clear everything"
         }
         "service-workers" => {
             "\
-sidekar service-workers <action>
+sidekar browser service-workers <action>
 
   Actions: list, unregister, update
   Manage service workers for the current page origin.
 
   Examples:
-    sidekar service-workers list
-    sidekar service-workers unregister"
+    sidekar browser service-workers list
+    sidekar browser service-workers unregister"
         }
         "security" => {
             "\
-sidekar security <action>
+sidekar browser security <action>
 
   Actions:
     ignore-certs   Accept self-signed/invalid certificates
     strict         Restore normal certificate validation
 
-  Example: sidekar security ignore-certs"
+  Example: sidekar browser security ignore-certs"
         }
         "media" => {
             "\
-sidekar media <features...>
+sidekar browser media <features...>
 
   Emulate media features. Use 'reset' to restore defaults.
 
   Features: dark, light, print, reduce-motion, etc.
 
   Examples:
-    sidekar media dark
-    sidekar media print
-    sidekar media reset"
+    sidekar browser media dark
+    sidekar browser media print
+    sidekar browser media reset"
         }
         "animations" => {
-            "sidekar animations <pause|resume|slow>\n\n  pause: freeze all animations\n  resume: restore normal playback\n  slow: 10% speed"
+            "sidekar browser animations <pause|resume|slow>\n\n  pause: freeze all animations\n  resume: restore normal playback\n  slow: 10% speed"
         }
         "grid" => {
             "\
-sidekar grid [spec]
+sidekar browser grid [spec]
 
   Overlay a coordinate grid for canvas/image targeting.
 
   Specs: 8x6 (cols x rows), 50 (pixel cell size), off (remove)
   Default: 10x10 grid. Take a screenshot after to see coordinates.
 
-  Example: sidekar grid 8x6"
+  Example: sidekar browser grid 8x6"
         }
-        "pdf" => "sidekar pdf [path]\n\n  Save current page as PDF. Default: temp directory.",
+        "pdf" => "sidekar browser pdf [path]\n\n  Save current page as PDF. Default: temp directory.",
         "download" => {
-            "sidekar download [action] [path]\n\n  Actions: path (set download dir), list (show downloads)\n\n  Example: sidekar download path /tmp/downloads"
+            "sidekar browser download [action] [path]\n\n  Actions: path (set download dir), list (show downloads)\n\n  Example: sidekar browser download path /tmp/downloads"
         }
-        "frames" => "sidekar frames\n\n  List all frames/iframes in the page.",
+        "frames" => "sidekar browser frames\n\n  List all frames/iframes in the page.",
         "frame" => {
-            "sidekar frame <target>\n\n  Switch to a frame by ID, name, or CSS selector.\n  Use 'main' to switch back to the top frame.\n\n  Example: sidekar frame \"iframe.content\""
+            "sidekar browser frame <target>\n\n  Switch to a frame by ID, name, or CSS selector.\n  Use 'main' to switch back to the top frame.\n\n  Example: sidekar browser frame \"iframe.content\""
         }
         "lock" => {
-            "sidekar lock [seconds]\n\n  Lock the active tab for exclusive access (default: 300s)."
+            "sidekar browser lock [seconds]\n\n  Lock the active tab for exclusive access (default: 300s)."
         }
-        "unlock" => "sidekar unlock\n\n  Release the tab lock.",
-        "activate" => "sidekar activate\n\n  Bring the browser window to the front (macOS).",
-        "minimize" => "sidekar minimize\n\n  Minimize the browser window (macOS).",
-        "kill" => "sidekar kill\n\n  Kill the custom profile browser session.",
+        "unlock" => "sidekar browser unlock\n\n  Release the tab lock.",
+        "activate" => "sidekar browser activate\n\n  Bring the browser window to the front (macOS).",
+        "minimize" => "sidekar browser minimize\n\n  Minimize the browser window (macOS).",
+        "kill" => "sidekar browser kill\n\n  Kill the custom profile browser session.",
         "geo" => {
             "\
-sidekar geo <lat> <lng> [accuracy]
-sidekar geo off
+sidekar browser geo <lat> <lng> [accuracy]
+sidekar browser geo off
 
   Emulate geolocation for the current page.
 
@@ -304,13 +262,13 @@ sidekar geo off
     off          Clear geolocation override
 
   Examples:
-    sidekar geo 37.7749 -122.4194
-    sidekar geo 51.5074 -0.1278 100
-    sidekar geo off"
+    sidekar browser geo 37.7749 -122.4194
+    sidekar browser geo 51.5074 -0.1278 100
+    sidekar browser geo off"
         }
         "mouse" => {
             "\
-sidekar mouse <action> [args]
+sidekar browser mouse <action> [args]
 
   Raw mouse primitives for fine-grained control.
 
@@ -323,15 +281,15 @@ sidekar mouse <action> [args]
   Mouse position is tracked across calls (move first, then down/up/wheel).
 
   Examples:
-    sidekar mouse move 100 200
-    sidekar mouse down
-    sidekar mouse up
-    sidekar mouse wheel 300
-    sidekar mouse down right"
+    sidekar browser mouse move 100 200
+    sidekar browser mouse down
+    sidekar browser mouse up
+    sidekar browser mouse wheel 300
+    sidekar browser mouse down right"
         }
         "state" => {
             "\
-sidekar state <save|load> [path]
+sidekar browser state <save|load> [path]
 
   Save or restore browser state (cookies + localStorage + sessionStorage)
   as a portable JSON file.
@@ -341,13 +299,13 @@ sidekar state <save|load> [path]
     load <path>    Restore state from file (navigates to original URL)
 
   Examples:
-    sidekar state save /tmp/mysite.json
-    sidekar state load /tmp/mysite.json
-    sidekar state save"
+    sidekar browser state save /tmp/mysite.json
+    sidekar browser state load /tmp/mysite.json
+    sidekar browser state save"
         }
         "auth" => {
             "\
-sidekar auth <save|login|list|delete> [args]
+sidekar browser auth <save|login|list|delete> [args]
 
   Credential vault with auto-fill. Stored encrypted via KV.
 
@@ -358,14 +316,14 @@ sidekar auth <save|login|list|delete> [args]
     delete <name>      Remove a credential
 
   Examples:
-    sidekar auth save github myuser mypass --url=https://github.com/login
-    sidekar auth login github
-    sidekar auth list
-    sidekar auth delete github"
+    sidekar browser auth save github myuser mypass --url=https://github.com/login
+    sidekar browser auth login github
+    sidekar browser auth list
+    sidekar browser auth delete github"
         }
         "screencast" => {
             "\
-sidekar screencast <start|stop|frame> [options]
+sidekar browser screencast <start|stop|frame> [options]
 
   Live screen capture via CDP Page.screencastFrame.
 
@@ -381,9 +339,9 @@ sidekar screencast <start|stop|frame> [options]
     --height=N    Max height (default: 800)
 
   Examples:
-    sidekar screencast start --fps=5 --quality=70
-    sidekar screencast frame
-    sidekar screencast stop"
+    sidekar browser screencast start --fps=5 --quality=70
+    sidekar browser screencast frame
+    sidekar browser screencast stop"
         }
         _ => return None,
     })

@@ -1,6 +1,27 @@
 use super::{CommandGroup, CommandSpec, spec};
 
-pub const COMMANDS: &[CommandSpec] = &[
+pub const TOP_LEVEL: &[CommandSpec] = &[
+    spec(
+        "browser",
+        "<subcommand> [args]",
+        "Browser automation via CDP. Subcommands: launch, connect, navigate, tabs, read, text, ax-tree, observe, click, type, screenshot, cookies, network, sessions, ... (see help browser)",
+        CommandGroup::Browser,
+        false,
+        false,
+        false,
+    ),
+    spec(
+        "desktop",
+        "<subcommand> [args]",
+        "Desktop automation (macOS). Background-safe via SkyLight SPI — no focus/cursor steal when --app/--pid given. Subcommands: screenshot, apps, windows, find, see, set-value, perform-action, click, press, type, paste, scroll, launch, activate, quit, trust, check-bg, clipboard, menu, dialog, window, space, drag, menubar, monitor",
+        CommandGroup::Desktop,
+        false,
+        false,
+        false,
+    ),
+];
+
+pub const SUBCOMMANDS: &[CommandSpec] = &[
     spec(
         "launch",
         "[--headless]",
@@ -614,16 +635,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
-        "desktop",
-        "<subcommand> [args]",
-        "Desktop automation (macOS). Background-safe via SkyLight SPI — no focus/cursor steal when --app/--pid given. Subcommands: screenshot, apps, windows, find, click, press, type, paste, scroll, launch, activate, quit, trust, check-bg, clipboard, menu, monitor",
-        CommandGroup::Desktop,
-        false,
-        false,
-        false,
-    ),
-    spec(
-        "browser-sessions",
+        "sessions",
         "<list|show>",
         "List or inspect explicit local browser sessions",
         CommandGroup::Browser,

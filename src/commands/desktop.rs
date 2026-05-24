@@ -144,7 +144,7 @@ pub(super) async fn cmd_desktop_screenshot(ctx: &mut AppContext, args: &[String]
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_pid_by_app_name(name: &str) -> Result<i32> {
+pub(super) fn resolve_pid_by_app_name(name: &str) -> Result<i32> {
     let apps = crate::desktop::native::list_apps()?;
     let lower = name.to_lowercase();
     apps.iter()
@@ -327,6 +327,10 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
             ref_id: Option<String>,
             role: String,
             title: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            help: Option<String>,
             actions: Vec<String>,
         }
         #[derive(serde::Serialize)]
@@ -366,6 +370,8 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
                     ref_id: m.ref_id,
                     role: m.role,
                     title: m.title,
+                    description: m.description,
+                    help: m.help,
                     actions: m.actions,
                 })
                 .collect(),
@@ -376,7 +382,7 @@ pub(super) async fn cmd_desktop_find(ctx: &mut AppContext, args: &[String]) -> R
 }
 
 #[cfg(target_os = "macos")]
-fn parse_desktop_pid_and_rest(args: &[String]) -> Result<(i32, Vec<String>)> {
+pub(super) fn parse_desktop_pid_and_rest(args: &[String]) -> Result<(i32, Vec<String>)> {
     let mut pid: Option<i32> = None;
     let mut rest = Vec::new();
     let mut i = 0;
@@ -416,7 +422,7 @@ fn parse_desktop_pid_and_rest(args: &[String]) -> Result<(i32, Vec<String>)> {
 /// Like `parse_desktop_pid_and_rest` but doesn't require --app/--pid.
 /// Returns `(None, all_args)` when neither is given.
 #[cfg(target_os = "macos")]
-fn parse_desktop_pid_and_rest_optional(args: &[String]) -> (Option<i32>, Vec<String>) {
+pub(super) fn parse_desktop_pid_and_rest_optional(args: &[String]) -> (Option<i32>, Vec<String>) {
     let mut pid: Option<i32> = None;
     let mut rest = Vec::new();
     let mut i = 0;
@@ -521,32 +527,6 @@ pub(super) async fn cmd_desktop_press(ctx: &mut AppContext, args: &[String]) -> 
             ctx,
             "{}",
             crate::output::to_string(&PlainOutput::new(format!("Pressed {}{}", spec, target)))?
-        );
-        Ok(())
-    }
-}
-
-pub(super) async fn cmd_desktop_type(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    #[cfg(not(target_os = "macos"))]
-    bail!("Desktop automation is only available on macOS");
-
-    #[cfg(target_os = "macos")]
-    {
-        let (pid, remaining) = parse_desktop_pid_and_rest_optional(args);
-        let text = remaining.join(" ");
-        if text.is_empty() {
-            bail!("Usage: sidekar desktop type [--app <name>|--pid <pid>] <text>");
-        }
-        crate::desktop::bg_input::type_characters(&text, 5, pid)?;
-        let target = pid.map(|p| format!(" → pid {p}")).unwrap_or_default();
-        out!(
-            ctx,
-            "{}",
-            crate::output::to_string(&PlainOutput::new(format!(
-                "Typed {} chars{}",
-                text.chars().count(),
-                target
-            )))?
         );
         Ok(())
     }
@@ -813,55 +793,6 @@ pub(super) async fn cmd_desktop_clipboard(ctx: &mut AppContext, args: &[String])
                 );
             }
             other => bail!("Unknown clipboard subcommand: {other} (use read|write)"),
-        }
-        Ok(())
-    }
-}
-
-pub(super) async fn cmd_desktop_menu(ctx: &mut AppContext, args: &[String]) -> Result<()> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        bail!("Desktop menu is only available on macOS");
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let mut pid: Option<i32> = None;
-        let mut i = 0;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--app" => {
-                    i += 1;
-                    let name = args.get(i).context("--app requires a name")?;
-                    pid = Some(resolve_pid_by_app_name(name)?);
-                }
-                "--pid" => {
-                    i += 1;
-                    pid = Some(
-                        args.get(i)
-                            .context("--pid requires a value")?
-                            .parse()
-                            .context("invalid pid")?,
-                    );
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        let pid = pid
-            .or_else(crate::desktop::native::frontmost_app_pid)
-            .ok_or_else(|| anyhow!("No app specified; pass --app or --pid"))?;
-        let entries = crate::desktop::native::list_menu(pid)?;
-        if entries.is_empty() {
-            out!(
-                ctx,
-                "{}",
-                crate::output::to_string(&PlainOutput::new(
-                    "No menu entries (app may not have a menu bar or permission denied).",
-                ))?
-            );
-        } else {
-            out!(ctx, "{}", entries.join("\n"));
         }
         Ok(())
     }

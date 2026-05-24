@@ -11,7 +11,7 @@
 )]
 
 use crate::desktop::types::*;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::number::CFNumber;
@@ -32,7 +32,8 @@ use std::ptr;
 type AXUIElementRef = *const c_void;
 type AXValueRef = *const c_void;
 
-const AX_ERROR_SUCCESS: i32 = 0;
+pub(crate) type AxElementRef = AXUIElementRef;
+pub(crate) const AX_ERROR_SUCCESS: i32 = 0;
 
 const kAXValueTypeCGPoint: i32 = 1;
 const kAXValueTypeCGSize: i32 = 2;
@@ -68,6 +69,10 @@ const kAXFocusedAttribute: &str = "AXFocused";
 const kAXChildrenAttribute: &str = "AXChildren";
 const kAXIdentifierAttribute: &str = "AXIdentifier";
 const kAXPressAction: &str = "AXPress";
+const kAXRaiseAction: &str = "AXRaise";
+const kAXDescriptionAttribute: &str = "AXDescription";
+const kAXHelpAttribute: &str = "AXHelp";
+const kAXSubroleAttribute: &str = "AXSubrole";
 
 #[allow(clashing_extern_declarations)]
 unsafe extern "C" {
@@ -88,6 +93,16 @@ unsafe extern "C" {
     fn AXUIElementPerformAction(
         element: AXUIElementRef,
         action: core_foundation_sys::string::CFStringRef,
+    ) -> i32;
+    fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: core_foundation_sys::string::CFStringRef,
+        value: core_foundation_sys::base::CFTypeRef,
+    ) -> i32;
+    fn AXUIElementIsAttributeSettable(
+        element: AXUIElementRef,
+        attribute: core_foundation_sys::string::CFStringRef,
+        settable: *mut bool,
     ) -> i32;
     fn AXValueGetValue(value: AXValueRef, value_type: i32, value_ptr: *mut c_void) -> bool;
 
@@ -676,30 +691,7 @@ pub fn find_elements(pid: i32, query: &str) -> Result<Vec<DesktopElementMatch>> 
     unsafe { CFRelease(app_element as *const c_void) };
 
     // Assign refs to interactive matches
-    {
-        let mut refmap = super::refs::ref_map().lock().unwrap();
-        refmap.clear_pid(pid);
-        for m in &mut matches {
-            if super::refs::INTERACTIVE_ROLES.contains(&m.role.as_str()) || !m.actions.is_empty() {
-                let fh = m
-                    .frame
-                    .as_ref()
-                    .map(|f| super::refs::frame_hash(f.x, f.y, f.width, f.height));
-                let ref_id = refmap.allocate(super::refs::RefEntry {
-                    pid,
-                    role: m.role.clone(),
-                    title: m.title.clone(),
-                    value: m.value.clone(),
-                    actions: m.actions.clone(),
-                    path: m.path.clone(),
-                    frame_hash: fh,
-                });
-                m.ref_id = Some(ref_id);
-            }
-        }
-    }
-    // Persist refs so they survive across CLI invocations
-    super::refs::save_refs();
+    super::refs::assign_refs_for_pid(pid, &mut matches);
 
     Ok(matches)
 }
@@ -722,6 +714,8 @@ fn walk_tree(
     let title = ax_string_attribute(element, kAXTitleAttribute);
     let value = ax_string_attribute(element, kAXValueAttribute);
     let identifier = ax_string_attribute(element, kAXIdentifierAttribute);
+    let description = ax_string_attribute(element, kAXDescriptionAttribute);
+    let help = ax_string_attribute(element, kAXHelpAttribute);
 
     let step = DesktopElementStep {
         role: role.clone(),
@@ -739,6 +733,8 @@ fn walk_tree(
         title.as_deref().unwrap_or("").to_lowercase(),
         value.as_deref().unwrap_or("").to_lowercase(),
         identifier.as_deref().unwrap_or("").to_lowercase(),
+        description.as_deref().unwrap_or("").to_lowercase(),
+        help.as_deref().unwrap_or("").to_lowercase(),
     ];
 
     if searchables.iter().any(|s| s.contains(query)) {
@@ -773,6 +769,8 @@ fn walk_tree(
                     v
                 }
             }),
+            description,
+            help,
             frame,
             actions,
             ref_id: None, // assigned later by find_elements
@@ -943,7 +941,7 @@ fn click_element_by_path(
 
 /// Walk the AX tree following a DesktopElementPath to find the actual element.
 /// Returns a retained AXUIElementRef that the caller must release, or None.
-fn resolve_element(root: AXUIElementRef, path: &DesktopElementPath) -> Option<AXUIElementRef> {
+pub(crate) fn resolve_element(root: AXUIElementRef, path: &DesktopElementPath) -> Option<AXUIElementRef> {
     let mut current = root;
     // Retain root so we can release `current` uniformly in the loop
     unsafe { CFRetain(current as *const c_void) };
@@ -1085,5 +1083,605 @@ pub fn quit_app(pid: i32) -> Result<()> {
         } else {
             bail!("Failed to quit app (pid {pid})")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extended helpers (interact, snapshot, menu, dialog, window)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn ax_perform_action(element: AXUIElementRef, action: &str) -> i32 {
+    let cf = CFString::new(action);
+    unsafe { AXUIElementPerformAction(element, cf.as_concrete_TypeRef()) }
+}
+
+pub(crate) fn ax_is_value_settable(element: AXUIElementRef) -> bool {
+    let mut settable = false;
+    let attr = CFString::new(kAXValueAttribute);
+    let err = unsafe {
+        AXUIElementIsAttributeSettable(element, attr.as_concrete_TypeRef(), &mut settable)
+    };
+    err == AX_ERROR_SUCCESS && settable
+}
+
+pub(crate) fn ax_set_value(element: AXUIElementRef, value: &str) -> i32 {
+    let attr = CFString::new(kAXValueAttribute);
+    let cf_val = CFString::new(value);
+    unsafe {
+        AXUIElementSetAttributeValue(
+            element,
+            attr.as_concrete_TypeRef(),
+            cf_val.as_concrete_TypeRef() as _,
+        )
+    }
+}
+
+pub(crate) fn create_application_element(pid: i32) -> AXUIElementRef {
+    unsafe { AXUIElementCreateApplication(pid) }
+}
+
+pub(crate) fn release_ax_element(element: AXUIElementRef) {
+    if !element.is_null() {
+        unsafe { CFRelease(element as *const c_void) };
+    }
+}
+
+pub(crate) fn ax_string_attribute_pub(element: AXUIElementRef, attr: &str) -> Option<String> {
+    ax_string_attribute(element, attr)
+}
+
+pub(crate) fn collect_interactive_elements(
+    pid: i32,
+    max_depth: usize,
+    max_elements: usize,
+) -> Result<Vec<DesktopElementMatch>> {
+    let mut matches = Vec::new();
+    let app_element = unsafe { AXUIElementCreateApplication(pid) };
+    collect_tree(
+        app_element,
+        pid,
+        &[],
+        0,
+        0,
+        max_depth,
+        max_elements,
+        &mut matches,
+    );
+    unsafe { CFRelease(app_element as *const c_void) };
+    Ok(matches)
+}
+
+fn collect_tree(
+    element: AXUIElementRef,
+    pid: i32,
+    chain: &[DesktopElementStep],
+    sibling_index: usize,
+    depth: usize,
+    max_depth: usize,
+    max_elements: usize,
+    matches: &mut Vec<DesktopElementMatch>,
+) {
+    if depth >= max_depth || matches.len() >= max_elements {
+        return;
+    }
+
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_else(|| "AXUnknown".into());
+    let title = ax_string_attribute(element, kAXTitleAttribute);
+    let value = ax_string_attribute(element, kAXValueAttribute);
+    let identifier = ax_string_attribute(element, kAXIdentifierAttribute);
+    let description = ax_string_attribute(element, kAXDescriptionAttribute);
+    let help = ax_string_attribute(element, kAXHelpAttribute);
+
+    let step = DesktopElementStep {
+        role: role.clone(),
+        title: title.clone(),
+        identifier: identifier.clone(),
+        index: sibling_index,
+    };
+    let mut current_chain = chain.to_vec();
+    current_chain.push(step);
+
+    let actions = ax_action_names(element);
+    let interactive = super::refs::INTERACTIVE_ROLES.contains(&role.as_str()) || !actions.is_empty();
+    if interactive {
+        let position = ax_point_attribute(element, kAXPositionAttribute);
+        let size = ax_size_attribute(element, kAXSizeAttribute);
+        let frame = match (position, size) {
+            (Some(pos), Some(sz)) => Some(DesktopRect {
+                x: pos.x,
+                y: pos.y,
+                width: sz.width,
+                height: sz.height,
+            }),
+            _ => None,
+        };
+        matches.push(DesktopElementMatch {
+            path: DesktopElementPath {
+                pid,
+                chain: current_chain.clone(),
+            },
+            role,
+            title,
+            value: value.map(|v| if v.len() > 200 { v[..200].to_string() } else { v }),
+            description,
+            help,
+            frame,
+            actions,
+            ref_id: None,
+        });
+    }
+
+    let children = ax_children(element);
+    for (i, child) in children.iter().enumerate() {
+        collect_tree(
+            *child,
+            pid,
+            &current_chain,
+            i,
+            depth + 1,
+            max_depth,
+            max_elements,
+            matches,
+        );
+        unsafe { CFRelease(*child as *const c_void) };
+    }
+}
+
+pub(crate) fn try_web_area_focus(pid: i32) -> Result<bool> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let mut web_area: Option<AXUIElementRef> = None;
+    find_first_role(app, kAXWebAreaRole, 0, 14, &mut web_area);
+    let Some(area) = web_area else {
+        unsafe { CFRelease(app as *const c_void) };
+        return Ok(false);
+    };
+    let actions = ax_action_names(area);
+    let pressed = if actions.iter().any(|a| a == kAXPressAction) {
+        let cf_action = CFString::new(kAXPressAction);
+        let err = unsafe { AXUIElementPerformAction(area, cf_action.as_concrete_TypeRef()) };
+        err == AX_ERROR_SUCCESS
+    } else {
+        false
+    };
+    unsafe {
+        CFRelease(area as *const c_void);
+        CFRelease(app as *const c_void);
+    }
+    Ok(pressed)
+}
+
+const kAXWebAreaRole: &str = "AXWebArea";
+
+fn find_first_role(
+    element: AXUIElementRef,
+    want_role: &str,
+    depth: usize,
+    max_depth: usize,
+    out: &mut Option<AXUIElementRef>,
+) {
+    if depth >= max_depth || out.is_some() {
+        return;
+    }
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_default();
+    if role == want_role {
+        unsafe { CFRetain(element as *const c_void) };
+        *out = Some(element);
+        return;
+    }
+    let children = ax_children(element);
+    for child in children {
+        find_first_role(child, want_role, depth + 1, max_depth, out);
+        unsafe { CFRelease(child as *const c_void) };
+        if out.is_some() {
+            return;
+        }
+    }
+}
+
+pub(crate) fn click_menu_items(pid: i32, parts: &[String]) -> Result<String> {
+    super::focus_guard::ax_enablement().assert_for_pid(pid);
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let menu_bar_raw = ax_copy_attribute(app, kAXMenuBarAttribute);
+    if menu_bar_raw.is_none() {
+        unsafe { CFRelease(app as *const c_void) };
+        bail!("No menu bar for pid {pid}");
+    }
+    let bar = menu_bar_raw.unwrap() as AXUIElementRef;
+    let mut current = bar;
+    unsafe { CFRetain(current as *const c_void) };
+
+    for (idx, part) in parts.iter().enumerate() {
+        let children = ax_children(current);
+        let mut next: Option<AXUIElementRef> = None;
+        for child in &children {
+            let title = ax_string_attribute(*child, kAXTitleAttribute).unwrap_or_default();
+            if title.eq_ignore_ascii_case(part) {
+                unsafe { CFRetain(*child as *const c_void) };
+                next = Some(*child);
+                break;
+            }
+        }
+        for child in &children {
+            unsafe { CFRelease(*child as *const c_void) };
+        }
+        if current != bar {
+            unsafe { CFRelease(current as *const c_void) };
+        }
+        let Some(el) = next else {
+            unsafe { CFRelease(bar as *const c_void) };
+            unsafe { CFRelease(app as *const c_void) };
+            bail!("Menu item not found: {part}");
+        };
+        current = el;
+        if idx + 1 < parts.len() {
+            let cf_action = CFString::new(kAXPressAction);
+            let err = unsafe { AXUIElementPerformAction(current, cf_action.as_concrete_TypeRef()) };
+            if err != AX_ERROR_SUCCESS {
+                unsafe { CFRelease(bar as *const c_void) };
+                unsafe { CFRelease(app as *const c_void) };
+                bail!("Failed to open menu \"{part}\"");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        } else {
+            let cf_action = CFString::new(kAXPressAction);
+            let err = unsafe { AXUIElementPerformAction(current, cf_action.as_concrete_TypeRef()) };
+            unsafe { CFRelease(current as *const c_void) };
+            unsafe { CFRelease(bar as *const c_void) };
+            unsafe { CFRelease(app as *const c_void) };
+            if err != AX_ERROR_SUCCESS {
+                bail!("Failed to click menu \"{part}\"");
+            }
+            return Ok(format!("Clicked menu path: {}", parts.join(" > ")));
+        }
+    }
+    unsafe { CFRelease(bar as *const c_void) };
+    unsafe { CFRelease(app as *const c_void) };
+    bail!("menu path incomplete")
+}
+
+pub(crate) fn window_element_at(pid: i32, window_index: usize) -> Result<AXUIElementRef> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let cf_attr = CFString::new(kAXWindowsAttribute);
+    let mut windows_ref: core_foundation_sys::base::CFTypeRef = ptr::null();
+    let err = unsafe {
+        AXUIElementCopyAttributeValue(app, cf_attr.as_concrete_TypeRef(), &mut windows_ref)
+    };
+    unsafe { CFRelease(app as *const c_void) };
+    if err != AX_ERROR_SUCCESS || windows_ref.is_null() {
+        bail!("No windows for pid {pid}");
+    }
+    let array_ref = windows_ref as core_foundation_sys::array::CFArrayRef;
+    let count = unsafe { CFArrayGetCount(array_ref) } as usize;
+    if window_index >= count {
+        unsafe { CFRelease(windows_ref as *const c_void) };
+        bail!("Window index {window_index} out of range (count {count})");
+    }
+    let window =
+        unsafe { CFArrayGetValueAtIndex(array_ref, window_index as isize) } as AXUIElementRef;
+    unsafe { CFRetain(window as *const c_void) };
+    unsafe { CFRelease(windows_ref as *const c_void) };
+    Ok(window)
+}
+
+pub(crate) fn raise_window(window: AXUIElementRef) -> Result<()> {
+    let cf_action = CFString::new(kAXRaiseAction);
+    let err = unsafe { AXUIElementPerformAction(window, cf_action.as_concrete_TypeRef()) };
+    if err != AX_ERROR_SUCCESS {
+        bail!("AXRaise failed (error {err})");
+    }
+    Ok(())
+}
+
+pub(crate) fn close_window(window: AXUIElementRef) -> Result<()> {
+    for action in ["AXCancel", "AXClose", "AXPress"] {
+        let cf_action = CFString::new(action);
+        let err = unsafe { AXUIElementPerformAction(window, cf_action.as_concrete_TypeRef()) };
+        if err == AX_ERROR_SUCCESS {
+            return Ok(());
+        }
+    }
+    bail!("Could not close window via AX actions");
+}
+
+pub(crate) fn set_window_bounds(
+    pid: i32,
+    window_index: usize,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String> {
+    let windows = list_windows(pid)?;
+    let win = windows
+        .get(window_index)
+        .ok_or_else(|| anyhow::anyhow!("Window index {window_index} not found"))?;
+    let title = win.title.as_deref().unwrap_or("");
+    let mut script = String::from("tell application \"System Events\"\n");
+    script.push_str(&format!(
+        "  tell process id {}\n",
+        pid
+    ));
+    if !title.is_empty() {
+        script.push_str(&format!(
+            "    set targetWindow to first window whose name is \"{}\"\n",
+            title.replace('\\', "\\\\").replace('"', "\\\"")
+        ));
+    } else {
+        script.push_str(&format!(
+            "    set targetWindow to window {}\n",
+            window_index + 1
+        ));
+    }
+    if let (Some(x), Some(y)) = (x, y) {
+        script.push_str(&format!("    set position of targetWindow to {{{}, {}}}\n", x as i64, y as i64));
+    }
+    if let (Some(w), Some(h)) = (width, height) {
+        script.push_str(&format!("    set size of targetWindow to {{{}, {}}}\n", w as i64, h as i64));
+    }
+    script.push_str("  end tell\nend tell");
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .context("osascript failed")?;
+    if !output.status.success() {
+        bail!(
+            "set window bounds failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(format!("Updated window bounds for pid {pid} index {window_index}"))
+}
+
+pub(crate) fn find_dialog_info(pid: i32) -> Result<DesktopDialogInfo> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let mut buttons = Vec::new();
+    let mut fields = Vec::new();
+    let mut static_text = Vec::new();
+    walk_dialog(app, &mut buttons, &mut fields, &mut static_text, 0);
+    unsafe { CFRelease(app as *const c_void) };
+    Ok(DesktopDialogInfo {
+        buttons,
+        fields,
+        static_text,
+    })
+}
+
+fn walk_dialog(
+    element: AXUIElementRef,
+    buttons: &mut Vec<String>,
+    fields: &mut Vec<DesktopDialogField>,
+    static_text: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > 16 {
+        return;
+    }
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_default();
+    let title = ax_string_attribute(element, kAXTitleAttribute);
+    let value = ax_string_attribute(element, kAXValueAttribute);
+    match role.as_str() {
+        "AXButton" => {
+            if let Some(t) = title.filter(|s| !s.is_empty()) {
+                buttons.push(t);
+            }
+        }
+        "AXTextField" | "AXTextArea" | "AXSecureTextField" => {
+            fields.push(DesktopDialogField {
+                label: title,
+                value,
+                index: fields.len(),
+            });
+        }
+        "AXStaticText" => {
+            if let Some(t) = title.filter(|s| !s.is_empty()) {
+                static_text.push(t);
+            }
+        }
+        _ => {}
+    }
+    let children = ax_children(element);
+    for child in &children {
+        walk_dialog(*child, buttons, fields, static_text, depth + 1);
+        unsafe { CFRelease(*child as *const c_void) };
+    }
+}
+
+pub(crate) fn click_dialog_button(pid: i32, label: &str) -> Result<String> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let mut clicked = false;
+    click_button_recursive(app, label, &mut clicked, 0);
+    unsafe { CFRelease(app as *const c_void) };
+    if clicked {
+        Ok(format!("Clicked dialog button \"{label}\""))
+    } else {
+        bail!("Dialog button not found: {label}");
+    }
+}
+
+fn click_button_recursive(
+    element: AXUIElementRef,
+    label: &str,
+    clicked: &mut bool,
+    depth: usize,
+) {
+    if *clicked || depth > 16 {
+        return;
+    }
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_default();
+    let title = ax_string_attribute(element, kAXTitleAttribute).unwrap_or_default();
+    if role == "AXButton" && title.eq_ignore_ascii_case(label) {
+        let cf_action = CFString::new(kAXPressAction);
+        let err = unsafe { AXUIElementPerformAction(element, cf_action.as_concrete_TypeRef()) };
+        if err == AX_ERROR_SUCCESS {
+            *clicked = true;
+            return;
+        }
+    }
+    let children = ax_children(element);
+    for child in &children {
+        click_button_recursive(*child, label, clicked, depth + 1);
+        unsafe { CFRelease(*child as *const c_void) };
+        if *clicked {
+            return;
+        }
+    }
+}
+
+pub(crate) fn set_dialog_field(
+    pid: i32,
+    text: &str,
+    field_label: Option<&str>,
+    index: Option<usize>,
+) -> Result<String> {
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let mut field_idx = 0usize;
+    let mut set = false;
+    set_field_recursive(app, text, field_label, index, &mut field_idx, &mut set, 0);
+    unsafe { CFRelease(app as *const c_void) };
+    if set {
+        Ok(format!("Set dialog field to {} chars", text.chars().count()))
+    } else {
+        bail!("Dialog text field not found");
+    }
+}
+
+fn set_field_recursive(
+    element: AXUIElementRef,
+    text: &str,
+    field_label: Option<&str>,
+    want_index: Option<usize>,
+    field_idx: &mut usize,
+    set: &mut bool,
+    depth: usize,
+) {
+    if *set || depth > 16 {
+        return;
+    }
+    let role = ax_string_attribute(element, kAXRoleAttribute).unwrap_or_default();
+    if role == "AXTextField" || role == "AXTextArea" {
+        let title = ax_string_attribute(element, kAXTitleAttribute);
+        let label_match = field_label.map_or(true, |want| {
+            title.as_deref().unwrap_or("").eq_ignore_ascii_case(want)
+        });
+        let index_match = want_index.map_or(true, |want| *field_idx == want);
+        if label_match && index_match {
+            let attr = CFString::new(kAXValueAttribute);
+            let cf_val = CFString::new(text);
+            let err = unsafe {
+                AXUIElementSetAttributeValue(
+                    element,
+                    attr.as_concrete_TypeRef(),
+                    cf_val.as_concrete_TypeRef() as _,
+                )
+            };
+            if err == AX_ERROR_SUCCESS {
+                *set = true;
+                return;
+            }
+        }
+        *field_idx += 1;
+    }
+    let children = ax_children(element);
+    for child in &children {
+        set_field_recursive(*child, text, field_label, want_index, field_idx, set, depth + 1);
+        unsafe { CFRelease(*child as *const c_void) };
+        if *set {
+            return;
+        }
+    }
+}
+
+pub(crate) fn dismiss_dialog(pid: i32, force: bool) -> Result<String> {
+    if force {
+        super::bg_input::hotkey(&["escape"], Some(pid))?;
+        return Ok("Sent Escape to dismiss dialog".into());
+    }
+    click_dialog_button(pid, "Cancel")
+        .or_else(|_| click_dialog_button(pid, "Close"))
+        .or_else(|_| {
+            super::bg_input::hotkey(&["escape"], Some(pid))?;
+            Ok("Sent Escape to dismiss dialog".into())
+        })
+}
+
+pub(crate) fn system_ui_pid() -> Option<i32> {
+    list_apps()
+        .ok()
+        .and_then(|apps| {
+            apps.into_iter()
+                .find(|a| a.bundle_id.as_deref() == Some("com.apple.systemuiserver"))
+                .map(|a| a.pid)
+        })
+}
+
+pub(crate) fn list_menubar_extras() -> Result<Vec<DesktopMenubarItem>> {
+    let pid = system_ui_pid().ok_or_else(|| anyhow::anyhow!("SystemUIServer not running"))?;
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let bar_raw = ax_copy_attribute(app, kAXMenuBarAttribute);
+    unsafe { CFRelease(app as *const c_void) };
+    let Some(bar_ref) = bar_raw else {
+        return Ok(vec![]);
+    };
+    let bar = bar_ref as AXUIElementRef;
+    let mut items = Vec::new();
+    let children = ax_children(bar);
+    for (i, child) in children.iter().enumerate() {
+        let title = ax_string_attribute(*child, kAXTitleAttribute).unwrap_or_default();
+        if title.is_empty() {
+            continue;
+        }
+        let position = ax_point_attribute(*child, kAXPositionAttribute);
+        let size = ax_size_attribute(*child, kAXSizeAttribute);
+        let frame = match (position, size) {
+            (Some(pos), Some(sz)) => Some(DesktopRect {
+                x: pos.x,
+                y: pos.y,
+                width: sz.width,
+                height: sz.height,
+            }),
+            _ => None,
+        };
+        items.push(DesktopMenubarItem {
+            title,
+            index: i,
+            frame,
+        });
+    }
+    for child in &children {
+        unsafe { CFRelease(*child as *const c_void) };
+    }
+    unsafe { CFRelease(bar_ref as *const c_void) };
+    Ok(items)
+}
+
+pub(crate) fn click_menubar_extra(title: &str) -> Result<String> {
+    let pid = system_ui_pid().ok_or_else(|| anyhow::anyhow!("SystemUIServer not running"))?;
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    let bar_raw = ax_copy_attribute(app, kAXMenuBarAttribute);
+    unsafe { CFRelease(app as *const c_void) };
+    let Some(bar_ref) = bar_raw else {
+        bail!("No system menu bar");
+    };
+    let bar = bar_ref as AXUIElementRef;
+    let children = ax_children(bar);
+    let mut clicked = false;
+    for child in &children {
+        let t = ax_string_attribute(*child, kAXTitleAttribute).unwrap_or_default();
+        if t.eq_ignore_ascii_case(title) {
+            let cf_action = CFString::new(kAXPressAction);
+            let err = unsafe { AXUIElementPerformAction(*child, cf_action.as_concrete_TypeRef()) };
+            clicked = err == AX_ERROR_SUCCESS;
+            break;
+        }
+    }
+    for child in &children {
+        unsafe { CFRelease(*child as *const c_void) };
+    }
+    unsafe { CFRelease(bar_ref as *const c_void) };
+    if clicked {
+        Ok(format!("Clicked menubar item \"{title}\""))
+    } else {
+        bail!("Menubar item not found: {title}");
     }
 }

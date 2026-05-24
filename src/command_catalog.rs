@@ -125,7 +125,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     COMMAND_SPECS
         .get_or_init(|| {
             let mut out = Vec::new();
-            out.extend_from_slice(browser::COMMANDS);
+            out.extend_from_slice(browser::TOP_LEVEL);
             out.extend_from_slice(agent::COMMANDS);
             out.extend_from_slice(account::COMMANDS);
             out.extend_from_slice(system::COMMANDS);
@@ -183,6 +183,41 @@ pub fn command_handler(name: &str) -> Option<&'static str> {
         .map(|spec| handler_name(spec.name))
 }
 
+pub fn browser_subcommands() -> &'static [CommandSpec] {
+    browser::SUBCOMMANDS
+}
+
+pub fn browser_subcommand_spec(name: &str) -> Option<&'static CommandSpec> {
+    browser_subcommands()
+        .iter()
+        .find(|spec| spec.name == name || spec.aliases.contains(&name))
+}
+
+pub fn browser_subcommand_handler(name: &str) -> Option<&'static str> {
+    browser_subcommand_spec(name).map(|spec| handler_name(spec.name))
+}
+
+pub fn browser_requires_session(args: &[String]) -> bool {
+    args.first()
+        .and_then(|s| browser_subcommand_spec(s))
+        .map(|spec| spec.requires_session)
+        .unwrap_or(false)
+}
+
+pub fn browser_should_auto_launch(args: &[String]) -> bool {
+    args.first()
+        .and_then(|s| browser_subcommand_spec(s))
+        .map(|spec| spec.auto_launch_browser)
+        .unwrap_or(false)
+}
+
+pub fn browser_ext_routable(args: &[String]) -> bool {
+    args.first()
+        .and_then(|s| browser_subcommand_spec(s))
+        .map(|spec| spec.ext_routable)
+        .unwrap_or(false)
+}
+
 pub fn command_requires_session(name: &str) -> bool {
     public_command_spec(name)
         .map(|spec| spec.requires_session)
@@ -213,8 +248,6 @@ pub fn render_tool_catalog() -> &'static str {
     CATALOG.get_or_init(|| {
         let groups = [
             CommandGroup::Browser,
-            CommandGroup::Page,
-            CommandGroup::Interact,
             CommandGroup::Code,
             CommandGroup::Data,
             CommandGroup::Desktop,

@@ -366,9 +366,116 @@ pub fn scroll(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Mouse: per-pid click synthesis
-// ---------------------------------------------------------------------------
+/// Type each character with an optional cadence profile.
+pub fn type_with_profile(
+    text: &str,
+    profile: super::typing::TypingProfile,
+    pid: Option<i32>,
+) -> Result<()> {
+    let mut word_chars = 0u32;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            word_chars = 0;
+        } else {
+            word_chars += 1;
+        }
+        let delay = profile.delay_before_char(ch, word_chars);
+        type_characters(&ch.to_string(), 0, pid)?;
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+        }
+    }
+    Ok(())
+}
+
+/// Drag from one screen coordinate to another (synthetic mouse events).
+pub fn drag(
+    from_x: f64,
+    from_y: f64,
+    to_x: f64,
+    to_y: f64,
+    pid: Option<i32>,
+    steps: u32,
+) -> Result<()> {
+    let steps = steps.max(1).min(60);
+    post_mouse_down(from_x, from_y, pid, MouseButton::Left)?;
+    let dx = (to_x - from_x) / steps as f64;
+    let dy = (to_y - from_y) / steps as f64;
+    for i in 1..=steps {
+        let x = from_x + dx * i as f64;
+        let y = from_y + dy * i as f64;
+        post_mouse_move(x, y, pid, true)?;
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    post_mouse_up(to_x, to_y, pid, MouseButton::Left)?;
+    Ok(())
+}
+
+fn post_mouse_down(x: f64, y: f64, pid: Option<i32>, button: MouseButton) -> Result<()> {
+    post_mouse_move(x, y, pid, false)?;
+    let event = unsafe {
+        CGEventCreateMouseEvent(
+            std::ptr::null_mut(),
+            button.down_type(),
+            CGPoint { x, y },
+            button.cg_button(),
+        )
+    };
+    if event.is_null() {
+        bail!("failed to create mouse down event");
+    }
+    post_event(event, pid)?;
+    Ok(())
+}
+
+fn post_event(event: CGEventRef, pid: Option<i32>) -> Result<()> {
+    if let Some(pid) = pid {
+        if !skylight::post_to_pid(pid, event, false) {
+            unsafe { CGEventPostToPid(pid, event) };
+        }
+    } else {
+        unsafe { CGEventPost(kCGHIDEventTap, event) };
+    }
+    unsafe { CFRelease(event as *const c_void) };
+    Ok(())
+}
+
+fn post_mouse_move(x: f64, y: f64, pid: Option<i32>, dragged: bool) -> Result<()> {
+    let event_type = if dragged {
+        kCGEventLeftMouseDragged
+    } else {
+        kCGEventMouseMoved
+    };
+    let event = unsafe {
+        CGEventCreateMouseEvent(
+            std::ptr::null_mut(),
+            event_type,
+            CGPoint { x, y },
+            kCGMouseButtonLeft,
+        )
+    };
+    if event.is_null() {
+        bail!("failed to create mouse move event");
+    }
+    post_event(event, pid)
+}
+
+fn post_mouse_up(x: f64, y: f64, pid: Option<i32>, button: MouseButton) -> Result<()> {
+    let event = unsafe {
+        CGEventCreateMouseEvent(
+            std::ptr::null_mut(),
+            button.up_type(),
+            CGPoint { x, y },
+            button.cg_button(),
+        )
+    };
+    if event.is_null() {
+        bail!("failed to create mouse up event");
+    }
+    post_event(event, pid)
+}
+
+const kCGEventLeftMouseDragged: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MouseButton {

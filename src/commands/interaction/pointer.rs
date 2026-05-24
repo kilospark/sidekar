@@ -92,7 +92,7 @@ pub(crate) async fn cmd_click_dispatch(ctx: &mut AppContext, args: &[String]) ->
     if args.first().map(String::as_str) == Some("--text") {
         let text = args[1..].join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar click --text <text>");
+            bail!("Usage: sidekar browser click --text <text>");
         }
         let tabs_before = snapshot_tab_ids(ctx).await?;
         let mut cdp = open_cdp(ctx).await?;
@@ -209,7 +209,7 @@ pub(crate) async fn cmd_double_click_dispatch(ctx: &mut AppContext, args: &[Stri
     if args.first().map(String::as_str) == Some("--text") {
         let text = args[1..].join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar click --mode=double --text <text>");
+            bail!("Usage: sidekar browser click --mode=double --text <text>");
         }
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;
@@ -256,7 +256,7 @@ pub(crate) async fn cmd_right_click_dispatch(ctx: &mut AppContext, args: &[Strin
     if args.first().map(String::as_str) == Some("--text") {
         let text = args[1..].join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar click --mode=right --text <text>");
+            bail!("Usage: sidekar browser click --mode=right --text <text>");
         }
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;
@@ -307,7 +307,7 @@ pub(crate) async fn cmd_hover_dispatch(ctx: &mut AppContext, args: &[String]) ->
     if args.first().map(String::as_str) == Some("--text") {
         let text = args[1..].join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar hover --text <text>");
+            bail!("Usage: sidekar browser hover --text <text>");
         }
         let mut cdp = open_cdp(ctx).await?;
         prepare_cdp(ctx, &mut cdp).await?;

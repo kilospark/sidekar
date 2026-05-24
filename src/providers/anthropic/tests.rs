@@ -1,7 +1,4 @@
-use super::{
-    AnthropicStreamState, CCH_PLACEHOLDER, build_request_body, compute_fingerprint,
-    handle_anthropic_event, sign_request_body,
-};
+use super::{AnthropicStreamState, build_request_body, handle_anthropic_event};
 use crate::providers::{
     ChatMessage, ContentBlock, RateLimitSnapshot, Role, StreamConfig, StreamEvent, ToolDef,
 };
@@ -10,21 +7,6 @@ use tokio::sync::mpsc;
 
 fn test_config() -> StreamConfig {
     StreamConfig::default()
-}
-
-#[test]
-fn fingerprint_matches_reference_example() {
-    let prompt = "Say 'hello' and nothing else.";
-    assert_eq!(compute_fingerprint(prompt, "2.1.37"), "9e7");
-}
-
-#[test]
-fn sign_request_body_replaces_only_the_first_placeholder() {
-    let body = format!("{{\"system\":\"{CCH_PLACEHOLDER}\",\"messages\":\"{CCH_PLACEHOLDER}\"}}");
-    let signed = sign_request_body(&body);
-
-    assert!(!signed.contains(&format!("\"system\":\"{CCH_PLACEHOLDER}\"")));
-    assert!(signed.contains(&format!("\"messages\":\"{CCH_PLACEHOLDER}\"")));
 }
 
 fn sample_tool(name: &str) -> ToolDef {

@@ -3,11 +3,13 @@ use crate::*;
 mod agent_sessions;
 mod agent_tools;
 mod batch;
+mod browser_sessions;
 mod core;
 pub mod cron;
 mod data;
 mod debug;
 mod desktop;
+mod desktop_ext;
 mod doc;
 mod interaction;
 mod journal;
@@ -19,9 +21,11 @@ pub mod totp;
 
 use agent_tools::*;
 use batch::*;
+use browser_sessions::*;
 use core::*;
 use data::*;
 use desktop::*;
+use desktop_ext::*;
 use interaction::*;
 use session::*;
 use system::*;
@@ -79,7 +83,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "debug" => debug::cmd_debug(ctx, args).await,
         "navigate" => {
             if args.is_empty() {
-                bail!("Usage: sidekar navigate <url>");
+                bail!("Usage: sidekar browser navigate <url>");
             }
             let no_dismiss = args.iter().any(|a| a == "--no-dismiss");
             let url_parts: Vec<&str> = args
@@ -133,7 +137,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .cloned()
                 .collect();
             if filtered.is_empty() {
-                bail!("Usage: sidekar click <sel|x,y|--text> [--mode=double|right|human]");
+                bail!("Usage: sidekar browser click <sel|x,y|--text> [--mode=double|right|human]");
             }
             match mode.as_deref() {
                 Some("double") => cmd_double_click_dispatch(ctx, &filtered).await,
@@ -145,7 +149,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         }
         "hover" => {
             if args.is_empty() {
-                bail!("Usage: sidekar hover <sel|x,y|--text>");
+                bail!("Usage: sidekar browser hover <sel|x,y|--text>");
             }
             cmd_hover_dispatch(ctx, args).await
         }
@@ -163,7 +167,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let selector_arg = filtered
                 .first()
                 .cloned()
-                .context("Usage: sidekar type <selector> <text> [--human]")?;
+                .context("Usage: sidekar browser type <selector> <text> [--human]")?;
             let text = filtered
                 .iter()
                 .skip(1)
@@ -171,7 +175,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .collect::<Vec<_>>()
                 .join(" ");
             if text.is_empty() {
-                bail!("Usage: sidekar type <selector> <text> [--human]");
+                bail!("Usage: sidekar browser type <selector> <text> [--human]");
             }
             let selector = resolve_selector(ctx, selector_arg)?;
             if human {
@@ -227,7 +231,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let selector = args
                 .first()
                 .cloned()
-                .context("Usage: sidekar select <selector> <value> [value2...]")?;
+                .context("Usage: sidekar browser select <selector> <value> [value2...]")?;
             let selector = resolve_selector(ctx, &selector)?;
             cmd_select(ctx, &selector, &args[1..]).await
         }
@@ -235,13 +239,13 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let selector = args
                 .first()
                 .cloned()
-                .context("Usage: sidekar upload <selector> <file> [file2...]")?;
+                .context("Usage: sidekar browser upload <selector> <file> [file2...]")?;
             let selector = resolve_selector(ctx, &selector)?;
             cmd_upload(ctx, &selector, &args[1..]).await
         }
         "drag" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar drag <from> <to>");
+                bail!("Usage: sidekar browser drag <from> <to>");
             }
             let from = resolve_selector(ctx, &args[0])?;
             let to = resolve_selector(ctx, &args[1])?;
@@ -252,7 +256,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             let selector = args
                 .first()
                 .cloned()
-                .context("Usage: sidekar wait-for <selector> [timeout_ms]")?;
+                .context("Usage: sidekar browser wait-for <selector> [timeout_ms]")?;
             let selector = resolve_selector(ctx, &selector)?;
             cmd_wait_for(ctx, &selector, args.get(1).map(String::as_str)).await
         }
@@ -290,7 +294,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "download" => cmd_download(ctx, args).await,
         "tabs" => cmd_tabs(ctx, args).await,
         "tab" => {
-            let id = args.first().cloned().context("Usage: sidekar tab <id>")?;
+            let id = args.first().cloned().context("Usage: sidekar browser tab <id>")?;
             cmd_tab(ctx, &id).await
         }
         "newtab" => {
@@ -340,13 +344,28 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 .cloned()
                 .collect();
             if urls.is_empty() {
-                bail!("Usage: sidekar read-urls <url1> <url2> ...");
+                bail!("Usage: sidekar browser read-urls <url1> <url2> ...");
             }
             cmd_readurls(ctx, &urls, max_tokens).await
         }
         "back" => cmd_back(ctx).await,
         "forward" => cmd_forward(ctx).await,
         "reload" => cmd_reload(ctx).await,
+        "browser" => {
+            let sub = args.first().map(String::as_str).unwrap_or("");
+            if sub.is_empty() {
+                bail!(
+                    "Usage: sidekar browser <subcommand> [args...]\n\nRun 'sidekar help browser' for subcommands."
+                );
+            }
+            if sub == "sessions" {
+                return cmd_browser_sessions(&args[1..]);
+            }
+            let handler = crate::command_catalog::browser_subcommand_handler(sub).ok_or_else(|| {
+                anyhow::anyhow!("Unknown browser subcommand: {sub}")
+            })?;
+            Box::pin(dispatch(ctx, handler, &args[1..])).await
+        }
         "desktop" => {
             let sub = args.first().map(String::as_str).unwrap_or("");
             let subcommand = match sub {
@@ -366,6 +385,14 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                 "check-bg" => "desktop-check-bg",
                 "clipboard" => "desktop-clipboard",
                 "menu" => "desktop-menu",
+                "see" => "desktop-see",
+                "set-value" => "desktop-set-value",
+                "perform-action" => "desktop-perform-action",
+                "dialog" => "desktop-dialog",
+                "window" => "desktop-window",
+                "space" => "desktop-space",
+                "drag" => "desktop-drag",
+                "menubar" => "desktop-menubar",
                 "monitor" => {
                     // `watch` is in-process (no daemon handoff). Everything
                     // else goes through the daemon.
@@ -376,7 +403,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
                     }
                 }
                 _ => bail!(
-                    "Usage: sidekar desktop <screenshot|apps|windows|find|click|press|type|paste|scroll|launch|activate|quit|trust|check-bg|clipboard|menu|monitor> [args...]"
+                    "Usage: sidekar desktop <screenshot|apps|windows|find|see|click|press|type|paste|scroll|launch|activate|quit|trust|check-bg|clipboard|menu|dialog|window|space|drag|menubar|set-value|perform-action|monitor> [args...]"
                 ),
             };
             Box::pin(dispatch(ctx, subcommand, &args[1..])).await
@@ -387,7 +414,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-find" => cmd_desktop_find(ctx, args).await,
         "desktop-click" => cmd_desktop_click(ctx, args).await,
         "desktop-press" => cmd_desktop_press(ctx, args).await,
-        "desktop-type" => cmd_desktop_type(ctx, args).await,
+        "desktop-type" => cmd_desktop_type_extended(ctx, args).await,
         "desktop-paste" => cmd_desktop_paste(ctx, args).await,
         "desktop-scroll" => cmd_desktop_scroll(ctx, args).await,
         "desktop-launch" => cmd_desktop_launch(ctx, args).await,
@@ -396,7 +423,15 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "desktop-trust" => cmd_desktop_trust(ctx, args).await,
         "desktop-check-bg" => cmd_desktop_check_bg(ctx, args).await,
         "desktop-clipboard" => cmd_desktop_clipboard(ctx, args).await,
-        "desktop-menu" => cmd_desktop_menu(ctx, args).await,
+        "desktop-menu" => cmd_desktop_menu_ext(ctx, args).await,
+        "desktop-see" => cmd_desktop_see(ctx, args).await,
+        "desktop-set-value" => cmd_desktop_set_value(ctx, args).await,
+        "desktop-perform-action" => cmd_desktop_perform_action(ctx, args).await,
+        "desktop-dialog" => cmd_desktop_dialog(ctx, args).await,
+        "desktop-window" => cmd_desktop_window(ctx, args).await,
+        "desktop-space" => cmd_desktop_space(ctx, args).await,
+        "desktop-drag" => cmd_desktop_drag(ctx, args).await,
+        "desktop-menubar" => cmd_desktop_menubar(ctx, args).await,
         "desktop-monitor" => cmd_desktop_monitor(ctx, args).await,
         "desktop-monitor-watch" => cmd_desktop_monitor_watch(ctx, args).await,
         _ => bail!("Unknown command: {command}"),

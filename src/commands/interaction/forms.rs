@@ -319,7 +319,7 @@ pub(crate) async fn cmd_select(
     values: &[String],
 ) -> Result<()> {
     if values.is_empty() {
-        bail!("Usage: sidekar select <selector> <value> [value2...]");
+        bail!("Usage: sidekar browser select <selector> <value> [value2...]");
     }
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
@@ -377,7 +377,7 @@ pub(crate) async fn cmd_upload(
     file_paths: &[String],
 ) -> Result<()> {
     if file_paths.is_empty() {
-        bail!("Usage: sidekar upload <selector> <file> [file2...]");
+        bail!("Usage: sidekar browser upload <selector> <file> [file2...]");
     }
     let resolved = file_paths
         .iter()

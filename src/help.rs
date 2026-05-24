@@ -21,11 +21,19 @@ pub fn print_command_help(command: &str) {
 }
 
 fn command_spec_fallback(command: &str) -> Option<String> {
-    let spec = crate::command_catalog::command_spec(command)?;
+    if let Some(spec) = crate::command_catalog::command_spec(command) {
+        let usage = if spec.usage.is_empty() {
+            format!("sidekar {}", spec.name)
+        } else {
+            format!("sidekar {} {}", spec.name, spec.usage)
+        };
+        return Some(format!("{usage}\n\n  {}", spec.summary));
+    }
+    let spec = crate::command_catalog::browser_subcommand_spec(command)?;
     let usage = if spec.usage.is_empty() {
-        format!("sidekar {}", spec.name)
+        format!("sidekar browser {}", spec.name)
     } else {
-        format!("sidekar {} {}", spec.name, spec.usage)
+        format!("sidekar browser {} {}", spec.name, spec.usage)
     };
     Some(format!("{usage}\n\n  {}", spec.summary))
 }

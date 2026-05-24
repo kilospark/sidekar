@@ -38,8 +38,6 @@ pub fn render_help(version: &str) -> String {
 
     let groups = [
         CommandGroup::Browser,
-        CommandGroup::Page,
-        CommandGroup::Interact,
         CommandGroup::Code,
         CommandGroup::Data,
         CommandGroup::Desktop,

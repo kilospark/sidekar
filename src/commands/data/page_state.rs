@@ -180,7 +180,7 @@ pub(crate) async fn cmd_frame(
 ) -> Result<()> {
     let frame_id_or_selector = frame_id_or_selector.ok_or_else(|| {
         anyhow!(
-            "Usage: sidekar frame <frameId|selector>\nUse \"sidekar frames\" to list frames.\nUse \"sidekar frame main\" to return to main frame."
+            "Usage: sidekar browser frame <frameId|selector>\nUse \"sidekar frames\" to list frames.\nUse \"sidekar frame main\" to return to main frame."
         )
     })?;
     let mut state = ctx.load_session_state()?;

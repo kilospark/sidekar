@@ -116,6 +116,7 @@ pub use cdp::{
     http_put_text, minimize_window_by_id, open_cdp, restore_window_by_id, verify_cdp_ready,
 };
 pub use command_catalog::{
+    browser_ext_routable, browser_requires_session, browser_should_auto_launch,
     canonical_command_name, command_handler, command_requires_session,
     command_should_auto_launch_browser, is_ext_routable_command, is_known_command,
     removed_command_replacement,

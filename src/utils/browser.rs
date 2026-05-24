@@ -1,5 +1,175 @@
 use super::*;
 
+fn expand_user_path(candidate: &str) -> PathBuf {
+    let trimmed = candidate.trim();
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()))
+            .join(rest);
+    }
+    PathBuf::from(trimmed)
+}
+
+/// Resolve a browser executable path for existence checks and spawning. On macOS, a path may
+/// traverse a `.app` that is a Finder alias (bookmark file); `std::fs` does not follow those.
+/// `CHROME_PATH` may point at the bundle (`…/Foo.app`), including an alias bundle.
+fn resolve_browser_executable(candidate: &str) -> Option<PathBuf> {
+    let path = expand_user_path(candidate);
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if is_macos_app_bundle(&path) && (path.is_dir() || path.is_file()) {
+            return resolve_macos_bundle_root_to_executable(&path);
+        }
+        if path.is_file() {
+            return Some(path);
+        }
+        return resolve_macos_alias_bundle_executable(&path).filter(|p| p.is_file());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        path.is_file().then_some(path)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_app_bundle(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some(ext) if ext.eq_ignore_ascii_case("app")
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_bundle_root_to_executable(bundle_path: &Path) -> Option<PathBuf> {
+    let resolved_bundle = if bundle_path.is_dir() {
+        bundle_path.to_path_buf()
+    } else if bundle_path.is_file() {
+        resolve_finder_alias_posix(bundle_path)?
+    } else {
+        return None;
+    };
+    macos_main_executable_in_bundle(&resolved_bundle)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_main_executable_in_bundle(bundle: &Path) -> Option<PathBuf> {
+    let stem = bundle.file_stem()?.to_str()?.to_string();
+    let macos_dir = bundle.join("Contents/MacOS");
+    let mut tries = vec![stem.clone()];
+    for exe in [
+        "Chromium",
+        "Google Chrome",
+        "Google Chrome Canary",
+        "chrome",
+        "Brave Browser",
+        "Microsoft Edge",
+        "Arc",
+        "Vivaldi",
+        "Opera",
+    ] {
+        if exe != stem.as_str() {
+            tries.push(exe.into());
+        }
+    }
+    for exe in tries {
+        let p = macos_dir.join(exe);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_alias_bundle_executable(exe_path: &Path) -> Option<PathBuf> {
+    let path_str = exe_path.to_str()?;
+    let (bundle_root_str, after_app) = path_str.split_once(".app/")?;
+    let bundle_root = PathBuf::from(format!("{bundle_root_str}.app"));
+    let resolved_bundle = if bundle_root.is_dir() {
+        bundle_root
+    } else if bundle_root.is_file() {
+        resolve_finder_alias_posix(&bundle_root)?
+    } else {
+        return None;
+    };
+    let rel = after_app.trim_start_matches('/');
+    Some(resolved_bundle.join(rel))
+}
+
+/// Resolve a Finder alias (bookmark) `.app` entry to the real bundle directory.
+#[cfg(target_os = "macos")]
+fn resolve_finder_alias_posix(bundle_alias: &Path) -> Option<PathBuf> {
+    let raw = bundle_alias.to_string_lossy();
+    let escaped = raw.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        r#"tell application "Finder" to POSIX path of ((POSIX file "{}") as alias)"#,
+        escaped
+    );
+    let output = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if resolved.is_empty() {
+        return None;
+    }
+    let pb = PathBuf::from(resolved);
+    pb.is_dir().then_some(pb)
+}
+
+/// Extra Chromium bundles under `/Applications` and `~/Applications` (handles Finder aliases).
+#[cfg(target_os = "macos")]
+fn append_macos_chromium_bundle_candidates(candidates: &mut Vec<(String, String)>, user_apps: &Path) {
+    for base in [Path::new("/Applications"), user_apps] {
+        let Ok(entries) = fs::read_dir(base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let bundle_entry = entry.path();
+            let Some(fname) = bundle_entry.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !fname.ends_with(".app") {
+                continue;
+            }
+            let stem = fname.strip_suffix(".app").unwrap_or(fname);
+            if !stem.to_lowercase().contains("chromium") {
+                continue;
+            }
+            let bundle = if bundle_entry.is_dir() {
+                bundle_entry.clone()
+            } else if bundle_entry.is_file() {
+                let Some(resolved) = resolve_finder_alias_posix(&bundle_entry) else {
+                    continue;
+                };
+                resolved
+            } else {
+                continue;
+            };
+            let macos_dir = bundle.join("Contents/MacOS");
+            let mut tries = vec![stem.to_string()];
+            if stem != "Chromium" {
+                tries.push("Chromium".into());
+            }
+            tries.push("chrome".into());
+            for exe in tries {
+                let p = macos_dir.join(&exe);
+                if p.is_file() {
+                    candidates.push((p.to_string_lossy().into_owned(), stem.to_string()));
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub fn find_free_port() -> Result<u16> {
     let listener =
         TcpListener::bind((DEFAULT_CDP_HOST, 0)).context("failed to allocate free port")?;
@@ -13,18 +183,19 @@ pub fn find_free_port() -> Result<u16> {
 
 pub fn find_browser() -> Option<BrowserCandidate> {
     if let Ok(chrome_path) = env::var("CHROME_PATH")
-        && Path::new(&chrome_path).exists()
+        && let Some(resolved) = resolve_browser_executable(&chrome_path)
     {
-        let name = app_name_from_path(&chrome_path);
-        return Some(BrowserCandidate {
-            path: chrome_path,
-            name,
-        });
+        let path = resolved.to_string_lossy().into_owned();
+        let name = app_name_from_path(&path);
+        return Some(BrowserCandidate { path, name });
     }
 
     for (path, name) in all_browser_candidates() {
-        if Path::new(&path).exists() {
-            return Some(BrowserCandidate { path, name });
+        if let Some(resolved) = resolve_browser_executable(&path) {
+            return Some(BrowserCandidate {
+                path: resolved.to_string_lossy().into_owned(),
+                name,
+            });
         }
     }
 
@@ -68,22 +239,23 @@ pub fn find_browser_by_name(preferred: &str) -> Option<BrowserCandidate> {
     let name_matches = |label: &str| label.to_lowercase().contains(needle);
 
     if let Ok(chrome_path) = env::var("CHROME_PATH")
-        && Path::new(&chrome_path).exists()
+        && let Some(resolved) = resolve_browser_executable(&chrome_path)
     {
-        let name = app_name_from_path(&chrome_path);
+        let path = resolved.to_string_lossy().into_owned();
+        let name = app_name_from_path(&path);
         if name_matches(&name) {
-            return Some(BrowserCandidate {
-                path: chrome_path,
-                name,
-            });
+            return Some(BrowserCandidate { path, name });
         }
     }
 
     let all = all_browser_candidates();
     for (path, name) in &all {
-        if name_matches(name) && Path::new(path).exists() {
+        if !name_matches(name) {
+            continue;
+        }
+        if let Some(resolved) = resolve_browser_executable(path) {
             return Some(BrowserCandidate {
-                path: path.clone(),
+                path: resolved.to_string_lossy().into_owned(),
                 name: name.clone(),
             });
         }
@@ -116,10 +288,12 @@ pub fn find_browser_by_name(preferred: &str) -> Option<BrowserCandidate> {
 
 /// Return all known browser candidates for this platform (path, display name).
 fn all_browser_candidates() -> Vec<(String, String)> {
-    let home = env::var("HOME").unwrap_or_default();
     let mut candidates: Vec<(String, String)> = Vec::new();
 
     if cfg!(target_os = "macos") {
+        let user_apps = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()))
+            .join("Applications");
         for (name, rel) in [
             (
                 "Google Chrome",
@@ -142,9 +316,11 @@ fn all_browser_candidates() -> Vec<(String, String)> {
             ("Opera", "Opera.app/Contents/MacOS/Opera"),
             ("Chromium", "Chromium.app/Contents/MacOS/Chromium"),
         ] {
-            candidates.push((format!("/Applications/{rel}"), name.to_string()));
-            candidates.push((format!("{home}/Applications/{rel}"), name.to_string()));
+            candidates.push((Path::new("/Applications").join(rel).to_string_lossy().into_owned(), name.to_string()));
+            candidates.push((user_apps.join(rel).to_string_lossy().into_owned(), name.to_string()));
         }
+        #[cfg(target_os = "macos")]
+        append_macos_chromium_bundle_candidates(&mut candidates, user_apps.as_path());
     } else if cfg!(target_os = "linux") {
         candidates.extend(
             [

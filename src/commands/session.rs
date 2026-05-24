@@ -234,7 +234,7 @@ pub(super) async fn cmd_human_click_dispatch(ctx: &mut AppContext, args: &[Strin
     if args.first().map(String::as_str) == Some("--text") {
         let text = args[1..].join(" ");
         if text.is_empty() {
-            bail!("Usage: sidekar click --mode=human --text <text>");
+            bail!("Usage: sidekar browser click --mode=human --text <text>");
         }
         let tabs_before = snapshot_tab_ids(ctx).await?;
         let mut cdp = open_cdp(ctx).await?;
@@ -353,7 +353,7 @@ pub(super) async fn cmd_human_click(ctx: &mut AppContext, selector: &str) -> Res
 
 pub(super) async fn cmd_human_type(ctx: &mut AppContext, selector: &str, text: &str) -> Result<()> {
     if text.is_empty() {
-        bail!("Usage: sidekar type --human <selector> <text>");
+        bail!("Usage: sidekar browser type --human <selector> <text>");
     }
     let mut cdp = open_cdp(ctx).await?;
     prepare_cdp(ctx, &mut cdp).await?;
