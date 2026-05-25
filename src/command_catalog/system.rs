@@ -2,15 +2,6 @@ use super::{CommandGroup, CommandSpec, spec};
 
 pub const COMMANDS: &[CommandSpec] = &[
     spec(
-        "run",
-        "<sessionId> [command args...]",
-        "Run a command or command file against an explicit browser session",
-        CommandGroup::System,
-        false,
-        false,
-        false,
-    ),
-    spec(
         "daemon",
         "[start|stop|restart|status]",
         "Manage the Sidekar background daemon",
@@ -68,15 +59,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         "skill",
         "",
         "Print SKILL.md to stdout",
-        CommandGroup::System,
-        false,
-        false,
-        false,
-    ),
-    spec(
-        "ext",
-        "<sub> [args]",
-        "Control the browser via the extension (tabs, read, click, ...)",
         CommandGroup::System,
         false,
         false,

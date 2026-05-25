@@ -97,6 +97,7 @@ pub(crate) fn build_bedrock_invoke_stream_body(
                 system_prompt,
                 messages,
                 tools,
+                true,
             );
             let obj = body
                 .as_object_mut()

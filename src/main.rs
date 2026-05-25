@@ -137,12 +137,12 @@ async fn run(mut args: Vec<String>) -> Result<()> {
 
     // Global --profile <name>: select which managed Chrome profile to use.
     // Stripped from args here EXCEPT when the command consumes --profile
-    // itself (browser launch / browser network / ext / network), so per-command parsing keeps working.
+    // itself (browser launch / browser network / browser ext), so per-command parsing keeps working.
     let consumes_own_profile = match command.as_str() {
-        "ext" | "network" => true,
+        "network" => true,
         "browser" => matches!(
             args.first().map(String::as_str),
-            Some("launch") | Some("network")
+            Some("launch") | Some("network") | Some("ext")
         ),
         _ => false,
     };
@@ -244,14 +244,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if command == "device" {
         return top_level_cmds::handle_device(&args).await;
     }
-    if command == "session" {
-        return top_level_cmds::handle_session(&args).await;
+    if command == "relay" {
+        return top_level_cmds::handle_relay(&args).await;
     }
     if command == "daemon" {
         return top_level_cmds::handle_daemon(&args).await;
-    }
-    if command == "ext" {
-        return top_level_cmds::handle_ext(&args, &override_tab_id).await;
     }
 
     if let Some(replacement) = sidekar::removed_command_replacement(&raw_command) {
@@ -293,35 +290,11 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         ctx.override_tab_id = Some(tab_id.clone());
     }
 
-    if command == "run" {
-        let session_id = args
-            .first()
-            .cloned()
-            .context("Usage: sidekar run <sessionId> [command args...]")?;
-        ctx.set_current_session(session_id);
-        ctx.hydrate_connection_from_state()?;
-
-        if args.len() > 1 {
-            let inline_command = args[1].clone();
-            let inline_args = args[2..].to_vec();
-            commands::dispatch(&mut ctx, &inline_command, &inline_args).await?;
-        } else {
-            run_command_file(&mut ctx).await?;
-        }
-        let buffered = ctx.drain_output();
-        if !buffered.is_empty() {
-            print!("{buffered}");
-        }
-        return Ok(());
-    }
-
     // Two-axis browser routing:
     //   * Whose Chrome — managed (sidekar owns the process + profile) vs host
-    //     (your already-running Chrome). `--host` selects host mode; absence
-    //     selects managed.
-    //   * Transport — picked automatically. `--host` routes through the
-    //     extension daemon (which finds the host browser); managed mode uses
-    //     CDP against the launched Chrome.
+    //   * `--host` — sugar for extension transport on CDP-overlapping subs (not `browser ext`).
+    //     `--tab` with `--host` uses Chrome extension tab IDs (`browser ext tabs`).
+    //   * Managed CDP — default. `--tab` without `--host` uses CDP target IDs (`browser tabs`).
     //
     // `--profile <name>` and `--host` are mutually exclusive. `--profile`
     // implies managed. Without either, managed-default is used and Chrome is
@@ -332,7 +305,36 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         );
     }
 
-    if ctx.override_tab_id.is_some() {
+    if command == "browser" && host_mode {
+        if let Some(msg) = sidekar::command_catalog::browser_host_incompatible(&args) {
+            bail!("{msg}");
+        }
+        if sidekar::command_catalog::browser_host_routable(&args)
+            && !is_sessionless_subcommand(&command, &args)
+        {
+            let sub = args
+                .first()
+                .context("Usage: sidekar browser <subcommand> [args...]")?;
+            let handler = sidekar::command_catalog::browser_subcommand_handler(sub)
+                .context("Unknown browser subcommand")?;
+            let default_tab = sidekar::commands::browser_ext::extension_tab_id_from_ctx(&ctx);
+            return sidekar::ext::send_cli_command(handler, &args[1..], default_tab).await;
+        }
+        if let Some(sub) = args.first().map(String::as_str) {
+            if sidekar::browser_requires_session(&args)
+                && !is_sessionless_subcommand(&command, &args)
+                && !matches!(sub, "ext" | "run" | "sessions")
+            {
+                bail!(
+                    "--host doesn't support `browser {sub}` (no extension equivalent yet). \
+                     Drop --host to use managed Chrome, use `sidekar browser ext {sub}` if available, \
+                     or pick an --host-supported CDP subcommand."
+                );
+            }
+        }
+    }
+
+    if ctx.override_tab_id.is_some() && !host_mode {
         // --tab mode: discover Chrome port only, then create an isolated session
         // to avoid polluting the original session's state (ref maps, frame, etc.)
         let port = if let Ok(state_port) = (|| -> Result<u16> {
@@ -368,27 +370,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         let tab_id = ctx.override_tab_id.as_ref().unwrap();
         let short = &tab_id[..tab_id.len().min(8)];
         ctx.set_current_session(format!("tab-{short}"));
-    } else if command == "browser" && host_mode && sidekar::browser_requires_session(&args)
-        && !is_sessionless_subcommand(&command, &args)
-    {
-        let sub = args
-            .first()
-            .context("Usage: sidekar browser <subcommand> [args...]")?;
-        if !sidekar::browser_ext_routable(&args) {
-            bail!(
-                "--host doesn't support `browser {sub}` (no extension equivalent yet). \
-                 Drop --host to use managed Chrome, or run an --host-supported command."
-            );
-        }
-        let handler = sidekar::command_catalog::browser_subcommand_handler(sub)
-            .context("Unknown browser subcommand")?;
-        let default_tab = override_tab_id
-            .as_deref()
-            .and_then(|s| s.parse::<u64>().ok());
-        return sidekar::ext::send_cli_command(handler, &args[1..], default_tab).await;
     } else if command == "browser"
         && sidekar::browser_requires_session(&args)
         && !is_sessionless_subcommand(&command, &args)
+        && !matches!(args.first().map(String::as_str), Some("ext" | "run"))
     {
         // Managed mode + no session passed: first try to reuse the last
         // session (pointed to by the per-agent last-session file). Only
@@ -424,32 +409,6 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-async fn run_command_file(ctx: &mut AppContext) -> Result<()> {
-    let session_id = ctx.require_session_id()?.to_string();
-    let cmd_file = ctx.command_file(&session_id);
-    let content = fs::read_to_string(&cmd_file)
-        .with_context(|| format!("Cannot read {}", cmd_file.display()))?;
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("Invalid JSON in {}", cmd_file.display()))?;
-
-    let entries = if parsed.is_array() {
-        serde_json::from_value::<Vec<CommandFileEntry>>(parsed)?
-    } else {
-        vec![serde_json::from_value::<CommandFileEntry>(parsed)?]
-    };
-
-    for entry in entries {
-        if entry.command.trim().is_empty() {
-            bail!("Missing \"command\" field in command file");
-        }
-        let args = entry.args.iter().map(json_value_to_arg).collect::<Vec<_>>();
-        commands::dispatch(ctx, &entry.command, &args).await?;
-    }
-
-    Ok(())
-}
-
-/// Parse `--tab <id>` global flag into a numeric tab id, or exit on invalid input.
 /// Subcommands on session-requiring commands that don't actually need a
 /// browser session — e.g. `network passive` reads a daemon ring buffer.
 fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
@@ -458,19 +417,6 @@ fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
             (args.first().map(String::as_str), args.get(1).map(String::as_str)),
             (Some("network"), Some("passive")) | (Some("network"), Some("sse"))
         )
-}
-
-fn tab_id_from_global_flag(override_tab_id: &Option<String>) -> Option<u64> {
-    match override_tab_id.as_deref() {
-        None => None,
-        Some(s) => match s.parse::<u64>() {
-            Ok(id) => Some(id),
-            Err(_) => {
-                eprintln!("Error: --tab requires a numeric tab ID");
-                std::process::exit(1);
-            }
-        },
-    }
 }
 
 fn should_handle_sidekar_help_flag(raw_command: &str, command: &str) -> bool {

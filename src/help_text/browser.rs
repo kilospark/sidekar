@@ -9,7 +9,10 @@ sidekar browser <subcommand> [args...]
   Session / chrome:
     launch, connect, stealth, debug, navigate, back, forward, reload
     tabs, tab, new-tab, close, activate, minimize, kill, frames, frame
-    screencast, sessions
+    screencast, sessions, run
+
+  Extension (host Chrome):
+    ext                               Full extension surface (history, watch, monitor, …)
 
   Read / observe:
     read, text, dom, ax-tree, observe, find, resolve, screenshot, pdf
@@ -27,15 +30,21 @@ sidekar browser <subcommand> [args...]
 
   Global flags (before `browser`):
     --profile <name>   Managed Chrome profile (auto-launch on first use)
-    --host             Route via sidekar extension to your running Chrome
-    --tab <id>         Target a specific tab
+    --host             Extension transport for CDP-overlapping subs (see --tab note)
+    --tab <id>         Tab target — ID namespace depends on transport (see below)
+
+  Tab IDs:
+    Managed CDP (default): IDs from `sidekar browser tabs` (CDP target ids).
+    --host or `browser ext`: IDs from `sidekar browser ext tabs` (Chrome extension tab ids).
+    Do not mix namespaces — the same number can refer to different tabs.
 
   Examples:
     sidekar browser navigate example.com
     sidekar browser click 3
-    sidekar browser ax-tree -i
-    sidekar --profile work browser navigate https://internal.app
-    sidekar --host browser read"
+    sidekar browser ext tabs
+    sidekar --host browser read
+    sidekar --host --tab 123456789 browser click \"#submit\"
+    sidekar --profile work browser navigate https://internal.app"
         }
         "navigate" => {
             "\
@@ -337,22 +346,49 @@ sidekar browser sessions <list|show> [sessionId]
         }
         "run" => {
             "\
-sidekar run <sessionId> [command args...]
+sidekar browser run <sessionId> [<subcommand> args...]
 
-  Run a command or command file against an explicit browser session.
+  Run browser subcommands against an explicit saved CDP session.
 
   Most callers don't need this — `sidekar browser <subcommand>` auto-launches/attaches to
-  the default managed Chrome, and `sidekar --profile <name> browser <subcommand>` uses a
-  named profile. `run` is for cases where you want to dispatch into a
-  specific historical session ID (e.g. from `browser sessions list`).
+  the default managed Chrome. `run` targets a specific historical session ID
+  (from `browser sessions list`).
 
-  Without an inline command, Sidekar reads /tmp/sidekar-command-<sessionId>.json.
-  With an inline command, Sidekar executes it directly against that session.
+  Without inline args, reads /tmp/sidekar-command-<sessionId>.json (command file).
+  Command file entries use flat subcommand names: {\"command\":\"navigate\",\"args\":[\"example.com\"]}.
 
   Examples:
     sidekar browser sessions list
-    sidekar run a1b2c3d4 tabs
-    sidekar run a1b2c3d4 click 7"
+    sidekar browser run a1b2c3d4 tabs
+    sidekar browser run a1b2c3d4 navigate example.com
+    sidekar browser run a1b2c3d4 click 7"
+        }
+        "ext" => {
+            "\
+sidekar browser ext <subcommand> [args...]
+
+  Drive your normal Chrome profile via the Sidekar extension. Load unpacked `extension/`
+  in Chrome, then click Login with GitHub in the extension popup.
+
+  Equivalent to `sidekar --host browser <sub>` for CDP-overlapping subs, plus extension-only
+  commands (history, context, watch, monitor, eval-page, …).
+
+  Tab IDs: from `sidekar browser ext tabs` (Chrome extension ids). Pass `--tab <id>` globally
+  or as a subcommand argument; explicit subcommand tab id wins.
+
+  Browser:
+    tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page
+    navigate, new-tab, close, scroll
+
+  History & Context: history, context
+  Watchers: watch, unwatch, watchers, monitor
+  Management: status, stop, dev-extract
+
+  Examples:
+    sidekar browser ext tabs
+    sidekar browser ext history \"terraform vpc\"
+    sidekar --tab 123456789 browser ext read
+    sidekar browser ext monitor start all"
         }
         "desktop" => {
             "\

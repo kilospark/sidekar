@@ -1769,6 +1769,7 @@ pub(super) async fn interactive_select_model(
             m.id.as_str(),
             m.display_name.as_str(),
             m.context_window,
+            &m.capabilities,
         );
         tunnel_println(&format!(
             "  [{i}] \x1b[36m{}\x1b[0m  \x1b[2m{}{marker}\x1b[0m",

@@ -90,7 +90,7 @@ impl crate::output::CommandOutput for BrowserSessionDetail {
         writeln!(w)?;
         writeln!(
             w,
-            "Run commands with: sidekar run {} browser <subcommand> [args...]",
+            "Run commands with: sidekar browser run {} <subcommand> [args...]",
             self.id
         )?;
         Ok(())

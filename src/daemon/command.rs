@@ -122,7 +122,7 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
                         "ext",
                         "extension returned watchId but WatchRecord was not registered \
                          (missing top-level deliver_to or selector); DOM watch_event messages will be dropped. \
-                         Run `sidekar ext watch` from a PTY/repl session or set SIDEKAR_AGENT_NAME.",
+                         Run `sidekar browser ext watch` from a PTY/repl session or set SIDEKAR_AGENT_NAME.",
                         None,
                     );
                 }

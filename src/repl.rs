@@ -558,7 +558,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
                 tunnel_println(&format!("\x1b[31m{e:#}\x1b[0m"));
                 continue;
             }
-            staged_user_content = Some(content);
+            staged_user_content = Some(content.clone());
 
             // Record to both in-memory (for up-arrow) and SQLite (for next session)
             line_editor.push_history(&sub.text);
@@ -663,6 +663,14 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         let prov = provider.as_ref().expect("guarded above");
         let mdl = model.as_ref().expect("guarded above");
+
+        if let Some(ref content) = staged_user_content {
+            if let Some(warn) =
+                providers::capabilities::preflight_image_warning(prov.provider_type(), mdl, content)
+            {
+                tunnel_println(&format!("\x1b[33m{warn}\x1b[0m"));
+            }
+        }
 
         // Lazy one-time spawn of the journaling polling task. Now
         // that `prov`/`mdl`/`cred_name` are all definitely Some,

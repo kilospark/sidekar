@@ -167,6 +167,7 @@ async fn handle_models(args: &[String]) -> Result<()> {
             id: m.id.clone(),
             display_name: m.display_name.clone(),
             context_window: m.context_window,
+            capabilities: m.capabilities,
             bedrock_foundation_model_arn: m.bedrock_foundation_model_arn.clone(),
             bedrock_inference_profile_refs: m.bedrock_inference_profile_refs.clone(),
         })
@@ -185,6 +186,7 @@ struct ModelEntry {
     id: String,
     display_name: String,
     context_window: u32,
+    capabilities: sidekar::providers::ModelCapabilities,
     #[serde(skip_serializing_if = "skip_models_bedrock_detail_option")]
     bedrock_foundation_model_arn: Option<String>,
     #[serde(skip_serializing_if = "skip_models_bedrock_detail_vec")]
@@ -216,6 +218,7 @@ impl sidekar::output::CommandOutput for ModelsListOutput {
                 m.id.as_str(),
                 m.display_name.as_str(),
                 m.context_window,
+                &m.capabilities,
             );
             writeln!(w, "  \x1b[36m{}\x1b[0m  \x1b[2m{}\x1b[0m", m.id, dim)?;
             if sidekar::providers::is_verbose() {

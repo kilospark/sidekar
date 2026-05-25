@@ -3,6 +3,8 @@ use crate::*;
 mod agent_sessions;
 mod agent_tools;
 mod batch;
+pub mod browser_ext;
+mod browser_run;
 mod browser_sessions;
 mod core;
 pub mod cron;
@@ -21,6 +23,8 @@ pub mod totp;
 
 use agent_tools::*;
 use batch::*;
+use browser_ext::*;
+use browser_run::*;
 use browser_sessions::*;
 use core::*;
 use data::*;
@@ -360,6 +364,12 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             }
             if sub == "sessions" {
                 return cmd_browser_sessions(&args[1..]);
+            }
+            if sub == "ext" {
+                return cmd_browser_ext(ctx, &args[1..]).await;
+            }
+            if sub == "run" {
+                return cmd_browser_run(ctx, &args[1..]).await;
             }
             let handler = crate::command_catalog::browser_subcommand_handler(sub).ok_or_else(|| {
                 anyhow::anyhow!("Unknown browser subcommand: {sub}")

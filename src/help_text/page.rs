@@ -61,7 +61,7 @@ sidekar browser network [action] [args]
     sse tail [url] [-n N]     Last N chunks of a stream
 
   Passive capture requires the Sidekar extension to be connected (see
-  `sidekar ext status`). It sees requests as the page sees them and cannot
+  `sidekar browser ext status`). It sees requests as the page sees them and cannot
   modify them; use `network capture` when you need CDP-level completeness.
 
   Examples:

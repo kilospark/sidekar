@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod bedrock;
 mod bedrock_inference;
+pub mod capabilities;
 pub mod codex;
 pub mod cursor;
 pub mod gcp_adc;
@@ -9,6 +10,8 @@ pub mod oauth;
 pub mod openrouter;
 pub mod session_lock;
 pub mod vertex;
+
+pub use capabilities::{ModelCapabilities, VisionSupport};
 
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::{Deserialize, Serialize};
@@ -1218,6 +1221,7 @@ pub struct RemoteModel {
     pub id: String,
     pub display_name: String,
     pub context_window: u32,
+    pub capabilities: ModelCapabilities,
     /// AWS Bedrock: foundation model ARN from `ListFoundationModels` (`modelArn`).
     pub bedrock_foundation_model_arn: Option<String>,
     /// AWS Bedrock: system inference profile ARN or `id:<inferenceProfileId>` when the API omitted ARN.
@@ -1236,6 +1240,7 @@ impl RemoteModel {
             id: id.into(),
             display_name: display_name.into(),
             context_window,
+            capabilities: ModelCapabilities::default(),
             bedrock_foundation_model_arn: None,
             bedrock_inference_profile_refs: Vec::new(),
         }
@@ -1252,20 +1257,22 @@ pub fn model_list_display_suffix(
     id: &str,
     display_name: &str,
     context_window: u32,
+    capabilities: &ModelCapabilities,
 ) -> String {
     let ctx = if context_window > 0 {
         format!(", {}k ctx", context_window / 1000)
     } else {
         String::new()
     };
+    let vision = capabilities::vision_list_tag(capabilities);
     let name_trim = display_name.trim();
     if provider_type == "bedrock" && !is_verbose() {
         if name_trim.is_empty() || name_trim == id || name_trim.starts_with("arn:") {
-            return ctx;
+            return format!("{ctx}{vision}");
         }
-        return format!("{name_trim}{ctx}");
+        return format!("{name_trim}{ctx}{vision}");
     }
-    format!("{display_name}{ctx}")
+    format!("{display_name}{ctx}{vision}")
 }
 
 /// Fetch available models from a provider's API.
@@ -1290,7 +1297,8 @@ pub async fn fetch_model_list(
 pub async fn fetch_model_list_for_provider(
     provider: &Provider,
 ) -> Result<Vec<RemoteModel>, String> {
-    match provider {
+    let provider_type = provider.provider_type();
+    let models = match provider {
         Provider::Anthropic {
             api_key, base_url, ..
         } if base_url.contains("opencode.ai/zen/go") => fetch_opencode_go_model_list(api_key).await,
@@ -1309,7 +1317,9 @@ pub async fn fetch_model_list_for_provider(
             aws_profile,
         } => bedrock::fetch_bedrock_model_list(region, aws_profile.as_deref()).await,
         Provider::Cursor { api_key, .. } => fetch_cursor_model_list(api_key).await,
-    }
+    }?;
+    capabilities::ingest_model_catalog(provider_type, &models);
+    Ok(models)
 }
 
 async fn fetch_anthropic_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
@@ -1606,7 +1616,9 @@ pub async fn fetch_openai_compat_model_list(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
             if !id.is_empty() {
-                models.push(RemoteModel::catalog(id.to_string(), name.to_string(), ctx));
+                let mut row = RemoteModel::catalog(id.to_string(), name.to_string(), ctx);
+                row.capabilities.vision = capabilities::vision_from_openrouter_architecture(m);
+                models.push(row);
             }
         }
     }
@@ -1702,13 +1714,25 @@ async fn fetch_opencode_public_model_list(
 }
 
 async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "OpenCode Zen", true)
-        .await
+    let mut models = fetch_opencode_public_model_list(
+        "https://opencode.ai/zen/v1/models",
+        "OpenCode Zen",
+        true,
+    )
+    .await?;
+    capabilities::enrich_opencode_catalog("opencode", &mut models).await;
+    Ok(models)
 }
 
 async fn fetch_opencode_go_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    fetch_opencode_public_model_list("https://opencode.ai/zen/go/v1/models", "OpenCode Go", false)
-        .await
+    let mut models = fetch_opencode_public_model_list(
+        "https://opencode.ai/zen/go/v1/models",
+        "OpenCode Go",
+        false,
+    )
+    .await?;
+    capabilities::enrich_opencode_catalog("opencode-go", &mut models).await;
+    Ok(models)
 }
 
 // ---------------------------------------------------------------------------
@@ -2115,6 +2139,8 @@ impl Provider {
                 cfg.credential_kv_key = credential
                     .as_ref()
                     .map(|n| crate::providers::oauth::kv_key_for(n));
+                let provider_type = self.provider_type();
+                let allow_vision = capabilities::allows_vision(provider_type, model);
                 let rx = anthropic::stream(
                     key,
                     base_url,
@@ -2124,6 +2150,8 @@ impl Provider {
                     tools,
                     prompt_cache_key,
                     &cfg,
+                    provider_type,
+                    allow_vision,
                 )
                 .await?;
                 Ok(no_ws_reclaim(rx))
@@ -2188,6 +2216,7 @@ impl Provider {
                 base_url,
                 display_name,
                 credential,
+                provider_type,
                 ..
             } => {
                 let key_raw = api_key_override.unwrap_or(api_key);
@@ -2227,8 +2256,10 @@ impl Provider {
                     .await?;
                     Ok(no_ws_reclaim(rx))
                 } else {
+                    let allow_vision = capabilities::allows_vision(provider_type, model);
                     let rx = openrouter::stream_with_provider(
                         display_name,
+                        provider_type,
                         &key,
                         base_url,
                         model,
@@ -2236,6 +2267,7 @@ impl Provider {
                         messages,
                         tools,
                         prompt_cache_key,
+                        allow_vision,
                     )
                     .await?;
                     Ok(no_ws_reclaim(rx))

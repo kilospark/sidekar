@@ -11,9 +11,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
-        "session",
+        "relay",
         "<list>",
-        "List active sessions for your account",
+        "List active relay sessions for your account",
         CommandGroup::Account,
         false,
         false,

@@ -45,7 +45,7 @@ Ctrl-C (stalls the turn) or hits Bash timeout (watcher dies). In REPL, `monitor 
 via this tool returns immediately on the next transcript line while the watcher keeps \
 running until `monitor stop` or REPL exit. Tab ids: hex from `tabs`, list index from \
 that session, or `all`; not Chrome extension numeric ids — for extension-only workflows use \
-`sidekar ext monitor start …` with ids from `sidekar ext tabs`. `monitor status` only sees \
+`sidekar browser ext monitor start …` with ids from `sidekar browser ext tabs`. `monitor status` only sees \
 monitors in this same REPL process, not another terminal.\n\n",
         );
         out.push_str("## Command catalog\n");

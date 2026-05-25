@@ -643,4 +643,22 @@ pub const SUBCOMMANDS: &[CommandSpec] = &[
         false,
         false,
     ),
+    spec(
+        "ext",
+        "<subcommand> [args]",
+        "Control your Chrome via the Sidekar extension (host browser)",
+        CommandGroup::Browser,
+        false,
+        false,
+        false,
+    ),
+    spec(
+        "run",
+        "<sessionId> [<subcommand> args...]",
+        "Run browser subcommands against an explicit saved CDP session",
+        CommandGroup::Browser,
+        false,
+        false,
+        false,
+    ),
 ];

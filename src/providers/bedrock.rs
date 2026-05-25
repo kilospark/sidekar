@@ -815,6 +815,11 @@ pub async fn fetch_bedrock_model_list(
             .map(std::string::ToString::to_string);
         let display = bedrock_list_display_name(id, m.model_name.as_deref());
         let mut row = RemoteModel::catalog(id.clone(), display, 0);
+        row.capabilities.vision = m
+            .input_modalities
+            .as_deref()
+            .map(super::capabilities::vision_from_input_modalities)
+            .unwrap_or(super::VisionSupport::Unknown);
         row.bedrock_foundation_model_arn = fm_arn;
         row.bedrock_inference_profile_refs = invoke_refs;
         models.push(row);

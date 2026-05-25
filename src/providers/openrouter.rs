@@ -19,6 +19,7 @@ pub async fn stream(
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     stream_with_provider(
         "OpenRouter",
+        "openrouter",
         api_key,
         base_url,
         model,
@@ -26,6 +27,7 @@ pub async fn stream(
         messages,
         tools,
         _prompt_cache_key,
+        true,
     )
     .await
 }
@@ -34,6 +36,7 @@ pub async fn stream(
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_with_provider(
     provider_name: &str,
+    provider_type: &str,
     api_key: &str,
     base_url: &str,
     model: &str,
@@ -41,6 +44,7 @@ pub async fn stream_with_provider(
     messages: &[ChatMessage],
     tools: &[ToolDef],
     _prompt_cache_key: Option<&str>,
+    allow_vision: bool,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
     if let Some(partner_base) =
         super::vertex::openapi_base_to_anthropic_partner_base(base_url, model)
@@ -57,7 +61,55 @@ pub async fn stream_with_provider(
         .await;
     }
 
-    let body = build_request_body(model, system_prompt, messages, tools);
+    match send_openai_compat_stream(
+        provider_name,
+        api_key,
+        base_url,
+        model,
+        system_prompt,
+        messages,
+        tools,
+        allow_vision,
+    )
+    .await
+    {
+        Ok(rx) => Ok(rx),
+        Err(e) if allow_vision && super::capabilities::is_vision_rejection_error(&e.to_string()) => {
+            super::capabilities::record_vision_rejection(provider_type, model);
+            crate::broker::try_log_event(
+                "debug",
+                "provider",
+                "vision-rejected-retry-text-only",
+                Some(&format!("provider={provider_type} model={model}")),
+            );
+            send_openai_compat_stream(
+                provider_name,
+                api_key,
+                base_url,
+                model,
+                system_prompt,
+                messages,
+                tools,
+                false,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_openai_compat_stream(
+    provider_name: &str,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    allow_vision: bool,
+) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    let body = build_request_body(model, system_prompt, messages, tools, allow_vision);
     let url = super::openai_chat_completions_url(base_url);
 
     let mut headers = reqwest::header::HeaderMap::new();
@@ -111,8 +163,9 @@ fn build_request_body(
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
+    allow_vision: bool,
 ) -> Value {
-    openai_compat_chat_completion_body(model, system_prompt, messages, tools)
+    openai_compat_chat_completion_body(model, system_prompt, messages, tools, allow_vision)
 }
 
 pub(super) fn openai_compat_chat_completion_body(
@@ -120,6 +173,7 @@ pub(super) fn openai_compat_chat_completion_body(
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
+    allow_vision: bool,
 ) -> Value {
     let mut api_messages: Vec<Value> = Vec::new();
 
@@ -171,13 +225,29 @@ pub(super) fn openai_compat_chat_completion_body(
                         ContentBlock::Image {
                             media_type,
                             data_base64,
+                            source_path,
                             ..
                         } => {
-                            let url = format!("data:{media_type};base64,{data_base64}");
-                            pending_user_parts.push(json!({
-                                "type": "image_url",
-                                "image_url": { "url": url },
-                            }));
+                            if allow_vision {
+                                let url = format!("data:{media_type};base64,{data_base64}");
+                                pending_user_parts.push(json!({
+                                    "type": "image_url",
+                                    "image_url": { "url": url },
+                                }));
+                            } else {
+                                let note = match source_path {
+                                    Some(path) => format!(
+                                        "[Image omitted: model does not support vision input ({media_type}, {path})]"
+                                    ),
+                                    None => format!(
+                                        "[Image omitted: model does not support vision input ({media_type})]"
+                                    ),
+                                };
+                                pending_user_parts.push(json!({
+                                    "type": "text",
+                                    "text": note,
+                                }));
+                            }
                         }
                         ContentBlock::ToolResult {
                             tool_use_id,
@@ -188,7 +258,7 @@ pub(super) fn openai_compat_chat_completion_body(
                             flush_openrouter_user(&mut api_messages, &mut pending_user_parts);
                             let tool_content: Value = if content_images.is_empty() {
                                 json!(content)
-                            } else {
+                            } else if allow_vision {
                                 let mut parts = vec![json!({
                                     "type": "text",
                                     "text": content,
@@ -204,6 +274,14 @@ pub(super) fn openai_compat_chat_completion_body(
                                     }));
                                 }
                                 json!(parts)
+                            } else {
+                                let n = content_images.len();
+                                let suffix = if n == 1 {
+                                    "\n\n[1 image omitted: model does not support vision input.]".to_string()
+                                } else {
+                                    format!("\n\n[{n} images omitted: model does not support vision input.]")
+                                };
+                                json!(format!("{content}{suffix}"))
                             };
                             api_messages.push(json!({
                                 "role": "tool",

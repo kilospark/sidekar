@@ -1,7 +1,7 @@
 //! Extension bridge for Chrome extension communication.
 //!
 //! The Chrome extension connects via localhost WebSocket, and the daemon
-//! routes `sidekar ext <command>` requests to the connected extension bridge.
+//! routes `sidekar browser ext <command>` requests to the connected extension bridge.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -75,7 +75,7 @@ pub fn extract_embedded_extension_message() -> Result<String> {
 
 /// Extract embedded Chrome extension ZIP to `~/.sidekar/extension`.
 ///
-/// Same as `sidekar ext dev-extract`: unpacked tree for Chrome “Load unpacked”, kept in sync with
+/// Same as `sidekar browser ext dev-extract`: unpacked tree for Chrome “Load unpacked”, kept in sync with
 /// the binary’s embedded `assets/extension.zip`.
 pub fn extract_embedded_extension() -> Result<()> {
     let msg = extract_embedded_extension_message()?;
@@ -670,7 +670,7 @@ pub async fn get_status(state: &SharedExtState) -> Value {
                 "owner": c.owner_agent_id,
                 // Surface the extension's reported manifest version
                 // and whether it drifts from the daemon binary, so
-                // `sidekar ext status` immediately shows a mismatch
+                // `sidekar browser ext status` immediately shows a mismatch
                 // without anyone having to grep logs.
                 "ext_version": c.ext_version,
                 "version_matches_daemon": c
@@ -710,7 +710,7 @@ async fn send_command(
         let conn_id = if let Some(cid) = target_conn {
             // Explicit connection ID
             if !s.connections.contains_key(&cid) {
-                bail!("Connection {cid} not found. Use `sidekar ext status` to list connections.");
+                bail!("Connection {cid} not found. Use `sidekar browser ext status` to list connections.");
             }
             cid
         } else if let Some(profile) = target_profile {
@@ -724,7 +724,7 @@ async fn send_command(
             match found {
                 Some(cid) => cid,
                 None => bail!(
-                    "No connection matching profile '{profile}'. Use `sidekar ext status` to list."
+                    "No connection matching profile '{profile}'. Use `sidekar browser ext status` to list."
                 ),
             }
         } else if s.connections.len() == 1 {

@@ -13,33 +13,91 @@ use super::{
 
 const CLAUDE_CODE_VERSION: &str = "2.1.87";
 
-/// Stream a response from the Anthropic Messages API.
+/// Rewrite messages so user/tool image payloads become text placeholders (matches OpenAI-compat
+/// path in `openrouter.rs`). Needed for gateways (e.g. OpenCode Go) that translate Anthropic
+/// multimodal payloads to OpenAI upstreams that reject `image_url`.
+fn omit_multimodal_user_images_from_messages(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    messages
+        .iter()
+        .map(|m| ChatMessage {
+            role: m.role.clone(),
+            content: omit_multimodal_user_images_from_blocks(&m.content),
+        })
+        .collect()
+}
+
+fn omit_multimodal_user_images_from_blocks(blocks: &[ContentBlock]) -> Vec<ContentBlock> {
+    blocks
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Image {
+                media_type,
+                source_path,
+                ..
+            } => ContentBlock::Text {
+                text: match source_path {
+                    Some(path) => format!(
+                        "[Image omitted: model does not support vision input ({media_type}, {path})]"
+                    ),
+                    None => format!(
+                        "[Image omitted: model does not support vision input ({media_type})]"
+                    ),
+                },
+            },
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                content_images,
+            } if content_images.is_empty() => ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+                content_images: Vec::new(),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                content_images,
+            } => {
+                let n = content_images.len();
+                let suffix = if n == 1 {
+                    "\n\n[1 image omitted: model does not support vision input.]".to_string()
+                } else {
+                    format!("\n\n[{n} images omitted: model does not support vision input.]")
+                };
+                ContentBlock::ToolResult {
+                    tool_use_id: tool_use_id.clone(),
+                    content: format!("{content}{suffix}"),
+                    is_error: *is_error,
+                    content_images: Vec::new(),
+                }
+            }
+            ContentBlock::Text { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::ToolCall { .. }
+            | ContentBlock::EncryptedReasoning { .. }
+            | ContentBlock::Reasoning { .. } => b.clone(),
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
-pub async fn stream(
+async fn stream_messages_once(
     api_key: &str,
     base_url: &str,
-    model: &str,
+    model_display: &str,
+    enable_1m_beta: bool,
     system_prompt: &str,
     messages: &[ChatMessage],
     tools: &[ToolDef],
-    _prompt_cache_key: Option<&str>,
     config: &StreamConfig,
+    is_oauth: bool,
 ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-    let is_oauth = api_key.contains("sk-ant-oat");
-
-    // The REPL surfaces a `<id>#1m` variant for models that support 1M
-    // context. For beta-gated models (Sonnet 4/4.5, Opus 4.5), this enables
-    // the `context-1m-2025-08-07` header. For native-1M models (Opus 4.7/4.6,
-    // Sonnet 4.6), the header is harmless/no-op. Strip the suffix before
-    // talking to Anthropic.
-    let (model, enable_1m_beta) = match model.strip_suffix(super::ANTHROPIC_1M_SUFFIX) {
-        Some(clean) => (clean, true),
-        None => (model, false),
-    };
-
     let body = build_request_body(
         api_key,
-        model,
+        model_display,
         system_prompt,
         messages,
         tools,
@@ -139,6 +197,87 @@ pub async fn stream(
     });
 
     Ok(rx)
+}
+
+/// Stream a response from the Anthropic Messages API (`/v1/messages`).
+///
+/// When `allow_vision_from_catalog` is false — or when the upstream returns vision-deserialize
+/// errors despite `true` — user/tool images are rewritten to placeholders before JSON is sent so
+/// OpenCode-style gateways can forward to strict text-only OpenAI backends (e.g. DeepSeek via Go).
+#[allow(clippy::too_many_arguments)]
+pub async fn stream(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolDef],
+    _prompt_cache_key: Option<&str>,
+    config: &StreamConfig,
+    provider_type: &str,
+    allow_vision_from_catalog: bool,
+) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    let is_oauth = api_key.contains("sk-ant-oat");
+
+    let (model_display, enable_1m_beta) = match model.strip_suffix(super::ANTHROPIC_1M_SUFFIX) {
+        Some(clean) => (clean, true),
+        None => (model, false),
+    };
+
+    if !allow_vision_from_catalog {
+        let stripped = omit_multimodal_user_images_from_messages(messages);
+        return stream_messages_once(
+            api_key,
+            base_url,
+            model_display,
+            enable_1m_beta,
+            system_prompt,
+            &stripped,
+            tools,
+            config,
+            is_oauth,
+        )
+        .await;
+    }
+
+    match stream_messages_once(
+        api_key,
+        base_url,
+        model_display,
+        enable_1m_beta,
+        system_prompt,
+        messages,
+        tools,
+        config,
+        is_oauth,
+    )
+    .await
+    {
+        Ok(rx) => Ok(rx),
+        Err(e) if super::capabilities::is_vision_rejection_error(&e.to_string()) => {
+            super::capabilities::record_vision_rejection(provider_type, model);
+            crate::broker::try_log_event(
+                "debug",
+                "provider",
+                "vision-rejected-retry-text-only-messages-api",
+                Some(&format!("provider={provider_type} model={model}")),
+            );
+            let stripped = omit_multimodal_user_images_from_messages(messages);
+            stream_messages_once(
+                api_key,
+                base_url,
+                model_display,
+                enable_1m_beta,
+                system_prompt,
+                &stripped,
+                tools,
+                config,
+                is_oauth,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Stream Claude via Vertex AI partner REST `:streamRawPredict` (Anthropic Messages JSON body).

@@ -66,7 +66,7 @@ pub async fn send_cli_command(
     if command == "watch" {
         let Some(dest) = crate::bus::resolve_registered_agent_bus_name_for_current_process() else {
             bail!(
-                "sidekar ext watch needs a broker-registered agent context: \
+                "sidekar browser ext watch needs a broker-registered agent context: \
                  run from `sidekar claude` / `sidekar codex` / …, or `sidekar repl`, \
                  or set SIDEKAR_AGENT_NAME to your agent's bus name. \
                  (The daemon must know deliver_to to enqueue extension watch events.)"
@@ -77,7 +77,7 @@ pub async fn send_cli_command(
     if command == "monitor-start" {
         let Some(dest) = crate::bus::resolve_registered_agent_bus_name_for_current_process() else {
             bail!(
-                "sidekar ext monitor start needs a broker-registered agent context: \
+                "sidekar browser ext monitor start needs a broker-registered agent context: \
                  run from `sidekar repl`, `sidekar claude`, … or set SIDEKAR_AGENT_NAME \
                  so tab title events can be delivered to the bus."
             );
@@ -233,7 +233,7 @@ fn build_command(
     fn require_tab(command: &str, explicit: Option<u64>, default_tab: Option<u64>) -> Result<u64> {
         explicit.or(default_tab).ok_or_else(|| {
             anyhow!(
-                "sidekar ext {command} requires an explicit tab ID. Pass `--tab <id>` or the command's [tab_id] argument."
+                "sidekar browser ext {command} requires an explicit tab ID. Pass `--tab <id>` or the command's [tab_id] argument."
             )
         })
     }
@@ -269,7 +269,7 @@ fn build_command(
             let target = args
                 .first()
                 .cloned()
-                .ok_or_else(|| anyhow!("Usage: sidekar ext click <selector|text:...>"))?;
+                .ok_or_else(|| anyhow!("Usage: sidekar browser ext click <selector|text:...>"))?;
             let tab_id = require_tab("click", None, default_tab)?;
             let mut cmd = json!({"command": "click", "target": target});
             cmd.as_object_mut()
@@ -279,7 +279,7 @@ fn build_command(
         }
         "type" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar ext type <selector> <text>");
+                bail!("Usage: sidekar browser ext type <selector> <text>");
             }
             let tab_id = require_tab("type", None, default_tab)?;
             let mut cmd =
@@ -300,21 +300,21 @@ fn build_command(
                     "--html" => {
                         i += 1;
                         let value = args.get(i).cloned().context(
-                            "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]",
+                            "Usage: sidekar browser ext paste [--html <html>] [--text <text>] [--selector <selector>]",
                         )?;
                         html = Some(value);
                     }
                     "--text" => {
                         i += 1;
                         let value = args.get(i).cloned().context(
-                            "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]",
+                            "Usage: sidekar browser ext paste [--html <html>] [--text <text>] [--selector <selector>]",
                         )?;
                         text = Some(value);
                     }
                     "--selector" => {
                         i += 1;
                         let value = args.get(i).cloned().context(
-                            "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]",
+                            "Usage: sidekar browser ext paste [--html <html>] [--text <text>] [--selector <selector>]",
                         )?;
                         selector = Some(value);
                     }
@@ -328,7 +328,7 @@ fn build_command(
             if text.as_deref().unwrap_or("").is_empty() && html.as_deref().unwrap_or("").is_empty()
             {
                 bail!(
-                    "Usage: sidekar ext paste [--html <html>] [--text <text>] [--selector <selector>]"
+                    "Usage: sidekar browser ext paste [--html <html>] [--text <text>] [--selector <selector>]"
                 );
             }
             let tab_id = require_tab("paste", None, default_tab)?;
@@ -351,7 +351,7 @@ fn build_command(
         }
         "set-value" => {
             if args.len() < 2 {
-                bail!("Usage: sidekar ext set-value <selector> <text>");
+                bail!("Usage: sidekar browser ext set-value <selector> <text>");
             }
             let tab_id = require_tab("set-value", None, default_tab)?;
             let mut cmd =
@@ -377,7 +377,7 @@ fn build_command(
         "eval" => {
             let code = args.join(" ");
             if code.is_empty() {
-                bail!("Usage: sidekar ext eval <javascript>");
+                bail!("Usage: sidekar browser ext eval <javascript>");
             }
             let tab_id = require_tab("eval", None, default_tab)?;
             let mut cmd = json!({"command": "eval", "code": code});
@@ -389,7 +389,7 @@ fn build_command(
         "eval-page" => {
             let code = args.join(" ");
             if code.is_empty() {
-                bail!("Usage: sidekar ext eval-page <javascript>");
+                bail!("Usage: sidekar browser ext eval-page <javascript>");
             }
             let tab_id = require_tab("eval-page", None, default_tab)?;
             let mut cmd = json!({"command": "evalpage", "code": code});
@@ -400,7 +400,7 @@ fn build_command(
         }
         "navigate" => {
             if args.is_empty() {
-                bail!("Usage: sidekar ext navigate <url> [tab_id]");
+                bail!("Usage: sidekar browser ext navigate <url> [tab_id]");
             }
             let url = &args[0];
             let tab_id = require_tab(
@@ -454,7 +454,7 @@ fn build_command(
             let selector = args
                 .first()
                 .cloned()
-                .ok_or_else(|| anyhow!("Usage: sidekar ext watch <selector> [--tab <id>]"))?;
+                .ok_or_else(|| anyhow!("Usage: sidekar browser ext watch <selector> [--tab <id>]"))?;
             let tab_id = require_tab("watch", None, default_tab)?;
             let mut cmd = json!({"command": "watch", "selector": selector});
             cmd.as_object_mut()
@@ -488,7 +488,7 @@ fn build_command(
                 ids.push(n);
             }
             if ids.is_empty() {
-                bail!("Usage: sidekar ext monitor start <tab_id...>|all");
+                bail!("Usage: sidekar browser ext monitor start <tab_id...>|all");
             }
             Ok(json!({
                 "command": "tabmonitor",

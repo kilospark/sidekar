@@ -118,6 +118,9 @@ const REMOVED_COMMANDS: &[(&str, &str)] = &[
     ("wait_for_nav", "wait-for-nav"),
     ("sw", "service-workers"),
     ("service_workers", "service-workers"),
+    ("run", "browser run"),
+    ("ext", "browser ext"),
+    ("session", "relay"),
 ];
 
 pub fn command_specs() -> &'static [CommandSpec] {
@@ -181,6 +184,28 @@ pub fn command_handler(name: &str) -> Option<&'static str> {
         .iter()
         .find(|spec| handler_name(spec.name) == name)
         .map(|spec| handler_name(spec.name))
+}
+
+pub fn browser_host_routable(args: &[String]) -> bool {
+    let Some(sub) = args.first().map(String::as_str) else {
+        return false;
+    };
+    if matches!(sub, "ext" | "run" | "sessions" | "launch" | "connect") {
+        return false;
+    }
+    browser_subcommand_spec(sub)
+        .map(|spec| spec.ext_routable)
+        .unwrap_or(false)
+}
+
+pub fn browser_host_incompatible(args: &[String]) -> Option<&'static str> {
+    match args.first().map(String::as_str) {
+        Some("launch") | Some("connect") => Some(
+            "--host uses your running Chrome via the extension; it cannot launch or attach managed Chrome. \
+             Drop --host, or use `sidekar browser ext` for extension control.",
+        ),
+        _ => None,
+    }
 }
 
 pub fn browser_subcommands() -> &'static [CommandSpec] {

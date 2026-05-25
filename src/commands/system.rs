@@ -415,7 +415,7 @@ async fn cmd_update(ctx: &mut AppContext) -> Result<()> {
             ctx,
             "{}",
             crate::output::to_string(&crate::output::PlainOutput::new(format!(
-                "Warning: could not extract Chrome extension (same as `sidekar ext dev-extract`): {e:#}"
+                "Warning: could not extract Chrome extension (same as `sidekar browser ext dev-extract`): {e:#}"
             )))?
         ),
     }

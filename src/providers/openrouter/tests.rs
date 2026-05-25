@@ -18,6 +18,7 @@ fn build_request_body_adds_openrouter_cache_control_for_claude() {
             }],
         }],
         &[],
+        true,
     );
 
     let messages = body
@@ -31,6 +32,45 @@ fn build_request_body_adds_openrouter_cache_control_for_claude() {
     assert_eq!(
         content[0].get("cache_control"),
         Some(&json!({"type": "ephemeral"}))
+    );
+}
+
+#[test]
+fn text_only_openai_compat_omits_image_url_blocks() {
+    let body = build_request_body(
+        "deepseek-v4-pro",
+        "",
+        &[ChatMessage {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "[Image #1] is this better?".to_string(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data_base64: "abc".into(),
+                    source_path: Some("/tmp/shot.png".into()),
+                },
+            ],
+        }],
+        &[],
+        false,
+    );
+    let user = &body["messages"][0];
+    let content = user["content"].as_array().expect("multimodal array");
+    assert!(
+        content
+            .iter()
+            .all(|p| p.get("type").and_then(|v| v.as_str()) != Some("image_url")),
+        "text-only compat must not emit image_url: {content:?}"
+    );
+    assert!(
+        content
+            .iter()
+            .any(|p| p["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("Image omitted"))),
+        "expected omission note: {content:?}"
     );
 }
 
@@ -66,6 +106,7 @@ fn deepseek_model_enables_compat_thinking_in_request_body() {
             }],
         }],
         &[],
+        true,
     );
     assert_eq!(body["thinking"], json!({ "type": "enabled" }));
     assert_eq!(body["reasoning_effort"], json!("high"));
@@ -83,6 +124,7 @@ fn non_deepseek_skips_compat_thinking_field() {
             }],
         }],
         &[],
+        true,
     );
     assert!(
         body.get("thinking").is_none(),
@@ -128,6 +170,7 @@ fn deepseek_tool_assistant_always_serializes_reasoning_content() {
             }],
         }],
         &[],
+        true,
     );
     let messages = body.get("messages").and_then(|m| m.as_array()).unwrap();
     let asst = &messages[0];
@@ -159,6 +202,7 @@ fn deepseek_tool_assistant_maps_pre_tool_plain_text_into_reasoning_content() {
             ],
         }],
         &[],
+        true,
     );
     let messages = body.get("messages").and_then(|m| m.as_array()).unwrap();
     assert_eq!(messages[0]["reasoning_content"], "planning excerpt");

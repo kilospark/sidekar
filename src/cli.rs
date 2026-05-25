@@ -32,7 +32,7 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--host{RST}            {DIM}Use your already-running Chrome via the sidekar extension.{RST}"
+        "  {GREEN}--host{RST}            {DIM}Extension transport for CDP-overlapping `browser` subs (not `browser ext`){RST}"
     );
     let _ = writeln!(out);
 
@@ -119,7 +119,7 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--host{RST}              {DIM}Use your already-running Chrome via extension (vs sidekar-managed){RST}"
+        "  {GREEN}--host{RST}              {DIM}Extension transport for CDP-overlapping `browser` subs; `--tab` uses extension tab ids{RST}"
     );
     let _ = writeln!(
         out,
@@ -127,7 +127,7 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--tab <id>{RST}          {DIM}Target a specific tab (bypasses session){RST}"
+        "  {GREEN}--tab <id>{RST}          {DIM}CDP target id (managed) or Chrome extension tab id (--host / browser ext){RST}"
     );
     let _ = writeln!(
         out,

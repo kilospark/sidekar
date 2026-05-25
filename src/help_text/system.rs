@@ -1,6 +1,6 @@
 pub const COMMANDS: &[&str] = &[
-    "config", "device", "session", "event", "daemon", "totp", "pack", "unpack", "kv", "install",
-    "skill", "ext",
+    "config", "device", "relay", "event", "daemon", "totp", "pack", "unpack", "kv", "install",
+    "skill",
 ];
 
 pub fn get(command: &str) -> Option<&'static str> {
@@ -41,17 +41,17 @@ sidekar device <login|logout|list>
     sidekar device list
     sidekar device logout"
         }
-        "session" => {
+        "relay" => {
             "\
-sidekar session <list>
+sidekar relay <list>
 
-  Manage active relay sessions.
+  List active relay sessions for your sidekar.dev account (remote PTY viewers).
 
   Subcommands:
-    list      List active sessions for your account
+    list      List active relay sessions
 
   Examples:
-    sidekar session list"
+    sidekar relay list"
         }
         "event" => {
             "\
@@ -160,55 +160,6 @@ sidekar install
   Detects: Claude Code, Codex, Gemini CLI, OpenCode, Pi."
         }
         "skill" => "sidekar skill\n\n  Print the embedded SKILL.md to stdout (for agents to read).",
-        "ext" => {
-            "\
-sidekar ext <subcommand> [args...]
-
-  Drive your normal Chrome profile via the Sidekar extension. Load unpacked `extension/`
-  in Chrome, then click Login with GitHub in the extension popup.
-
-  Use `sidekar --tab <id> ext ...` to set tab id when the subcommand omits it; an explicit
-  tab id in the subcommand args wins.
-
-  Browser:
-    tabs                              List open tabs
-    read [tab_id]                     Read page text
-    screenshot [tab_id]               Capture visible tab
-    click <selector|text:...>         Click element
-    type <selector> <text>            Type into field
-    paste [--html H] [--text T]       Paste content (smart fallbacks)
-    set-value <selector> <text>       Set field value
-    ax-tree [tab_id]                  Accessibility tree with refs
-    eval <js>                         Run JS (isolated world)
-    eval-page <js>                    Run JS (page world)
-    navigate <url> [tab_id]           Navigate tab
-    new-tab [url]                     Open new tab
-    close [tab_id]                    Close tab
-    scroll <up|down|top|bottom>       Scroll page
-
-  History & Context (no CDP equivalent):
-    history <query>                   Search browsing history
-    context                           Active tab + windows + recent activity
-
-  Watchers & tab monitor (events delivered via bus):
-    watch <selector>                  Watch DOM element text
-    unwatch [watchId]                 Remove watcher(s)
-    watchers                          List DOM watchers
-    monitor <start|stop|status>       Tab title monitor (Chrome tab IDs)
-
-  Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands),
-         --focus (raise Chrome + activate tab for navigate | new-tab | screenshot | paste | set-value)
-  Management: status, stop
-
-  Examples:
-    sidekar ext tabs
-    sidekar ext history \"terraform vpc\"
-    sidekar ext context
-    sidekar ext watch \"span.notification-count\"
-    sidekar ext monitor start all
-    sidekar ext paste --html \"<h1>Title</h1>\" --text \"Title\"
-    sidekar ext eval-page \"window.monaco?.editor?.getEditors?.()[0]?.getValue()\""
-        }
         _ => return None,
     })
 }

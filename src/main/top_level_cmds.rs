@@ -127,8 +127,8 @@ impl sidekar::output::CommandOutput for RelaySessionsOutput {
     }
 }
 
-/// Handle `sidekar session list`.
-pub async fn handle_session(args: &[String]) -> Result<()> {
+/// Handle `sidekar relay list`.
+pub async fn handle_relay(args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
@@ -168,7 +168,7 @@ pub async fn handle_session(args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("Usage: sidekar session <list>");
+            eprintln!("Usage: sidekar relay <list>");
             std::process::exit(1);
         }
     }
@@ -204,82 +204,4 @@ pub async fn handle_daemon(args: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     }
-}
-
-/// Handle `sidekar ext <subcommand>`.
-pub async fn handle_ext(args: &[String], override_tab_id: &Option<String>) -> Result<()> {
-    let sub = args.first().cloned().unwrap_or_default();
-    if sub.is_empty() {
-        eprintln!("Usage: sidekar ext <subcommand> [args...]");
-        eprintln!();
-        eprintln!("Browser:");
-        eprintln!("  tabs                         List open tabs");
-        eprintln!("  read [tab_id]                Read page text");
-        eprintln!("  screenshot [tab_id]          Capture visible tab");
-        eprintln!("  click <selector|text:..>     Click element");
-        eprintln!("  type <selector> <text>       Type into field");
-        eprintln!("  paste [--html H] [--text T]  Paste content");
-        eprintln!("  set-value <selector> <text>  Set field value");
-        eprintln!("  ax-tree [tab_id]             Accessibility tree");
-        eprintln!("  eval <js>                    Run JS (isolated)");
-        eprintln!("  eval-page <js>               Run JS (page world)");
-        eprintln!("  navigate <url>               Navigate tab");
-        eprintln!("  new-tab [url]                Open new tab");
-        eprintln!("  close [tab_id]               Close tab");
-        eprintln!("  scroll <up|down|top|bottom>  Scroll page");
-        eprintln!();
-        eprintln!("History & Context:");
-        eprintln!("  history <query>              Search browsing history");
-        eprintln!("  context                      Current browser context");
-        eprintln!();
-        eprintln!("Watchers & tab monitor (events delivered via bus):");
-        eprintln!("  watch <selector>             Watch DOM element text");
-        eprintln!("  unwatch [watchId]            Remove watcher(s)");
-        eprintln!("  watchers                     List DOM watchers");
-        eprintln!("  monitor <start|stop|status>  Tab title monitor (Chrome extension tab IDs)");
-        eprintln!("  dev-extract                  Extract embedded extension ZIP");
-        eprintln!();
-        eprintln!("Management:");
-        eprintln!("  status                       Connection status");
-        eprintln!("  stop                         Stop daemon");
-        eprintln!();
-        eprintln!(
-            "Flags: --conn <id>, --profile <name>, --tab <id> (required for tab-targeted ext commands)"
-        );
-        std::process::exit(1);
-    }
-
-    let (command, sub_args): (String, Vec<String>) = match sub.as_str() {
-        "monitor" => {
-            let msub = args
-                .get(1)
-                .map(|s| s.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Usage: sidekar ext monitor <start|stop|status> [tab_id...|all]"
-                    )
-                })?;
-            let tail: Vec<String> = args.iter().skip(2).cloned().collect();
-            match msub {
-                "start" => ("monitor-start".to_string(), tail),
-                "stop" => ("monitor-stop".to_string(), Vec::new()),
-                "status" => ("monitor-status".to_string(), Vec::new()),
-                other => anyhow::bail!(
-                    "Unknown ext monitor subcommand: {other} (use start, stop, status)"
-                ),
-            }
-        }
-        _ => (
-            sub,
-            if args.len() > 1 {
-                args[1..].to_vec()
-            } else {
-                vec![]
-            },
-        ),
-    };
-
-    let default_tab = super::tab_id_from_global_flag(override_tab_id);
-    sidekar::ext::send_cli_command(&command, &sub_args, default_tab).await
 }
