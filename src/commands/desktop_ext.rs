@@ -530,3 +530,28 @@ pub(super) async fn cmd_desktop_type_extended(
     );
     Ok(())
 }
+
+#[cfg(not(target_os = "macos"))]
+macro_rules! desktop_macos_only_stub {
+    ($($name:ident),* $(,)?) => {
+        $(
+            pub(super) async fn $name(_ctx: &mut AppContext, _args: &[String]) -> Result<()> {
+                bail!("Desktop automation is only available on macOS")
+            }
+        )*
+    };
+}
+
+#[cfg(not(target_os = "macos"))]
+desktop_macos_only_stub!(
+    cmd_desktop_see,
+    cmd_desktop_set_value,
+    cmd_desktop_perform_action,
+    cmd_desktop_menu_ext,
+    cmd_desktop_dialog,
+    cmd_desktop_window,
+    cmd_desktop_space,
+    cmd_desktop_drag,
+    cmd_desktop_menubar,
+    cmd_desktop_type_extended,
+);
