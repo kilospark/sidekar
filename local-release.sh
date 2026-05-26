@@ -12,6 +12,7 @@ TAG="v${VERSION}"
 REPO="kilospark/sidekar"
 NAME="sidekar-darwin-arm64"
 KEY="${SIDEKAR_MINISIGN_KEY:-$HOME/.sidekar/minisign.key}"
+GH_TOKEN="$(gh auth token)"
 
 if [ -z "$VERSION" ]; then
   echo "Error: www/version.txt is empty or missing"
@@ -63,18 +64,50 @@ echo "=== Signing ==="
 echo | minisign -S -s "$KEY" -m "${NAME}.tar.gz"
 
 echo ""
-echo "=== Creating GitHub release ${TAG} ==="
-gh release create "$TAG" --repo "$REPO" --generate-notes \
-  "${NAME}.tar.gz" "${NAME}.tar.gz.minisig" || {
-    echo "Release ${TAG} may already exist. Uploading assets..."
-    gh release upload "$TAG" --repo "$REPO" --clobber \
-      "${NAME}.tar.gz" "${NAME}.tar.gz.minisig"
-  }
+echo "=== Publishing GitHub release ${TAG} ==="
+# `gh release create/upload` has been observed to hang indefinitely
+# after creating draft release or uploading first asset. Create draft
+# with `gh`, then upload assets via GitHub uploads API so reruns can
+# safely recover and clobber existing assets.
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  echo "Release ${TAG} already exists. Reusing it."
+else
+  gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes ""
+fi
+RELEASE_ID="$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id')"
+upload_asset() {
+  local file="$1"
+  local asset_name existing_id content_type
+  asset_name="$(basename "$file")"
+  existing_id="$(
+    gh api "repos/${REPO}/releases/tags/${TAG}" \
+      --jq ".assets[] | select(.name == \"${asset_name}\") | .id" 2>/dev/null \
+      | head -n 1 || true
+  )"
+  if [ -n "$existing_id" ]; then
+    gh api -X DELETE "repos/${REPO}/releases/assets/${existing_id}" >/dev/null
+  fi
+  content_type="application/octet-stream"
+  case "$asset_name" in
+    *.tar.gz) content_type="application/gzip" ;;
+  esac
+  curl -fsSL -X POST \
+    --http1.1 \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "Content-Type: ${content_type}" \
+    -H "Expect:" \
+    --limit-rate 100k \
+    --data-binary "@${file}" \
+    "https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${asset_name}" >/dev/null
+}
+upload_asset "${NAME}.tar.gz"
+upload_asset "${NAME}.tar.gz.minisig"
+gh release edit "$TAG" --repo "$REPO" --draft=false --title "$TAG"
 
 echo ""
-echo "=== Copying binaries to www ==="
-mkdir -p "www/public/binaries/${TAG}"
-cp "${NAME}.tar.gz" "${NAME}.tar.gz.minisig" "www/public/binaries/${TAG}/"
+echo "=== Pruning local binaries for Vercel ==="
+rm -rf "www/public/binaries"
+mkdir -p "www/public/binaries"
 
 echo ""
 echo "=== Deploying to Vercel ==="

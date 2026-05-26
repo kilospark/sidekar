@@ -1,8 +1,8 @@
 {
   "rewrites": [
     { "source": "/v1/:path*", "destination": "/api/v1/:path*" },
-    { "source": "/download/v:version/:asset", "destination": "/binaries/v:version/:asset" },
-    { "source": "/download/:version/:asset", "destination": "/binaries/v:version/:asset" },
+    { "source": "/download/v:version/:asset", "destination": "/api/download?version=v:version&asset=:asset" },
+    { "source": "/download/:version/:asset", "destination": "/api/download?version=v:version&asset=:asset" },
     { "source": "/install", "destination": "/api/script?name=install" },
     { "source": "/install.sh", "destination": "/api/script?name=install" },
     { "source": "/uninstall", "destination": "/api/script?name=uninstall" },
