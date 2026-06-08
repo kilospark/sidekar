@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidekar</title>
+<script>
+(function () {
+  var t = localStorage.getItem('sidekar-theme');
+  if (t !== 'light' && t !== 'dark' && t !== 'system') t = 'system';
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+<style>
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb33;
+    --danger: #f85149;
+    --ok: #3fb950;
+    --hover: #21262d;
+    --notice-bg: #0d1117;
+    --th-bg: #1c2128;
+    --row-hover: #161b22;
+    --btn-bg: #21262d;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #0969da;
+    --accent-dim: #0969da1a;
+    --danger: #cf222e;
+    --ok: #1a7f37;
+    --hover: #eaeef2;
+    --notice-bg: #f6f8fa;
+    --th-bg: #eaeef2;
+    --row-hover: #f6f8fa;
+    --btn-bg: #f6f8fa;
+  }
+  html[data-theme="system"] {
+    color-scheme: dark;
+    --bg: #0f1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb33;
+    --danger: #f85149;
+    --ok: #3fb950;
+    --hover: #21262d;
+    --notice-bg: #0d1117;
+    --th-bg: #1c2128;
+    --row-hover: #161b22;
+    --btn-bg: #21262d;
+  }
+  @media (prefers-color-scheme: light) {
+    html[data-theme="system"] {
+      color-scheme: light;
+      --bg: #ffffff;
+      --panel: #f6f8fa;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #656d76;
+      --accent: #0969da;
+      --accent-dim: #0969da1a;
+      --danger: #cf222e;
+      --ok: #1a7f37;
+      --hover: #eaeef2;
+      --notice-bg: #f6f8fa;
+      --th-bg: #eaeef2;
+      --row-hover: #f6f8fa;
+      --btn-bg: #f6f8fa;
+    }
+  }
+  :root {
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  header .meta {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .theme-switch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .theme-switch select {
+    background: var(--btn-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    min-height: calc(100vh - 49px);
+  }
+  nav {
+    border-right: 1px solid var(--border);
+    padding: 12px 0;
+    overflow-y: auto;
+  }
+  nav section { margin-bottom: 16px; }
+  nav h2 {
+    margin: 0 0 6px;
+    padding: 0 16px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  nav button {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    padding: 7px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  nav button:hover { background: var(--hover); }
+  nav button:focus { outline: none; }
+  nav button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  nav button.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+  nav button.active:hover { background: var(--accent-dim); }
+  nav button .count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  main { padding: 16px 20px; overflow: auto; }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .toolbar h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .toolbar .stats {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .toolbar button, .pager button {
+    background: var(--btn-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .toolbar button:disabled, .pager button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .notice {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--notice-bg);
+  }
+  .table-wrap {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    max-height: calc(100vh - 180px);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  th, td {
+    border-bottom: 1px solid var(--border);
+    padding: 6px 8px;
+    vertical-align: top;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-width: 420px;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    background: var(--th-bg);
+    color: var(--muted);
+    font-weight: 600;
+    z-index: 1;
+  }
+  tr:hover td { background: var(--row-hover); }
+  .masked { color: var(--danger); }
+  .blob { color: var(--muted); }
+  .empty {
+    padding: 40px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .overview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--panel);
+  }
+  .card .label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .card .value {
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 13px;
+    word-break: break-all;
+  }
+  .pager {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .error { color: var(--danger); }
+  .ok-text { color: var(--ok); }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 18px 0 8px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .session-table { margin-bottom: 8px; }
+  .session-table td:first-child { white-space: nowrap; }
+  .clickable { cursor: pointer; color: var(--accent); }
+  .clickable:hover { text-decoration: underline; }
+  .detail-panel {
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--notice-bg);
+  }
+  .detail-panel pre {
+    margin: 8px 0 0;
+    padding: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: auto;
+    max-height: 420px;
+    font-family: var(--mono);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+    nav { border-right: 0; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sidekar</h1>
+  <div class="header-right">
+    <label class="theme-switch">
+      <span>Theme</span>
+      <select id="theme-select" aria-label="Theme">
+        <option value="system">System</option>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </label>
+    <div class="meta" id="header-meta">loading…</div>
+  </div>
+</header>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main>
+    <div id="content"><div class="empty">Select a table</div></div>
+  </main>
+</div>
+<script>
+const LIMIT = 50;
+const THEME_KEY = 'sidekar-theme';
+let overview = null;
+let runtime = null;
+let groups = [];
+let currentTable = null;
+let currentView = 'overview';
+let offset = 0;
+let proxyOffset = 0;
+
+function fmtTime(epoch) {
+  if (!epoch) return '—';
+  return new Date(epoch * 1000).toLocaleString();
+}
+
+function fmtBytes(n) {
+  if (n == null) return '—';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
+function fmtVal(v) {
+  if (v == null) return '';
+  if (typeof v === 'object') {
+    if (v.masked) return `<span class="masked">••• (${v.len ?? '?'} chars)</span>`;
+    if (v.blob) return `<span class="blob">&lt;blob ${v.bytes} bytes&gt;</span>`;
+    return esc(JSON.stringify(v));
+  }
+  return esc(String(v));
+}
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function getStoredTheme() {
+  const t = localStorage.getItem(THEME_KEY);
+  return (t === 'light' || t === 'dark' || t === 'system') ? t : 'system';
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem(THEME_KEY, theme);
+  const sel = document.getElementById('theme-select');
+  if (sel && sel.value !== theme) sel.value = theme;
+}
+
+function initTheme() {
+  applyTheme(getStoredTheme());
+  const sel = document.getElementById('theme-select');
+  if (sel) {
+    sel.addEventListener('change', () => applyTheme(sel.value));
+  }
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (getStoredTheme() === 'system') {
+      document.documentElement.dataset.theme = 'system';
+    }
+  });
+}
+
+async function api(path) {
+  const r = await fetch(path);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function currentNavId() {
+  if (currentView === 'overview' || currentView === 'proxy') return currentView;
+  if (currentTable) return currentTable;
+  return 'overview';
+}
+
+function setActiveNav(id) {
+  const buttons = document.querySelectorAll('nav button[data-nav-id]');
+  for (const b of buttons) b.classList.remove('active');
+  const sel = id ? CSS.escape(String(id)) : '';
+  const match = sel ? document.querySelector(`nav button[data-nav-id="${sel}"]`) : null;
+  if (match) match.classList.add('active');
+}
+
+function navigate(id, fn) {
+  if (id === 'overview') {
+    currentView = 'overview';
+    currentTable = null;
+  } else if (id === 'proxy') {
+    currentView = 'proxy';
+    currentTable = null;
+  } else {
+    currentView = 'table';
+    currentTable = id;
+  }
+  setActiveNav(id);
+  fn();
+}
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+  const home = document.createElement('section');
+  home.innerHTML = '<h2>Home</h2>';
+  const homeBtn = document.createElement('button');
+  homeBtn.dataset.navId = 'overview';
+  homeBtn.textContent = 'Overview';
+  homeBtn.onclick = () => navigate('overview', showOverview);
+  home.appendChild(homeBtn);
+  const proxyBtn = document.createElement('button');
+  proxyBtn.dataset.navId = 'proxy';
+  proxyBtn.textContent = 'Proxy MITM';
+  proxyBtn.onclick = () => navigate('proxy', () => showProxyLog());
+  home.appendChild(proxyBtn);
+  nav.appendChild(home);
+
+  for (const g of groups) {
+    const sec = document.createElement('section');
+    const h = document.createElement('h2');
+    h.textContent = g.label;
+    sec.appendChild(h);
+    for (const t of g.tables) {
+      const btn = document.createElement('button');
+      btn.dataset.navId = t.name;
+      btn.innerHTML = `<span>${esc(t.label)}</span><span class="count">${t.count}</span>`;
+      const tableName = t.name;
+      btn.onclick = () => navigate(tableName, () => loadTable(tableName, 0));
+      sec.appendChild(btn);
+    }
+    nav.appendChild(sec);
+  }
+  setActiveNav(currentNavId());
+}
+
+function renderSessionTable(title, rows, cols) {
+  if (!rows.length) return `<div class="section-title">${esc(title)} (0)</div><div class="notice">None active</div>`;
+  let thead = cols.map(c => `<th>${esc(c.label)}</th>`).join('');
+  let tbody = rows.map(r => '<tr>' + cols.map(c => `<td>${c.render(r)}</td>`).join('') + '</tr>').join('');
+  return `<div class="section-title">${esc(title)} (${rows.length})</div>
+    <div class="table-wrap session-table"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`;
+}
+
+function renderExtConnections(ext) {
+  const conns = ext.connections || [];
+  if (!conns.length) {
+    return `<div class="section-title">Extension (0)</div><div class="notice">No authenticated extension bridge</div>`;
+  }
+  const rows = conns.map(c => `<tr>
+    <td>${c.id}</td><td>${esc(c.browser || '')}</td><td>${esc(c.profile || '')}</td>
+    <td>${esc(c.user_id || '')}</td><td>${esc(c.ext_version || '')}</td>
+    <td>${c.version_matches_daemon ? '<span class="ok-text">match</span>' : '<span class="danger">drift</span>'}</td>
+  </tr>`).join('');
+  return `<div class="section-title">Extension (${conns.length})</div>
+    <div class="table-wrap session-table"><table>
+      <thead><tr><th>conn</th><th>browser</th><th>profile</th><th>user</th><th>ext ver</th><th>daemon</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+
+async function showOverview() {
+  currentTable = null;
+  currentView = 'overview';
+  offset = 0;
+  setActiveNav('overview');
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    runtime = await api('/api/runtime');
+    document.getElementById('header-meta').textContent =
+      `v${runtime.sidekar_version} · ${runtime.db_path}`;
+    const dev = runtime.device || {};
+    const proxy = runtime.proxy || {};
+    const sess = runtime.sessions || {};
+    const agentCols = [
+      { label: 'name', render: r => esc(r.name) },
+      { label: 'nick', render: r => esc(r.nick || '') },
+      { label: 'pid', render: r => esc(String(r.pid || '')) },
+      { label: 'cwd', render: r => esc(r.cwd || '') },
+      { label: 'session', render: r => esc(r.session || '') },
+    ];
+    const openCols = [
+      { label: 'id', render: r => esc(r.id) },
+      { label: 'agent', render: r => esc(r.agent_name) },
+      { label: 'type', render: r => esc(r.agent_type || '') },
+      { label: 'project', render: r => esc(r.project || '') },
+      { label: 'last active', render: r => esc(fmtTime(r.last_active_at)) },
+    ];
+    el.innerHTML = `
+      <div class="toolbar"><h2>Overview</h2><button onclick="showOverview()">Refresh</button></div>
+      <div class="notice">${esc(proxy.note || '')}</div>
+      <div class="overview-grid">
+        <div class="card"><div class="label">Device login</div><div class="value ${dev.logged_in ? 'ok-text' : ''}">${dev.logged_in ? 'logged in' : 'not logged in'}</div></div>
+        <div class="card"><div class="label">Auth since</div><div class="value">${esc(dev.auth_created_at || '—')}</div></div>
+        <div class="card"><div class="label">Encryption</div><div class="value">${dev.encryption_configured ? 'configured' : 'off'}</div></div>
+        <div class="card"><div class="label">DB size</div><div class="value">${fmtBytes(runtime.db_size_bytes)}</div></div>
+        <div class="card"><div class="label">Proxy traces</div><div class="value">${proxy.total_entries || 0} entries</div></div>
+        <div class="card"><div class="label">Latest capture</div><div class="value">${fmtTime(proxy.latest_at)}</div></div>
+        <div class="card"><div class="label">REPL persisted</div><div class="value">${sess.repl_persisted_count || 0} sessions on disk</div></div>
+      </div>
+      ${renderExtConnections(runtime.extension || {})}
+      ${renderSessionTable('PTY wrappers', sess.pty || [], agentCols)}
+      ${renderSessionTable('REPL (running)', sess.repl || [], agentCols)}
+      ${renderSessionTable('Other bus agents', sess.other || [], agentCols)}
+      ${renderSessionTable('Open agent_sessions', sess.agent_sessions_open || [], openCols)}
+      <div class="notice">Proxy MITM state (--proxy / /proxy) is per-process; only captured rows appear in <span class="clickable" onclick="navigate('proxy', () => showProxyLog())">Proxy MITM</span>.</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+
+async function showProxyDetail(id) {
+  const panel = document.getElementById('proxy-detail');
+  if (!panel) return;
+  panel.innerHTML = '<div class="empty">Loading detail…</div>';
+  try {
+    const d = await api(`/api/proxy/show?id=${id}`);
+    const req = d.request_body?.data || '';
+    const resp = d.response_body?.data || '';
+    panel.innerHTML = `
+      <div><strong>#${d.id}</strong> ${esc(d.method)} ${esc(d.path)} → ${esc(d.upstream_host)}
+        · ${d.response_status} · ${d.duration_ms}ms · ${fmtTime(d.created_at)}</div>
+      <div class="section-title">Request headers</div><pre>${esc(d.request_headers || '')}</pre>
+      <div class="section-title">Request body (${fmtBytes(d.request_body?.total_bytes || 0)})</div><pre>${esc(req)}</pre>
+      <div class="section-title">Response headers</div><pre>${esc(d.response_headers || '')}</pre>
+      <div class="section-title">Response body (${fmtBytes(d.response_body?.total_bytes || 0)})</div><pre>${esc(resp)}</pre>`;
+  } catch (e) {
+    panel.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+
+async function showProxyLog(newOffset = 0) {
+  currentTable = null;
+  currentView = 'proxy';
+  proxyOffset = newOffset;
+  setActiveNav('proxy');
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="empty">Loading proxy log…</div>';
+  try {
+    const data = await api(`/api/proxy/log?limit=${LIMIT}&offset=${proxyOffset}`);
+    let tbody = (data.items || []).map(r => `<tr>
+      <td class="clickable" onclick="showProxyDetail(${r.id})">${r.id}</td>
+      <td>${fmtTime(r.created_at)}</td>
+      <td>${esc(r.method)}</td>
+      <td>${esc(r.path)}</td>
+      <td>${esc(r.upstream_host)}</td>
+      <td>${r.response_status}</td>
+      <td>${r.duration_ms}</td>
+      <td>${fmtBytes(r.request_size)}</td>
+      <td>${fmtBytes(r.response_size)}</td>
+    </tr>`).join('');
+    if (!tbody) tbody = '<tr><td colspan="9" class="empty">No captures yet. Enable --proxy (PTY) or /proxy on (REPL).</td></tr>';
+    const start = data.total ? proxyOffset + 1 : 0;
+    const end = Math.min(proxyOffset + (data.items || []).length, data.total);
+    el.innerHTML = `
+      <div class="toolbar">
+        <h2>Proxy MITM traces</h2>
+        <span class="stats">${data.total} entries · stored in proxy_log</span>
+        <button onclick="showProxyLog(0)">Refresh</button>
+      </div>
+      <div class="notice">Captured when REPL /proxy on or sidekar &lt;agent&gt; --proxy. Written to ~/.sidekar/sidekar.sqlite3 proxy_log.</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>id</th><th>time</th><th>method</th><th>path</th><th>host</th><th>status</th><th>ms</th><th>req</th><th>resp</th></tr></thead>
+        <tbody>${tbody}</tbody></table></div>
+      <div class="pager">
+        <button ${proxyOffset <= 0 ? 'disabled' : ''} onclick="showProxyLog(${Math.max(0, proxyOffset - LIMIT)})">Prev</button>
+        <span>${start}–${end} of ${data.total}</span>
+        <button ${end >= data.total ? 'disabled' : ''} onclick="showProxyLog(${proxyOffset + LIMIT})">Next</button>
+      </div>
+      <div id="proxy-detail" class="detail-panel"><div class="empty">Click an id for full request/response bodies</div></div>`;
+    window.showProxyDetail = showProxyDetail;
+  } catch (e) {
+    el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadTable(name, newOffset = 0) {
+  currentView = 'table';
+  currentTable = name;
+  offset = newOffset;
+  setActiveNav(name);
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const data = await api(`/api/rows?table=${encodeURIComponent(name)}&limit=${LIMIT}&offset=${offset}`);
+    const cols = data.columns || [];
+    let thead = cols.map(c => `<th>${esc(c)}</th>`).join('');
+    let tbody = '';
+    for (const row of data.rows || []) {
+      tbody += '<tr>' + cols.map(c => `<td>${fmtVal(row[c])}</td>`).join('') + '</tr>';
+    }
+    if (!tbody) tbody = `<tr><td colspan="${cols.length || 1}" class="empty">No rows</td></tr>`;
+    const start = data.total ? offset + 1 : 0;
+    const end = Math.min(offset + data.rows.length, data.total);
+    el.innerHTML = `
+      <div class="toolbar">
+        <h2>${esc(data.label)}</h2>
+        <span class="stats">${data.total} rows · ${esc(data.table)}</span>
+        <button onclick="loadTable('${esc(name)}', 0)">Refresh</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>
+      <div class="pager">
+        <button ${offset <= 0 ? 'disabled' : ''} onclick="loadTable('${esc(name)}', ${Math.max(0, offset - LIMIT)})">Prev</button>
+        <span>${start}–${end} of ${data.total}</span>
+        <button ${end >= data.total ? 'disabled' : ''} onclick="loadTable('${esc(name)}', ${offset + LIMIT})">Next</button>
+      </div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+
+async function init() {
+  initTheme();
+  try {
+    const [rt, tb] = await Promise.all([
+      api('/api/runtime'),
+      api('/api/tables'),
+    ]);
+    runtime = rt;
+    groups = tb.groups || [];
+    document.getElementById('header-meta').textContent =
+      `v${runtime.sidekar_version} · ${runtime.db_path}`;
+    renderNav();
+    showOverview();
+  } catch (e) {
+    document.getElementById('content').innerHTML =
+      `<div class="error">Failed to load API: ${esc(e.message)}</div>`;
+  }
+}
+
+init();
+window.navigate = navigate;
+window.showOverview = showOverview;
+window.showProxyLog = showProxyLog;
+window.loadTable = loadTable;
+window.showProxyDetail = showProxyDetail;
+</script>
+</body>
+</html>

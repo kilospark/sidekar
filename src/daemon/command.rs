@@ -21,10 +21,16 @@ pub(super) async fn handle_command(cmd: &Value, state: &Arc<Mutex<DaemonState>>)
             };
             #[cfg(not(target_os = "macos"))]
             let trust = json!(null);
+            let web_url = if s.http_port > 0 {
+                Some(format!("http://127.0.0.1:{}", s.http_port))
+            } else {
+                None
+            };
             json!({
                 "running": true,
                 "pid": std::process::id(),
                 "http_port": s.http_port,
+                "web_url": web_url,
                 "ext": ext_status,
                 "cli_logged_in": cli_logged_in,
                 "trust": trust,

@@ -1,7 +1,5 @@
 use std::fmt::Write;
 
-use crate::command_catalog::{CommandGroup, CommandSpec, command_specs};
-
 pub fn render_help(version: &str) -> String {
     const BOLD: &str = "\x1b[1m";
     const DIM: &str = "\x1b[2m";
@@ -21,60 +19,91 @@ pub fn render_help(version: &str) -> String {
     let _ = writeln!(out, "       sidekar <agent>  {DIM}(wrap agent in PTY){RST}");
     let _ = writeln!(out, "       sidekar help <command>");
     let _ = writeln!(out);
-    let _ = writeln!(out, "{YELLOW}{BOLD}Browser modes{RST}");
-    let _ = writeln!(
-        out,
-        "  {DIM}Default — managed Chrome with profile 'default', auto-launched on first use.{RST}"
+    write_section(
+        &mut out,
+        "Automation",
+        &[
+            (
+                "browser",
+                "Web automation: navigate, read, click, type, network, ext",
+            ),
+            ("desktop", "Apps, windows, input, menus, screenshots"),
+            ("monitor", "Stream browser tab events to bus"),
+        ],
+        CYAN,
+        YELLOW,
+        BOLD,
+        DIM,
+        RST,
     );
-    let _ = writeln!(
-        out,
-        "  {GREEN}--profile <name>{RST}  {DIM}Managed Chrome with a named profile (also auto-launched).{RST}"
+    write_section(
+        &mut out,
+        "Agent",
+        &[
+            ("repl", "Interactive agent"),
+            ("bus", "Inter-agent communication and coordination"),
+            ("memory", "Durable memory"),
+            ("tasks", "Local task graph"),
+            ("journal", "Session journals"),
+            ("agent-sessions", "Session history"),
+            ("repo", "Repo packing and token estimates"),
+            ("compact", "Output compaction"),
+            ("kv", "Encrypted key/value secrets"),
+            ("totp", "TOTP secrets"),
+            ("cron", "Scheduled jobs"),
+            ("loop", "Run prompt on interval"),
+        ],
+        CYAN,
+        YELLOW,
+        BOLD,
+        DIM,
+        RST,
     );
-    let _ = writeln!(
-        out,
-        "  {GREEN}--host{RST}            {DIM}Extension transport for CDP-overlapping `browser` subs (not `browser ext`){RST}"
+    write_section(
+        &mut out,
+        "Account",
+        &[
+            ("device", "Device auth and registration"),
+            ("relay", "Active relay sessions"),
+        ],
+        CYAN,
+        YELLOW,
+        BOLD,
+        DIM,
+        RST,
     );
-    let _ = writeln!(out);
-
-    let groups = [
-        CommandGroup::Browser,
-        CommandGroup::Code,
-        CommandGroup::Data,
-        CommandGroup::Desktop,
-        CommandGroup::Agent,
-        CommandGroup::Jobs,
-        CommandGroup::Account,
-        CommandGroup::System,
-    ];
-
-    let visible_specs: Vec<&CommandSpec> = command_specs().iter().collect();
-    let name_width = visible_specs
-        .iter()
-        .map(|spec| spec.name.len())
-        .max()
-        .unwrap_or(0);
-
-    for group in groups {
-        let specs: Vec<&CommandSpec> = visible_specs
-            .iter()
-            .copied()
-            .filter(|spec| spec.group == group)
-            .collect();
-        if specs.is_empty() {
-            continue;
-        }
-        let _ = writeln!(out, "{YELLOW}{BOLD}{}{RST}", group.title());
-        for spec in specs {
-            let _ = writeln!(
-                out,
-                "  {CYAN}{:<width$}{RST}  {DIM}{}{RST}",
-                spec.name,
-                spec.summary,
-                width = name_width
-            );
-        }
-        let _ = writeln!(out);
-    }
+    write_section(
+        &mut out,
+        "Data",
+        &[
+            ("doc", "Markdown doc intelligence"),
+            ("pack", "Pack JSON, YAML, or CSV"),
+            ("unpack", "Unpack packed data"),
+        ],
+        CYAN,
+        YELLOW,
+        BOLD,
+        DIM,
+        RST,
+    );
+    write_section(
+        &mut out,
+        "System",
+        &[
+            ("daemon", "Background daemon"),
+            ("proxy", "Captured proxy traffic"),
+            ("config", "Settings"),
+            ("event", "Event log"),
+            ("install", "Install skill file"),
+            ("uninstall", "Remove local data and skill files"),
+            ("skill", "Print SKILL.md"),
+        ],
+        CYAN,
+        YELLOW,
+        BOLD,
+        DIM,
+        RST,
+    );
 
     let _ = writeln!(out, "{YELLOW}{BOLD}Global Flags{RST}");
     let _ = writeln!(
@@ -119,15 +148,15 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--host{RST}              {DIM}Extension transport for CDP-overlapping `browser` subs; `--tab` uses extension tab ids{RST}"
+        "  {GREEN}--host{RST}              {DIM}Browser-only: use extension transport; `--tab` uses extension tab ids{RST}"
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--profile <name>{RST}    {DIM}Use named managed-Chrome profile (auto-launch on first use){RST}"
+        "  {GREEN}--profile <name>{RST}    {DIM}Browser-only: use named managed Chrome profile{RST}"
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--tab <id>{RST}          {DIM}CDP target id (managed) or Chrome extension tab id (--host / browser ext){RST}"
+        "  {GREEN}--tab <id>{RST}          {DIM}Browser-only: managed CDP target id or extension tab id{RST}"
     );
     let _ = writeln!(
         out,
@@ -139,4 +168,28 @@ pub fn render_help(version: &str) -> String {
         "{DIM}Respects NO_COLOR env var. ANSI colors are stripped when output is piped.{RST}"
     );
     out
+}
+
+fn write_section(
+    out: &mut String,
+    title: &str,
+    rows: &[(&str, &str)],
+    cyan: &str,
+    yellow: &str,
+    bold: &str,
+    dim: &str,
+    rst: &str,
+) {
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let _ = writeln!(out, "{yellow}{bold}{title}{rst}");
+    for (name, summary) in rows {
+        let _ = writeln!(
+            out,
+            "  {cyan}{:<width$}{rst}  {dim}{}{rst}",
+            name,
+            summary,
+            width = width
+        );
+    }
+    let _ = writeln!(out);
 }

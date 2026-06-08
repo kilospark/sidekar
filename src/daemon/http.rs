@@ -1,4 +1,16 @@
-use super::*;
+use super::{admin, *};
+
+fn parse_http_request(request: &str) -> Option<(String, String, String)> {
+    let first = request.lines().next()?;
+    let mut parts = first.split_whitespace();
+    let method = parts.next()?.to_string();
+    let target = parts.next()?;
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (target.to_string(), String::new()),
+    };
+    Some((method, path, query))
+}
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncWriteExt;
@@ -109,6 +121,24 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
             let _ = stream.write_all(response.as_bytes()).await;
             return;
         }
+    }
+
+    let (method, path, query) = match parse_http_request(request) {
+        Some(v) => v,
+        None => {
+            let response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(response.as_bytes()).await;
+            return;
+        }
+    };
+
+    let http_port = state.lock().await.http_port;
+    let ext_status = {
+        let s = state.lock().await;
+        crate::ext::get_status(&s.ext_state).await
+    };
+    if admin::handle_admin_request(&method, &path, &query, http_port, ext_status, &mut stream).await {
+        return;
     }
 
     if first_line.contains("/ext") {

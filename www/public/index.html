@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>sidekar: the sidecar for AI agents</title>
-<meta name="description" content="Sidekar is a coordination and automation substrate for agent CLIs. It adds browser and page automation, data capture, desktop automation, agent coordination, local memory and tasks, background jobs, encrypted secrets, and extension control without replacing the agent you already use.">
+<meta name="description" content="Sidekar is a sidecar binary and skill for agent CLIs. Browser and desktop automation, local bus, relay, memory, secrets, and MITM debugging, without replacing the agent you already use.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -92,10 +92,7 @@ body {
 }
 
 .hero-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 34px;
-  align-items: stretch;
+  max-width: 720px;
 }
 
 .hero-copy {
@@ -103,11 +100,11 @@ body {
 }
 
 h1 {
-  font-size: clamp(3.3rem, 8vw, 6.8rem);
-  line-height: 0.93;
+  font-size: clamp(2.8rem, 7vw, 5.2rem);
+  line-height: 0.95;
   letter-spacing: -0.06em;
   margin-bottom: 18px;
-  max-width: 9.2ch;
+  max-width: 14ch;
   color: var(--page-ink);
 }
 
@@ -173,51 +170,59 @@ h1 {
   background: var(--page-warm);
 }
 
-.hero-panel {
-  position: relative;
-  overflow: hidden;
-  border-radius: 0;
-  border: 1px solid var(--page-line);
-  background: var(--page-panel);
-  padding: 22px;
-  min-height: 520px;
-}
-
-.surface-card {
-  position: relative;
-  z-index: 1;
-  border: 1px solid var(--page-line);
-  background: var(--page-panel);
-  border-radius: 0;
-  padding: 18px;
-}
-
-.surface-grid {
+.components-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 14px;
 }
 
-.surface-card h3 {
-  font-size: 14px;
-  margin-bottom: 10px;
-  color: var(--page-ink);
+.component-group {
+  margin-bottom: 28px;
 }
 
-.surface-card p {
+.component-group:last-child {
+  margin-bottom: 0;
+}
+
+.component-group-label {
+  font: 11px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--page-muted);
+  margin-bottom: 12px;
+}
+
+.component-card {
+  display: block;
+  text-decoration: none;
+  border: 1px solid var(--page-line);
+  background: var(--page-panel);
+  padding: 20px;
+  min-height: 180px;
+  transition: border-color 0.15s ease;
+}
+
+.component-card:hover {
+  border-color: var(--page-muted);
+}
+
+.component-card h3 {
+  color: var(--page-ink);
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+.component-card p {
   color: var(--page-muted);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
+  margin-bottom: 14px;
 }
 
-.surface-badge {
-  display: inline-block;
-  font: 11px/1 var(--mono);
+.component-cmd {
+  display: block;
+  font: 11px/1.5 var(--mono);
   color: var(--page-muted);
-  border: 1px solid var(--page-line);
-  border-radius: 0;
-  padding: 7px 9px;
-  margin-bottom: 12px;
 }
 
 .section {
@@ -258,94 +263,6 @@ h1 {
   font-size: 17px;
   line-height: 1.7;
   max-width: 58ch;
-}
-
-.pillars {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-}
-
-.pillar {
-  border: 1px solid var(--page-line);
-  border-radius: 0;
-  background: var(--page-panel);
-  padding: 22px;
-  min-height: 250px;
-}
-
-.pillar-index {
-  font: 12px/1 var(--mono);
-  color: var(--page-muted);
-  margin-bottom: 32px;
-}
-
-.pillar h3 {
-  font-size: 19px;
-  color: var(--page-ink);
-  margin-bottom: 10px;
-}
-
-.pillar p {
-  color: var(--page-muted);
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.extension-band {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 18px;
-  align-items: stretch;
-}
-
-.extension-copy,
-.extension-stack {
-  border: 1px solid var(--page-line);
-  border-radius: 0;
-  background: var(--page-panel);
-  padding: 28px;
-}
-
-.extension-copy h3 {
-  color: var(--page-ink);
-  font-size: 28px;
-  line-height: 1.06;
-  letter-spacing: -0.04em;
-  margin-bottom: 14px;
-}
-
-.extension-copy p,
-.extension-stack p {
-  color: var(--page-muted);
-  line-height: 1.7;
-}
-
-.extension-points {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 20px;
-}
-
-.extension-point {
-  border: 1px solid var(--page-line);
-  border-radius: 0;
-  padding: 14px;
-  background: var(--page-panel);
-}
-
-.extension-point strong {
-  display: block;
-  color: var(--page-ink);
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-
-.extension-point span {
-  color: var(--page-muted);
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .mini-flow {
@@ -426,6 +343,10 @@ h1 {
   content: "→";
   color: var(--page-ink);
   margin-right: 8px;
+}
+
+.workflow-card a {
+  color: var(--page-ink);
 }
 
 .trust-grid {
@@ -510,14 +431,13 @@ h1 {
 
 @media (max-width: 980px) {
   .hero-grid,
-  .extension-band,
   .trust-grid,
   .cta-band,
   .section-header {
     grid-template-columns: 1fr;
   }
 
-  .pillars,
+  .components-grid,
   .workflows {
     grid-template-columns: 1fr 1fr;
   }
@@ -532,16 +452,10 @@ h1 {
     padding-top: 110px;
   }
 
-  .pillars,
+  .components-grid,
   .workflows,
-  .extension-points,
-  .surface-grid,
   .setup-flow {
     grid-template-columns: 1fr;
-  }
-
-  .hero-panel {
-    min-height: auto;
   }
 }
 </style>
@@ -575,55 +489,95 @@ h1 {
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <h1>Coordination and automation for agent CLIs.</h1>
+      <h1>Sidecar for agent CLIs.</h1>
       <p class="hero-sub">
-        Sidekar runs alongside Claude Code, Codex, Cursor, Copilot, Gemini CLI, and other agent CLIs.<br>
-        It is not an orchestrator, harness, or agent OS.<br>
-        Sidekar is a power packed binary and a skill. That's it.<br>
-        It adds browser and page automation, data capture, desktop automation, agent coordination, local memory and tasks, background jobs, encrypted secrets, and extension control without replacing the agent you already use.
+        Sidekar sits next to Claude Code, Codex, Cursor, Gemini CLI, and the rest.
+        One binary, one skill file. Not an orchestrator or agent OS.
+        Wrap your usual agent, or run Sidekar on its own in the REPL.
       </p>
       <div class="hero-actions">
         <a href="#setup" class="primary-cta">Install the CLI</a>
-        <a href="/docs" class="secondary-cta">Browse docs</a>
+        <a href="/docs" class="secondary-cta">Read the docs</a>
       </div>
       <div class="hero-notes">
         <span>No MCP</span>
-        <span>Works with your existing agent CLI</span>
-        <span>Also runs as a standalone REPL agent</span>
+        <span>Runs locally by default</span>
+        <span>Relay needs device login</span>
       </div>
     </div>
-    <div class="hero-panel">
-      <div class="surface-grid">
-        <div class="surface-card">
-          <div class="surface-badge">Browser</div>
-          <h3>One browser surface, end to end</h3>
-          <p>Launch or connect to Chrome, read pages, inspect DOM and accessibility trees, click and type through flows, capture screenshots and PDFs, inspect cookies and network traffic, and work across tabs and frames.</p>
-        </div>
-        <div class="surface-card">
-          <div class="surface-badge">Desktop</div>
-          <h3>macOS UI access</h3>
-          <p>Inspect native windows, take desktop screenshots, click controls, press keys, paste text, launch apps, and finish work that lives outside the browser.</p>
-        </div>
-        <div class="surface-card">
-          <div class="surface-badge">Agent</div>
-          <h3>Coordinate and keep context local</h3>
-          <p>Use the bus, durable memory, task graph, repo pack/tree, and output compaction so agents can collaborate without losing local context.</p>
-        </div>
-        <div class="surface-card">
-          <div class="surface-badge">Jobs + Account</div>
-          <h3>Run in the background, keep secrets local</h3>
-          <p>Schedule recurring prompts and tool runs, monitor tabs for changes, authenticate devices, manage sessions, and store encrypted secrets and TOTP codes.</p>
-        </div>
-        <div class="surface-card">
-          <div class="surface-badge">Web terminal</div>
-          <h3>Check in from anywhere</h3>
-          <p>Sign in to Sidekar and use the relay and web terminal to view active agent sessions remotely without replacing the local PTY as the source of truth.</p>
-        </div>
-        <div class="surface-card">
-          <div class="surface-badge">System + Extension</div>
-          <h3>Own the whole runtime</h3>
-          <p>Manage the daemon, config, updates, event log, skill install, and Chrome extension bridge from the same binary instead of scattering setup across services.</p>
-        </div>
+  </div>
+</section>
+
+<section class="section" id="components">
+  <div class="container section-shell">
+    <div class="section-header">
+      <div class="label">Overview</div>
+      <div>
+        <h2>What Sidekar handles.</h2>
+        <p>Each card links to a docs section with commands and examples. Almost everything runs on your machine. Relay is the main exception.</p>
+      </div>
+    </div>
+
+    <div class="component-group">
+      <div class="component-group-label">Run and connect</div>
+      <div class="components-grid">
+        <a class="component-card" href="/docs#runtime">
+          <h3>Runtime</h3>
+          <p>Wrap an existing agent CLI, or run Sidekar as the agent in the REPL.</p>
+          <span class="component-cmd">sidekar claude, sidekar repl</span>
+        </a>
+        <a class="component-card" href="/docs#communication">
+          <h3>Communication</h3>
+          <p>Local bus for handoffs between terminals on the same machine.</p>
+          <span class="component-cmd">sidekar bus who, send, done</span>
+        </a>
+        <a class="component-card" href="/docs#relay">
+          <h3>Relay</h3>
+          <p>Web terminal and session list through relay.sidekar.dev.</p>
+          <span class="component-cmd">sidekar device login, --relay</span>
+        </a>
+        <a class="component-card" href="/docs#proxy">
+          <h3>Proxy (MITM)</h3>
+          <p>Capture agent-to-LLM API traffic locally when you need to debug.</p>
+          <span class="component-cmd">--proxy, sidekar proxy log</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="component-group">
+      <div class="component-group-label">Automate</div>
+      <div class="components-grid">
+        <a class="component-card" href="/docs#browser">
+          <h3>Browser</h3>
+          <p>CDP automation, plus an optional Chrome extension for everyday profiles.</p>
+          <span class="component-cmd">sidekar read, click, ext</span>
+        </a>
+        <a class="component-card" href="/docs#desktop">
+          <h3>Desktop</h3>
+          <p>macOS native UI: windows, clicks, keys, screenshots outside Chrome.</p>
+          <span class="component-cmd">sidekar desktop apps, click</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="component-group">
+      <div class="component-group-label">Persist and schedule</div>
+      <div class="components-grid">
+        <a class="component-card" href="/docs#background">
+          <h3>Background</h3>
+          <p>Cron jobs, recurring loops, and tab monitors that outlive one prompt.</p>
+          <span class="component-cmd">sidekar cron, loop, monitor</span>
+        </a>
+        <a class="component-card" href="/docs#tools">
+          <h3>Tools</h3>
+          <p>Memory, tasks, journals, repo context, and output compaction.</p>
+          <span class="component-cmd">sidekar memory, tasks, compact</span>
+        </a>
+        <a class="component-card" href="/docs#secrets">
+          <h3>Secrets</h3>
+          <p>Encrypted KV and TOTP. Device login unlocks encryption.</p>
+          <span class="component-cmd">sidekar kv, totp</span>
+        </a>
       </div>
     </div>
   </div>
@@ -631,60 +585,33 @@ h1 {
 
 <section class="section" id="setup">
   <div class="container section-shell">
+    <div class="section-header">
+      <div class="label">Install</div>
+      <div>
+        <h2>Get running.</h2>
+        <p>Four steps. Only the first is required.</p>
+      </div>
+    </div>
     <div class="mini-flow setup-flow">
       <div class="mini-step">
         <div class="num">Step 1</div>
         <strong>Install Sidekar</strong>
-        <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>.</p>
+        <p>Run <code>curl -fsSL https://sidekar.dev/install | sh</code>. This also runs <code>sidekar install</code> for agent skills.</p>
       </div>
       <div class="mini-step">
         <div class="num">Step 2</div>
-        <strong>Authenticate this device (optional)</strong>
-        <p><code>sidekar device login</code> stores the device token and unlocks account-backed features like the relay tunnel, web terminal, and session management.</p>
+        <strong>Launch your agent</strong>
+        <p>Wrap your usual CLI with <code>sidekar &lt;agent&gt; [args]</code>, or run <code>sidekar repl -c &lt;credential&gt; -m &lt;model&gt;</code>.</p>
       </div>
       <div class="mini-step">
         <div class="num">Step 3</div>
-        <strong>Install the extension (optional)</strong>
-        <p>Add the Chrome extension for the advanced use-cases. See <a href="/extension">the extension docs</a> for setup and details.</p>
+        <strong>Device login (optional)</strong>
+        <p><code>sidekar device login</code> unlocks relay, the web terminal, encrypted secrets, and session management.</p>
       </div>
       <div class="mini-step">
         <div class="num">Step 4</div>
-        <strong>Launch your agent or use Sidekar directly</strong>
-        <p>Wrap your usual agent with <code>sidekar &lt;agent&gt; [args]</code>, or run <code>sidekar repl -c &lt;credential&gt; -m &lt;model&gt;</code> for Sidekar's standalone LLM agent mode.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="capabilities">
-  <div class="container section-shell">
-    <div class="section-header">
-      <div class="label">Product pillars</div>
-      <div>
-        <h2>One binary, four main buckets, one supporting layer.</h2>
-        <p>At the product level, Sidekar is browser automation, desktop automation, agent coordination, and background automation. Account, system, and extension commands support those pillars.</p>
-      </div>
-    </div>
-    <div class="surface-grid">
-      <div class="surface-card">
-        <div class="surface-badge">Browser</div>
-        <p>The CLI splits this into Browser, Page, Interact, and Data commands, but it is one capability surface: launch and control Chrome, read pages, interact with real UI, and inspect page state.</p>
-      </div>
-      <div class="surface-card">
-        <div class="surface-badge">Desktop</div>
-        <p>Use macOS desktop automation for screenshots, app and window inspection, clicks, keypresses, text input, paste, launch, activate, and quit.</p>
-      </div>
-      <div class="surface-card">
-        <div class="surface-badge">Agent</div>
-        <p>Use the bus, local memory, task graph, agent session history, repo context, and output compaction to keep collaboration local and durable.</p>
-      </div>
-      <div class="surface-card">
-        <div class="surface-badge">Background</div>
-        <p>Create scheduled jobs with <code>cron</code>, recurring prompt loops with <code>loop</code>, and reactive tab monitoring with <code>monitor</code>.</p>
-      </div>
-      <div class="surface-card">
-        <div class="surface-badge">Supporting layer</div>
-        <p>Device auth, account sessions, encrypted KV and TOTP, daemon and config management, the local event log, self-update, skill installation, extension control, and <code>sidekar repl</code> support the four main pillars.</p>
+        <strong>Chrome extension (optional)</strong>
+        <p>For everyday Chrome profiles and history. See <a href="/extension">the extension page</a>.</p>
       </div>
     </div>
   </div>
@@ -693,47 +620,56 @@ h1 {
 <section class="section" id="workflows">
   <div class="container section-shell">
     <div class="section-header">
-      <div class="label">Workflows</div>
+      <div class="label">Examples</div>
       <div>
-        <h2>Work that crosses real boundaries.</h2>
-        <p>Sidekar matters when an agent has to move from code to browser, from browser to desktop, or from one agent to another without losing state.</p>
+        <h2>Where it helps.</h2>
+        <p>Sidekar is most useful when work jumps between terminals, browsers, and native apps.</p>
       </div>
     </div>
     <div class="workflows">
       <article class="workflow-card">
         <h3>Ship and verify</h3>
-        <p>One agent edits the code, another opens the actual app in Chrome, and a third watches staging. The bus passes results back without you manually copying context between terminals.</p>
+        <p>One agent edits code, another checks the deployed page in Chrome, a third signs off. The bus carries results so you are not copy-pasting between windows.</p>
         <ul>
           <li><code>sidekar codex</code> builds the change</li>
-          <li><code>sidekar read</code> or <code>sidekar ext read</code> checks the real page</li>
+          <li><code>sidekar read</code> or <code>sidekar ext read</code> checks the live page</li>
           <li><code>sidekar bus send</code> hands off to QA</li>
         </ul>
       </article>
       <article class="workflow-card">
-        <h3>Complete login flows</h3>
-        <p>Agents can read credentials from encrypted local storage, generate TOTP codes, and finish browser login flows end to end instead of stopping at “please do this step manually.”</p>
+        <h3>Finish login flows</h3>
+        <p>Pull credentials from encrypted storage, generate TOTP codes, and drive the browser through the rest of the flow.</p>
         <ul>
           <li>Encrypted KV for secrets</li>
-          <li>TOTP generation on demand</li>
-          <li>Real browser and desktop surfaces</li>
+          <li>TOTP on demand</li>
+          <li>Browser and desktop commands for the UI steps</li>
         </ul>
       </article>
       <article class="workflow-card">
-        <h3>Work from local context</h3>
-        <p>Keep project memory, task dependencies, repo context, and compact action output in the same local binary so agents can resume work without rebuilding context from scratch.</p>
+        <h3>Pick up where you left off</h3>
+        <p>Memory, tasks, repo packs, and compact command output stay on disk between sessions.</p>
         <ul>
-          <li><code>sidekar memory context</code> loads scoped memory</li>
-          <li><code>sidekar tasks list --ready</code> shows the next unblocked work</li>
-          <li><code>sidekar repo pack</code> packs repo context for the model</li>
+          <li><code>sidekar memory context</code> loads project memory</li>
+          <li><code>sidekar tasks list --ready</code> shows unblocked work</li>
+          <li><code>sidekar repo pack</code> ships repo context to the model</li>
         </ul>
       </article>
       <article class="workflow-card">
-        <h3>Watch the background</h3>
-        <p>Keep long-running checks alive after the prompt: watch a dashboard, poll a page, or schedule work and route the result back into the same agent bus.</p>
+        <h3>Background checks</h3>
+        <p>Watch a dashboard tab, schedule a cron prompt, or loop a recurring check. Results can land back on the bus.</p>
         <ul>
-          <li>Monitors for reactive alerts</li>
-          <li>Cron and loop for recurring checks</li>
-          <li>Results delivered through the bus</li>
+          <li><code>sidekar monitor start all</code> for tab changes</li>
+          <li><code>sidekar cron create</code> for scheduled runs</li>
+          <li><code>sidekar loop</code> for recurring prompts</li>
+        </ul>
+      </article>
+      <article class="workflow-card">
+        <h3>Debug and remote check-in</h3>
+        <p>Turn on MITM capture when API traffic looks wrong, or attach through relay when a long session is running elsewhere.</p>
+        <ul>
+          <li><code>sidekar claude --proxy</code> logs API calls locally</li>
+          <li><code>sidekar claude --relay</code> opens a web terminal</li>
+          <li>Active sessions at <a href="/sessions">sidekar.dev/sessions</a></li>
         </ul>
       </article>
     </div>
@@ -743,17 +679,17 @@ h1 {
 <section class="section" id="trust">
   <div class="container section-shell">
     <div class="section-header">
-      <div class="label">Security and trust</div>
+      <div class="label">Privacy</div>
       <div>
-        <h2>Make the trust model obvious.</h2>
-        <p>Browser automation, desktop automation, local bus delivery, encrypted secrets, and TOTP all stay on your machine. sidekar.dev handles authentication, dashboards, the web terminal, device management, and relay sessions.</p>
+        <h2>Local first.</h2>
+        <p>Browser automation, the bus, secrets, TOTP, and proxy traces stay on your machine. Sign in at sidekar.dev only when you want relay, the dashboard, or the web terminal.</p>
       </div>
     </div>
     <div class="trust-grid">
       <div class="trust-panel">
         <h3>What stays local</h3>
-        <p>Browser automation, desktop automation, local bus delivery, encrypted secret storage, and TOTP generation happen on your machine. The extension talks to a local bridge on <code>127.0.0.1</code>. It does not browse on its own and it does not act until your local Sidekar process tells it to.</p>
-        <p>Remote features exist for authentication, dashboards, and relay sessions. They are a separate layer, and this site spells out that boundary instead of hiding it in docs.</p>
+        <p>Browser and desktop automation, bus delivery, encrypted secret storage, and TOTP generation all run locally. The extension talks to a bridge on <code>127.0.0.1</code>. It does not browse on its own; it waits for your Sidekar process to tell it what to do.</p>
+        <p>Relay sends session metadata (name, hostname, working directory, agent type) so the dashboard can list active sessions. See the <a href="/privacy">privacy policy</a> for the full breakdown.</p>
       </div>
     </div>
     <div class="cta-band">

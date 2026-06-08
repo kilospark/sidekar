@@ -6,13 +6,19 @@ sidekar browser <subcommand> [args...]
 
   Browser automation via Chrome DevTools Protocol (CDP).
 
-  Session / chrome:
+  Common paths:
+    browser navigate <url>  Open page in managed Chrome
+    browser read            Extract article-style text
+    browser click <target>  Interact with page element
+    browser ext ...         Use extension-specific surface
+
+  Session:
     launch, connect, stealth, debug, navigate, back, forward, reload
     tabs, tab, new-tab, close, activate, minimize, kill, frames, frame
     screencast, sessions, run
 
-  Extension (host Chrome):
-    ext                               Full extension surface (history, watch, monitor, …)
+  Extension:
+    ext                               Full extension surface (history, watch, monitor, ...)
 
   Read / observe:
     read, text, dom, ax-tree, observe, find, resolve, screenshot, pdf
@@ -24,11 +30,11 @@ sidekar browser <subcommand> [args...]
     wait-for-nav, press, scroll, eval, media, animations, zoom, lock
     unlock, mouse
 
-  Data / env:
+  Network / state:
     cookies, console, network, block, viewport, download, storage
     service-workers, security, geo, state, auth
 
-  Global flags (before `browser`):
+  Browser flags (before `browser`):
     --profile <name>   Managed Chrome profile (auto-launch on first use)
     --host             Extension transport for CDP-overlapping subs (see --tab note)
     --tab <id>         Tab target — ID namespace depends on transport (see below)

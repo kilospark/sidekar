@@ -41,7 +41,7 @@ Engineering backlog for Sidekar (single file). Roadmap prose from retired `conte
 - [ ] Marketing strategy: public launch vs private/invite-only
 - [x] Clarify and harden first-install signature verification path (`install.sh` bootstrap trust / how signatures are checked before Sidekar is already installed)
 - [ ] Publish Chrome extension to Web Store
-- [ ] Update website copy
+- [x] Update website copy
 
 ## Medium Priority
 

@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 
 use crate::ext::{ExtState, SharedExtState};
 
+mod admin;
 mod command;
 mod housekeeping;
 mod http;
@@ -216,6 +217,8 @@ struct DaemonStatusOutput {
     running: bool,
     pid: Option<i32>,
     socket: Option<String>,
+    http_port: Option<u16>,
+    web_url: Option<String>,
 }
 
 impl crate::output::CommandOutput for DaemonStatusOutput {
@@ -225,6 +228,11 @@ impl crate::output::CommandOutput for DaemonStatusOutput {
             if let Some(sock) = &self.socket {
                 writeln!(w, "Socket: {sock}")?;
             }
+            if let Some(url) = &self.web_url {
+                writeln!(w, "Web: {url}")?;
+            } else if self.http_port == Some(0) {
+                writeln!(w, "Web: unavailable (HTTP listener not bound)")?;
+            }
         } else {
             writeln!(w, "Daemon not running")?;
         }
@@ -232,17 +240,31 @@ impl crate::output::CommandOutput for DaemonStatusOutput {
     }
 }
 
+fn daemon_http_port() -> Option<u16> {
+    let resp = send_command(&json!({"type": "status"})).ok()?;
+    let port = resp.get("http_port")?.as_u64()? as u16;
+    if port == 0 { None } else { Some(port) }
+}
+
 /// Show daemon status.
 pub fn status() -> Result<()> {
-    let (pid, socket) = if let Some(pid) = get_pid() {
-        (Some(pid), Some(socket_path().display().to_string()))
+    let (pid, socket, http_port) = if let Some(pid) = get_pid() {
+        let port = daemon_http_port();
+        (
+            Some(pid),
+            Some(socket_path().display().to_string()),
+            port,
+        )
     } else {
-        (None, None)
+        (None, None, None)
     };
+    let web_url = http_port.map(|p| format!("http://127.0.0.1:{p}"));
     let out = DaemonStatusOutput {
         running: pid.is_some(),
         pid,
         socket,
+        http_port,
+        web_url,
     };
     crate::output::emit(&out)?;
     Ok(())

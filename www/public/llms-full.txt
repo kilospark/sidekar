@@ -1,10 +1,12 @@
 # sidekar - Full Reference
 
-> The sidecar for AI agents. A coordination and automation substrate with four capability pillars: browser automation (CDP + Chrome extension), desktop automation (macOS), an agent communication bus, and background automation (monitor + cron).
+> A sidecar binary and skill for agent CLIs. Wrap existing agent CLIs or run Sidekar as its own REPL agent. Not an orchestrator, harness, or agent OS.
 
 ## What is sidekar?
 
-sidekar is a single binary that gives AI agents the ability to see, interact with, and coordinate through browsers, desktops, and each other. It is not an orchestrator, not a harness, and not an agent OS. It equips autonomous agents without replacing their control loop. Install with `curl -fsSL sidekar.dev/install | sh`. That downloads the binary and runs `sidekar install` to add `SKILL.md` to each detected agent’s skills directory.
+sidekar gives agents browser and desktop control, a local message bus, background jobs, encrypted secrets, optional remote relay, and local MITM debugging. Install with `curl -fsSL sidekar.dev/install | sh`. That downloads the binary and runs `sidekar install` to add `SKILL.md` to each detected agent skills directory.
+
+Most features run locally. Relay (web terminal, session registry) requires `sidekar device login` and talks to `relay.sidekar.dev`.
 
 ## Install
 
@@ -12,24 +14,61 @@ sidekar is a single binary that gives AI agents the ability to see, interact wit
 curl -fsSL sidekar.dev/install | sh
 ```
 
-## Getting started (step by step)
+## Getting started
 
 1. **Install:** run the curl command above (binary + `sidekar install` for skills).
-2. **Chrome extension (optional):** load unpacked from `extension/`, run `sidekar device login`, sign in from the extension popup, then use `sidekar ext ...` commands.
-3. **`sidekar device login` (optional):** device auth against sidekar.dev for remote session access (web dashboard, tunnel workflows).
-4. **Launch an agent:** `sidekar <agent> [args…]` for any agent CLI on PATH (e.g. `sidekar claude`, `sidekar codex`).
+2. **Launch an agent:** `sidekar <agent> [args…]` for any agent CLI on PATH (e.g. `sidekar claude`, `sidekar codex`).
+3. **Or REPL:** `sidekar repl -c <credential> -m <model>`.
+4. **Device login (optional):** auth against sidekar.dev for relay, encrypted secrets, dashboard.
+5. **Chrome extension (optional):** load from `extension/`, sign in from popup, then `sidekar ext ...`.
 
-## Core capabilities (four pillars)
+## Components
 
-### 1. Browser automation (CDP + Chrome extension)
+### Runtime (PTY wrapper + REPL)
 
-Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read page content. The optional Chrome extension complements CDP for the same automation goals. Smart perception returns compact page summaries, not raw DOM dumps. Agents escalate from text to screenshot only when needed.
+**PTY:** `sidekar <agent> [args]` wraps Claude Code, Codex, Cursor, Gemini CLI, etc. Registers on the bus, wires browser integration, optional `--relay` and `--proxy`.
 
-**Web search and multi-page reads** (`search`, `read-urls`) and **batch** (multi-step sequences) are **use cases** on the browser stack, not separate product pillars.
+**REPL:** `sidekar repl` is Sidekar's own agent loop. Session persistence, slash commands (`/model`, `/session`, `/compact`, `/relay`, `/proxy`, `/journal`).
 
-**Key tools:** navigate, read, text, ax-tree, observe, screenshot, click, type, fill, press, scroll, keyboard, search, read-urls, batch
+Use PTY when you keep your existing agent CLI. Use REPL when Sidekar should drive the conversation.
 
-**batch** example (multi-step in one call):
+**Skill:** `sidekar install` / `sidekar skill`.
+
+### Communication (local bus)
+
+SQLite-backed broker on the machine. Agents discover and message each other without cloud dependency.
+
+**Commands:** `bus who`, `bus send`, `bus done`, `bus requests`, `bus replies`
+
+**Message kinds:** request (expects response), response, fyi (informational)
+
+**Note:** bus registration is separate from Chrome/CDP session ownership.
+
+### Relay (remote sessions)
+
+WebSocket bridge to `relay.sidekar.dev`. Requires device login. Multiplexes PTY I/O to a web terminal; local terminal stays authoritative. Session metadata on sidekar.dev dashboard and sessions page. Cross-device bus fan-out when agents run on different machines.
+
+**Commands:** `device login`, `--relay`, `config set relay on/off`, REPL `/relay on|off`
+
+### Proxy (MITM)
+
+Local HTTPS capture of agent-to-LLM API traffic into `~/.sidekar/sidekar.sqlite3` table `proxy_log`. For debugging, not surveillance. Seven-day automatic prune.
+
+**PTY/REPL:** `--proxy`, REPL `/proxy on|off`
+
+**CLI:** `sidekar proxy log`, `proxy show <id>`, `proxy clear`
+
+**Local UI:** daemon serves traces at `http://127.0.0.1:21517` (localhost only).
+
+### Browser (CDP + extension)
+
+Full Chrome DevTools Protocol. Navigate, click, type, screenshot, read page content. Optional Chrome extension for everyday profiles and history.
+
+**Web search and multi-page reads** (`search`, `read-urls`) and **batch** (multi-step sequences) are use cases on this stack.
+
+**Key tools:** navigate, read, text, ax-tree, observe, dom, screenshot, click, type, fill, press, scroll, keyboard, search, read-urls, batch
+
+**batch** example:
 ```json
 {"actions": [
   {"tool": "click", "target": "--text Continue", "retries": 2},
@@ -39,7 +78,7 @@ Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read pa
 ```
 
 **Perception escalation order (stop at the first that works):**
-1. `read` - Reader-mode text extraction (articles, docs, search results). Low cost.
+1. `read` - Reader-mode text (articles, docs, search results). Low cost.
 2. `ax-tree -i` / `observe` - Interactive elements with ref numbers. Low cost.
 3. `text` - Full page text with refs. Low-medium cost.
 4. `dom` - HTML structure with selectors. Medium cost.
@@ -53,27 +92,39 @@ Full Chrome DevTools Protocol access. Navigate, click, type, screenshot, read pa
 4. eval with querySelector
 5. Coordinates from screenshot (last resort)
 
-### 2. Desktop automation (macOS)
+**Extension (`sidekar ext`):** tabs, read, context, history, watch. Use when CDP alone is not enough. See sidekar.dev/extension.
 
-macOS Accessibility API integration. Find and interact with native app elements, take screenshots, launch and manage applications. No browser required.
+### Desktop (macOS)
+
+Accessibility API for native apps, windows, clicks, keys, screenshots outside the browser.
 
 **Key tools:** desktop_screenshot, desktop_apps, desktop_windows, desktop_find, desktop_click, desktop_launch, desktop_activate, desktop_quit
 
-### 3. Agent communication bus
+### Background
 
-Agents discover and message each other via a local bus (SQLite-backed). Send requests, broadcast, hand off tasks.
+Tab monitoring (title/favicon changes), cron-scheduled tool runs, recurring prompt loops. Results delivered via the bus.
 
-**Key tools:** register, unregister, bus who, bus send, bus done
+**Key tools:** monitor start/stop/status, cron create/list/delete, loop
 
-**Message kinds:** request (expects response), response (answers a prior request), fyi (informational)
+### Tools
 
-### 4. Background automation
+**Memory:** explicit durable entries (`memory write`, `search`, `context`).
 
-Watch browser tabs for meaningful changes and run tools on a cron schedule. Reactive alerts and unattended runs; results delivered via the bus.
+**Tasks:** local task graph with dependencies (`tasks add/list/depend/show`).
 
-**Key tools:** monitor start/stop/status, cron_create, cron_list, cron_delete
+**Journal:** automatic REPL session summaries after idle time. Inspect with `journal list/show`. Toggle `/journal` in REPL. Not a substitute for memory.
 
-## Tool Categories
+**Repo:** `repo tree`, `repo pack`.
+
+**Compact:** token-efficient compaction of noisy shell output (`compact run/filter`).
+
+### Secrets
+
+Encrypted KV and TOTP. Device login unlocks encryption at rest.
+
+**Commands:** `kv set/get/list`, `totp add/get/list`
+
+## Tool Categories (REPL native tool)
 
 Core tools are always available. Extended tools load on demand via `tools(action: "load", category: "<name>")`:
 
@@ -121,5 +172,6 @@ Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Deskto
 ## Links
 
 - Website: https://sidekar.dev
+- Docs: https://sidekar.dev/docs
 - Install: https://sidekar.dev/install
 - Compact version: https://sidekar.dev/llms.txt

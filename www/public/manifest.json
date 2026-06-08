@@ -1,7 +1,7 @@
 {
   "name": "sidekar",
   "short_name": "sidekar",
-  "description": "Token-efficient browser control for AI agents",
+  "description": "Sidecar binary and skill for agent CLIs: browser, desktop, bus, relay, and local tools",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0c0d10",

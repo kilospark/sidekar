@@ -1,31 +1,42 @@
 # sidekar
 
-> The sidecar for AI agents. A coordination and automation substrate with four capability pillars: browser automation (CDP + Chrome extension), desktop automation (macOS), an agent communication bus, and background automation (monitor + cron).
+> A sidecar binary and skill for agent CLIs. Wrap Claude Code, Codex, Cursor, Gemini CLI, and others, or run Sidekar as its own REPL agent. Not an orchestrator, harness, or agent OS.
 
 ## What is sidekar?
 
-sidekar is a single binary that gives AI agents real browser and desktop control plus a shared coordination substrate. It equips autonomous agents without replacing their control loop.
+sidekar gives agents browser and desktop control, a local message bus, background jobs, encrypted secrets, optional remote relay, and local MITM debugging. It runs on your machine and does not replace the agent's control loop.
 
-## Getting started (step by step)
+## Getting started
 
 1. **Install:** `curl -fsSL https://sidekar.dev/install | sh` (installs the binary and runs `sidekar install` for agent skills).
-2. **Chrome extension (optional):** Load unpacked from the repo `extension/` directory, run `sidekar device login`, sign in from the extension popup, then use `sidekar ext ...` commands. Automates your everyday Chrome profile through the local bridge.
-3. **`sidekar device login` (optional):** Authenticate this machine with sidekar.dev to control or attach to sessions from the web dashboard and remote workflows.
-4. **Launch an agent:** `sidekar <agent> [args…]` with any agent CLI on your PATH (e.g. `sidekar claude`, `sidekar codex`). Wraps the PTY and agent bus.
+2. **Launch an agent:** `sidekar <agent> [args…]` (e.g. `sidekar claude`, `sidekar codex`).
+3. **Or run Sidekar directly:** `sidekar repl -c <credential> -m <model>`.
+4. **Device login (optional):** `sidekar device login` for relay, web terminal, and encrypted secrets.
+5. **Chrome extension (optional):** load from `extension/`, sign in from the popup, then `sidekar ext ...`.
 
-## The four pillars
+## Components
 
-1. **Browser automation:** Full Chrome DevTools Protocol; optional Chrome extension for the same automation story. Search (`search`), parallel reads (`read-urls`), and batch runs are **use cases** on this stack.
+**Runtime:** PTY wrapper (`sidekar claude`) or REPL (`sidekar repl`). Skill install via `sidekar install`.
 
-2. **Desktop automation:** macOS Accessibility API for native apps, windows, UI elements, and screenshots without requiring the browser.
+**Communication:** local agent bus (SQLite): `bus who`, `bus send`, `bus done`. Works without login.
 
-3. **Agent communication bus:** Local bus (SQLite broker): `bus who`, `bus send`, `bus done`, registration, handoffs.
+**Relay:** remote PTY bridge via `relay.sidekar.dev`. Requires device login. Web terminal and session list at sidekar.dev.
 
-4. **Background automation:** Tab monitoring (title/favicon) and cron-scheduled tool runs; results via the bus.
+**Proxy (MITM):** local capture of agent-to-LLM HTTPS traffic into `proxy_log`. Flags: `--proxy`, REPL `/proxy`. CLI: `sidekar proxy log|show|clear`. Seven-day retention.
+
+**Browser:** CDP automation (launch, read, click, screenshot, search, read-urls). Optional Chrome extension for everyday profiles (`sidekar ext`).
+
+**Desktop:** macOS Accessibility API for native apps and windows.
+
+**Background:** tab monitors (`monitor`), cron jobs, recurring loops (`loop`).
+
+**Tools:** memory (explicit writes), tasks, automatic REPL journals, repo pack/tree, output compaction (`compact`).
+
+**Secrets:** encrypted KV and TOTP. Device login unlocks encryption.
 
 ## Supported agents
 
-Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, OpenCode, and others via the skill installer or `npx skills add kilospark/sidekar`.
+Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, OpenCode, and others via `sidekar install` or the skills registry.
 
 ## Pricing
 
@@ -35,5 +46,6 @@ Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Deskto
 ## Links
 
 - Website: https://sidekar.dev
+- Docs: https://sidekar.dev/docs
 - Install: https://sidekar.dev/install
 - Full reference: https://sidekar.dev/llms-full.txt
