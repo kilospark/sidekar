@@ -50,7 +50,11 @@ cargo build --release
 echo ""
 echo "=== Embedding Chrome extension ==="
 rm -f assets/extension.zip
-zip -r assets/extension.zip extension/
+mkdir -p assets
+# Zip contents of extension/, not the folder itself — must match
+# .github/workflows/release.yml or dev-extract lands at
+# ~/.sidekar/extension/extension/.
+(cd extension && zip -r ../assets/extension.zip . -x '*.test.*' 'generate_icons.py' 'README.md')
 cargo build --release
 
 echo ""
@@ -74,7 +78,14 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
 else
   gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes ""
 fi
-RELEASE_ID="$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id')"
+RELEASE_ID="$(
+  gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id' 2>/dev/null \
+    || gh api "repos/${REPO}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" | head -n 1
+)"
+if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+  echo "Error: could not resolve GitHub release id for ${TAG}"
+  exit 1
+fi
 upload_asset() {
   local file="$1"
   local asset_name existing_id content_type

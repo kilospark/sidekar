@@ -27,6 +27,31 @@ mod verify;
 pub use cli::send_cli_command;
 pub use verify::{VerifyResult, is_ext_available, verify_ext_token};
 
+/// Embedded zips must place manifest.json at archive root (see release.yml).
+/// Legacy local-release.sh used `zip -r … extension/`, which prefixes every
+/// entry with `extension/` and would unpack to ~/.sidekar/extension/extension/.
+fn extension_zip_entry_path(name: &str, strip_wrapped_dir: bool) -> &str {
+    if strip_wrapped_dir {
+        name.strip_prefix("extension/").unwrap_or(name)
+    } else {
+        name
+    }
+}
+
+fn extension_zip_uses_wrapped_dir(archive: &mut ZipArchive<Cursor<&[u8]>>) -> bool {
+    for i in 0..archive.len() {
+        let Ok(file) = archive.by_index(i) else {
+            continue;
+        };
+        let name = file.name();
+        if name.is_empty() || name == "extension/" {
+            continue;
+        }
+        return name.starts_with("extension/");
+    }
+    false
+}
+
 fn unzip_embedded_extension_to_dev_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("No home directory found"))?;
     let target_dir = home.join(".sidekar/extension");
@@ -35,10 +60,21 @@ fn unzip_embedded_extension_to_dev_dir() -> Result<PathBuf> {
 
     let reader = Cursor::new(EXTENSION_ZIP);
     let mut archive = ZipArchive::new(reader).context("Failed to read embedded ZIP")?;
+    let strip_wrapped_dir = extension_zip_uses_wrapped_dir(&mut archive);
+    if strip_wrapped_dir {
+        let nested = target_dir.join("extension");
+        if nested.is_dir() {
+            let _ = fs::remove_dir_all(&nested);
+        }
+    }
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).context("Failed to access ZIP entry")?;
-        let outpath = target_dir.join(file.name());
+        let relative = extension_zip_entry_path(file.name(), strip_wrapped_dir);
+        if relative.is_empty() {
+            continue;
+        }
+        let outpath = target_dir.join(relative);
 
         if file.name().ends_with('/') {
             fs::create_dir_all(&outpath).context("Failed to create directory in extraction")?;
