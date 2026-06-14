@@ -9,7 +9,7 @@ pub(super) async fn dispatch_system_command(
 ) -> Option<Result<()>> {
     let result = match command {
         "event" => cmd_event(ctx, args),
-        "install" => cmd_setup(ctx).await,
+        "install" => cmd_setup(ctx, args).await,
         "uninstall" => cmd_uninstall(ctx).await,
         "config" => cmd_config(ctx, args),
         "update" => cmd_update(ctx).await,

@@ -403,6 +403,107 @@ fn enrich_pi_startup(user_args: &[String]) -> Vec<String> {
     out
 }
 
+/// Grok Build subcommands that manage auth/config/sessions — never prepend the
+/// Sidekar starter prompt (see `grok --help` `[COMMAND]` list).
+const GROK_COMMANDS: &[&str] = &[
+    "agent",
+    "completions",
+    "dashboard",
+    "export",
+    "help",
+    "import",
+    "inspect",
+    "leader",
+    "login",
+    "logout",
+    "mcp",
+    "memory",
+    "models",
+    "plugin",
+    "sessions",
+    "setup",
+    "ssh",
+    "trace",
+    "update",
+    "version",
+    "worktree",
+];
+
+const GROK_VALUE_FLAGS: &[&str] = &[
+    "--agent",
+    "--agents",
+    "--allow",
+    "--best-of-n",
+    "--compaction-detail",
+    "--compaction-mode",
+    "--cwd",
+    "--debug-file",
+    "--deny",
+    "--disallowed-tools",
+    "--effort",
+    "--leader-socket",
+    "-m",
+    "--model",
+    "--max-turns",
+    "--output-format",
+    "-p",
+    "--single",
+    "--permission-mode",
+    "--prompt-file",
+    "--prompt-json",
+    "-r",
+    "--resume",
+    "--reasoning-effort",
+    "--rules",
+    "--sandbox",
+    "--system-prompt-override",
+    "--tools",
+    "-w",
+    "--worktree",
+];
+
+struct Grok;
+
+impl AgentCliSpec for Grok {
+    fn ids(&self) -> &'static [&'static str] {
+        &["grok"]
+    }
+
+    fn enrich_startup(&self, invoked_as: &str, args: &[String]) -> Vec<String> {
+        debug_assert_eq!(invoked_as, "grok");
+        if has_flag(
+            args,
+            &[
+                "-c",
+                "--continue",
+                "-r",
+                "--resume",
+                "-h",
+                "--help",
+                "-v",
+                "--version",
+                "-p",
+                "--single",
+                "--prompt-file",
+                "--prompt-json",
+            ],
+        ) {
+            return args.to_vec();
+        }
+        if first_positional(args, GROK_VALUE_FLAGS)
+            .is_some_and(|arg| GROK_COMMANDS.contains(&arg))
+        {
+            return args.to_vec();
+        }
+        enrich_with_startup_prompt(args, GROK_VALUE_FLAGS)
+    }
+
+    fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
+        // Native Grok Build binary (not Node); MITM uses the universal HTTPS_PROXY block.
+        ProxyEnvFlags::default()
+    }
+}
+
 struct Pi;
 
 impl AgentCliSpec for Pi {
@@ -424,10 +525,12 @@ static CLAUDE: Claude = Claude;
 static CODEX: Codex = Codex;
 static CURSOR_FAMILY: CursorFamily = CursorFamily;
 static GEMINI: Gemini = Gemini;
+static GROK: Grok = Grok;
 static OPENCODE: OpenCode = OpenCode;
 static PI: Pi = Pi;
 
-static REGISTRY: &[&dyn AgentCliSpec] = &[&CLAUDE, &CODEX, &CURSOR_FAMILY, &GEMINI, &OPENCODE, &PI];
+static REGISTRY: &[&dyn AgentCliSpec] =
+    &[&CLAUDE, &CODEX, &CURSOR_FAMILY, &GEMINI, &GROK, &OPENCODE, &PI];
 
 pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
     REGISTRY

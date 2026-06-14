@@ -235,8 +235,60 @@ fn unknown_binary_passes_args_through() {
 }
 
 #[test]
+fn enrich_grok_empty_gets_starter() {
+    assert_eq!(enrich("grok", &[]), vec![STARTUP_INJECT]);
+}
+
+#[test]
+fn enrich_grok_user_prompt_unchanged() {
+    assert_eq!(enrich("grok", &["fix the bug"]), vec!["fix the bug"]);
+}
+
+#[test]
+fn enrich_grok_headless_single_skips_starter() {
+    assert_eq!(enrich("grok", &["-p", "hello"]), vec!["-p", "hello"]);
+    assert_eq!(
+        enrich("grok", &["--single", "hello"]),
+        vec!["--single", "hello"]
+    );
+}
+
+#[test]
+fn enrich_grok_skip_option_values_before_injecting() {
+    assert_eq!(
+        enrich("grok", &["--model", "grok-build-0.1"]),
+        vec!["--model", "grok-build-0.1", STARTUP_INJECT]
+    );
+}
+
+#[test]
+fn enrich_grok_resume_and_continue_skip_starter() {
+    assert_eq!(enrich("grok", &["--continue"]), vec!["--continue"]);
+    assert_eq!(enrich("grok", &["-c"]), vec!["-c"]);
+    assert_eq!(enrich("grok", &["--resume"]), vec!["--resume"]);
+    assert_eq!(enrich("grok", &["-r"]), vec!["-r"]);
+    assert_eq!(
+        enrich("grok", &["--resume", "session-id"]),
+        vec!["--resume", "session-id"]
+    );
+    assert_eq!(
+        enrich("grok", &["--prompt-file", "/tmp/p.txt"]),
+        vec!["--prompt-file", "/tmp/p.txt"]
+    );
+}
+
+#[test]
+fn enrich_grok_management_subcommands_skip_starter() {
+    assert_eq!(enrich("grok", &["login"]), vec!["login"]);
+    assert_eq!(enrich("grok", &["models"]), vec!["models"]);
+    assert_eq!(enrich("grok", &["sessions"]), vec!["sessions"]);
+    assert_eq!(enrich("grok", &["update"]), vec!["update"]);
+}
+
+#[test]
 fn is_pty_agent_matches_registry() {
     assert!(is_pty_agent("claude"));
+    assert!(is_pty_agent("grok"));
     assert!(is_pty_agent("pi"));
     assert!(!is_pty_agent("aider"));
     assert!(!is_pty_agent("goose"));

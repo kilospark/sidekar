@@ -23,6 +23,23 @@ const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 pub struct UserInputState {
     last_user_input_at_ms: std::sync::atomic::AtomicU64,
     pending_line: Mutex<Vec<u8>>,
+    /// Draft stashed when a bus message is injected while the user had partial input.
+    stashed_draft: Mutex<Option<Vec<u8>>>,
+    /// Set when the event loop should clear its local line buffer (after stash).
+    line_tracking_reset: std::sync::atomic::AtomicBool,
+}
+
+/// Result of feeding stdin bytes while a draft recall is offered.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DraftRecallInput {
+    /// No stashed draft; handle input normally.
+    NotApplicable,
+    /// Accumulating a possible Up-arrow sequence across reads.
+    Pending,
+    /// Up arrow — restore the stashed draft (do not forward).
+    Restore,
+    /// Something else — forward these bytes to the child and drop the stash.
+    Forward(Vec<u8>),
 }
 
 impl UserInputState {
@@ -30,6 +47,8 @@ impl UserInputState {
         Self {
             last_user_input_at_ms: std::sync::atomic::AtomicU64::new(0),
             pending_line: Mutex::new(Vec::new()),
+            stashed_draft: Mutex::new(None),
+            line_tracking_reset: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -56,6 +75,77 @@ impl UserInputState {
             .lock()
             .map(|pending| !pending.is_empty())
             .unwrap_or(false)
+    }
+
+    pub fn has_stashed_draft(&self) -> bool {
+        self.stashed_draft
+            .lock()
+            .map(|draft| draft.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn take_stashed_draft(&self) -> Option<Vec<u8>> {
+        self.stashed_draft.lock().ok()?.take()
+    }
+
+    pub fn discard_stashed_draft(&self) {
+        if let Ok(mut draft) = self.stashed_draft.lock() {
+            draft.take();
+        }
+    }
+
+    /// Move the current pending line into `stashed_draft` so bus inject can proceed.
+    /// Returns true when a draft was stashed.
+    pub fn stash_pending_line_for_inject(&self) -> bool {
+        let mut pending = match self.pending_line.lock() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        if pending.is_empty() {
+            return false;
+        }
+        let mut stashed = match self.stashed_draft.lock() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        *stashed = Some(std::mem::take(&mut *pending));
+        self.line_tracking_reset.store(true, Ordering::Relaxed);
+        true
+    }
+
+    pub fn take_line_tracking_reset(&self) -> bool {
+        self.line_tracking_reset.swap(false, Ordering::Relaxed)
+    }
+
+    /// When a draft is stashed, treat Up arrow as "recall draft" instead of forwarding
+    /// to the child (which would only show the agent's own history).
+    pub fn draft_recall_from_input(
+        chunk: &[u8],
+        pending_esc: &mut Vec<u8>,
+        input_state: &UserInputState,
+    ) -> DraftRecallInput {
+        if !input_state.has_stashed_draft() {
+            pending_esc.clear();
+            return DraftRecallInput::NotApplicable;
+        }
+
+        pending_esc.extend_from_slice(chunk);
+
+        const UP_SEQS: &[&[u8]] = &[b"\x1b[A", b"\x1bOA"];
+        if UP_SEQS.contains(&pending_esc.as_slice()) {
+            pending_esc.clear();
+            return DraftRecallInput::Restore;
+        }
+
+        let waiting_for_more = UP_SEQS.iter().any(|seq| {
+            seq.starts_with(pending_esc.as_slice()) && pending_esc.len() < seq.len()
+        });
+        if waiting_for_more {
+            return DraftRecallInput::Pending;
+        }
+
+        input_state.discard_stashed_draft();
+        DraftRecallInput::Forward(std::mem::take(pending_esc))
     }
 
     pub fn is_idle(&self) -> bool {
@@ -222,9 +312,10 @@ fn is_recipient_alive(recipient_name: &str) -> bool {
 fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, child_pid: i32) {
     let raw_fd = fd.as_raw_fd();
 
-    // Do not inject while the user is actively typing or has a pending line.
+    // Wait until the user stops typing. A pending draft does not block inject once idle:
+    // we stash it in Sidekar and offer Up-arrow recall instead of clearing the agent line.
     let mut waited = 0u32;
-    while !input_state.is_idle() || input_state.has_pending_line() {
+    while !input_state.is_idle() {
         if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             return;
         }
@@ -246,6 +337,16 @@ fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, chi
         }
         std::thread::sleep(INJECT_CHECK_INTERVAL);
     }
+
+    let stashed_draft = if input_state.stash_pending_line_for_inject() {
+        input_state
+            .stashed_draft
+            .lock()
+            .ok()
+            .and_then(|draft| draft.as_ref().map(|d| format_draft_preview(d)))
+    } else {
+        None
+    };
 
     // Write message text
     if let Err(e) = write_all_raw(raw_fd, message.as_bytes()) {
@@ -279,12 +380,30 @@ fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, chi
         "debug",
         "poller",
         &format!(
-            "injected {}B + CR + SIGWINCH (waited={}s)",
+            "injected {}B + CR + SIGWINCH (waited={}s stashed_draft={})",
             message.len(),
             waited / 10,
+            stashed_draft.is_some(),
         ),
         None,
     );
+
+    if let Some(preview) = stashed_draft {
+        crate::tunnel::tunnel_println(&format!(
+            "\x1b[33m[sidekar]\x1b[0m Draft saved: \"{preview}\" — ↑ to restore"
+        ));
+    }
+}
+
+fn format_draft_preview(draft: &[u8]) -> String {
+    let one_line = String::from_utf8_lossy(draft).replace(['\r', '\n'], " ");
+    const MAX_CHARS: usize = 80;
+    if one_line.chars().count() > MAX_CHARS {
+        let truncated: String = one_line.chars().take(MAX_CHARS.saturating_sub(1)).collect();
+        format!("{truncated}…")
+    } else {
+        one_line
+    }
 }
 
 fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
@@ -314,4 +433,73 @@ fn epoch_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stash_moves_pending_line_and_clears_tracking() {
+        let state = UserInputState::new();
+        state.set_pending_line(b"fix the bu");
+        assert!(state.stash_pending_line_for_inject());
+        assert!(!state.has_pending_line());
+        assert!(state.has_stashed_draft());
+        assert!(state.take_line_tracking_reset());
+        assert!(!state.take_line_tracking_reset());
+    }
+
+    #[test]
+    fn stash_noop_when_pending_empty() {
+        let state = UserInputState::new();
+        assert!(!state.stash_pending_line_for_inject());
+        assert!(!state.has_stashed_draft());
+    }
+
+    #[test]
+    fn take_stashed_draft_clears_stash() {
+        let state = UserInputState::new();
+        state.set_pending_line(b"hello");
+        state.stash_pending_line_for_inject();
+        assert_eq!(state.take_stashed_draft().as_deref(), Some(b"hello".as_ref()));
+        assert!(!state.has_stashed_draft());
+    }
+
+    #[test]
+    fn draft_recall_up_arrow_csi() {
+        let state = UserInputState::new();
+        state.set_pending_line(b"hello");
+        state.stash_pending_line_for_inject();
+        let mut pending = Vec::new();
+        assert!(matches!(
+            UserInputState::draft_recall_from_input(b"\x1b", &mut pending, &state),
+            DraftRecallInput::Pending
+        ));
+        assert!(matches!(
+            UserInputState::draft_recall_from_input(b"[A", &mut pending, &state),
+            DraftRecallInput::Restore
+        ));
+    }
+
+    #[test]
+    fn draft_recall_other_key_forwards_and_drops_stash() {
+        let state = UserInputState::new();
+        state.set_pending_line(b"hello");
+        state.stash_pending_line_for_inject();
+        let mut pending = Vec::new();
+        match UserInputState::draft_recall_from_input(b"x", &mut pending, &state) {
+            DraftRecallInput::Forward(bytes) => assert_eq!(bytes, b"x"),
+            other => panic!("expected Forward, got {other:?}"),
+        }
+        assert!(!state.has_stashed_draft());
+    }
+
+    #[test]
+    fn format_draft_preview_truncates_long_lines() {
+        let long = "a".repeat(100);
+        let preview = format_draft_preview(long.as_bytes());
+        assert!(preview.ends_with('…'));
+        assert!(preview.chars().count() <= 80);
+    }
 }

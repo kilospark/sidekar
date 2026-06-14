@@ -154,10 +154,15 @@ sidekar kv <subcommand> [args...]
         }
         "install" => {
             "\
-sidekar install
+sidekar install [config-folder]
 
   Install sidekar skill file for detected agents.
-  Detects: Claude Code, Codex, Gemini CLI, OpenCode, Pi."
+  Detects: Claude Code, Codex, Gemini CLI, Grok, OpenCode, Pi.
+  Honors CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, etc. when set.
+
+  config-folder  Alternate agent config root (optional).
+                 Examples: claude-work → ~/.claude-work/
+                           .claude-work, ~/profiles/work"
         }
         "skill" => "sidekar skill\n\n  Print the embedded SKILL.md to stdout (for agents to read).",
         _ => return None,

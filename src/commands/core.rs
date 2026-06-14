@@ -6,8 +6,12 @@ mod page;
 pub(crate) use browser::*;
 pub(crate) use page::*;
 
-pub(super) async fn cmd_setup(ctx: &mut AppContext) -> Result<()> {
-    crate::skill::install_skill();
+pub(super) async fn cmd_setup(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a.starts_with('-')) {
+        bail!("Usage: sidekar install [config-folder]");
+    }
+    let config_hint = args.first().map(String::as_str);
+    crate::skill::install_skill(config_hint);
     match crate::ext::extract_embedded_extension_message() {
         Ok(msg) => out!(
             ctx,

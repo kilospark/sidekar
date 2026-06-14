@@ -61,6 +61,7 @@ pub(crate) async fn event_loop(
 
     // Line buffer for pending-user-input tracking.
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
+    let mut pending_recall_esc: Vec<u8> = Vec::with_capacity(8);
     // Split tunnel into sender + receiver (if connected)
     let (tunnel_tx, mut tunnel_rx) = match tunnel {
         Some((tx, rx)) => (Some(tx), Some(rx)),
@@ -153,6 +154,33 @@ pub(crate) async fn event_loop(
                     Ok(n) => {
                         let chunk = &buf_in[..n];
 
+                        match crate::poller::UserInputState::draft_recall_from_input(
+                            chunk,
+                            &mut pending_recall_esc,
+                            input_state,
+                        ) {
+                            crate::poller::DraftRecallInput::Pending => continue,
+                            crate::poller::DraftRecallInput::Restore => {
+                                input_state.mark_activity();
+                                if let Some(draft) = input_state.take_stashed_draft() {
+                                    line_buf.clear();
+                                    line_buf.extend_from_slice(&draft);
+                                    input_state.set_pending_line(&line_buf);
+                                    let _ = write_all_fd(master_fd, &draft);
+                                    crate::tunnel::tunnel_println(
+                                        "\x1b[33m[sidekar]\x1b[0m Draft restored.",
+                                    );
+                                }
+                                continue;
+                            }
+                            crate::poller::DraftRecallInput::Forward(bytes) => {
+                                input_state.mark_activity();
+                                let _ = write_all_fd(master_fd, &bytes);
+                                continue;
+                            }
+                            crate::poller::DraftRecallInput::NotApplicable => {}
+                        }
+
                         // For local PTY sessions, pass terminal control replies through unchanged.
                         // Codex probes the terminal on startup and expects the real terminal's
                         // responses back on stdin. Swallowing those breaks its renderer.
@@ -163,9 +191,15 @@ pub(crate) async fn event_loop(
                             continue;
                         }
 
+                        if input_state.take_line_tracking_reset() {
+                            line_buf.clear();
+                        }
+
                         input_state.mark_activity();
 
                         for &byte in chunk {
+                            input_state.discard_stashed_draft();
+
                             if byte == b'\r' || byte == b'\n' {
                                 line_buf.clear();
                                 input_state.clear_pending_line();

@@ -40,7 +40,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     spec(
         "install",
         "",
-        "Install skill file for detected agents",
+        "Install skill file for detected agents (optional config-folder hint)",
         CommandGroup::System,
         false,
         false,

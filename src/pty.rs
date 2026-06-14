@@ -1,6 +1,6 @@
 //! PTY wrapper for launching and controlling owned agent sessions.
 //!
-//! `sidekar codex ...`, `sidekar claude ...`, etc. launch the agent inside
+//! `sidekar codex ...`, `sidekar claude ...`, `sidekar grok ...`, etc. launch the agent inside
 //! a sidekar-owned PTY. This gives us direct input injection (write to master fd),
 //! signal forwarding, resize handling, and broker registration.
 
@@ -449,6 +449,10 @@ pub async fn run_agent(
     // last-session file is updated. We read it and update the cron context.
     let session_watcher = tokio::spawn(watch_session_file(pre_fork_name.clone()));
 
+    if let Some((ref tx, _)) = tunnel {
+        crate::tunnel::set_output_tunnel(tx.clone());
+    }
+
     // Enter raw mode (must happen after eprintln messages)
     let raw_guard = match RawModeGuard::enter() {
         Ok(guard) => guard,
@@ -456,6 +460,7 @@ pub async fn run_agent(
             if let Some((ref tx, _)) = tunnel {
                 tx.shutdown();
             }
+            crate::tunnel::clear_output_tunnel();
             session_watcher.abort();
             crate::poller::shutdown_poller();
             cleanup_chrome_session(&pre_fork_name).await;
@@ -489,6 +494,7 @@ pub async fn run_agent(
 
     // Cleanup: restore terminal, unregister, stop poller
     drop(raw_guard);
+    crate::tunnel::clear_output_tunnel();
 
     session_watcher.abort();
     crate::poller::shutdown_poller();
