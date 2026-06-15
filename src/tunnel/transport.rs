@@ -157,6 +157,11 @@ async fn io_loop(
                             return false;
                         }
                     }
+                    Some(TunnelCommand::ActivityText(json)) => {
+                        if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                            return false;
+                        }
+                    }
                     Some(TunnelCommand::Shutdown) | None => {
                         let _ = ws_sink.close().await;
                         return true;

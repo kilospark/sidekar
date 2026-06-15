@@ -74,6 +74,47 @@ pub(crate) struct RelaySessionInfo {
     pub owner_origin: Option<String>,
     #[serde(default)]
     pub viewers: usize,
+    #[serde(default = "default_relay_activity_state")]
+    pub activity_state: String,
+    #[serde(default)]
+    pub activity_at: u64,
+}
+
+fn default_relay_activity_state() -> String {
+    "unknown".to_string()
+}
+
+pub(crate) fn relay_recipient_should_defer_nudge(session_id: &str) -> bool {
+    relay_session_activity(session_id)
+        .map(|snap| snap.should_defer_nudge())
+        .unwrap_or(false)
+}
+
+pub(crate) fn relay_session_activity(session_id: &str) -> Result<crate::activity::ActivitySnapshot> {
+    let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("no device token"))?;
+    let base = relay_http_base();
+    let url = format!("{}/sessions/{}", base.trim_end_matches('/'), session_id);
+
+    std::thread::spawn(move || -> Result<crate::activity::ActivitySnapshot> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            anyhow::bail!("relay GET session: HTTP {}", resp.status());
+        }
+        let info: RelaySessionInfo = resp.json().context("parse relay session JSON")?;
+        Ok(crate::activity::ActivitySnapshot {
+            state: crate::activity::ActivityState::parse(&info.activity_state),
+            at: info.activity_at,
+        })
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("relay_session_activity thread panicked"))?
 }
 
 pub(crate) fn fetch_relay_sessions() -> Result<Vec<RelaySessionInfo>> {
@@ -110,6 +151,11 @@ pub struct RelayHttp;
 
 impl Transport for RelayHttp {
     fn deliver(&self, target: &str, message: &str, from: &str) -> Result<DeliveryResult> {
+        if relay_recipient_should_defer_nudge(target) {
+            return Ok(DeliveryResult::Failed(
+                "recipient busy; delivery deferred".into(),
+            ));
+        }
         let token = crate::auth::auth_token()
             .ok_or_else(|| anyhow::anyhow!("no device token; run: sidekar device login"))?;
         let url = format!("{}/relay/bus", relay_http_base().trim_end_matches('/'));

@@ -2407,6 +2407,8 @@ pub(super) fn read_input_or_bus(
 ) -> InputEvent {
     editor.redraw();
 
+    crate::activity::publish(bus_name, crate::activity::ActivityState::Idle);
+
     let raw_mode = RawModeGuard::enter().ok();
     if raw_mode.is_none() && tunnel_fd.is_none() {
         if let Some(line) = drain_editor_pending_submit(editor) {
@@ -2495,6 +2497,10 @@ pub(super) fn read_input_or_bus(
                                 {
                                     return InputEvent::Eof;
                                 }
+                                crate::activity::publish(
+                                    bus_name,
+                                    crate::activity::ActivityState::UserTyping,
+                                );
                                 if let Some(line) = drain_editor_pending_submit(editor) {
                                     return InputEvent::User(line);
                                 }
@@ -2517,6 +2523,10 @@ pub(super) fn read_input_or_bus(
                                 {
                                     return InputEvent::Eof;
                                 }
+                                crate::activity::publish(
+                                    bus_name,
+                                    crate::activity::ActivityState::UserTyping,
+                                );
                                 if let Some(line) = drain_editor_pending_submit(editor) {
                                     return InputEvent::User(line);
                                 }

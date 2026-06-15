@@ -18,10 +18,11 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 mod agent_registry;
 mod agent_sessions;
+mod activity;
 mod auth_store;
 mod bus_queue;
 mod cron;
@@ -32,6 +33,7 @@ mod outbound;
 mod proxy_log_store;
 mod totp;
 
+pub use activity::*;
 pub use agent_registry::*;
 pub use agent_sessions::*;
 pub use auth_store::*;
@@ -109,6 +111,9 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     if version < 4 {
         migrate_agents_drop_socket_path(conn)?;
     }
+    if version < 5 {
+        migrate_agents_activity_columns(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     Ok(())
 }
@@ -122,6 +127,30 @@ fn migrate_agents_drop_socket_path(conn: &Connection) -> Result<()> {
     };
     if has_socket_path {
         conn.execute_batch("ALTER TABLE agents DROP COLUMN socket_path")?;
+    }
+    Ok(())
+}
+
+fn migrate_agents_activity_columns(conn: &Connection) -> Result<()> {
+    let mut cols = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for name in names.flatten() {
+            cols.insert(name);
+        }
+    }
+    if !cols.contains("activity_state") {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN activity_state TEXT NOT NULL DEFAULT 'unknown'",
+            [],
+        )?;
+    }
+    if !cols.contains("activity_at") {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN activity_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -201,7 +230,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             agent_type TEXT,
             cwd TEXT,
             registered_at INTEGER NOT NULL,
-            last_seen_at INTEGER NOT NULL
+            last_seen_at INTEGER NOT NULL,
+            activity_state TEXT NOT NULL DEFAULT 'unknown',
+            activity_at INTEGER NOT NULL DEFAULT 0
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_pane_unique
             ON agents(pane_unique_id)

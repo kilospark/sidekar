@@ -1,6 +1,7 @@
 //! Bus message poller — reads from the SQLite bus_queue and delivers
 //! messages to the local agent via PTY write.
 
+use crate::activity::{ActivitySnapshot, ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
 use crate::broker;
 use crate::transport::{Broker as BrokerTransport, RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -27,6 +28,8 @@ pub struct UserInputState {
     stashed_draft: Mutex<Option<Vec<u8>>>,
     /// Set when the event loop should clear its local line buffer (after stash).
     line_tracking_reset: std::sync::atomic::AtomicBool,
+    last_pty_output_at_ms: std::sync::atomic::AtomicU64,
+    last_spinner_at_ms: std::sync::atomic::AtomicU64,
 }
 
 /// Result of feeding stdin bytes while a draft recall is offered.
@@ -49,12 +52,48 @@ impl UserInputState {
             pending_line: Mutex::new(Vec::new()),
             stashed_draft: Mutex::new(None),
             line_tracking_reset: std::sync::atomic::AtomicBool::new(false),
+            last_pty_output_at_ms: std::sync::atomic::AtomicU64::new(0),
+            last_spinner_at_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     pub fn mark_activity(&self) {
         self.last_user_input_at_ms
             .store(epoch_millis(), Ordering::Relaxed);
+    }
+
+    pub fn mark_pty_output(&self) {
+        self.last_pty_output_at_ms
+            .store(epoch_millis(), Ordering::Relaxed);
+    }
+
+    pub fn mark_spinner_activity(&self) {
+        self.last_spinner_at_ms
+            .store(epoch_millis(), Ordering::Relaxed);
+    }
+
+    pub fn is_agent_working(&self) -> bool {
+        let now = epoch_millis();
+        let output_at = self.last_pty_output_at_ms.load(Ordering::Relaxed);
+        if output_at > 0 && now.saturating_sub(output_at) < PTY_OUTPUT_BUSY_MS {
+            return true;
+        }
+        let spinner_at = self.last_spinner_at_ms.load(Ordering::Relaxed);
+        spinner_at > 0 && now.saturating_sub(spinner_at) < PTY_SPINNER_BUSY_MS
+    }
+
+    pub fn current_activity_state(&self) -> ActivityState {
+        if !self.is_idle() || self.has_pending_line() || self.has_stashed_draft() {
+            ActivityState::UserTyping
+        } else if self.is_agent_working() {
+            ActivityState::AgentWorking
+        } else {
+            ActivityState::Idle
+        }
+    }
+
+    pub fn publish_activity(&self, agent_name: &str) {
+        crate::activity::publish(agent_name, self.current_activity_state());
     }
 
     pub fn set_pending_line(&self, line: &[u8]) {
@@ -273,6 +312,19 @@ fn send_nudges(agent_name: &str) {
             continue;
         }
 
+        if recipient_should_defer_nudge(&request.transport_name, &request.transport_target) {
+            crate::broker::try_log_event(
+                "debug",
+                "poller",
+                &format!(
+                    "nudge deferred: recipient busy transport={} target={} msg_id={}",
+                    request.transport_name, request.transport_target, request.msg_id,
+                ),
+                None,
+            );
+            continue;
+        }
+
         // Send the nudge
         let nudge_msg = format!(
             "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
@@ -309,13 +361,24 @@ fn is_recipient_alive(recipient_name: &str) -> bool {
     true
 }
 
+fn recipient_should_defer_nudge(transport_name: &str, transport_target: &str) -> bool {
+    match transport_name {
+        "broker" => broker::get_agent_activity(transport_target)
+            .ok()
+            .flatten()
+            .unwrap_or(ActivitySnapshot::unknown())
+            .should_defer_nudge(),
+        "relay_http" => crate::transport::relay_recipient_should_defer_nudge(transport_target),
+        _ => false,
+    }
+}
+
 fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, child_pid: i32) {
     let raw_fd = fd.as_raw_fd();
 
-    // Wait until the user stops typing. A pending draft does not block inject once idle:
-    // we stash it in Sidekar and offer Up-arrow recall instead of clearing the agent line.
+    // Wait until the user stops typing and the wrapped agent is not mid-turn.
     let mut waited = 0u32;
-    while !input_state.is_idle() {
+    while !input_state.is_idle() || input_state.is_agent_working() {
         if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             return;
         }
@@ -326,8 +389,9 @@ fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, chi
                 "debug",
                 "poller",
                 &format!(
-                    "inject blocked: idle={} pending_line={} waited={}s msg_len={}",
+                    "inject blocked: idle={} agent_working={} pending_line={} waited={}s msg_len={}",
                     input_state.is_idle(),
+                    input_state.is_agent_working(),
                     input_state.has_pending_line(),
                     waited / 10,
                     message.len(),
@@ -493,6 +557,14 @@ mod tests {
             other => panic!("expected Forward, got {other:?}"),
         }
         assert!(!state.has_stashed_draft());
+    }
+
+    #[test]
+    fn agent_working_heuristic_tracks_recent_output() {
+        let state = UserInputState::new();
+        assert!(!state.is_agent_working());
+        state.mark_pty_output();
+        assert!(state.is_agent_working());
     }
 
     #[test]

@@ -19,6 +19,12 @@ pub struct TerminalSize {
     pub rows: u16,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SessionActivity {
+    pub state: String,
+    pub at: i64,
+}
+
 /// Message sent to the tunnel WebSocket from viewers or peer bus relay.
 pub enum TunnelMsg {
     Data(Vec<u8>),
@@ -47,6 +53,7 @@ pub struct LiveSession {
     pub viewers: Arc<RwLock<Vec<ViewerHandle>>>,
     pub scrollback_buffer: Arc<RwLock<ScrollbackBuffer>>,
     pub terminal_size: Arc<RwLock<TerminalSize>>,
+    pub activity: Arc<RwLock<SessionActivity>>,
 }
 
 /// A simple ring buffer that keeps the most recent PTY output bytes for web scrollback.
@@ -275,6 +282,8 @@ impl Registry {
             "owner_origin": &self.public_origin,
             "connected_at": now,
             "last_heartbeat": now,
+            "activity_state": "unknown",
+            "activity_at": 0_i64,
         };
         let _ = self
             .db
@@ -295,6 +304,7 @@ impl Registry {
             viewers: Arc::new(RwLock::new(Vec::new())),
             scrollback_buffer: Arc::new(RwLock::new(ScrollbackBuffer::new(SCROLLBACK_BUFFER_SIZE))),
             terminal_size: Arc::new(RwLock::new(TerminalSize { cols, rows })),
+            activity: Arc::new(RwLock::new(SessionActivity::default())),
         };
         self.live
             .write()
@@ -357,29 +367,85 @@ impl Registry {
                 0
             };
 
-            let connected_at = doc
-                .get_datetime("connected_at")
-                .ok()
-                .map(|dt| {
-                    chrono::DateTime::from_timestamp_millis(dt.timestamp_millis())
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
-
-            result.push(SessionInfo {
-                id: sid,
-                name: doc.get_str("name").unwrap_or_default().to_string(),
-                agent_type: doc.get_str("agent_type").unwrap_or_default().to_string(),
-                cwd: doc.get_str("cwd").unwrap_or_default().to_string(),
-                hostname: doc.get_str("hostname").unwrap_or_default().to_string(),
-                nickname: doc.get_str("nickname").ok().map(|s| s.to_string()),
-                owner_origin: doc.get_str("owner_origin").ok().map(|s| s.to_string()),
-                connected_at,
-                viewers: viewer_count,
-            });
+            result.push(doc_to_session_info(&doc, viewer_count));
         }
 
         result
+    }
+
+    pub async fn get_session(&self, user_id: &str, session_id: &str) -> Option<SessionInfo> {
+        let doc = self
+            .db
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .find_one(mongodb::bson::doc! { "session_id": session_id })
+            .await
+            .ok()
+            .flatten()?;
+        let owner = doc.get_str("user_id").ok()?.to_string();
+        if !self
+            .viewer_can_access_session_owned_by(user_id, &owner)
+            .await
+        {
+            return None;
+        }
+        let viewer_count = {
+            let live = self.live.read().await;
+            if let Some(ls) = live.get(session_id) {
+                ls.viewers.read().await.len()
+            } else {
+                0
+            }
+        };
+        Some(doc_to_session_info(&doc, viewer_count))
+    }
+
+    pub async fn update_session_activity(&self, session_id: &str, state: &str, at: i64) {
+        let activity_handle = {
+            let live = self.live.read().await;
+            live.get(session_id).map(|s| s.activity.clone())
+        };
+        if let Some(activity) = activity_handle {
+            let mut guard = activity.write().await;
+            guard.state = state.to_string();
+            guard.at = at;
+        }
+        let _ = self
+            .db
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .update_one(
+                mongodb::bson::doc! { "session_id": session_id },
+                mongodb::bson::doc! {
+                    "$set": {
+                        "activity_state": state,
+                        "activity_at": at,
+                    }
+                },
+            )
+            .await;
+    }
+
+    pub async fn session_activity_snapshot(&self, session_id: &str) -> SessionActivity {
+        let activity_handle = {
+            let live = self.live.read().await;
+            live.get(session_id).map(|s| s.activity.clone())
+        };
+        if let Some(activity) = activity_handle {
+            let guard = activity.read().await;
+            return guard.clone();
+        }
+        SessionActivity::default()
+    }
+
+    pub async fn recipient_should_defer_delivery(&self, session_id: &str) -> bool {
+        let activity = self.session_activity_snapshot(session_id).await;
+        if activity.at <= 0 {
+            return false;
+        }
+        let now = chrono::Utc::now().timestamp();
+        if now.saturating_sub(activity.at) > 60 {
+            return false;
+        }
+        matches!(activity.state.as_str(), "user_typing" | "agent_working")
     }
 
     /// Add a viewer to a session. Uses in-memory state (needs the WebSocket handles).
@@ -663,6 +729,34 @@ impl Registry {
                 .await;
             }
         }
+    }
+}
+
+fn doc_to_session_info(doc: &mongodb::bson::Document, viewer_count: usize) -> SessionInfo {
+    let sid = doc.get_str("session_id").unwrap_or_default().to_string();
+    let connected_at = doc
+        .get_datetime("connected_at")
+        .ok()
+        .map(|dt| {
+            chrono::DateTime::from_timestamp_millis(dt.timestamp_millis()).unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    SessionInfo {
+        id: sid,
+        name: doc.get_str("name").unwrap_or_default().to_string(),
+        agent_type: doc.get_str("agent_type").unwrap_or_default().to_string(),
+        cwd: doc.get_str("cwd").unwrap_or_default().to_string(),
+        hostname: doc.get_str("hostname").unwrap_or_default().to_string(),
+        nickname: doc.get_str("nickname").ok().map(|s| s.to_string()),
+        owner_origin: doc.get_str("owner_origin").ok().map(|s| s.to_string()),
+        connected_at,
+        viewers: viewer_count,
+        activity_state: doc
+            .get_str("activity_state")
+            .unwrap_or("unknown")
+            .to_string(),
+        activity_at: doc.get_i64("activity_at").unwrap_or(0),
     }
 }
 

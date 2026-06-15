@@ -515,3 +515,25 @@ fn cancel_all_outbound_for_sender_only_touches_open_rows() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn agent_activity_round_trip() -> Result<()> {
+    use crate::activity::ActivityState;
+
+    with_test_db(|| {
+        let agent = AgentId {
+            name: "busy-agent".into(),
+            nick: Some("b".into()),
+            session: None,
+            pane: None,
+            agent_type: Some("sidekar".into()),
+        };
+        register_agent(&agent, None)?;
+        let now = crate::message::epoch_secs();
+        update_agent_activity("busy-agent", ActivityState::AgentWorking, now)?;
+        let snap = get_agent_activity("busy-agent")?.expect("activity");
+        assert_eq!(snap.state, ActivityState::AgentWorking);
+        assert!(snap.should_defer_nudge());
+        Ok(())
+    })
+}

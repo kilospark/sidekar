@@ -276,6 +276,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     }
 
     crate::bus::set_repl_terminal_title(&nick, false);
+    crate::activity::publish(&bus_name, crate::activity::ActivityState::Idle);
 
     // SAFETY: called once during serial startup, before spawning async tasks.
     unsafe { std::env::set_var("SIDEKAR_AGENT_NAME", &bus_name) };
@@ -375,6 +376,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         let pre_len = history.len();
         crate::bus::set_repl_terminal_title(&nick, true);
+        crate::activity::publish(&bus_name, crate::activity::ActivityState::AgentWorking);
         let run_result = crate::agent::run(
             prov,
             mdl,
@@ -392,6 +394,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
             guard.teardown();
         }
         crate::bus::set_repl_terminal_title(&nick, false);
+        crate::activity::publish(&bus_name, crate::activity::ActivityState::Idle);
 
         if crate::runtime::verbose() && run_result.is_ok() {
             crate::broker::try_log_event("debug", "repl", "turn-complete", None);
@@ -517,6 +520,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         // user genuinely went idle, not merely "between turns."
         idle_tracker.disarm();
         crate::bus::set_repl_terminal_title(&nick, false);
+        crate::activity::publish(&bus_name, crate::activity::ActivityState::Idle);
 
         let input = match read_input_or_bus(
             &bus_name,
@@ -795,6 +799,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         let pre_len = history.len();
         crate::bus::set_repl_terminal_title(&nick, true);
+        crate::activity::publish(&bus_name, crate::activity::ActivityState::AgentWorking);
         let run_result = crate::agent::run(
             prov,
             mdl,
@@ -814,6 +819,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let returned_editor = active_prompt.finish();
         line_editor = returned_editor;
         crate::bus::set_repl_terminal_title(&nick, false);
+        crate::activity::publish(&bus_name, crate::activity::ActivityState::Idle);
 
         let run_ok = run_result.is_ok();
         if run_ok {

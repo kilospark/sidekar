@@ -61,6 +61,7 @@ pub mod browser_session;
 pub mod bus;
 
 pub mod agent;
+pub mod activity;
 pub mod agent_cli;
 pub mod cdp;
 pub mod cdp_proxy;

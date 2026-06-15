@@ -71,6 +71,8 @@ pub(crate) async fn event_loop(
     // Structured event parser — emits semantic events alongside raw PTY bytes
     let mut event_parser = crate::events::EventParser::new();
 
+    crate::activity::publish(agent_name, crate::activity::ActivityState::Idle);
+
     loop {
         tokio::select! {
             biased;
@@ -214,6 +216,7 @@ pub(crate) async fn event_loop(
                                 let _ = write_all_fd(master_fd, &[byte]);
                             }
                         }
+                        input_state.publish_activity(agent_name);
                     }
                 }
             }
@@ -236,6 +239,14 @@ pub(crate) async fn event_loop(
                         }) {
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
+                                input_state.mark_pty_output();
+                                let parsed_events = event_parser.feed(raw);
+                                for event in &parsed_events {
+                                    if matches!(event, crate::events::AgentEvent::Status { .. }) {
+                                        input_state.mark_spinner_activity();
+                                    }
+                                }
+                                input_state.publish_activity(agent_name);
                                 // Preserve terminal transparency except for OSC window-title
                                 // sequences, where we prefix the agent nickname.
                                 let local_data = if nick_prefix.is_empty() {
@@ -259,7 +270,7 @@ pub(crate) async fn event_loop(
                                     tx.send_data(tunnel_data);
 
                                     // Emit structured events alongside raw bytes
-                                    for event in event_parser.feed(raw) {
+                                    for event in parsed_events {
                                         tx.send_event(crate::events::event_to_json(&event));
                                     }
                                 }

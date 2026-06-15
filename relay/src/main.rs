@@ -143,6 +143,7 @@ async fn main() {
         .route("/session/{id}", get(bridge::handle_viewer_upgrade))
         .route("/session/{id}/resolve", get(bridge::handle_resolve_session))
         .route("/sessions", get(bridge::handle_list_sessions))
+        .route("/sessions/{session_id}", get(bridge::handle_get_session))
         .route("/relay/bus", post(bridge::handle_relay_bus))
         .route("/telegram/webhook", post(telegram::handle_webhook))
         .route("/telegram/deliver", post(telegram::handle_deliver))

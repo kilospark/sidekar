@@ -31,4 +31,6 @@ pub struct SessionInfo {
     pub owner_origin: Option<String>,
     pub connected_at: chrono::DateTime<chrono::Utc>,
     pub viewers: usize,
+    pub activity_state: String,
+    pub activity_at: i64,
 }

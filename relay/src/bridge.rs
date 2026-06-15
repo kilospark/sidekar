@@ -184,6 +184,16 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                 state.registry.broadcast_control_to_viewers(&session_id, &text).await;
                                 continue;
                             }
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("activity") {
+                                let state_name =
+                                    v.get("state").and_then(|x| x.as_str()).unwrap_or("unknown");
+                                let at = v.get("at").and_then(|x| x.as_u64()).unwrap_or(0) as i64;
+                                state
+                                    .registry
+                                    .update_session_activity(&session_id, state_name, at)
+                                    .await;
+                                continue;
+                            }
                         }
                         tracing::debug!(session_id = %session_id, "tunnel text (ignored): {text}");
                     }
@@ -273,6 +283,20 @@ pub async fn handle_relay_bus(
     };
 
     if let Some(recipient_session_id) = body.recipient_session_id.as_deref() {
+        if state
+            .registry
+            .recipient_should_defer_delivery(recipient_session_id)
+            .await
+        {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": "recipient_busy",
+                })),
+            )
+                .into_response();
+        }
         state
             .registry
             .enqueue_bus_for_session(
@@ -554,8 +578,48 @@ pub async fn handle_list_sessions(
         }
     };
 
-    let sessions: Vec<SessionInfo> = state.registry.get_sessions(&user_id).await;
+    let sessions = state.registry.get_sessions(&user_id).await;
     Json(serde_json::json!({ "sessions": sessions })).into_response()
+}
+
+/// GET /sessions/:session_id — fetch one session (includes activity for nudge gating).
+pub async fn handle_get_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ViewerQuery>,
+) -> Response {
+    let user_id = if let Some(bearer) = extract_bearer_token(&headers) {
+        match auth::validate_device_token(&state.db, &bearer).await {
+            Some(uid) => uid,
+            None => {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid device token").into_response()
+            }
+        }
+    } else {
+        let jwt = query
+            .token
+            .or_else(|| extract_cookie_token(&headers, "sidekar_session"));
+
+        let jwt = match jwt {
+            Some(t) => t,
+            None => {
+                return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response()
+            }
+        };
+
+        match auth::validate_session_jwt(&jwt, &state.jwt_secret) {
+            Some(uid) => uid,
+            None => {
+                return (axum::http::StatusCode::UNAUTHORIZED, "invalid token").into_response()
+            }
+        }
+    };
+
+    match state.registry.get_session(&user_id, &session_id).await {
+        Some(session) => Json(session).into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "session not found").into_response(),
+    }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────

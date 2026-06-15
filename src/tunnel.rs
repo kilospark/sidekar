@@ -36,6 +36,14 @@ const CHANNEL_CAPACITY: usize = 256;
 
 static OUTPUT_TUNNEL: Mutex<Option<TunnelSender>> = Mutex::new(None);
 
+/// Borrow the registered output tunnel sender, if any.
+pub fn output_tunnel_sender() -> Option<TunnelSender> {
+    OUTPUT_TUNNEL
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().cloned())
+}
+
 /// Register the tunnel sender for global output forwarding.
 pub fn set_output_tunnel(tx: TunnelSender) {
     if let Ok(mut guard) = OUTPUT_TUNNEL.lock() {
@@ -138,6 +146,8 @@ enum TunnelCommand {
     PtyText(String),
     /// Structured agent events JSON (ch: "events").
     EventText(String),
+    /// Session activity for relay-side nudge gating (ch: "activity").
+    ActivityText(String),
     /// Graceful shutdown.
     Shutdown,
 }
@@ -196,6 +206,17 @@ impl TunnelSender {
     /// Send a structured agent event (non-blocking, drops on full channel).
     pub fn send_event(&self, json: String) {
         let _ = self.tx.try_send(TunnelCommand::EventText(json));
+    }
+
+    /// Publish session activity to the relay (non-blocking).
+    pub fn send_activity(&self, state: crate::activity::ActivityState, at: u64) {
+        let json = serde_json::json!({
+            "ch": "activity",
+            "v": 1,
+            "state": state.as_str(),
+            "at": at,
+        });
+        let _ = self.tx.try_send(TunnelCommand::ActivityText(json.to_string()));
     }
 
     /// Request graceful shutdown of the tunnel background task.
