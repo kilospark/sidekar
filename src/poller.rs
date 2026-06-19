@@ -338,7 +338,11 @@ fn send_nudges(agent_name: &str) {
             _ => continue,
         };
 
-        if delivery_result.is_ok()
+        let delivered = matches!(
+            delivery_result,
+            Ok(crate::message::DeliveryResult::Delivered | crate::message::DeliveryResult::Queued)
+        );
+        if delivered
             && broker::try_increment_nudge_count(&request.msg_id, now)
                 .unwrap_or(false)
         {

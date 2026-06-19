@@ -194,6 +194,24 @@ pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
                 envelope_json,
             ],
         )?;
+        tx.execute(
+            "UPDATE agent_sessions
+             SET reply_count = reply_count + 1,
+                 message_count = message_count + 1,
+                 last_reply_msg_id = ?2,
+                 last_active_at = ?3
+             WHERE id = (
+                 SELECT id
+                 FROM agent_sessions
+                 WHERE agent_name = (
+                     SELECT sender_name FROM outbound_requests WHERE msg_id = ?1
+                 )
+                   AND ended_at IS NULL
+                 ORDER BY started_at DESC
+                 LIMIT 1
+             )",
+            params![reply_to_msg_id, envelope.id, envelope.created_at as i64],
+        )?;
     }
     tx.execute(
         "DELETE FROM pending_requests WHERE id = ?1",
@@ -210,24 +228,6 @@ pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
             OUTBOUND_STATUS_ANSWERED,
             envelope.created_at as i64
         ],
-    )?;
-    tx.execute(
-        "UPDATE agent_sessions
-         SET reply_count = reply_count + 1,
-             message_count = message_count + 1,
-             last_reply_msg_id = ?2,
-             last_active_at = ?3
-         WHERE id = (
-             SELECT id
-             FROM agent_sessions
-             WHERE agent_name = (
-                 SELECT sender_name FROM outbound_requests WHERE msg_id = ?1
-             )
-               AND ended_at IS NULL
-             ORDER BY started_at DESC
-             LIMIT 1
-         )",
-        params![reply_to_msg_id, envelope.id, envelope.created_at as i64],
     )?;
     tx.commit()?;
     Ok(())

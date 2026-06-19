@@ -132,6 +132,7 @@ impl WorkingHeartbeat {
         let handle = std::thread::Builder::new()
             .name("sidekar-activity-heartbeat".into())
             .spawn(move || {
+                refresh_working(&agent_name);
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     if stop_flag.load(Ordering::Relaxed) {
