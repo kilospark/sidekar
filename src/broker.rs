@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 mod agent_registry;
 mod agent_sessions;
@@ -112,11 +112,13 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         if version < 5 {
             migrate_agents_activity_columns(conn)?;
         }
+        if version < 7 {
+            ensure_bus_replies_unique(conn)?;
+        }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
-    // Idempotent — adds proxy_log.status + index when missing (including repair for
-    // v6 DBs that failed the old init_schema index-before-column ordering).
     ensure_proxy_log_status(conn)?;
+    ensure_bus_replies_unique(conn)?;
     Ok(())
 }
 
@@ -174,6 +176,14 @@ fn ensure_proxy_log_status(conn: &Connection) -> Result<()> {
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_proxy_log_status ON proxy_log(status, id);",
+    )?;
+    Ok(())
+}
+
+fn ensure_bus_replies_unique(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bus_replies_pair
+         ON bus_replies(reply_to_msg_id, reply_msg_id);",
     )?;
     Ok(())
 }
@@ -309,6 +319,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_bus_replies_reply_to
             ON bus_replies(reply_to_msg_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_bus_replies_pair
+            ON bus_replies(reply_to_msg_id, reply_msg_id);
         CREATE INDEX IF NOT EXISTS idx_bus_replies_created
             ON bus_replies(created_at);
 

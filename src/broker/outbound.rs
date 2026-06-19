@@ -156,44 +156,27 @@ pub fn delete_outbound_for_sender(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn resolve_reply(msg_id: &str) -> Result<()> {
-    let conn = open()?;
-    conn.execute(
-        "DELETE FROM pending_requests WHERE id = ?1",
-        params![msg_id],
-    )?;
-    Ok(())
-}
-
 pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
     let conn = open()?;
     let tx = conn.unchecked_transaction()?;
     let envelope_json =
         serde_json::to_string(envelope).context("failed to serialize reply envelope")?;
-    let reply_exists: bool = tx.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM bus_replies
-            WHERE reply_to_msg_id = ?1 AND reply_msg_id = ?2
-        )",
-        params![reply_to_msg_id, envelope.id],
-        |r| r.get(0),
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO bus_replies (
+            reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            reply_to_msg_id,
+            envelope.id,
+            envelope.from.name,
+            envelope.from.display_name(),
+            envelope.kind.as_str(),
+            envelope.message,
+            envelope.created_at as i64,
+            envelope_json,
+        ],
     )?;
-    if !reply_exists {
-        tx.execute(
-            "INSERT INTO bus_replies (
-                reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                reply_to_msg_id,
-                envelope.id,
-                envelope.from.name,
-                envelope.from.display_name(),
-                envelope.kind.as_str(),
-                envelope.message,
-                envelope.created_at as i64,
-                envelope_json,
-            ],
-        )?;
+    if inserted > 0 {
         tx.execute(
             "UPDATE agent_sessions
              SET reply_count = reply_count + 1,
@@ -291,23 +274,6 @@ pub fn expired_outbound_for_sender(
     Ok(requests)
 }
 
-pub fn increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<u32> {
-    let conn = open()?;
-    conn.execute(
-        "UPDATE outbound_requests
-         SET nudge_count = nudge_count + 1,
-             last_nudged_at = ?2
-         WHERE msg_id = ?1",
-        params![msg_id, nudged_at as i64],
-    )?;
-    let count = conn.query_row(
-        "SELECT nudge_count FROM outbound_requests WHERE msg_id = ?1",
-        params![msg_id],
-        |row| row.get::<_, i64>(0),
-    )?;
-    Ok(count as u32)
-}
-
 /// True when this outbound row is still unanswered and eligible for a nudge.
 pub fn outbound_nudgeable(msg_id: &str) -> Result<bool> {
     let conn = open()?;
@@ -354,7 +320,7 @@ pub fn repair_answered_outbounds(sender_name: &str) -> Result<u64> {
     Ok(count as u64)
 }
 
-/// Increment nudge count only if the request is still nudgeable (atomic with delivery).
+/// Increment nudge count only if the request is still nudgeable (claim before delivery).
 pub fn try_increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<bool> {
     let conn = open()?;
     let updated = conn.execute(
@@ -369,6 +335,21 @@ pub fn try_increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<bool> {
         params![msg_id, nudged_at as i64, OUTBOUND_STATUS_OPEN],
     )?;
     Ok(updated > 0)
+}
+
+/// Undo a nudge claim when delivery fails after `try_increment_nudge_count`.
+pub fn revert_nudge_claim(msg_id: &str, nudged_at: u64) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "UPDATE outbound_requests
+         SET nudge_count = nudge_count - 1,
+             last_nudged_at = NULL
+         WHERE msg_id = ?1
+           AND last_nudged_at = ?2
+           AND nudge_count > 0",
+        params![msg_id, nudged_at as i64],
+    )?;
+    Ok(())
 }
 
 pub fn mark_outbound_timed_out(msg_id: &str, timed_out_at: u64) -> Result<()> {

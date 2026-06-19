@@ -551,10 +551,12 @@ pub fn runtime_json(ext_status: Value) -> Result<Value> {
 
 pub fn proxy_log_json(limit: usize, offset: usize) -> Result<Value> {
     let (total, rows) = crate::broker::proxy_log_page(limit, offset)?;
+    let max_id = crate::broker::proxy_log_max_id()?;
     let page: Vec<Value> = rows.iter().map(proxy_entry_summary).collect();
     Ok(json!({
         "mode": "page",
         "total": total,
+        "max_id": max_id,
         "limit": limit,
         "offset": offset,
         "items": page,
@@ -574,9 +576,11 @@ pub fn proxy_log_tail_json(since_id: i64, ids: &[i64], limit: usize) -> Result<V
     };
     let conn = crate::broker::open()?;
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_log", [], |r| r.get(0))?;
+    let max_id = crate::broker::proxy_log_max_id()?;
     Ok(json!({
         "mode": "tail",
         "total": total,
+        "max_id": max_id,
         "new": new_rows.iter().map(proxy_entry_summary).collect::<Vec<_>>(),
         "updated": updated.iter().map(proxy_entry_summary).collect::<Vec<_>>(),
     }))

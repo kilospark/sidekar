@@ -192,6 +192,13 @@ pub fn proxy_log_page(limit: usize, offset: usize) -> Result<(i64, Vec<ProxyLogR
     Ok((total, page))
 }
 
+pub fn proxy_log_max_id() -> Result<i64> {
+    let conn = open()?;
+    let max_id: Option<i64> =
+        conn.query_row("SELECT MAX(id) FROM proxy_log", [], |r| r.get(0))?;
+    Ok(max_id.unwrap_or(0))
+}
+
 pub fn proxy_log_detail(id: i64) -> Result<Option<ProxyLogRow>> {
     let conn = open()?;
     let mut stmt = conn.prepare(&format!("{PROXY_ROW_SELECT} WHERE id = ?1"))?;

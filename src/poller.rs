@@ -242,6 +242,7 @@ pub fn start_nudger(agent_name: String) {
     POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
 
     std::thread::spawn(move || {
+        let _ = broker::repair_answered_outbounds(&agent_name);
         let mut cleanup_poll_count: u32 = 0;
         let mut nudge_poll_count: u32 = 0;
 
@@ -321,12 +322,12 @@ fn send_nudges(agent_name: &str) {
             continue;
         }
 
-        // Re-check immediately before delivery — record_reply may have landed since the loop started.
-        if !broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
+        // Claim the nudge slot before delivery so a concurrent record_reply cannot
+        // produce ghost text after the pre-check.
+        if !broker::try_increment_nudge_count(&request.msg_id, now).unwrap_or(false) {
             continue;
         }
 
-        // Send the nudge
         let nudge_msg = format!(
             "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
             request.sender_label, request.msg_id
@@ -335,27 +336,30 @@ fn send_nudges(agent_name: &str) {
         let delivery_result = match request.transport_name.as_str() {
             "broker" => BrokerTransport.deliver(&request.transport_target, &nudge_msg, "sidekar"),
             "relay_http" => RelayHttp.deliver(&request.transport_target, &nudge_msg, "sidekar"),
-            _ => continue,
+            _ => {
+                let _ = broker::revert_nudge_claim(&request.msg_id, now);
+                continue;
+            }
         };
 
         let delivered = matches!(
             delivery_result,
             Ok(crate::message::DeliveryResult::Delivered | crate::message::DeliveryResult::Queued)
         );
-        if delivered
-            && broker::try_increment_nudge_count(&request.msg_id, now)
-                .unwrap_or(false)
-        {
-            crate::broker::try_log_event(
-                "debug",
-                "poller",
-                &format!(
-                    "nudge delivered transport={} target={} msg_id={}",
-                    request.transport_name, request.transport_target, request.msg_id,
-                ),
-                None,
-            );
+        if !delivered {
+            let _ = broker::revert_nudge_claim(&request.msg_id, now);
+            continue;
         }
+
+        crate::broker::try_log_event(
+            "debug",
+            "poller",
+            &format!(
+                "nudge delivered transport={} target={} msg_id={}",
+                request.transport_name, request.transport_target, request.msg_id,
+            ),
+            None,
+        );
     }
 }
 

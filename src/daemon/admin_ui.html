@@ -371,6 +371,7 @@ let currentView = 'overview';
 let offset = 0;
 let proxyOffset = 0;
 let proxyMaxId = 0;
+let proxyViewGen = 0;
 let refreshTimer = null;
 let applyingRoute = false;
 
@@ -736,8 +737,10 @@ function updateProxyStats(total) {
 }
 
 async function pollProxyLog() {
+  if (currentView !== 'proxy' || proxyOffset !== 0) return;
   const tbody = document.querySelector('#proxy-table tbody');
   if (!tbody) return;
+  const myGen = proxyViewGen;
   const pendingIds = [];
   tbody.querySelectorAll('tr.row-pending').forEach(tr => {
     const id = parseInt(tr.dataset.id, 10);
@@ -749,11 +752,13 @@ async function pollProxyLog() {
   if (!qs.has('since_id') && !qs.has('ids')) return;
   try {
     const data = await api(`/api/proxy/log?${qs}`);
+    if (myGen !== proxyViewGen || currentView !== 'proxy' || proxyOffset !== 0) return;
+    if (typeof data.max_id === 'number') proxyMaxId = Math.max(proxyMaxId, data.max_id);
     for (const r of data.updated || []) {
       const tr = tbody.querySelector(`tr[data-id="${r.id}"]`);
       if (tr) tr.outerHTML = proxyRowHtml(r);
     }
-    for (const r of (data.new || []).slice().reverse()) {
+    for (const r of data.new || []) {
       tbody.insertAdjacentHTML('afterbegin', proxyRowHtml(r));
       proxyMaxId = Math.max(proxyMaxId, r.id);
       while (tbody.rows.length > LIMIT) {
@@ -769,6 +774,7 @@ async function showProxyLog(newOffset = 0, silent = false, skipRoute = false) {
     navigateTo({ view: 'proxy', offset: newOffset });
     return;
   }
+  proxyViewGen += 1;
   currentTable = null;
   currentView = 'proxy';
   proxyOffset = newOffset;
@@ -778,7 +784,11 @@ async function showProxyLog(newOffset = 0, silent = false, skipRoute = false) {
   try {
     const data = await api(`/api/proxy/log?limit=${LIMIT}&offset=${proxyOffset}`);
     const items = data.items || [];
-    proxyMaxId = items.reduce((m, r) => Math.max(m, r.id), 0);
+    if (typeof data.max_id === 'number') {
+      proxyMaxId = data.max_id;
+    } else {
+      proxyMaxId = items.reduce((m, r) => Math.max(m, r.id), 0);
+    }
     let tbody = items.map(proxyRowHtml).join('');
     if (!tbody) tbody = '<tr><td colspan="9" class="empty">No captures yet. Enable --proxy (PTY) or /proxy on (REPL).</td></tr>';
     const start = data.total ? proxyOffset + 1 : 0;
