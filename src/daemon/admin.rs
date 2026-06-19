@@ -423,6 +423,7 @@ fn proxy_entry_summary(row: &crate::broker::ProxyLogRow) -> Value {
     json!({
         "id": row.id,
         "created_at": row.created_at,
+        "status": row.status,
         "method": row.method,
         "path": row.path,
         "upstream_host": row.upstream_host,
@@ -549,38 +550,35 @@ pub fn runtime_json(ext_status: Value) -> Result<Value> {
 }
 
 pub fn proxy_log_json(limit: usize, offset: usize) -> Result<Value> {
-    let conn = crate::broker::open()?;
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_log", [], |r| r.get(0))?;
-    let lim = limit.clamp(1, 200) as i64;
-    let off = offset as i64;
-    let mut stmt = conn.prepare(
-        "SELECT id, created_at, method, path, upstream_host, request_headers, request_body,
-                response_status, response_headers, response_body, duration_ms
-         FROM proxy_log ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-    )?;
-    let rows = stmt
-        .query_map([lim, off], |row| {
-            Ok(crate::broker::ProxyLogRow {
-                id: row.get(0)?,
-                created_at: row.get(1)?,
-                method: row.get(2)?,
-                path: row.get(3)?,
-                upstream_host: row.get(4)?,
-                request_headers: row.get(5)?,
-                request_body: row.get(6)?,
-                response_status: row.get(7)?,
-                response_headers: row.get(8)?,
-                response_body: row.get(9)?,
-                duration_ms: row.get(10)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let (total, rows) = crate::broker::proxy_log_page(limit, offset)?;
     let page: Vec<Value> = rows.iter().map(proxy_entry_summary).collect();
     Ok(json!({
+        "mode": "page",
         "total": total,
-        "limit": lim,
-        "offset": off,
+        "limit": limit,
+        "offset": offset,
         "items": page,
+    }))
+}
+
+pub fn proxy_log_tail_json(since_id: i64, ids: &[i64], limit: usize) -> Result<Value> {
+    let new_rows = if since_id > 0 {
+        crate::broker::proxy_log_since(since_id, limit)?
+    } else {
+        Vec::new()
+    };
+    let updated = if ids.is_empty() {
+        Vec::new()
+    } else {
+        crate::broker::proxy_log_by_ids(ids)?
+    };
+    let conn = crate::broker::open()?;
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_log", [], |r| r.get(0))?;
+    Ok(json!({
+        "mode": "tail",
+        "total": total,
+        "new": new_rows.iter().map(proxy_entry_summary).collect::<Vec<_>>(),
+        "updated": updated.iter().map(proxy_entry_summary).collect::<Vec<_>>(),
     }))
 }
 
@@ -590,6 +588,7 @@ pub fn proxy_show_json(id: i64) -> Result<Value> {
     Ok(json!({
         "id": row.id,
         "created_at": row.created_at,
+        "status": row.status,
         "method": row.method,
         "path": row.path,
         "upstream_host": row.upstream_host,
@@ -726,14 +725,40 @@ pub async fn handle_admin_request(
                 .get("limit")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(50);
-            let offset = params
-                .get("offset")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            match tokio::task::spawn_blocking(move || proxy_log_json(limit, offset)).await {
-                Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
-                Ok(Err(e)) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
-                Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+            if params.contains_key("since_id") || params.contains_key("ids") {
+                let since_id = params
+                    .get("since_id")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let ids: Vec<i64> = params
+                    .get("ids")
+                    .map(|s| {
+                        s.split(',')
+                            .filter_map(|p| p.trim().parse().ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match tokio::task::spawn_blocking(move || proxy_log_tail_json(since_id, &ids, limit))
+                    .await
+                {
+                    Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
+                    Ok(Err(e)) => {
+                        write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                    }
+                    Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                }
+            } else {
+                let offset = params
+                    .get("offset")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                match tokio::task::spawn_blocking(move || proxy_log_json(limit, offset)).await {
+                    Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
+                    Ok(Err(e)) => {
+                        write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                    }
+                    Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                }
             }
         }
         "/api/proxy/show" => {

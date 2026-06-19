@@ -298,7 +298,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
   would be stale. Non-interactive: sidekar repl transcript list|undo|prune-after [--session=P].
   Options:
     -c <credential>  Stored credential name (`oauth:<name>` key): defaults like anthropic, gemini, or a nickname from `credential add`
-    -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, x-ai/grok-3, etc.)
+    -m <model>       Model ID (claude-sonnet-4-5-20250514, o3, grok-build-0.1, grok-4.3, etc.)
     -p <prompt>      Initial prompt (skip interactive input for first turn)
     -r [session_id]  Resume a session (picker if no ID; prefix match)
     --verbose        API request/response logging and `[turn complete]` after each agent run
@@ -313,7 +313,7 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     openrouter       OpenRouter — API key
     opencode-zen     OpenCode Zen — API key
     opencode-go      OpenCode Go — API key
-    grok             Grok (xAI) — API key
+    grok             Grok (xAI) — Grok Build OAuth → cli-chat-proxy; or XAI_API_KEY on api.x.ai
     gemini           Gemini (Google) — API key
     bedrock          Amazon Bedrock — IAM / SigV4
     vertex           GCP Vertex AI (OpenAI-compat) — project + region; Bearer via `gcloud`
@@ -347,14 +347,14 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     sidekar repl credential add claude
     sidekar repl credential add claude work           → stored as 'work'
     sidekar repl credential add openrouter personal   → stored as 'personal'
-    sidekar repl credential add grok
+    sidekar repl credential add grok          # imports ~/.grok/auth.json after `grok login`
     sidekar repl credential add vertex prod           → stored as 'prod'
     sidekar repl credential add openai-compat local http://localhost:11434/v1
     sidekar repl models -c claude-1
     sidekar repl sessions
     sidekar repl -c claude-1 -m claude-sonnet-4-20250514
-    sidekar repl -c personal -m x-ai/grok-3 -p \"explain quantum computing\"
-    sidekar repl -c grok -m grok-4
+    sidekar repl -c grok -m grok-build-0.1
+    sidekar repl -c grok -m grok-build        # alias → grok-build-0.1
     sidekar repl -c local -m llama3.1
     sidekar repl -c codex -m o3 -r
     sidekar repl -c claude-1 -r a63dcdc6

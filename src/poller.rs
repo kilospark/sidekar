@@ -268,6 +268,8 @@ pub fn start_nudger(agent_name: String) {
 
 /// Send nudges for this agent's unanswered outbound requests.
 fn send_nudges(agent_name: &str) {
+    let _ = broker::repair_answered_outbounds(agent_name);
+
     let requests = match broker::outbound_for_sender(agent_name) {
         Ok(r) => r,
         Err(_) => return,
@@ -295,13 +297,7 @@ fn send_nudges(agent_name: &str) {
             continue;
         }
 
-        // Check if the pending message still exists (hasn't been answered)
-        if broker::pending_message(&request.msg_id)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            let _ = broker::delete_outbound_request(&request.msg_id);
+        if !broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
             continue;
         }
 
@@ -325,6 +321,11 @@ fn send_nudges(agent_name: &str) {
             continue;
         }
 
+        // Re-check immediately before delivery — record_reply may have landed since the loop started.
+        if !broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
+            continue;
+        }
+
         // Send the nudge
         let nudge_msg = format!(
             "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
@@ -337,8 +338,19 @@ fn send_nudges(agent_name: &str) {
             _ => continue,
         };
 
-        if delivery_result.is_ok() {
-            let _ = broker::increment_nudge_count(&request.msg_id, now);
+        if delivery_result.is_ok()
+            && broker::try_increment_nudge_count(&request.msg_id, now)
+                .unwrap_or(false)
+        {
+            crate::broker::try_log_event(
+                "debug",
+                "poller",
+                &format!(
+                    "nudge delivered transport={} target={} msg_id={}",
+                    request.transport_name, request.transport_target, request.msg_id,
+                ),
+                None,
+            );
         }
     }
 }

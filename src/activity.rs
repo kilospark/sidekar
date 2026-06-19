@@ -107,6 +107,54 @@ fn publish_relay(state: ActivityState, at: u64) {
     }
 }
 
+/// Refresh `AgentWorking` timestamps during long REPL turns (defer nudges >60s).
+pub fn refresh_working(agent_name: &str) {
+    let now = epoch_secs();
+    if let Ok(mut last) = LAST_PUBLISHED.lock() {
+        last.insert(agent_name.to_string(), (ActivityState::AgentWorking, now));
+    }
+    let _ = crate::broker::update_agent_activity(agent_name, ActivityState::AgentWorking, now);
+    publish_relay(ActivityState::AgentWorking, now);
+}
+
+/// Keeps activity fresh while an agent turn runs longer than `ACTIVITY_STALE_SECS`.
+pub struct WorkingHeartbeat {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl WorkingHeartbeat {
+    pub fn start(agent_name: impl Into<String>) -> Self {
+        use std::sync::atomic::Ordering;
+        let agent_name = agent_name.into();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let handle = std::thread::Builder::new()
+            .name("sidekar-activity-heartbeat".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    if stop_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    refresh_working(&agent_name);
+                }
+            })
+            .ok();
+        Self {
+            stop,
+            _handle: handle,
+        }
+    }
+}
+
+impl Drop for WorkingHeartbeat {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

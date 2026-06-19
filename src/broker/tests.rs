@@ -537,3 +537,168 @@ fn agent_activity_round_trip() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn proxy_log_begin_finish_and_tail() -> Result<()> {
+    with_test_db(|| {
+        let id = proxy_log_begin(&ProxyLogBegin {
+            method: "POST".into(),
+            path: "/v1/messages".into(),
+            upstream_host: "api.anthropic.com".into(),
+            request_headers: "{}".into(),
+            request_body: b"{}".to_vec(),
+        })?;
+        let pending = proxy_log_detail(id)?.expect("row");
+        assert_eq!(pending.status, PROXY_STATUS_PENDING);
+        assert_eq!(pending.response_status, 0);
+
+        proxy_log_finish(
+            id,
+            &ProxyLogFinish {
+                response_status: 200,
+                response_headers: "{}".into(),
+                response_body: b"ok".to_vec(),
+                request_body: b"{}".to_vec(),
+                duration_ms: 42,
+            },
+        )?;
+        let done = proxy_log_detail(id)?.expect("row");
+        assert_eq!(done.status, PROXY_STATUS_COMPLETE);
+        assert_eq!(done.response_status, 200);
+        assert_eq!(done.duration_ms, 42);
+
+        let id2 = proxy_log_begin(&ProxyLogBegin {
+            method: "GET".into(),
+            path: "/health".into(),
+            upstream_host: "example.com".into(),
+            request_headers: "{}".into(),
+            request_body: Vec::new(),
+        })?;
+        let tail = proxy_log_since(id, 10)?;
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].id, id2);
+        assert_eq!(tail[0].status, PROXY_STATUS_PENDING);
+
+        let updated = proxy_log_by_ids(&[id2])?;
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].id, id2);
+        Ok(())
+    })
+}
+
+#[test]
+fn outbound_not_nudgeable_after_record_reply() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        register_agent(&sender, None)?;
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "ping");
+        set_pending(&envelope)?;
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        assert!(outbound_nudgeable(&envelope.id)?);
+
+        let reply = Envelope::new_response(
+            AgentId::new("receiver"),
+            "sender",
+            "pong",
+            envelope.id.clone(),
+        );
+        record_reply(&envelope.id, &reply)?;
+        assert!(!outbound_nudgeable(&envelope.id)?);
+        record_reply(&envelope.id, &reply)?;
+        assert_eq!(replies_for_request(&envelope.id)?.len(), 1);
+        Ok(())
+    })
+}
+
+#[test]
+fn repair_answered_outbounds_closes_stale_open_rows() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        register_agent(&sender, None)?;
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "ping");
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        let reply = Envelope::new_response(
+            AgentId::new("receiver"),
+            "sender",
+            "pong",
+            envelope.id.clone(),
+        );
+        record_reply(&envelope.id, &reply)?;
+        let conn = open_raw()?;
+        conn.execute(
+            "UPDATE outbound_requests SET status = ?1 WHERE msg_id = ?2",
+            params![OUTBOUND_STATUS_OPEN, envelope.id],
+        )?;
+        assert_eq!(
+            outbound_request(&envelope.id)?.expect("row").status,
+            OUTBOUND_STATUS_OPEN
+        );
+        assert!(!outbound_nudgeable(&envelope.id)?);
+        let repaired = repair_answered_outbounds("sender")?;
+        assert_eq!(repaired, 1);
+        assert_eq!(
+            outbound_request(&envelope.id)?.expect("row").status,
+            OUTBOUND_STATUS_ANSWERED
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn ensure_proxy_log_status_adds_column_on_legacy_table() -> Result<()> {
+    with_test_db(|| {
+        let conn = open_raw()?;
+        conn.execute_batch(
+            "
+            CREATE TABLE proxy_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                upstream_host TEXT NOT NULL,
+                request_headers TEXT,
+                request_body BLOB,
+                response_status INTEGER,
+                response_headers TEXT,
+                response_body BLOB,
+                duration_ms INTEGER,
+                compressed INTEGER NOT NULL DEFAULT 0
+            );
+            PRAGMA user_version = 6;
+            ",
+        )?;
+        ensure_proxy_log_status(&conn)?;
+        let has_status: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proxy_log') WHERE name = 'status'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(has_status, 1);
+        let row = proxy_log_begin(&ProxyLogBegin {
+            method: "GET".into(),
+            path: "/".into(),
+            upstream_host: "example.com".into(),
+            request_headers: "{}".into(),
+            request_body: Vec::new(),
+        })?;
+        assert_eq!(
+            proxy_log_detail(row)?.expect("row").status,
+            PROXY_STATUS_PENDING
+        );
+        Ok(())
+    })
+}

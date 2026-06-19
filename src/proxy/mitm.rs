@@ -198,6 +198,9 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             body
         };
 
+        let log_id =
+            proxy_log_begin_http(method, path, &host, &parsed_headers, &body).await;
+
         // Forward to upstream
         server_write
             .write_all(format!("{method} {path} {version}\r\n").as_bytes())
@@ -279,27 +282,40 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                 );
             }
 
-            // If the handshake failed, just pipe remaining bytes raw and bail.
             if ws_status != 101 {
                 tokio::select! {
                     r = tokio::io::copy(&mut client_reader, &mut server_write) => { let _ = r; }
                     r = tokio::io::copy(&mut server_reader, &mut client_write) => { let _ = r; }
                 }
-                let _ = state.log_tx.send(ProxyLogEntry {
-                    method: "WS".to_string(),
-                    path: path.to_string(),
-                    upstream_host: host.clone(),
-                    request_headers: parsed_headers,
-                    request_body: body,
-                    response_status: ws_status,
-                    response_headers: ws_resp_headers,
-                    response_body: Vec::new(),
-                    duration_ms: req_start.elapsed().as_millis() as u64,
-                });
+                if let Some(id) = log_id {
+                    proxy_log_finish_http(
+                        id,
+                        &parsed_headers,
+                        body,
+                        ws_status,
+                        &ws_resp_headers,
+                        Vec::new(),
+                        req_start.elapsed().as_millis() as u64,
+                    )
+                    .await;
+                }
                 break;
             }
 
-            // Frame mode. Emit one proxy_log row per *turn* rather than per
+            if let Some(id) = log_id {
+                proxy_log_finish_http(
+                    id,
+                    &parsed_headers,
+                    body,
+                    ws_status,
+                    &ws_resp_headers,
+                    Vec::new(),
+                    req_start.elapsed().as_millis() as u64,
+                )
+                .await;
+            }
+
+            // Frame mode. Emit one proxy_log row per *turn rather than per
             // session: codex holds the WS open across many turns, so a
             // flush-on-close design would never show live activity. Heuristic:
             // a turn starts when the client sends a Data message, and ends on
@@ -307,6 +323,7 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             // close. Raw bytes are always forwarded unchanged regardless of
             // bookkeeping.
             struct WsPending {
+                log_id: Option<i64>,
                 request_body: Vec<u8>,
                 response_body: Vec<u8>,
                 start: std::time::Instant,
@@ -328,18 +345,23 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             macro_rules! flush_pending {
                 ($p:expr) => {{
                     let p: WsPending = $p;
-                    if !p.request_body.is_empty() || !p.response_body.is_empty() {
-                        let _ = state.log_tx.send(ProxyLogEntry {
-                            method: "WS".to_string(),
-                            path: path.to_string(),
-                            upstream_host: host.clone(),
-                            request_headers: parsed_headers.clone(),
-                            request_body: p.request_body,
-                            response_status: ws_status,
-                            response_headers: ws_resp_headers.clone(),
-                            response_body: p.response_body,
-                            duration_ms: p.start.elapsed().as_millis() as u64,
-                        });
+                    if p.log_id.is_some()
+                        && (!p.request_body.is_empty() || !p.response_body.is_empty())
+                    {
+                        if let Some(id) = p.log_id {
+                            proxy_log_finish_http(
+                                id,
+                                &parsed_headers,
+                                p.request_body,
+                                ws_status,
+                                &ws_resp_headers,
+                                p.response_body,
+                                p.start.elapsed().as_millis() as u64,
+                            )
+                            .await;
+                        }
+                    } else if let Some(id) = p.log_id {
+                        proxy_log_fail_async(id).await;
                     }
                 }};
             }
@@ -369,8 +391,18 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                                             }
                                             let now = std::time::Instant::now();
                                             let take = bytes.len().min(MAX_RESPONSE_CAPTURE);
+                                            let chunk = bytes[..take].to_vec();
+                                            let turn_log_id = proxy_log_begin_http(
+                                                "WS",
+                                                path,
+                                                &host,
+                                                &parsed_headers,
+                                                &chunk,
+                                            )
+                                            .await;
                                             pending = Some(WsPending {
-                                                request_body: bytes[..take].to_vec(),
+                                                log_id: turn_log_id,
+                                                request_body: chunk,
                                                 response_body: Vec::new(),
                                                 start: now,
                                                 last_activity: now,
@@ -400,12 +432,24 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
                                             // Attach to the current turn; if the server spoke
                                             // first (unusual), open an empty-request turn.
                                             let now = std::time::Instant::now();
-                                            let p = pending.get_or_insert_with(|| WsPending {
-                                                request_body: Vec::new(),
-                                                response_body: Vec::new(),
-                                                start: now,
-                                                last_activity: now,
-                                            });
+                                            if pending.is_none() {
+                                                let turn_log_id = proxy_log_begin_http(
+                                                    "WS",
+                                                    path,
+                                                    &host,
+                                                    &parsed_headers,
+                                                    &[],
+                                                )
+                                                .await;
+                                                pending = Some(WsPending {
+                                                    log_id: turn_log_id,
+                                                    request_body: Vec::new(),
+                                                    response_body: Vec::new(),
+                                                    start: now,
+                                                    last_activity: now,
+                                                });
+                                            }
+                                            let p = pending.as_mut().expect("pending turn");
                                             if p.response_body.len() < MAX_RESPONSE_CAPTURE {
                                                 if !p.response_body.is_empty() {
                                                     p.response_body.push(b'\n');
@@ -533,17 +577,18 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
         }
         client_write.flush().await?;
 
-        let _ = state.log_tx.send(ProxyLogEntry {
-            method: method.to_string(),
-            path: path.to_string(),
-            upstream_host: host.clone(),
-            request_headers: parsed_headers,
-            request_body: body,
-            response_status,
-            response_headers: resp_headers,
-            response_body: response_buf,
-            duration_ms: req_start.elapsed().as_millis() as u64,
-        });
+        if let Some(id) = log_id {
+            proxy_log_finish_http(
+                id,
+                &parsed_headers,
+                body,
+                response_status,
+                &resp_headers,
+                response_buf,
+                req_start.elapsed().as_millis() as u64,
+            )
+            .await;
+        }
     }
 
     Ok(())

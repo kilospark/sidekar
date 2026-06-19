@@ -377,6 +377,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let pre_len = history.len();
         crate::bus::set_repl_terminal_title(&nick, true);
         crate::activity::publish(&bus_name, crate::activity::ActivityState::AgentWorking);
+        let _activity_heartbeat = crate::activity::WorkingHeartbeat::start(&bus_name);
         let run_result = crate::agent::run(
             prov,
             mdl,
@@ -800,6 +801,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         let pre_len = history.len();
         crate::bus::set_repl_terminal_title(&nick, true);
         crate::activity::publish(&bus_name, crate::activity::ActivityState::AgentWorking);
+        let _activity_heartbeat = crate::activity::WorkingHeartbeat::start(&bus_name);
         let run_result = crate::agent::run(
             prov,
             mdl,

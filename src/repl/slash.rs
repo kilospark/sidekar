@@ -1880,7 +1880,8 @@ pub async fn build_provider(cred_name: &str) -> Result<Provider> {
         }
         "grok" => {
             let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
-            Ok(Provider::grok(api_key, cred))
+            let base_url = providers::grok_oauth::grok_repl_base_url(cred_name);
+            Ok(Provider::grok(api_key, base_url, cred))
         }
         "gemini" => {
             let api_key = providers::oauth::get_gemini_token(Some(cred_name)).await?;

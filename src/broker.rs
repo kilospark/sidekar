@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 mod agent_registry;
 mod agent_sessions;
@@ -103,18 +103,20 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     let version: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
         .unwrap_or(0);
-    if version >= SCHEMA_VERSION {
-        return Ok(());
+    if version < SCHEMA_VERSION {
+        init_schema(conn)?;
+        // v4: drop legacy agents.socket_path (bus delivery uses broker SQLite `bus_queue`).
+        if version < 4 {
+            migrate_agents_drop_socket_path(conn)?;
+        }
+        if version < 5 {
+            migrate_agents_activity_columns(conn)?;
+        }
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
-    init_schema(conn)?;
-    // v4: drop legacy agents.socket_path (bus delivery uses broker SQLite `bus_queue`).
-    if version < 4 {
-        migrate_agents_drop_socket_path(conn)?;
-    }
-    if version < 5 {
-        migrate_agents_activity_columns(conn)?;
-    }
-    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    // Idempotent — adds proxy_log.status + index when missing (including repair for
+    // v6 DBs that failed the old init_schema index-before-column ordering).
+    ensure_proxy_log_status(conn)?;
     Ok(())
 }
 
@@ -152,6 +154,27 @@ fn migrate_agents_activity_columns(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+fn ensure_proxy_log_status(conn: &Connection) -> Result<()> {
+    let mut cols = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(proxy_log)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for name in names.flatten() {
+            cols.insert(name);
+        }
+    }
+    if !cols.contains("status") {
+        conn.execute(
+            "ALTER TABLE proxy_log ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_proxy_log_status ON proxy_log(status, id);",
+    )?;
     Ok(())
 }
 
@@ -764,7 +787,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             response_headers TEXT,
             response_body BLOB,
             duration_ms INTEGER,
-            compressed INTEGER NOT NULL DEFAULT 0
+            compressed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'complete'
         );
         CREATE INDEX IF NOT EXISTS idx_proxy_log_created
             ON proxy_log(created_at);

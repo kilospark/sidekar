@@ -454,6 +454,7 @@ fn format_bytes(n: usize) -> String {
 struct ProxyLogEntryOut {
     id: i64,
     created_at: i64,
+    status: String,
     method: String,
     path: String,
     upstream_host: String,
@@ -479,8 +480,8 @@ impl crate::output::CommandOutput for ProxyLogOutput {
         }
         writeln!(
             w,
-            "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} RESP",
-            "ID", "TIME", "METHOD", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ"
+            "{:<5} {:<8} {:<6} {:<10} {:<20} {:<20} {:<6} {:<8} {:<10} RESP",
+            "ID", "TIME", "METHOD", "STATE", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ"
         )?;
         for r in &self.items {
             let time = {
@@ -500,16 +501,28 @@ impl crate::output::CommandOutput for ProxyLogOutput {
             } else {
                 r.upstream_host.clone()
             };
+            let status = if r.status == "pending" {
+                "…".to_string()
+            } else if r.status == "failed" {
+                "fail".to_string()
+            } else {
+                r.response_status.to_string()
+            };
             writeln!(
                 w,
-                "{:<5} {:<8} {:<6} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
+                "{:<5} {:<8} {:<6} {:<10} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
                 r.id,
                 time,
                 r.method,
+                r.status,
                 path_short,
                 host_short,
-                r.response_status,
-                r.duration_ms,
+                status,
+                if r.status == "pending" {
+                    "—".to_string()
+                } else {
+                    r.duration_ms.to_string()
+                },
                 format_bytes(r.request_size),
                 format_bytes(r.response_size),
             )?;
@@ -532,6 +545,7 @@ fn cmd_proxy_log(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             .map(|r| ProxyLogEntryOut {
                 id: r.id,
                 created_at: r.created_at,
+                status: r.status,
                 method: r.method,
                 path: r.path,
                 upstream_host: r.upstream_host,

@@ -103,6 +103,8 @@ pub(super) async fn handle_reverse_proxy_http(
     };
     let _ = newlines_saved; // used above
 
+    let log_id = proxy_log_begin_http(method, path, upstream_host, &parsed_headers, &body).await;
+
     // Connect TLS to upstream
     let upstream_tcp = TcpStream::connect((upstream_host, upstream_port)).await?;
     let server_name = rustls::pki_types::ServerName::try_from(upstream_host.to_string())?;
@@ -176,17 +178,18 @@ pub(super) async fn handle_reverse_proxy_http(
             }
         }
 
-        let _ = state.log_tx.send(ProxyLogEntry {
-            method: method.to_string(),
-            path: path.to_string(),
-            upstream_host: upstream_host.to_string(),
-            request_headers: parsed_headers.clone(),
-            request_body: body,
-            response_status,
-            response_headers: resp_headers,
-            response_body: response_buf,
-            duration_ms: start_time.elapsed().as_millis() as u64,
-        });
+        if let Some(id) = log_id {
+            proxy_log_finish_http(
+                id,
+                &parsed_headers,
+                body,
+                response_status,
+                &resp_headers,
+                response_buf,
+                start_time.elapsed().as_millis() as u64,
+            )
+            .await;
+        }
     }
 
     Ok(())

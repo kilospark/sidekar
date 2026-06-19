@@ -170,21 +170,31 @@ pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let envelope_json =
         serde_json::to_string(envelope).context("failed to serialize reply envelope")?;
-    tx.execute(
-        "INSERT INTO bus_replies (
-            reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            reply_to_msg_id,
-            envelope.id,
-            envelope.from.name,
-            envelope.from.display_name(),
-            envelope.kind.as_str(),
-            envelope.message,
-            envelope.created_at as i64,
-            envelope_json,
-        ],
+    let reply_exists: bool = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM bus_replies
+            WHERE reply_to_msg_id = ?1 AND reply_msg_id = ?2
+        )",
+        params![reply_to_msg_id, envelope.id],
+        |r| r.get(0),
     )?;
+    if !reply_exists {
+        tx.execute(
+            "INSERT INTO bus_replies (
+                reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                reply_to_msg_id,
+                envelope.id,
+                envelope.from.name,
+                envelope.from.display_name(),
+                envelope.kind.as_str(),
+                envelope.message,
+                envelope.created_at as i64,
+                envelope_json,
+            ],
+        )?;
+    }
     tx.execute(
         "DELETE FROM pending_requests WHERE id = ?1",
         params![reply_to_msg_id],
@@ -296,6 +306,69 @@ pub fn increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<u32> {
         |row| row.get::<_, i64>(0),
     )?;
     Ok(count as u32)
+}
+
+/// True when this outbound row is still unanswered and eligible for a nudge.
+pub fn outbound_nudgeable(msg_id: &str) -> Result<bool> {
+    let conn = open()?;
+    let nudgeable: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM outbound_requests o
+            WHERE o.msg_id = ?1
+              AND o.status = ?2
+              AND NOT EXISTS (
+                  SELECT 1 FROM bus_replies r WHERE r.reply_to_msg_id = o.msg_id
+              )
+        )",
+        params![msg_id, OUTBOUND_STATUS_OPEN],
+        |r| r.get(0),
+    )?;
+    Ok(nudgeable)
+}
+
+/// Close open outbound rows that already have a stored reply (repair / idempotency).
+pub fn repair_answered_outbounds(sender_name: &str) -> Result<u64> {
+    let conn = open()?;
+    let count = conn.execute(
+        "UPDATE outbound_requests
+         SET status = ?1,
+             answered_at = COALESCE(
+                 answered_at,
+                 (SELECT r.created_at FROM bus_replies r
+                  WHERE r.reply_to_msg_id = outbound_requests.msg_id
+                  ORDER BY r.created_at DESC LIMIT 1)
+             ),
+             closed_at = COALESCE(
+                 closed_at,
+                 (SELECT r.created_at FROM bus_replies r
+                  WHERE r.reply_to_msg_id = outbound_requests.msg_id
+                  ORDER BY r.created_at DESC LIMIT 1)
+             )
+         WHERE sender_name = ?2
+           AND status = ?3
+           AND EXISTS (
+               SELECT 1 FROM bus_replies r WHERE r.reply_to_msg_id = outbound_requests.msg_id
+           )",
+        params![OUTBOUND_STATUS_ANSWERED, sender_name, OUTBOUND_STATUS_OPEN],
+    )?;
+    Ok(count as u64)
+}
+
+/// Increment nudge count only if the request is still nudgeable (atomic with delivery).
+pub fn try_increment_nudge_count(msg_id: &str, nudged_at: u64) -> Result<bool> {
+    let conn = open()?;
+    let updated = conn.execute(
+        "UPDATE outbound_requests
+         SET nudge_count = nudge_count + 1,
+             last_nudged_at = ?2
+         WHERE msg_id = ?1
+           AND status = ?3
+           AND NOT EXISTS (
+               SELECT 1 FROM bus_replies r WHERE r.reply_to_msg_id = outbound_requests.msg_id
+           )",
+        params![msg_id, nudged_at as i64, OUTBOUND_STATUS_OPEN],
+    )?;
+    Ok(updated > 0)
 }
 
 pub fn mark_outbound_timed_out(msg_id: &str, timed_out_at: u64) -> Result<()> {

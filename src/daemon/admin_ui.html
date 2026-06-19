@@ -307,6 +307,11 @@
   .session-table td:first-child { white-space: nowrap; }
   .clickable { cursor: pointer; color: var(--accent); }
   .clickable:hover { text-decoration: underline; }
+  tr.row-pending td { color: var(--muted); }
+  tr.row-pending td.status-cell::after { content: ' …'; animation: proxy-pulse 1.2s ease-in-out infinite; }
+  tr.row-failed td.status-cell { color: var(--danger); }
+  @keyframes proxy-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+  .live-badge { font-size: 11px; color: var(--ok); margin-left: 8px; font-weight: normal; }
   .detail-panel {
     margin-top: 16px;
     border: 1px solid var(--border);
@@ -356,6 +361,7 @@
 </div>
 <script>
 const LIMIT = 50;
+const REFRESH_MS = 1500;
 const THEME_KEY = 'sidekar-theme';
 let overview = null;
 let runtime = null;
@@ -364,6 +370,92 @@ let currentTable = null;
 let currentView = 'overview';
 let offset = 0;
 let proxyOffset = 0;
+let proxyMaxId = 0;
+let refreshTimer = null;
+let applyingRoute = false;
+
+function hashForRoute(route) {
+  if (route.view === 'overview') return '#/overview';
+  if (route.view === 'proxy') {
+    const p = new URLSearchParams();
+    if (route.offset) p.set('offset', String(route.offset));
+    if (route.detail) p.set('detail', String(route.detail));
+    const q = p.toString();
+    return q ? `#/proxy?${q}` : '#/proxy';
+  }
+  if (route.view === 'table' && route.table) {
+    let h = '#/table/' + encodeURIComponent(route.table);
+    if (route.offset) h += '?offset=' + route.offset;
+    return h;
+  }
+  return '#/overview';
+}
+
+function routeFromHash() {
+  const h = location.hash || '#/overview';
+  const without = h.startsWith('#') ? h.slice(1) : h;
+  const qIdx = without.indexOf('?');
+  const pathPart = qIdx >= 0 ? without.slice(0, qIdx) : without;
+  const params = new URLSearchParams(qIdx >= 0 ? without.slice(qIdx + 1) : '');
+  const segments = pathPart.split('/').filter(s => s.length);
+  const head = segments[0] || 'overview';
+  if (head === 'overview') return { view: 'overview' };
+  if (head === 'proxy') {
+    return {
+      view: 'proxy',
+      offset: Math.max(0, parseInt(params.get('offset') || '0', 10) || 0),
+      detail: params.has('detail') ? parseInt(params.get('detail'), 10) || null : null,
+    };
+  }
+  if (head === 'table' && segments[1]) {
+    return {
+      view: 'table',
+      table: decodeURIComponent(segments[1]),
+      offset: Math.max(0, parseInt(params.get('offset') || '0', 10) || 0),
+    };
+  }
+  return { view: 'overview' };
+}
+
+function navigateTo(route) {
+  const next = hashForRoute(route);
+  if (location.hash !== next) location.hash = next.slice(1);
+  else applyRoute(route);
+}
+
+async function applyRoute(route) {
+  if (applyingRoute) return;
+  applyingRoute = true;
+  try {
+    if (route.view === 'overview') {
+      currentView = 'overview';
+      currentTable = null;
+      offset = 0;
+      setActiveNav('overview');
+      syncAutoRefresh();
+      await showOverview(false, true);
+    } else if (route.view === 'proxy') {
+      currentView = 'proxy';
+      currentTable = null;
+      proxyOffset = route.offset || 0;
+      setActiveNav('proxy');
+      syncAutoRefresh();
+      await showProxyLog(proxyOffset, false, true);
+      if (route.detail) await showProxyDetail(route.detail, true);
+    } else if (route.view === 'table' && route.table) {
+      currentView = 'table';
+      currentTable = route.table;
+      offset = route.offset || 0;
+      setActiveNav(route.table);
+      stopAutoRefresh();
+      await loadTable(route.table, offset, true);
+    } else {
+      navigateTo({ view: 'overview' });
+    }
+  } finally {
+    applyingRoute = false;
+  }
+}
 
 function fmtTime(epoch) {
   if (!epoch) return '—';
@@ -437,19 +529,24 @@ function setActiveNav(id) {
   if (match) match.classList.add('active');
 }
 
-function navigate(id, fn) {
-  if (id === 'overview') {
-    currentView = 'overview';
-    currentTable = null;
-  } else if (id === 'proxy') {
-    currentView = 'proxy';
-    currentTable = null;
-  } else {
-    currentView = 'table';
-    currentTable = id;
+function navigate(id) {
+  if (id === 'overview') navigateTo({ view: 'overview' });
+  else if (id === 'proxy') navigateTo({ view: 'proxy', offset: 0 });
+  else navigateTo({ view: 'table', table: id, offset: 0 });
+}
+
+function syncAutoRefresh() {
+  stopAutoRefresh();
+  if (currentView === 'overview' || currentView === 'proxy') {
+    refreshTimer = setInterval(tickAutoRefresh, REFRESH_MS);
   }
-  setActiveNav(id);
-  fn();
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 }
 
 function renderNav() {
@@ -460,12 +557,12 @@ function renderNav() {
   const homeBtn = document.createElement('button');
   homeBtn.dataset.navId = 'overview';
   homeBtn.textContent = 'Overview';
-  homeBtn.onclick = () => navigate('overview', showOverview);
+  homeBtn.onclick = () => navigate('overview');
   home.appendChild(homeBtn);
   const proxyBtn = document.createElement('button');
   proxyBtn.dataset.navId = 'proxy';
   proxyBtn.textContent = 'Proxy MITM';
-  proxyBtn.onclick = () => navigate('proxy', () => showProxyLog());
+  proxyBtn.onclick = () => navigate('proxy');
   home.appendChild(proxyBtn);
   nav.appendChild(home);
 
@@ -479,7 +576,7 @@ function renderNav() {
       btn.dataset.navId = t.name;
       btn.innerHTML = `<span>${esc(t.label)}</span><span class="count">${t.count}</span>`;
       const tableName = t.name;
-      btn.onclick = () => navigate(tableName, () => loadTable(tableName, 0));
+      btn.onclick = () => navigate(tableName);
       sec.appendChild(btn);
     }
     nav.appendChild(sec);
@@ -511,13 +608,25 @@ function renderExtConnections(ext) {
       <tbody>${rows}</tbody></table></div>`;
 }
 
-async function showOverview() {
+async function tickAutoRefresh() {
+  if (currentView === 'overview') {
+    await showOverview(true, true);
+  } else if (currentView === 'proxy' && proxyOffset === 0) {
+    await pollProxyLog();
+  }
+}
+
+async function showOverview(silent = false, skipRoute = false) {
+  if (!skipRoute && !silent) {
+    navigateTo({ view: 'overview' });
+    return;
+  }
   currentTable = null;
   currentView = 'overview';
   offset = 0;
   setActiveNav('overview');
   const el = document.getElementById('content');
-  el.innerHTML = '<div class="empty">Loading…</div>';
+  if (!silent) el.innerHTML = '<div class="empty">Loading…</div>';
   try {
     runtime = await api('/api/runtime');
     document.getElementById('header-meta').textContent =
@@ -540,7 +649,7 @@ async function showOverview() {
       { label: 'last active', render: r => esc(fmtTime(r.last_active_at)) },
     ];
     el.innerHTML = `
-      <div class="toolbar"><h2>Overview</h2><button onclick="showOverview()">Refresh</button></div>
+      <div class="toolbar"><h2>Overview<span class="live-badge">● live</span></h2><button onclick="showOverview()">Refresh</button></div>
       <div class="notice">${esc(proxy.note || '')}</div>
       <div class="overview-grid">
         <div class="card"><div class="label">Device login</div><div class="value ${dev.logged_in ? 'ok-text' : ''}">${dev.logged_in ? 'logged in' : 'not logged in'}</div></div>
@@ -556,13 +665,21 @@ async function showOverview() {
       ${renderSessionTable('REPL (running)', sess.repl || [], agentCols)}
       ${renderSessionTable('Other bus agents', sess.other || [], agentCols)}
       ${renderSessionTable('Open agent_sessions', sess.agent_sessions_open || [], openCols)}
-      <div class="notice">Proxy MITM state (--proxy / /proxy) is per-process; only captured rows appear in <span class="clickable" onclick="navigate('proxy', () => showProxyLog())">Proxy MITM</span>.</div>`;
+      <div class="notice">Proxy MITM state (--proxy / /proxy) is per-process; only captured rows appear in <span class="clickable" onclick="navigate('proxy')">Proxy MITM</span>.</div>`;
+    syncAutoRefresh();
   } catch (e) {
-    el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    if (!silent) el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
   }
 }
 
-async function showProxyDetail(id) {
+async function showProxyDetail(id, skipRoute = false) {
+  if (!skipRoute) {
+    const route = routeFromHash();
+    route.view = 'proxy';
+    route.detail = id;
+    navigateTo(route);
+    return;
+  }
   const panel = document.getElementById('proxy-detail');
   if (!panel) return;
   panel.innerHTML = '<div class="empty">Loading detail…</div>';
@@ -572,7 +689,8 @@ async function showProxyDetail(id) {
     const resp = d.response_body?.data || '';
     panel.innerHTML = `
       <div><strong>#${d.id}</strong> ${esc(d.method)} ${esc(d.path)} → ${esc(d.upstream_host)}
-        · ${d.response_status} · ${d.duration_ms}ms · ${fmtTime(d.created_at)}</div>
+        · ${d.status === 'pending' ? 'in flight' : (d.status === 'failed' ? 'failed' : d.response_status)}
+        · ${d.status === 'pending' ? '—' : d.duration_ms + 'ms'} · ${fmtTime(d.created_at)}</div>
       <div class="section-title">Request headers</div><pre>${esc(d.request_headers || '')}</pre>
       <div class="section-title">Request body (${fmtBytes(d.request_body?.total_bytes || 0)})</div><pre>${esc(req)}</pre>
       <div class="section-title">Response headers</div><pre>${esc(d.response_headers || '')}</pre>
@@ -582,52 +700,118 @@ async function showProxyDetail(id) {
   }
 }
 
-async function showProxyLog(newOffset = 0) {
-  currentTable = null;
-  currentView = 'proxy';
-  proxyOffset = newOffset;
-  setActiveNav('proxy');
-  const el = document.getElementById('content');
-  el.innerHTML = '<div class="empty">Loading proxy log…</div>';
-  try {
-    const data = await api(`/api/proxy/log?limit=${LIMIT}&offset=${proxyOffset}`);
-    let tbody = (data.items || []).map(r => `<tr>
+function proxyStatusCell(r) {
+  if (r.status === 'pending') return 'pending';
+  if (r.status === 'failed') return 'failed';
+  return String(r.response_status);
+}
+
+function proxyRowClass(r) {
+  if (r.status === 'pending') return 'row-pending';
+  if (r.status === 'failed') return 'row-failed';
+  return '';
+}
+
+function proxyRowHtml(r) {
+  const cls = proxyRowClass(r);
+  const rowCls = cls ? ` class="${cls}"` : '';
+  const dur = r.status === 'pending' ? '—' : r.duration_ms;
+  const respSize = r.status === 'pending' ? '—' : fmtBytes(r.response_size);
+  return `<tr data-id="${r.id}"${rowCls}>
       <td class="clickable" onclick="showProxyDetail(${r.id})">${r.id}</td>
       <td>${fmtTime(r.created_at)}</td>
       <td>${esc(r.method)}</td>
       <td>${esc(r.path)}</td>
       <td>${esc(r.upstream_host)}</td>
-      <td>${r.response_status}</td>
-      <td>${r.duration_ms}</td>
+      <td class="status-cell">${proxyStatusCell(r)}</td>
+      <td>${dur}</td>
       <td>${fmtBytes(r.request_size)}</td>
-      <td>${fmtBytes(r.response_size)}</td>
-    </tr>`).join('');
+      <td>${respSize}</td>
+    </tr>`;
+}
+
+function updateProxyStats(total) {
+  const stats = document.getElementById('proxy-stats');
+  if (stats) stats.textContent = `${total} entries · stored in proxy_log · live tail`;
+}
+
+async function pollProxyLog() {
+  const tbody = document.querySelector('#proxy-table tbody');
+  if (!tbody) return;
+  const pendingIds = [];
+  tbody.querySelectorAll('tr.row-pending').forEach(tr => {
+    const id = parseInt(tr.dataset.id, 10);
+    if (id) pendingIds.push(id);
+  });
+  const qs = new URLSearchParams();
+  if (proxyMaxId > 0) qs.set('since_id', String(proxyMaxId));
+  if (pendingIds.length) qs.set('ids', pendingIds.join(','));
+  if (!qs.has('since_id') && !qs.has('ids')) return;
+  try {
+    const data = await api(`/api/proxy/log?${qs}`);
+    for (const r of data.updated || []) {
+      const tr = tbody.querySelector(`tr[data-id="${r.id}"]`);
+      if (tr) tr.outerHTML = proxyRowHtml(r);
+    }
+    for (const r of (data.new || []).slice().reverse()) {
+      tbody.insertAdjacentHTML('afterbegin', proxyRowHtml(r));
+      proxyMaxId = Math.max(proxyMaxId, r.id);
+      while (tbody.rows.length > LIMIT) {
+        tbody.deleteRow(tbody.rows.length - 1);
+      }
+    }
+    if (typeof data.total === 'number') updateProxyStats(data.total);
+  } catch (_) { /* keep polling on transient errors */ }
+}
+
+async function showProxyLog(newOffset = 0, silent = false, skipRoute = false) {
+  if (!skipRoute && !silent) {
+    navigateTo({ view: 'proxy', offset: newOffset });
+    return;
+  }
+  currentTable = null;
+  currentView = 'proxy';
+  proxyOffset = newOffset;
+  setActiveNav('proxy');
+  const el = document.getElementById('content');
+  if (!silent) el.innerHTML = '<div class="empty">Loading proxy log…</div>';
+  try {
+    const data = await api(`/api/proxy/log?limit=${LIMIT}&offset=${proxyOffset}`);
+    const items = data.items || [];
+    proxyMaxId = items.reduce((m, r) => Math.max(m, r.id), 0);
+    let tbody = items.map(proxyRowHtml).join('');
     if (!tbody) tbody = '<tr><td colspan="9" class="empty">No captures yet. Enable --proxy (PTY) or /proxy on (REPL).</td></tr>';
     const start = data.total ? proxyOffset + 1 : 0;
-    const end = Math.min(proxyOffset + (data.items || []).length, data.total);
+    const end = Math.min(proxyOffset + items.length, data.total);
+    const liveBadge = proxyOffset === 0 ? '<span class="live-badge">● live</span>' : '';
     el.innerHTML = `
       <div class="toolbar">
-        <h2>Proxy MITM traces</h2>
-        <span class="stats">${data.total} entries · stored in proxy_log</span>
-        <button onclick="showProxyLog(0)">Refresh</button>
+        <h2>Proxy MITM traces${liveBadge}</h2>
+        <span class="stats" id="proxy-stats">${data.total} entries · stored in proxy_log${proxyOffset === 0 ? ' · live tail' : ''}</span>
+        <button onclick="navigateTo({view:'proxy',offset:0})">Refresh</button>
       </div>
       <div class="notice">Captured when REPL /proxy on or sidekar &lt;agent&gt; --proxy. Written to ~/.sidekar/sidekar.sqlite3 proxy_log.</div>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table id="proxy-table">
         <thead><tr><th>id</th><th>time</th><th>method</th><th>path</th><th>host</th><th>status</th><th>ms</th><th>req</th><th>resp</th></tr></thead>
         <tbody>${tbody}</tbody></table></div>
       <div class="pager">
-        <button ${proxyOffset <= 0 ? 'disabled' : ''} onclick="showProxyLog(${Math.max(0, proxyOffset - LIMIT)})">Prev</button>
+        <button ${proxyOffset <= 0 ? 'disabled' : ''} onclick="navigateTo({view:'proxy',offset:${Math.max(0, proxyOffset - LIMIT)}})">Prev</button>
         <span>${start}–${end} of ${data.total}</span>
-        <button ${end >= data.total ? 'disabled' : ''} onclick="showProxyLog(${proxyOffset + LIMIT})">Next</button>
+        <button ${end >= data.total ? 'disabled' : ''} onclick="navigateTo({view:'proxy',offset:${proxyOffset + LIMIT}})">Next</button>
       </div>
       <div id="proxy-detail" class="detail-panel"><div class="empty">Click an id for full request/response bodies</div></div>`;
     window.showProxyDetail = showProxyDetail;
+    syncAutoRefresh();
   } catch (e) {
-    el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    if (!silent) el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
   }
 }
 
-async function loadTable(name, newOffset = 0) {
+async function loadTable(name, newOffset = 0, skipRoute = false) {
+  if (!skipRoute) {
+    navigateTo({ view: 'table', table: name, offset: newOffset });
+    return;
+  }
   currentView = 'table';
   currentTable = name;
   offset = newOffset;
@@ -645,17 +829,18 @@ async function loadTable(name, newOffset = 0) {
     if (!tbody) tbody = `<tr><td colspan="${cols.length || 1}" class="empty">No rows</td></tr>`;
     const start = data.total ? offset + 1 : 0;
     const end = Math.min(offset + data.rows.length, data.total);
+    const tableJs = JSON.stringify(name);
     el.innerHTML = `
       <div class="toolbar">
         <h2>${esc(data.label)}</h2>
         <span class="stats">${data.total} rows · ${esc(data.table)}</span>
-        <button onclick="loadTable('${esc(name)}', 0)">Refresh</button>
+        <button onclick="applyRoute(routeFromHash())">Refresh</button>
       </div>
       <div class="table-wrap"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>
       <div class="pager">
-        <button ${offset <= 0 ? 'disabled' : ''} onclick="loadTable('${esc(name)}', ${Math.max(0, offset - LIMIT)})">Prev</button>
+        <button ${offset <= 0 ? 'disabled' : ''} onclick="navigateTo({view:'table',table:${tableJs},offset:${Math.max(0, offset - LIMIT)}})">Prev</button>
         <span>${start}–${end} of ${data.total}</span>
-        <button ${end >= data.total ? 'disabled' : ''} onclick="loadTable('${esc(name)}', ${offset + LIMIT})">Next</button>
+        <button ${end >= data.total ? 'disabled' : ''} onclick="navigateTo({view:'table',table:${tableJs},offset:${offset + LIMIT}})">Next</button>
       </div>`;
   } catch (e) {
     el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -664,6 +849,7 @@ async function loadTable(name, newOffset = 0) {
 
 async function init() {
   initTheme();
+  window.addEventListener('hashchange', () => applyRoute(routeFromHash()));
   try {
     const [rt, tb] = await Promise.all([
       api('/api/runtime'),
@@ -674,15 +860,20 @@ async function init() {
     document.getElementById('header-meta').textContent =
       `v${runtime.sidekar_version} · ${runtime.db_path}`;
     renderNav();
-    showOverview();
+    if (!location.hash) location.replace(hashForRoute({ view: 'overview' }));
+    await applyRoute(routeFromHash());
   } catch (e) {
     document.getElementById('content').innerHTML =
       `<div class="error">Failed to load API: ${esc(e.message)}</div>`;
+    if (!location.hash) location.replace(hashForRoute({ view: 'overview' }));
   }
 }
 
 init();
 window.navigate = navigate;
+window.navigateTo = navigateTo;
+window.applyRoute = applyRoute;
+window.routeFromHash = routeFromHash;
 window.showOverview = showOverview;
 window.showProxyLog = showProxyLog;
 window.loadTable = loadTable;

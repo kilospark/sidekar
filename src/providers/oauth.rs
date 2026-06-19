@@ -318,7 +318,7 @@ pub struct OAuthCredentials {
 }
 
 impl OAuthCredentials {
-    fn is_expired(&self) -> bool {
+    pub(crate) fn is_expired(&self) -> bool {
         let now = now_secs();
         now + 300 >= self.expires_at
     }
@@ -369,6 +369,10 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
         "codex" => (
             resolve_kv_key(Some(cred_name), KV_KEY_CODEX),
             refresh_token_codex,
+        ),
+        "grok" => (
+            resolve_kv_key(Some(cred_name), KV_KEY_GROK),
+            refresh_token_grok,
         ),
         other => anyhow::bail!(
             "provider '{other}' has no refresh flow — re-authenticate via `sidekar repl credential add <provider> [nickname]`"
@@ -435,10 +439,13 @@ pub async fn get_opencode_go_token(nickname: Option<&str>) -> Result<String> {
     get_api_key_token(&kv_key, &["OPENCODE_API_KEY"], "OpenCode Go").await
 }
 
-/// Get a valid Grok API key. No OAuth — uses stored key or XAI_API_KEY env var.
+/// Get a valid Grok token (OAuth from `grok login` import, stored API key, or `XAI_API_KEY`).
 pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
+    if let Some(n) = nickname {
+        let _ = super::grok_oauth::sync_cli_session_from_disk_if_stale(n);
+    }
     let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
-    get_api_key_token(&kv_key, &["XAI_API_KEY"], "Grok").await
+    get_token(&kv_key, "XAI_API_KEY", "Grok", refresh_token_grok).await
 }
 
 /// Get a valid Gemini API key. No OAuth — uses stored key or
@@ -779,6 +786,7 @@ async fn get_token(
         Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>,
     >,
 ) -> Result<String> {
+    let mut refresh_failed: Option<anyhow::Error> = None;
     if let Some(creds) = load_credentials(kv_key)? {
         if creds.is_expired() {
             match refresh_fn(&creds).await {
@@ -798,6 +806,7 @@ async fn get_token(
                         "refresh-failed-reauthenticating",
                         Some(provider_name),
                     );
+                    refresh_failed = Some(e);
                 }
             }
         } else {
@@ -811,10 +820,17 @@ async fn get_token(
         return Ok(key);
     }
 
+    let nick = kv_key.strip_prefix("oauth:").unwrap_or(kv_key);
+    if let Some(e) = refresh_failed {
+        bail!(
+            "{provider_name} OAuth token expired and refresh failed for '{nick}': {e:#}\n\
+             Re-authenticate: sidekar repl credential add grok [nickname]"
+        );
+    }
+
     bail!(
-        "No {provider_name} credentials found for '{}'.\n\
-         Run: sidekar repl credential add <provider> [nickname]",
-        kv_key.strip_prefix("oauth:").unwrap_or(kv_key)
+        "No {provider_name} credentials found for '{nick}'.\n\
+         Run: sidekar repl credential add <provider> [nickname]"
     )
 }
 
@@ -950,6 +966,18 @@ fn refresh_token_codex(
                 .await?;
         new_creds.metadata = codex_credentials_metadata(&new_creds.access_token);
         Ok(new_creds)
+    })
+}
+
+fn refresh_token_grok(
+    creds: &OAuthCredentials,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<OAuthCredentials>> + Send>> {
+    let refresh_token = creds.refresh_token.clone();
+    let metadata = creds.metadata.clone();
+    let client_id = super::grok_oauth::oauth_client_id(creds).to_string();
+    let token_url = super::grok_oauth::oauth_token_url(creds);
+    Box::pin(async move {
+        refresh_token_form(&client_id, &token_url, &refresh_token, metadata).await
     })
 }
 
@@ -1200,6 +1228,58 @@ async fn complete_pkce_login(pending: PendingPkceLogin) -> Result<OAuthCredentia
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Token exchange failed after retries")))
+}
+
+/// xAI / Grok Build OAuth expects `application/x-www-form-urlencoded` token requests.
+async fn refresh_token_form(
+    client_id: &str,
+    token_url: &str,
+    refresh_token: &str,
+    metadata: serde_json::Value,
+) -> Result<OAuthCredentials> {
+    let client = reqwest::Client::new();
+    let mut last_err = None;
+    for attempt in 0..3u32 {
+        match client
+            .post(token_url)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", client_id),
+                ("refresh_token", refresh_token),
+            ])
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    let token_resp: TokenResponse = resp.json().await?;
+                    return Ok(OAuthCredentials {
+                        access_token: token_resp.access_token,
+                        refresh_token: token_resp.refresh_token,
+                        expires_at: now_secs() + token_resp.expires_in,
+                        metadata,
+                    });
+                }
+                let resp_body = resp.text().await.unwrap_or_default();
+                if status.is_client_error() {
+                    bail!("Token refresh failed ({}): {}", status, resp_body);
+                }
+                last_err = Some(anyhow::anyhow!(
+                    "Token refresh failed ({}): {}",
+                    status,
+                    resp_body
+                ));
+            }
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt))).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Token refresh failed after retries")))
 }
 
 async fn refresh_token_generic(

@@ -6,6 +6,7 @@ pub mod codex;
 pub mod cursor;
 pub mod gcp_adc;
 pub mod gemini;
+pub mod grok_oauth;
 pub mod oauth;
 pub mod openrouter;
 pub mod session_lock;
@@ -1275,6 +1276,111 @@ pub fn model_list_display_suffix(
     format!("{display_name}{ctx}{vision}")
 }
 
+/// Map Grok Build CLI model ids to xAI API ids for REPL (public API only).
+pub fn resolve_model_id(provider_type: &str, model: &str, base_url: &str) -> String {
+    match provider_type {
+        "grok"
+            if model == "grok-build" && !grok_oauth::is_cli_proxy_base(base_url) =>
+        {
+            "grok-build-0.1".to_string()
+        }
+        _ => model.to_string(),
+    }
+}
+
+async fn fetch_grok_model_list(
+    api_key: &str,
+    base_url: &str,
+) -> Result<Vec<RemoteModel>, String> {
+    let mut models = if grok_oauth::is_cli_proxy_base(base_url) {
+        fetch_grok_cli_proxy_model_list(api_key).await?
+    } else {
+        fetch_openai_compat_model_list(api_key, base_url).await?
+    };
+    if !grok_oauth::is_cli_proxy_base(base_url) {
+        append_grok_build_model_aliases(&mut models);
+    }
+    Ok(models)
+}
+
+async fn fetch_grok_cli_proxy_model_list(api_key: &str) -> Result<Vec<RemoteModel>, String> {
+    let base = grok_oauth::GROK_CLI_PROXY_BASE_URL;
+    let url = openai_models_url(base);
+    let verbose = is_verbose();
+    if verbose {
+        crate::broker::try_log_event(
+            "debug",
+            "provider",
+            "fetching-grok-cli-model-list",
+            Some(&format!("url={url}")),
+        );
+    }
+    let client = catalog_http_client(MODEL_CATALOG_TIMEOUT_SECS)?;
+    let mut req = client
+        .get(&url)
+        .header("authorization", format!("Bearer {api_key}"));
+    let mut headers = reqwest::header::HeaderMap::new();
+    grok_oauth::apply_cli_proxy_headers(&mut headers);
+    req = req.headers(headers);
+    let body = catalog_send_openai_compat_model_list_json(req, &url, verbose).await?;
+    parse_openai_compat_model_catalog(&body)
+}
+
+fn parse_openai_compat_model_catalog(body: &serde_json::Value) -> Result<Vec<RemoteModel>, String> {
+    let mut models = Vec::new();
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        for m in data {
+            push_openai_compat_model_row(&mut models, m);
+        }
+    }
+    Ok(models)
+}
+
+fn push_openai_compat_model_row(models: &mut Vec<RemoteModel>, m: &serde_json::Value) {
+    let id = m
+        .get("id")
+        .or_else(|| m.get("model"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let name = m
+        .get("name")
+        .or_else(|| m.get("display_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(id);
+    let ctx = m
+        .get("context_length")
+        .or_else(|| m.get("context_window"))
+        .or_else(|| m.pointer("/info/context_window"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    if id.is_empty() {
+        return;
+    }
+    let mut row = RemoteModel::catalog(id.to_string(), name.to_string(), ctx);
+    row.capabilities.vision = capabilities::vision_from_openrouter_architecture(m);
+    models.push(row);
+}
+
+fn append_grok_build_model_aliases(models: &mut Vec<RemoteModel>) {
+    if models.iter().any(|m| m.id == "grok-build") {
+        return;
+    }
+    let Some(build) = models.iter().find(|m| m.id == "grok-build-0.1") else {
+        return;
+    };
+    models.insert(
+        0,
+        RemoteModel {
+            id: "grok-build".to_string(),
+            display_name: format!("{} (Grok Build CLI alias)", build.display_name),
+            context_window: build.context_window,
+            capabilities: build.capabilities.clone(),
+            bedrock_foundation_model_arn: None,
+            bedrock_inference_profile_refs: Vec::new(),
+        },
+    );
+}
+
 /// Fetch available models from a provider's API.
 pub async fn fetch_model_list(
     provider_type: &str,
@@ -1284,7 +1390,7 @@ pub async fn fetch_model_list(
         "anthropic" => fetch_anthropic_model_list(api_key).await,
         "codex" => fetch_codex_model_list(api_key).await,
         "openrouter" => fetch_openrouter_model_list(api_key).await,
-        "grok" => fetch_openai_compat_model_list(api_key, oauth::GROK_BASE_URL).await,
+        "grok" => fetch_grok_model_list(api_key, oauth::GROK_BASE_URL).await,
         "opencode-zen" | "opencode" => fetch_opencode_model_list(api_key).await,
         "opencode-go" => fetch_opencode_go_model_list(api_key).await,
         "gemini" => gemini::fetch_gemini_model_list(api_key).await,
@@ -1308,6 +1414,9 @@ pub async fn fetch_model_list_for_provider(
         Provider::Anthropic { api_key, .. } => fetch_anthropic_model_list(api_key).await,
         Provider::Codex { api_key, .. } => fetch_codex_model_list(api_key).await,
         Provider::OpenRouter { api_key, .. } => fetch_openrouter_model_list(api_key).await,
+        Provider::OpenAiCompat {
+            api_key, base_url, provider_type, ..
+        } if *provider_type == "grok" => fetch_grok_model_list(api_key, base_url).await,
         Provider::OpenAiCompat {
             api_key, base_url, ..
         } => fetch_openai_compat_model_list(api_key, base_url).await,
@@ -1820,13 +1929,29 @@ impl Provider {
         }
     }
 
-    pub fn grok(api_key: String, credential: Option<String>) -> Self {
+    pub fn grok(api_key: String, base_url: String, credential: Option<String>) -> Self {
+        let display_name = if grok_oauth::is_cli_proxy_base(&base_url) {
+            "Grok Build".to_string()
+        } else {
+            "Grok".to_string()
+        };
         Provider::OpenAiCompat {
             api_key,
-            base_url: oauth::GROK_BASE_URL.to_string(),
+            base_url,
             provider_type: "grok".to_string(),
-            display_name: "Grok".to_string(),
+            display_name,
             credential,
+        }
+    }
+
+    pub fn openai_compat_base_url(&self) -> Option<&str> {
+        match self {
+            Provider::OpenAiCompat { base_url, .. } => Some(base_url.as_str()),
+            Provider::Anthropic { base_url, .. } => Some(base_url.as_str()),
+            Provider::Codex { base_url, .. } => Some(base_url.as_str()),
+            Provider::OpenRouter { base_url, .. } => Some(base_url.as_str()),
+            Provider::Gemini { base_url, .. } => Some(base_url.as_str()),
+            Provider::Bedrock { .. } | Provider::Cursor { .. } => None,
         }
     }
 
@@ -1941,6 +2066,13 @@ impl Provider {
         match self {
             Provider::Codex { .. } => true,
             Provider::Anthropic { api_key, .. } => api_key.contains("sk-ant-oat"),
+            Provider::OpenAiCompat {
+                provider_type,
+                credential,
+                ..
+            } if provider_type == "grok" => credential
+                .as_ref()
+                .is_some_and(|n| grok_oauth::credential_has_refresh_token(n)),
             Provider::OpenAiCompat { api_key, .. } => {
                 api_key == oauth::OPENAI_COMPAT_GCP_ADC
                     || api_key == oauth::OPENAI_COMPAT_GCLOUD_CLI
@@ -2028,6 +2160,10 @@ impl Provider {
         tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
         tokio::sync::oneshot::Receiver<Option<codex::CachedWs>>,
     )> {
+        let base_url = self
+            .openai_compat_base_url()
+            .unwrap_or("");
+        let model = resolve_model_id(self.provider_type(), model, base_url);
         let max_retries = 3u32;
         let mut attempt = 0u32;
         let mut ws = cached_ws;
@@ -2037,7 +2173,7 @@ impl Provider {
         loop {
             let result = self
                 .stream_once(
-                    model,
+                    &model,
                     system_prompt,
                     messages,
                     tools,

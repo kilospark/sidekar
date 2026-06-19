@@ -157,43 +157,57 @@ struct ProxyState {
     tls_connector: tokio_rustls::TlsConnector,
     host_cache: RwLock<HashMap<String, Arc<CachedCert>>>,
     verbose: bool,
-    log_tx: tokio::sync::mpsc::UnboundedSender<ProxyLogEntry>,
 }
 
-struct ProxyLogEntry {
-    method: String,
-    path: String,
-    upstream_host: String,
-    request_headers: Vec<(String, String)>,
+fn headers_json(headers: &[(String, String)]) -> String {
+    serde_json::to_string(headers).unwrap_or_default()
+}
+
+async fn proxy_log_begin_http(
+    method: &str,
+    path: &str,
+    upstream_host: &str,
+    request_headers: &[(String, String)],
+    request_body: &[u8],
+) -> Option<i64> {
+    let entry = crate::broker::ProxyLogBegin {
+        method: method.to_string(),
+        path: path.to_string(),
+        upstream_host: upstream_host.to_string(),
+        request_headers: headers_json(request_headers),
+        request_body: request_body.to_vec(),
+    };
+    tokio::task::spawn_blocking(move || crate::broker::proxy_log_begin(&entry))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+}
+
+async fn proxy_log_finish_http(
+    id: i64,
+    _request_headers: &[(String, String)],
     request_body: Vec<u8>,
     response_status: u16,
-    response_headers: Vec<(String, String)>,
+    response_headers: &[(String, String)],
     response_body: Vec<u8>,
     duration_ms: u64,
+) {
+    let finish = crate::broker::ProxyLogFinish {
+        response_status,
+        response_headers: headers_json(response_headers),
+        response_body,
+        request_body,
+        duration_ms,
+    };
+    let _ = tokio::task::spawn_blocking(move || crate::broker::proxy_log_finish(id, &finish)).await;
+}
+
+async fn proxy_log_fail_async(id: i64) {
+    let _ =
+        tokio::task::spawn_blocking(move || crate::broker::proxy_log_fail(id)).await;
 }
 
 const MAX_RESPONSE_CAPTURE: usize = 10 * 1024 * 1024; // 10MB
-
-async fn proxy_log_writer(mut rx: tokio::sync::mpsc::UnboundedReceiver<ProxyLogEntry>) {
-    while let Some(entry) = rx.recv().await {
-        let _ = tokio::task::spawn_blocking(move || {
-            let req_hdrs = serde_json::to_string(&entry.request_headers).unwrap_or_default();
-            let resp_hdrs = serde_json::to_string(&entry.response_headers).unwrap_or_default();
-            let _ = crate::broker::proxy_log_insert(&crate::broker::ProxyLogEntry {
-                method: entry.method,
-                path: entry.path,
-                upstream_host: entry.upstream_host,
-                request_headers: req_hdrs,
-                request_body: entry.request_body,
-                response_status: entry.response_status,
-                response_headers: resp_hdrs,
-                response_body: entry.response_body,
-                duration_ms: entry.duration_ms,
-            });
-        })
-        .await;
-    }
-}
 
 /// Ephemeral ports are reused quickly; parallel tests (or back-to-back `start()`)
 /// can get the same port. CA path must be unique per instance so one `cleanup_ca_file`
@@ -237,11 +251,9 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     let ca_pem_path = dir.join(format!("ca-{port}-{seq}.pem"));
     std::fs::write(&ca_pem_path, ca_cert.pem())?;
 
-    let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(proxy_log_writer(log_rx));
-
     // Prune entries older than 7 days on startup
     let _ = tokio::task::spawn_blocking(|| crate::broker::proxy_log_prune(7 * 86400)).await;
+    let _ = tokio::task::spawn_blocking(|| crate::broker::proxy_log_fail_stale_pending(3600)).await;
 
     let state = Arc::new(ProxyState {
         ca_cert,
@@ -249,7 +261,6 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
         tls_connector,
         host_cache: RwLock::new(HashMap::new()),
         verbose,
-        log_tx,
     });
 
     if verbose {

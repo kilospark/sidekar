@@ -1,6 +1,6 @@
 use super::{
     ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, Provider, SseDecoder, StreamEvent,
-    catalog_http_client, is_retryable_error, openai_chat_completions_url,
+    catalog_http_client, grok_oauth, is_retryable_error, oauth, openai_chat_completions_url,
     openai_compat_assistant_concat_reasoning_chunks, openai_compat_assistant_join_text,
     openai_models_url, openai_plain_text_before_first_tool_call, provider_models_list_client,
 };
@@ -200,7 +200,7 @@ fn openai_compat_urls_accept_root_or_v1_or_full_endpoint() {
 
 #[test]
 fn openai_compat_provider_type_is_preserved() {
-    let grok = Provider::grok("key".to_string(), None);
+    let grok = Provider::grok("key".to_string(), oauth::GROK_BASE_URL.to_string(), None);
     let compat = Provider::openai_compat(
         "key".to_string(),
         "http://localhost:11434/v1".to_string(),
@@ -210,6 +210,26 @@ fn openai_compat_provider_type_is_preserved() {
 
     assert_eq!(grok.provider_type(), "grok");
     assert_eq!(compat.provider_type(), "oac");
+}
+
+#[test]
+fn grok_build_model_alias_resolves_for_api() {
+    assert_eq!(
+        super::resolve_model_id("grok", "grok-build", oauth::GROK_BASE_URL),
+        "grok-build-0.1"
+    );
+    assert_eq!(
+        super::resolve_model_id(
+            "grok",
+            "grok-build",
+            grok_oauth::GROK_CLI_PROXY_BASE_URL,
+        ),
+        "grok-build"
+    );
+    assert_eq!(
+        super::resolve_model_id("grok", "grok-4.3", oauth::GROK_BASE_URL),
+        "grok-4.3"
+    );
 }
 
 // ---- is_retryable_error classifier ------------------------------

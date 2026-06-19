@@ -93,12 +93,6 @@ fn resolve_reply(envelope: &Envelope, reply_to: Option<&str>) {
     }
 }
 
-fn clear_local_pending_reply(reply_to: Option<&str>) {
-    if let Some(reply_id) = reply_to {
-        let _ = broker::resolve_reply(reply_id);
-    }
-}
-
 fn cleanup_completed_exchange(
     self_name: &str,
     other_name: &str,
@@ -240,11 +234,7 @@ fn send_directed_envelope(
         bail!("Failed to reach {}: {e}", envelope.to);
     }
 
-    if delivery.transport_name == RELAY_HTTP_TRANSPORT {
-        clear_local_pending_reply(reply_to);
-    } else {
-        resolve_reply(&envelope, reply_to);
-    }
+    resolve_reply(&envelope, reply_to);
 
     if matches!(envelope.kind, MessageKind::Request | MessageKind::Handoff) {
         out!(

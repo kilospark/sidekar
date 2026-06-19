@@ -115,6 +115,9 @@ async fn send_openai_compat_stream(
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("content-type", "application/json".parse()?);
     headers.insert("authorization", format!("Bearer {api_key}").parse()?);
+    if super::grok_oauth::is_cli_proxy_base(base_url) {
+        super::grok_oauth::apply_cli_proxy_headers(&mut headers);
+    }
     if let Some(project) = super::vertex::extract_project(base_url)
         && let Ok(value) = project.parse()
     {
