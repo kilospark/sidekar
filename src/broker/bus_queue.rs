@@ -9,7 +9,7 @@ pub struct QueuedMessage {
     pub body: String,
     pub created_at: u64,
     /// When true, deliver by writing into the agent input and submitting (Enter).
-    /// When false, print as a notification without touching the input buffer.
+    /// When false, print via side channel (stdout/tunnel) without touching agent input.
     pub submit_input: bool,
     pub envelope: Option<Envelope>,
 }

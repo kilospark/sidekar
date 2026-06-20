@@ -3,6 +3,7 @@
 
 use crate::activity::{ActivitySnapshot, ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
 use crate::broker;
+use crate::message::Envelope;
 use crate::transport::{RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
@@ -258,7 +259,7 @@ pub fn start_poller(
                         &pty_fd,
                         &input_state,
                         &msg.body,
-                        msg.submit_input,
+                        should_submit_queued_message(msg.submit_input, &msg.envelope),
                         child_pid,
                     );
                 }
@@ -443,6 +444,10 @@ fn recipient_should_defer_nudge(transport_name: &str, transport_target: &str) ->
     }
 }
 
+fn should_submit_queued_message(submit_input: bool, envelope: &Option<Envelope>) -> bool {
+    submit_input || envelope.as_ref().is_some_and(|e| e.requires_reply())
+}
+
 fn deliver_to_pty(
     fd: &OwnedFd,
     input_state: &UserInputState,
@@ -511,7 +516,8 @@ fn deliver_to_pty(
         }
 
         // User may have typed during stash/clear — retry instead of appending to their line.
-        if !input_state.is_idle() || input_state.is_agent_working() {
+        // Do not gate on is_agent_working here: our own Ctrl+U inject produces PTY output.
+        if !input_state.is_idle() {
             continue;
         }
 
@@ -526,38 +532,36 @@ fn deliver_to_pty(
                 return;
             }
             std::thread::sleep(Duration::from_millis(150));
-            if let Err(e) = write_all_raw(raw_fd, b"\r") {
+            if let Err(e) = write_all_raw(raw_fd, b"\r\n") {
                 crate::broker::try_log_event(
                     "error",
                     "poller",
-                    &format!("inject CR write failed: {e}"),
+                    &format!("inject Enter write failed: {e}"),
                     None,
                 );
                 return;
             }
-        } else if let Err(e) = write_all_raw(raw_fd, format!("\r\n{message}\r\n").as_bytes()) {
+            unsafe { libc::kill(child_pid, libc::SIGWINCH) };
+
             crate::broker::try_log_event(
-                "error",
+                "debug",
                 "poller",
-                &format!("display-only inject write failed: {e}"),
+                &format!(
+                    "injected {}B + Enter + SIGWINCH (stashed_draft={})",
+                    message.len(),
+                    stashed_draft.is_some(),
+                ),
                 None,
             );
-            return;
+        } else {
+            crate::tunnel::tunnel_println(message);
+            crate::broker::try_log_event(
+                "debug",
+                "poller",
+                &format!("displayed {}B via side channel (submit_input=false)", message.len()),
+                None,
+            );
         }
-
-        unsafe { libc::kill(child_pid, libc::SIGWINCH) };
-
-        crate::broker::try_log_event(
-            "debug",
-            "poller",
-            &format!(
-                "injected {}B (submit_input={}) + SIGWINCH (stashed_draft={})",
-                message.len(),
-                submit_input,
-                stashed_draft.is_some(),
-            ),
-            None,
-        );
 
         if let Some(preview) = stashed_draft {
             crate::tunnel::tunnel_println(&format!(
@@ -697,5 +701,15 @@ mod tests {
         let preview = format_draft_preview(long.as_bytes());
         assert!(preview.ends_with('…'));
         assert!(preview.chars().count() <= 80);
+    }
+
+    #[test]
+    fn should_submit_queued_message_prefers_envelope_reply_requirement() {
+        use crate::message::{AgentId, Envelope};
+        let fyi = Envelope::new_fyi(AgentId::new("a"), "b", "closed.");
+        assert!(!should_submit_queued_message(false, &Some(fyi)));
+        let req = Envelope::new_request(AgentId::new("a"), "b", "ping");
+        assert!(should_submit_queued_message(false, &Some(req)));
+        assert!(should_submit_queued_message(true, &None));
     }
 }
