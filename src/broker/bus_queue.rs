@@ -8,15 +8,14 @@ pub struct QueuedMessage {
     pub recipient: String,
     pub body: String,
     pub created_at: u64,
-    /// When true, deliver by writing into the agent input and submitting (Enter).
-    /// When false, print via side channel (stdout/tunnel) without touching agent input.
+    /// Legacy delivery flag. PTY delivery treats queued bus rows as agent input.
     pub submit_input: bool,
     pub envelope: Option<Envelope>,
 }
 
 /// Enqueue a message for delivery to `recipient`.
 pub fn enqueue_message(sender: &str, recipient: &str, body: &str) -> Result<()> {
-    enqueue_bus_message(recipient, sender, body, false, None)
+    enqueue_bus_message(recipient, sender, body, true, None)
 }
 
 /// Enqueue with explicit delivery mode and optional typed envelope metadata.
@@ -24,7 +23,7 @@ pub fn enqueue_bus_message(
     recipient: &str,
     sender: &str,
     body: &str,
-    submit_input: bool,
+    _submit_input: bool,
     envelope: Option<&Envelope>,
 ) -> Result<()> {
     let conn = open()?;
@@ -41,7 +40,7 @@ pub fn enqueue_bus_message(
             sender,
             body,
             now,
-            submit_input as i64,
+            true,
             envelope_json,
         ],
     )?;

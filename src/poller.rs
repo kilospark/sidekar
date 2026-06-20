@@ -548,14 +548,11 @@ fn recipient_should_defer_nudge(transport_name: &str, transport_target: &str) ->
 }
 
 fn should_submit_queued_message(
-    submit_input: bool,
-    envelope: &Option<Envelope>,
-    body: &str,
+    _submit_input: bool,
+    _envelope: &Option<Envelope>,
+    _body: &str,
 ) -> bool {
-    submit_input
-        || envelope.as_ref().is_some_and(|e| e.requires_reply())
-        || body.contains("[reply with: sidekar bus send")
-        || crate::message::nudge_msg_id_from_body(body).is_some()
+    true
 }
 
 /// Deliver one bus message. Returns true when the message can be acked/dequeued.
@@ -877,13 +874,20 @@ mod tests {
     }
 
     #[test]
-    fn should_submit_queued_message_prefers_envelope_reply_requirement() {
+    fn should_submit_queued_message_submits_every_bus_row() {
         use crate::message::{AgentId, Envelope};
         let fyi = Envelope::new_fyi(AgentId::new("a"), "b", "closed.");
-        assert!(!should_submit_queued_message(
+        assert!(should_submit_queued_message(
             false,
             &Some(fyi),
             "[fyi from a]: closed."
+        ));
+        let response =
+            Envelope::new_response(AgentId::new("a"), "b", "done", "msg-1".to_string());
+        assert!(should_submit_queued_message(
+            false,
+            &Some(response),
+            "[response from a]: done"
         ));
         let req = Envelope::new_request(AgentId::new("a"), "b", "ping");
         assert!(should_submit_queued_message(

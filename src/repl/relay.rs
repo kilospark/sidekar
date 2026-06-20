@@ -184,12 +184,11 @@ fn bridge_tunnel_input(
                             crate::message::MessageKind::Fyi => {}
                         }
                     }
-                    let submit = envelope.as_ref().is_some_and(|e| e.requires_reply());
                     let _ = broker::enqueue_bus_message(
                         &recipient,
                         &sender,
                         &body,
-                        submit,
+                        true,
                         envelope.as_ref(),
                     );
                 }

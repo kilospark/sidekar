@@ -686,7 +686,7 @@ fn repair_answered_outbounds_closes_stale_open_rows() -> Result<()> {
 }
 
 #[test]
-fn bus_queue_preserves_submit_input_and_envelope() -> Result<()> {
+fn bus_queue_forces_submit_input_and_preserves_envelope() -> Result<()> {
     with_test_db(|| {
         let sender = AgentId::new("sender");
         let envelope = Envelope::new_fyi(sender, "receiver", "closed.");
@@ -699,7 +699,7 @@ fn bus_queue_preserves_submit_input_and_envelope() -> Result<()> {
         )?;
         let msgs = poll_messages("receiver")?;
         assert_eq!(msgs.len(), 1);
-        assert!(!msgs[0].submit_input);
+        assert!(msgs[0].submit_input);
         assert_eq!(
             msgs[0].envelope.as_ref().map(|e| e.id.as_str()),
             Some(envelope.id.as_str())

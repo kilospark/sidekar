@@ -228,7 +228,7 @@ fn send_directed_envelope(
             &delivery.transport_target,
             &envelope.from.name,
             &full_message,
-            envelope.requires_reply(),
+            true,
             Some(&envelope),
         )
         .map(|_| ())
