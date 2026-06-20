@@ -483,7 +483,7 @@ fn send_nudges(agent_name: &str) {
                 &request.transport_target,
                 "sidekar",
                 &nudge_msg,
-                false,
+                true,
                 None,
             ) {
                 Ok(()) => Ok(crate::message::DeliveryResult::Delivered),
@@ -555,6 +555,7 @@ fn should_submit_queued_message(
     submit_input
         || envelope.as_ref().is_some_and(|e| e.requires_reply())
         || body.contains("[reply with: sidekar bus send")
+        || crate::message::nudge_msg_id_from_body(body).is_some()
 }
 
 /// Deliver one bus message. Returns true when the message can be acked/dequeued.
@@ -895,6 +896,11 @@ mod tests {
             false,
             &None,
             "[request from a]: ping\n[reply with: sidekar bus send a \"ok\" --reply-to=abc]"
+        ));
+        assert!(should_submit_queued_message(
+            false,
+            &None,
+            "[sidekar] You have an unanswered request from a. Reply using bus send or bus done with --reply-to=abc"
         ));
     }
 }

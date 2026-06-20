@@ -79,8 +79,8 @@ else
   gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes ""
 fi
 RELEASE_ID="$(
-  gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id' 2>/dev/null \
-    || gh api "repos/${REPO}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" | head -n 1
+  gh api "repos/${REPO}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" \
+    | head -n 1
 )"
 if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
   echo "Error: could not resolve GitHub release id for ${TAG}"
@@ -91,7 +91,7 @@ upload_asset() {
   local asset_name existing_id content_type
   asset_name="$(basename "$file")"
   existing_id="$(
-    gh api "repos/${REPO}/releases/tags/${TAG}" \
+    gh api "repos/${REPO}/releases/${RELEASE_ID}/assets" \
       --jq ".assets[] | select(.name == \"${asset_name}\") | .id" 2>/dev/null \
       | head -n 1 || true
   )"
