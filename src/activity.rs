@@ -7,6 +7,7 @@ pub const ACTIVITY_STALE_SECS: u64 = 60;
 pub const PTY_OUTPUT_BUSY_MS: u64 = 3_000;
 pub const PTY_SPINNER_BUSY_MS: u64 = 10_000;
 const USER_TYPING_REFRESH_SECS: u64 = 5;
+const AGENT_WORKING_REFRESH_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityState {
@@ -85,6 +86,8 @@ pub fn publish(agent_name: &str, state: ActivityState) {
             Some((prev, at)) if *prev == state => {
                 state == ActivityState::UserTyping
                     && now.saturating_sub(*at) >= USER_TYPING_REFRESH_SECS
+                    || state == ActivityState::AgentWorking
+                        && now.saturating_sub(*at) >= AGENT_WORKING_REFRESH_SECS
             }
             _ => true,
         };
