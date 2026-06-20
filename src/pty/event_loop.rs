@@ -125,7 +125,13 @@ pub(crate) async fn event_loop(
                                 match envelope.kind {
                                     crate::message::MessageKind::Request
                                     | crate::message::MessageKind::Handoff => {
-                                        let _ = crate::broker::set_pending(&envelope);
+                                        if envelope.requires_reply() {
+                                            let _ = crate::broker::set_pending(&envelope);
+                                        } else {
+                                            let _ = crate::broker::dismiss_terminal_ack_request(
+                                                &envelope.id,
+                                            );
+                                        }
                                     }
                                     crate::message::MessageKind::Response => {
                                         if let Some(reply_to) = envelope.reply_to.as_deref() {

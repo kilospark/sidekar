@@ -618,6 +618,33 @@ fn outbound_not_nudgeable_after_record_reply() -> Result<()> {
 }
 
 #[test]
+fn repair_dismiss_terminal_ack_outbounds_closes_ack_loops() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        register_agent(&sender, None)?;
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "closed.");
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        set_pending(&envelope)?;
+        assert!(outbound_nudgeable(&envelope.id)?);
+        let repaired = repair_dismiss_terminal_ack_outbounds("sender")?;
+        assert_eq!(repaired, 1);
+        assert_eq!(
+            outbound_request(&envelope.id)?.expect("row").status,
+            OUTBOUND_STATUS_ANSWERED
+        );
+        assert!(!outbound_nudgeable(&envelope.id)?);
+        Ok(())
+    })
+}
+
+#[test]
 fn repair_answered_outbounds_closes_stale_open_rows() -> Result<()> {
     with_test_db(|| {
         let sender = AgentId::new("sender");

@@ -60,7 +60,7 @@ fn deliver_via(transport_name: &str, target: &str, message: &str, from: &str) ->
 }
 
 fn maybe_track_request(state: &SidekarBusState, envelope: &Envelope, delivery: &DeliveryTarget) {
-    if !matches!(envelope.kind, MessageKind::Request | MessageKind::Handoff) {
+    if !envelope.requires_reply() {
         return;
     }
     if let Err(e) = broker::set_pending(envelope) {

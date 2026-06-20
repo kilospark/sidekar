@@ -226,6 +226,11 @@ pub fn start_poller(
             std::thread::sleep(POLL_INTERVAL);
             if let Ok(messages) = broker::poll_messages(&inject_agent) {
                 for msg in messages {
+                    if let Some(msg_id) =
+                        crate::message::terminal_ack_msg_id_from_paste(&msg.body)
+                    {
+                        let _ = broker::dismiss_terminal_ack_request(&msg_id);
+                    }
                     deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
                 }
             }
@@ -243,6 +248,7 @@ pub fn start_nudger(agent_name: String) {
 
     std::thread::spawn(move || {
         let _ = broker::repair_answered_outbounds(&agent_name);
+        let _ = broker::repair_dismiss_terminal_ack_outbounds(&agent_name);
         let mut cleanup_poll_count: u32 = 0;
         let mut nudge_poll_count: u32 = 0;
 
@@ -270,6 +276,7 @@ pub fn start_nudger(agent_name: String) {
 /// Send nudges for this agent's unanswered outbound requests.
 fn send_nudges(agent_name: &str) {
     let _ = broker::repair_answered_outbounds(agent_name);
+    let _ = broker::repair_dismiss_terminal_ack_outbounds(agent_name);
 
     let requests = match broker::outbound_for_sender(agent_name) {
         Ok(r) => r,

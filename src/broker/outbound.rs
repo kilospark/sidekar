@@ -352,6 +352,44 @@ pub fn revert_nudge_claim(msg_id: &str, nudged_at: u64) -> Result<()> {
     Ok(())
 }
 
+/// Close an open outbound + pending row for a terminal ack mis-sent as `request`.
+pub fn dismiss_terminal_ack_request(msg_id: &str) -> Result<bool> {
+    let conn = open()?;
+    let now = crate::message::epoch_secs() as i64;
+    let updated = conn.execute(
+        "UPDATE outbound_requests
+         SET status = ?2,
+             answered_at = COALESCE(answered_at, ?3),
+             closed_at = COALESCE(closed_at, ?3)
+         WHERE msg_id = ?1 AND status = ?4",
+        params![
+            msg_id,
+            OUTBOUND_STATUS_ANSWERED,
+            now,
+            OUTBOUND_STATUS_OPEN,
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM pending_requests WHERE id = ?1",
+        params![msg_id],
+    )?;
+    Ok(updated > 0)
+}
+
+/// Auto-close open terminal-ack outbounds so the nudger stops chasing ack loops.
+pub fn repair_dismiss_terminal_ack_outbounds(sender_name: &str) -> Result<u64> {
+    let open = outbound_for_sender(sender_name)?;
+    let mut closed = 0u64;
+    for request in open {
+        if crate::message::is_terminal_ack(&request.message_preview) {
+            if dismiss_terminal_ack_request(&request.msg_id)? {
+                closed += 1;
+            }
+        }
+    }
+    Ok(closed)
+}
+
 pub fn mark_outbound_timed_out(msg_id: &str, timed_out_at: u64) -> Result<()> {
     let conn = open()?;
     conn.execute(
