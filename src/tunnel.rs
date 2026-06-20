@@ -38,10 +38,7 @@ static OUTPUT_TUNNEL: Mutex<Option<TunnelSender>> = Mutex::new(None);
 
 /// Borrow the registered output tunnel sender, if any.
 pub fn output_tunnel_sender() -> Option<TunnelSender> {
-    OUTPUT_TUNNEL
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().cloned())
+    OUTPUT_TUNNEL.lock().ok().and_then(|g| g.as_ref().cloned())
 }
 
 /// Register the tunnel sender for global output forwarding.
@@ -97,6 +94,27 @@ pub fn tunnel_send(data: Vec<u8>) {
     if let Some(ref tx) = *OUTPUT_TUNNEL.lock().unwrap_or_else(|e| e.into_inner()) {
         tx.send_data(data);
     }
+}
+
+/// Async raw-mode output through a caller-owned stdout handle, mirrored to a
+/// specific tunnel sender. Used by the PTY event loop so bus notices serialize
+/// with child output instead of racing through global stdout.
+pub async fn tunnel_write_async(
+    stdout: &mut tokio::io::Stdout,
+    tx: Option<&TunnelSender>,
+    data: &[u8],
+) -> bool {
+    use tokio::io::AsyncWriteExt;
+    if stdout.write_all(data).await.is_err() {
+        return false;
+    }
+    if stdout.flush().await.is_err() {
+        return false;
+    }
+    if let Some(tx) = tx {
+        tx.send_data(data.to_vec());
+    }
+    true
 }
 
 /// Send a structured agent event JSON frame on the `ch:"events"` channel.
@@ -216,7 +234,9 @@ impl TunnelSender {
             "state": state.as_str(),
             "at": at,
         });
-        let _ = self.tx.try_send(TunnelCommand::ActivityText(json.to_string()));
+        let _ = self
+            .tx
+            .try_send(TunnelCommand::ActivityText(json.to_string()));
     }
 
     /// Request graceful shutdown of the tunnel background task.

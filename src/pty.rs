@@ -31,6 +31,7 @@ type PtySetupState = (
     String,
     String,
     Arc<crate::poller::UserInputState>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::poller::PtyNotice>,
 );
 
 // Re-export for external callers (e.g. bus.rs uses crate::pty::detect_channel)
@@ -359,17 +360,27 @@ pub async fn run_agent(
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
         let input_state = Arc::new(crate::poller::UserInputState::default());
+        let (notice_tx, notice_rx) = tokio::sync::mpsc::unbounded_channel();
         crate::poller::start_poller(
             identity.name.clone(),
             master_arc.clone(),
             input_state.clone(),
             child_pid,
+            notice_tx,
         );
 
-        Ok((master_arc, identity, nick, agent_session_id, input_state))
+        Ok((
+            master_arc,
+            identity,
+            nick,
+            agent_session_id,
+            input_state,
+            notice_rx,
+        ))
     })();
 
-    let (master_arc, identity, nick, agent_session_id, input_state) = match setup_result {
+    let (master_arc, identity, nick, agent_session_id, input_state, notice_rx) = match setup_result
+    {
         Ok(v) => v,
         Err(e) => {
             // silent — error propagated via return
@@ -484,6 +495,7 @@ pub async fn run_agent(
         &nick,
         &identity.name,
         &input_state,
+        notice_rx,
     )
     .await;
 

@@ -364,8 +364,8 @@ pub fn pending_warnings(state: &SidekarBusState) -> Option<String> {
         }
     }
 
-    // Drain bus_queue messages (from broker transport / cron / monitor)
-    if let Ok(queued) = broker::poll_messages(name) {
+    // Peek bus_queue messages (from broker transport / cron / monitor)
+    if let Ok(queued) = broker::list_queued_messages(name) {
         for msg in &queued {
             warnings.push(format!("  {}", msg.body));
         }

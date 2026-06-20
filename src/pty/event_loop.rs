@@ -1,6 +1,22 @@
 use super::escape_filter::{filter_osc_color_sequences, rewrite_osc_titles};
 use super::*;
 
+async fn write_sidekar_notice(
+    stdout: &mut tokio::io::Stdout,
+    tunnel_tx: Option<&crate::tunnel::TunnelSender>,
+    message: &str,
+    stashed_draft: Option<&str>,
+) -> bool {
+    let mut out = format!("\r\n\x1b[33m[sidekar]\x1b[0m {message}\r\n");
+    if let Some(preview) = stashed_draft {
+        out.push_str(&format!(
+            "\x1b[33m[sidekar]\x1b[0m Draft saved: \"{preview}\" — ↑ to restore\r\n"
+        ));
+    }
+
+    crate::tunnel::tunnel_write_async(stdout, tunnel_tx, out.as_bytes()).await
+}
+
 pub(crate) async fn event_loop(
     master: &Arc<OwnedFd>,
     child_pid: libc::pid_t,
@@ -8,6 +24,7 @@ pub(crate) async fn event_loop(
     nick: &str,
     agent_name: &str,
     input_state: &Arc<crate::poller::UserInputState>,
+    mut notice_rx: tokio::sync::mpsc::UnboundedReceiver<crate::poller::PtyNotice>,
 ) -> i32 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::signal::unix::{SignalKind, signal};
@@ -76,6 +93,18 @@ pub(crate) async fn event_loop(
     loop {
         tokio::select! {
             biased;
+
+            notice = notice_rx.recv() => {
+                let Some(notice) = notice else {
+                    continue;
+                };
+                let delivered = if input_state.sidecar_notice_allowed() {
+                    write_sidekar_notice(&mut stdout, tunnel_tx.as_ref(), &notice.message, notice.stashed_draft.as_deref()).await
+                } else {
+                    false
+                };
+                let _ = notice.ack.send(delivered);
+            }
 
             // SIGWINCH: resize child PTY
             _ = async {
@@ -255,7 +284,7 @@ pub(crate) async fn event_loop(
                         }) {
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
-                                input_state.mark_pty_output();
+                                input_state.mark_pty_output_bytes(raw);
                                 let parsed_events = event_parser.feed(raw);
                                 for event in &parsed_events {
                                     if matches!(event, crate::events::AgentEvent::Status { .. }) {

@@ -690,11 +690,20 @@ fn bus_queue_preserves_submit_input_and_envelope() -> Result<()> {
     with_test_db(|| {
         let sender = AgentId::new("sender");
         let envelope = Envelope::new_fyi(sender, "receiver", "closed.");
-        enqueue_bus_message("receiver", "sender", "[fyi from sender]: closed.", false, Some(&envelope))?;
+        enqueue_bus_message(
+            "receiver",
+            "sender",
+            "[fyi from sender]: closed.",
+            false,
+            Some(&envelope),
+        )?;
         let msgs = poll_messages("receiver")?;
         assert_eq!(msgs.len(), 1);
         assert!(!msgs[0].submit_input);
-        assert_eq!(msgs[0].envelope.as_ref().map(|e| e.id.as_str()), Some(envelope.id.as_str()));
+        assert_eq!(
+            msgs[0].envelope.as_ref().map(|e| e.id.as_str()),
+            Some(envelope.id.as_str())
+        );
 
         let request = Envelope::new_request(AgentId::new("sender"), "receiver", "ping");
         enqueue_bus_message(
@@ -707,6 +716,40 @@ fn bus_queue_preserves_submit_input_and_envelope() -> Result<()> {
         let msgs = poll_messages("receiver")?;
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].submit_input);
+        Ok(())
+    })
+}
+
+#[test]
+fn list_queued_messages_peek_then_delete_one() -> Result<()> {
+    with_test_db(|| {
+        enqueue_bus_message("receiver", "sender", "one", false, None)?;
+        enqueue_bus_message("receiver", "sender", "two", false, None)?;
+        let peek = list_queued_messages("receiver")?;
+        assert_eq!(peek.len(), 2);
+        delete_queued_message(peek[0].id)?;
+        let remaining = list_queued_messages("receiver")?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].body, "two");
+        Ok(())
+    })
+}
+
+#[test]
+fn claim_queued_message_hides_until_release_or_delete() -> Result<()> {
+    with_test_db(|| {
+        enqueue_bus_message("receiver", "sender", "one", false, None)?;
+        let id = list_queued_messages("receiver")?[0].id;
+
+        let claimed = claim_queued_message(id, "receiver")?.context("claim")?;
+        assert_eq!(claimed.body, "one");
+        assert!(claim_queued_message(id, "receiver")?.is_none());
+        assert!(list_queued_messages("receiver")?.is_empty());
+
+        release_queued_message(id)?;
+        assert_eq!(list_queued_messages("receiver")?.len(), 1);
+        delete_queued_message(id)?;
+        assert!(list_queued_messages("receiver")?.is_empty());
         Ok(())
     })
 }

@@ -80,16 +80,69 @@ fn map_queued_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMessage> {
     })
 }
 
+/// List pending messages without removing them (PTY poller peeks then acks per row).
+pub fn list_queued_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, sender, recipient, body, created_at, envelope_json, submit_input
+         FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0 ORDER BY id",
+    )?;
+    let messages = stmt
+        .query_map(params![recipient], map_queued_row)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(messages)
+}
+
+/// Atomically claim one queued message for delivery.
+pub fn claim_queued_message(id: i64, recipient: &str) -> Result<Option<QueuedMessage>> {
+    let conn = open()?;
+    let tx = conn.unchecked_transaction()?;
+    let message = {
+        let mut stmt = tx.prepare(
+            "SELECT id, sender, recipient, body, created_at, envelope_json, submit_input
+             FROM bus_queue WHERE id = ?1 AND recipient = ?2 AND claimed_at = 0",
+        )?;
+        stmt.query_row(params![id, recipient], map_queued_row)
+            .optional()?
+    };
+
+    if message.is_some() {
+        tx.execute(
+            "UPDATE bus_queue SET claimed_at = ?1 WHERE id = ?2 AND claimed_at = 0",
+            params![crate::message::epoch_secs() as i64, id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(message)
+}
+
+/// Return a claimed message to the pending queue after a failed delivery attempt.
+pub fn release_queued_message(id: i64) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "UPDATE bus_queue SET claimed_at = 0 WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// Remove one delivered message from the queue.
+pub fn delete_queued_message(id: i64) -> Result<()> {
+    let conn = open()?;
+    conn.execute("DELETE FROM bus_queue WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 /// Poll for messages addressed to `recipient`. Returns all pending messages
 /// and deletes them from the queue (atomic read-and-delete).
 pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
     let conn = open()?;
     let tx = conn.unchecked_transaction()?;
-
     let messages: Vec<QueuedMessage> = {
         let mut stmt = tx.prepare(
             "SELECT id, sender, recipient, body, created_at, envelope_json, submit_input
-             FROM bus_queue WHERE recipient = ?1 ORDER BY id",
+             FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0 ORDER BY id",
         )?;
         stmt.query_map(params![recipient], map_queued_row)?
             .filter_map(|r| r.ok())
@@ -98,11 +151,10 @@ pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
 
     if !messages.is_empty() {
         tx.execute(
-            "DELETE FROM bus_queue WHERE recipient = ?1",
+            "DELETE FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0",
             params![recipient],
         )?;
     }
-
     tx.commit()?;
     Ok(messages)
 }
