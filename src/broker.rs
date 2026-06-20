@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 mod agent_registry;
 mod agent_sessions;
@@ -115,10 +115,14 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         if version < 7 {
             ensure_bus_replies_unique(conn)?;
         }
+        if version < 8 {
+            ensure_bus_queue_delivery_columns(conn)?;
+        }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
     ensure_proxy_log_status(conn)?;
     ensure_bus_replies_unique(conn)?;
+    ensure_bus_queue_delivery_columns(conn)?;
     Ok(())
 }
 
@@ -185,6 +189,27 @@ fn ensure_bus_replies_unique(conn: &Connection) -> Result<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_bus_replies_pair
          ON bus_replies(reply_to_msg_id, reply_msg_id);",
     )?;
+    Ok(())
+}
+
+fn ensure_bus_queue_delivery_columns(conn: &Connection) -> Result<()> {
+    let mut cols = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(bus_queue)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for name in names.flatten() {
+            cols.insert(name);
+        }
+    }
+    if !cols.contains("submit_input") {
+        conn.execute(
+            "ALTER TABLE bus_queue ADD COLUMN submit_input INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !cols.contains("envelope_json") {
+        conn.execute("ALTER TABLE bus_queue ADD COLUMN envelope_json TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -363,7 +388,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             recipient TEXT NOT NULL,
             sender TEXT NOT NULL,
             body TEXT NOT NULL,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            submit_input INTEGER NOT NULL DEFAULT 0,
+            envelope_json TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_bus_queue_recipient
             ON bus_queue(recipient, id);

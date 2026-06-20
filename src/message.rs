@@ -47,6 +47,26 @@ impl AgentId {
             None => self.name.clone(),
         }
     }
+
+    /// Preferred address for `bus send <addr>` (nick if set, else the stable name).
+    /// Never emits the composite display form used only for human labels.
+    pub fn address(&self) -> &str {
+        self.nick.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// Parse a target that may be a display form "nick(name)" (as emitted in old hints)
+/// and return the usable address (the nick part). Falls back to raw.
+pub fn parse_target(raw: &str) -> String {
+    if let Some(p) = raw.find('(') {
+        if raw.ends_with(')') && p > 0 {
+            let cand = &raw[..p];
+            if !cand.is_empty() {
+                return cand.to_string();
+            }
+        }
+    }
+    raw.to_string()
 }
 
 impl fmt::Display for AgentId {
@@ -175,8 +195,9 @@ impl Envelope {
     /// Format the message for display in a terminal paste.
     pub fn format_for_paste(&self) -> String {
         let from = self.from.display_name();
+        let target = self.from.address();
         let reply_hint = format!(
-            "\n[reply with: sidekar bus send {from} \"<your response>\" --reply-to={}]",
+            "\n[reply with: sidekar bus send {target} \"<your response>\" --reply-to={}]",
             self.id
         );
         match self.kind {
@@ -310,19 +331,21 @@ pub fn is_terminal_ack(message: &str) -> bool {
         .all(|word| TOKENS.contains(&word))
 }
 
-/// If `body` is a pasted terminal-ack request, return its msg_id for dismissal.
-pub fn terminal_ack_msg_id_from_paste(body: &str) -> Option<String> {
-    let message = body
-        .strip_prefix("[request from ")
-        .and_then(|rest| rest.split("]: ").nth(1))
-        .and_then(|rest| rest.split("\n[reply with:").next())?;
-    if !is_terminal_ack(message) {
+/// Extract the target request id from a poller nudge body, if present.
+pub fn nudge_msg_id_from_body(body: &str) -> Option<String> {
+    if !body.starts_with("[sidekar]") {
         return None;
     }
-    body.split("--reply-to=")
-        .nth(1)
-        .map(|tail| tail.split(['\n', ' ', ']']).next().unwrap_or(tail).to_string())
-        .filter(|id| !id.is_empty())
+    let tail = body.split("--reply-to=").nth(1)?;
+    let id = tail
+        .split(|c: char| c.is_whitespace() || c == ']' || c == '\n')
+        .next()?
+        .trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -358,11 +381,11 @@ mod tests {
     }
 
     #[test]
-    fn terminal_ack_paste_extracts_msg_id() {
-        let paste = "[request from quokka]: closed.\n[reply with: sidekar bus send quokka \"x\" --reply-to=e1e3521c-3cdd]";
+    fn nudge_body_extracts_msg_id() {
+        let body = "[sidekar] You have an unanswered request from gazelle. Reply using bus send or bus done with --reply-to=e4d9210d-4287";
         assert_eq!(
-            terminal_ack_msg_id_from_paste(paste).as_deref(),
-            Some("e1e3521c-3cdd")
+            nudge_msg_id_from_body(body).as_deref(),
+            Some("e4d9210d-4287")
         );
     }
 }

@@ -111,33 +111,37 @@ pub fn list_agents(session: Option<&str>) -> Result<Vec<BrokerAgent>> {
 }
 
 pub fn find_agent(target: &str, session: Option<&str>) -> Result<Option<BrokerAgent>> {
+    let t = crate::message::parse_target(target);
     let conn = open()?;
-    let mut stmt = if session.is_some() {
-        conn.prepare(
-            "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
-             FROM agents
-             WHERE session = ?1 AND (name = ?2 OR nick = ?2)
-             ORDER BY CASE WHEN name = ?2 THEN 0 ELSE 1 END
-             LIMIT 1",
-        )?
-    } else {
-        conn.prepare(
-            "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
-             FROM agents
-             WHERE name = ?1 OR nick = ?1
-             ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END
-             LIMIT 1",
-        )?
-    };
-    if let Some(session) = session {
-        stmt.query_row(params![session, target], row_to_agent)
-            .optional()
-            .map_err(Into::into)
-    } else {
-        stmt.query_row(params![target], row_to_agent)
-            .optional()
-            .map_err(Into::into)
+    let candidates: Vec<&str> = if t != target { vec![t.as_str(), target] } else { vec![target] };
+    for cand in candidates {
+        let mut stmt = if session.is_some() {
+            conn.prepare(
+                "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
+                 FROM agents
+                 WHERE session = ?1 AND (name = ?2 OR nick = ?2)
+                 ORDER BY CASE WHEN name = ?2 THEN 0 ELSE 1 END
+                 LIMIT 1",
+            )?
+        } else {
+            conn.prepare(
+                "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
+                 FROM agents
+                 WHERE name = ?1 OR nick = ?1
+                 ORDER BY CASE WHEN name = ?1 THEN 0 ELSE 1 END
+                 LIMIT 1",
+            )?
+        };
+        let res = if let Some(s) = session {
+            stmt.query_row(params![s, cand], row_to_agent).optional()
+        } else {
+            stmt.query_row(params![cand], row_to_agent).optional()
+        };
+        if let Ok(Some(a)) = res {
+            return Ok(Some(a));
+        }
     }
+    Ok(None)
 }
 
 fn row_to_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrokerAgent> {

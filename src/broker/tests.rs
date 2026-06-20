@@ -686,6 +686,51 @@ fn repair_answered_outbounds_closes_stale_open_rows() -> Result<()> {
 }
 
 #[test]
+fn bus_queue_preserves_submit_input_and_envelope() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let envelope = Envelope::new_fyi(sender, "receiver", "closed.");
+        enqueue_bus_message("receiver", "sender", "[fyi from sender]: closed.", false, Some(&envelope))?;
+        let msgs = poll_messages("receiver")?;
+        assert_eq!(msgs.len(), 1);
+        assert!(!msgs[0].submit_input);
+        assert_eq!(msgs[0].envelope.as_ref().map(|e| e.id.as_str()), Some(envelope.id.as_str()));
+
+        let request = Envelope::new_request(AgentId::new("sender"), "receiver", "ping");
+        enqueue_bus_message(
+            "receiver",
+            "sender",
+            "[request from sender]: ping",
+            true,
+            Some(&request),
+        )?;
+        let msgs = poll_messages("receiver")?;
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].submit_input);
+        Ok(())
+    })
+}
+
+#[test]
+fn purge_nudges_for_request_removes_queued_stale_nudges() -> Result<()> {
+    with_test_db(|| {
+        let msg_id = "abc-123";
+        enqueue_bus_message(
+            "receiver",
+            "sidekar",
+            &format!(
+                "[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to={msg_id}"
+            ),
+            false,
+            None,
+        )?;
+        assert_eq!(purge_nudges_for_request(msg_id)?, 1);
+        assert!(poll_messages("receiver")?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
 fn ensure_proxy_log_status_adds_column_on_legacy_table() -> Result<()> {
     with_test_db(|| {
         let conn = open_raw()?;

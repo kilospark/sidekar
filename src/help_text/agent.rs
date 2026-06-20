@@ -44,6 +44,7 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
     replies [--msg-id=<request_id>] [--limit=N]
     show <msg_id>
     send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]
+    (plain send defaults to fyi; use --kind=request to create tracked outbound that will nudge until replied)
     done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]
     cancel <msg_id>... | --all
 

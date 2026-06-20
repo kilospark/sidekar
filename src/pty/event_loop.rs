@@ -121,12 +121,12 @@ pub(crate) async fn event_loop(
                         envelope,
                     }) => {
                         if recipient == agent_name {
-                            if let Some(envelope) = envelope {
+                            if let Some(ref envelope) = envelope {
                                 match envelope.kind {
                                     crate::message::MessageKind::Request
                                     | crate::message::MessageKind::Handoff => {
                                         if envelope.requires_reply() {
-                                            let _ = crate::broker::set_pending(&envelope);
+                                            let _ = crate::broker::set_pending(envelope);
                                         } else {
                                             let _ = crate::broker::dismiss_terminal_ack_request(
                                                 &envelope.id,
@@ -135,13 +135,23 @@ pub(crate) async fn event_loop(
                                     }
                                     crate::message::MessageKind::Response => {
                                         if let Some(reply_to) = envelope.reply_to.as_deref() {
-                                            let _ = crate::broker::record_reply(reply_to, &envelope);
+                                            let _ =
+                                                crate::broker::record_reply(reply_to, envelope);
                                         }
                                     }
                                     crate::message::MessageKind::Fyi => {}
                                 }
                             }
-                            let _ = crate::broker::enqueue_message(&sender, &recipient, &body);
+                            let submit = envelope
+                                .as_ref()
+                                .is_some_and(|e| e.requires_reply());
+                            let _ = crate::broker::enqueue_bus_message(
+                                &recipient,
+                                &sender,
+                                &body,
+                                submit,
+                                envelope.as_ref(),
+                            );
                         }
                     }
                     Some(crate::tunnel::TunnelEvent::BusPlain(body)) => {

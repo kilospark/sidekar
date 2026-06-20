@@ -3,7 +3,7 @@
 
 use crate::activity::{ActivitySnapshot, ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
 use crate::broker;
-use crate::transport::{Broker as BrokerTransport, RelayHttp, Transport};
+use crate::transport::{RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -194,6 +194,24 @@ impl UserInputState {
         }
         epoch_millis().saturating_sub(last) >= USER_IDLE_BEFORE_INJECT.as_millis() as u64
     }
+
+    /// Stash any in-progress draft and clear the child PTY input line before bus inject.
+    fn prepare_pty_for_inject(&self, raw_fd: i32) -> Option<String> {
+        if !self.has_pending_line() {
+            return None;
+        }
+        if !self.stash_pending_line_for_inject() {
+            return None;
+        }
+        if clear_pty_input_line(raw_fd).is_err() {
+            return None;
+        }
+        self.stashed_draft.lock().ok().and_then(|draft| {
+            draft
+                .as_ref()
+                .map(|d| format_draft_preview(d))
+        })
+    }
 }
 
 impl Default for UserInputState {
@@ -226,12 +244,23 @@ pub fn start_poller(
             std::thread::sleep(POLL_INTERVAL);
             if let Ok(messages) = broker::poll_messages(&inject_agent) {
                 for msg in messages {
-                    if let Some(msg_id) =
-                        crate::message::terminal_ack_msg_id_from_paste(&msg.body)
-                    {
-                        let _ = broker::dismiss_terminal_ack_request(&msg_id);
+                    if let Some(ref envelope) = msg.envelope {
+                        if !envelope.requires_reply() {
+                            let _ = broker::dismiss_terminal_ack_request(&envelope.id);
+                        }
                     }
-                    deliver_to_pty(&pty_fd, &input_state, &msg.body, child_pid);
+                    if let Some(msg_id) = crate::message::nudge_msg_id_from_body(&msg.body) {
+                        if !broker::outbound_nudgeable(&msg_id).unwrap_or(false) {
+                            continue;
+                        }
+                    }
+                    deliver_to_pty(
+                        &pty_fd,
+                        &input_state,
+                        &msg.body,
+                        msg.submit_input,
+                        child_pid,
+                    );
                 }
             }
         }
@@ -335,13 +364,27 @@ fn send_nudges(agent_name: &str) {
             continue;
         }
 
+        if !broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
+            let _ = broker::revert_nudge_claim(&request.msg_id, now);
+            continue;
+        }
+
         let nudge_msg = format!(
             "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
             request.sender_label, request.msg_id
         );
 
         let delivery_result = match request.transport_name.as_str() {
-            "broker" => BrokerTransport.deliver(&request.transport_target, &nudge_msg, "sidekar"),
+            "broker" => match broker::enqueue_bus_message(
+                &request.transport_target,
+                "sidekar",
+                &nudge_msg,
+                false,
+                None,
+            ) {
+                Ok(()) => Ok(crate::message::DeliveryResult::Delivered),
+                Err(e) => Ok(crate::message::DeliveryResult::Failed(e.to_string())),
+            },
             "relay_http" => RelayHttp.deliver(&request.transport_target, &nudge_msg, "sidekar"),
             _ => {
                 let _ = broker::revert_nudge_claim(&request.msg_id, now);
@@ -400,90 +443,136 @@ fn recipient_should_defer_nudge(transport_name: &str, transport_target: &str) ->
     }
 }
 
-fn deliver_to_pty(fd: &OwnedFd, input_state: &UserInputState, message: &str, child_pid: i32) {
+fn deliver_to_pty(
+    fd: &OwnedFd,
+    input_state: &UserInputState,
+    message: &str,
+    submit_input: bool,
+    child_pid: i32,
+) {
     let raw_fd = fd.as_raw_fd();
 
-    // Wait until the user stops typing and the wrapped agent is not mid-turn.
-    let mut waited = 0u32;
-    while !input_state.is_idle() || input_state.is_agent_working() {
-        if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
-            return;
+    loop {
+        // Wait until the user is not mid-keystroke and the wrapped agent is not mid-turn.
+        let mut waited = 0u32;
+        while !input_state.is_idle() || input_state.is_agent_working() {
+            if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
+                return;
+            }
+            waited += 1;
+            if waited.is_multiple_of(50) {
+                crate::broker::try_log_event(
+                    "debug",
+                    "poller",
+                    &format!(
+                        "inject blocked: idle={} agent_working={} pending_line={} waited={}s msg_len={} submit={}",
+                        input_state.is_idle(),
+                        input_state.is_agent_working(),
+                        input_state.has_pending_line(),
+                        waited / 10,
+                        message.len(),
+                        submit_input,
+                    ),
+                    None,
+                );
+            }
+            std::thread::sleep(INJECT_CHECK_INTERVAL);
         }
-        waited += 1;
-        if waited.is_multiple_of(50) {
-            // Log every 5s while blocked (50 * 100ms)
+
+        // Paused draft (idle but pending_line non-empty) must not be merged with inject.
+        let stashed_draft = if input_state.has_pending_line() {
+            match input_state.prepare_pty_for_inject(raw_fd) {
+                Some(preview) => Some(preview),
+                None => {
+                    crate::broker::try_log_event(
+                        "debug",
+                        "poller",
+                        "inject deferred: failed to stash/clear pending draft",
+                        None,
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        // Best-effort clear even when Sidekar lost track of PTY content (paste, arrow keys, etc.).
+        if submit_input {
+            if clear_pty_input_line(raw_fd).is_err() {
+                crate::broker::try_log_event(
+                    "debug",
+                    "poller",
+                    "inject deferred: failed to clear PTY input line",
+                    None,
+                );
+                return;
+            }
+        }
+
+        // User may have typed during stash/clear — retry instead of appending to their line.
+        if !input_state.is_idle() || input_state.is_agent_working() {
+            continue;
+        }
+
+        if submit_input {
+            if let Err(e) = write_all_raw(raw_fd, message.as_bytes()) {
+                crate::broker::try_log_event(
+                    "error",
+                    "poller",
+                    &format!("inject write failed: {e}"),
+                    None,
+                );
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            if let Err(e) = write_all_raw(raw_fd, b"\r") {
+                crate::broker::try_log_event(
+                    "error",
+                    "poller",
+                    &format!("inject CR write failed: {e}"),
+                    None,
+                );
+                return;
+            }
+        } else if let Err(e) = write_all_raw(raw_fd, format!("\r\n{message}\r\n").as_bytes()) {
             crate::broker::try_log_event(
-                "debug",
+                "error",
                 "poller",
-                &format!(
-                    "inject blocked: idle={} agent_working={} pending_line={} waited={}s msg_len={}",
-                    input_state.is_idle(),
-                    input_state.is_agent_working(),
-                    input_state.has_pending_line(),
-                    waited / 10,
-                    message.len(),
-                ),
+                &format!("display-only inject write failed: {e}"),
                 None,
             );
+            return;
         }
-        std::thread::sleep(INJECT_CHECK_INTERVAL);
-    }
 
-    let stashed_draft = if input_state.stash_pending_line_for_inject() {
-        input_state
-            .stashed_draft
-            .lock()
-            .ok()
-            .and_then(|draft| draft.as_ref().map(|d| format_draft_preview(d)))
-    } else {
-        None
-    };
+        unsafe { libc::kill(child_pid, libc::SIGWINCH) };
 
-    // Write message text
-    if let Err(e) = write_all_raw(raw_fd, message.as_bytes()) {
         crate::broker::try_log_event(
-            "error",
+            "debug",
             "poller",
-            &format!("inject write failed: {e}"),
+            &format!(
+                "injected {}B (submit_input={}) + SIGWINCH (stashed_draft={})",
+                message.len(),
+                submit_input,
+                stashed_draft.is_some(),
+            ),
             None,
         );
-        return;
-    }
-    // Brief pause then send Enter (CR)
-    std::thread::sleep(Duration::from_millis(150));
-    if let Err(e) = write_all_raw(raw_fd, b"\r") {
-        crate::broker::try_log_event(
-            "error",
-            "poller",
-            &format!("inject CR write failed: {e}"),
-            None,
-        );
-        return;
-    }
 
-    // Wake up the agent's event loop. Some agents (Claude Code / Node.js)
-    // don't notice new bytes in the PTY slave input buffer until an event
-    // kicks their I/O loop. SIGWINCH is harmless — the agent re-queries
-    // terminal size (a no-op) and processes pending stdin in the same cycle.
-    unsafe { libc::kill(child_pid, libc::SIGWINCH) };
-
-    crate::broker::try_log_event(
-        "debug",
-        "poller",
-        &format!(
-            "injected {}B + CR + SIGWINCH (waited={}s stashed_draft={})",
-            message.len(),
-            waited / 10,
-            stashed_draft.is_some(),
-        ),
-        None,
-    );
-
-    if let Some(preview) = stashed_draft {
-        crate::tunnel::tunnel_println(&format!(
-            "\x1b[33m[sidekar]\x1b[0m Draft saved: \"{preview}\" — ↑ to restore"
-        ));
+        if let Some(preview) = stashed_draft {
+            crate::tunnel::tunnel_println(&format!(
+                "\x1b[33m[sidekar]\x1b[0m Draft saved: \"{preview}\" — ↑ to restore"
+            ));
+        }
+        break;
     }
+}
+
+/// Clear the child readline/PTY input line (Ctrl+U) before bus inject.
+fn clear_pty_input_line(raw_fd: i32) -> anyhow::Result<()> {
+    write_all_raw(raw_fd, b"\x15")?;
+    std::thread::sleep(Duration::from_millis(50));
+    Ok(())
 }
 
 fn format_draft_preview(draft: &[u8]) -> String {
@@ -584,6 +673,14 @@ mod tests {
             other => panic!("expected Forward, got {other:?}"),
         }
         assert!(!state.has_stashed_draft());
+    }
+
+    #[test]
+    fn is_idle_can_be_true_while_draft_pending() {
+        let state = UserInputState::new();
+        state.set_pending_line(b"half typed");
+        assert!(state.is_idle());
+        assert!(state.has_pending_line());
     }
 
     #[test]

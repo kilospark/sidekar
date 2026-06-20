@@ -213,6 +213,7 @@ pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
         ],
     )?;
     tx.commit()?;
+    let _ = super::purge_nudges_for_request(reply_to_msg_id);
     Ok(())
 }
 
@@ -373,6 +374,7 @@ pub fn dismiss_terminal_ack_request(msg_id: &str) -> Result<bool> {
         "DELETE FROM pending_requests WHERE id = ?1",
         params![msg_id],
     )?;
+    let _ = super::purge_nudges_for_request(msg_id);
     Ok(updated > 0)
 }
 
@@ -431,6 +433,7 @@ pub fn cancel_outbound_request(msg_id: &str, cancelled_at: u64) -> Result<usize>
         params![msg_id],
     )?;
     tx.commit()?;
+    let _ = super::purge_nudges_for_request(msg_id);
     Ok(updated)
 }
 

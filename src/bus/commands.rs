@@ -18,10 +18,12 @@ struct DeliveryTarget {
 }
 
 fn find_agent_on_channel(name_or_nick: &str, channel: &str) -> Option<BrokerAgent> {
-    broker::list_agents(Some(channel))
-        .unwrap_or_default()
-        .into_iter()
-        .find(|a| a.id.name == name_or_nick || a.id.nick.as_deref() == Some(name_or_nick))
+    let agents = broker::list_agents(Some(channel)).unwrap_or_default();
+    let t = crate::message::parse_target(name_or_nick);
+    if let Some(a) = agents.iter().find(|a| a.id.name == t || a.id.nick.as_deref() == Some(t.as_str()) || a.id.name == name_or_nick || a.id.nick.as_deref() == Some(name_or_nick)) {
+        return Some(a.clone());
+    }
+    None
 }
 
 fn agents_on_channel(session: &str, exclude: &str) -> Vec<BrokerAgent> {
@@ -39,7 +41,7 @@ fn available_agents_str(channel: &str, exclude: &str) -> String {
     } else {
         agents
             .iter()
-            .map(|a| a.id.display_name())
+            .map(|a| a.id.address().to_string())
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -111,9 +113,10 @@ fn cleanup_completed_exchange(
 fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionInfo> {
     crate::auth::auth_token()?;
     let sessions = crate::transport::fetch_relay_sessions().ok()?;
+    let t = crate::message::parse_target(to);
     sessions
         .into_iter()
-        .find(|s| s.name == to || s.nickname.as_deref() == Some(to))
+        .find(|s| s.name == t || s.nickname.as_deref() == Some(t.as_str()) || s.name == to || s.nickname.as_deref() == Some(to))
 }
 
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
@@ -220,6 +223,15 @@ fn send_directed_envelope(
             &full_message,
         )
         .map(|_| ())
+    } else if delivery.transport_name == BROKER_TRANSPORT {
+        broker::enqueue_bus_message(
+            &delivery.transport_target,
+            &envelope.from.name,
+            &full_message,
+            envelope.requires_reply(),
+            Some(&envelope),
+        )
+        .map(|_| ())
     } else {
         deliver_via(
             delivery.transport_name,
@@ -235,6 +247,16 @@ fn send_directed_envelope(
     }
 
     resolve_reply(&envelope, reply_to);
+    if reply_to.is_some() {
+        if let Some(self_name) = state.name() {
+            cleanup_completed_exchange(
+                self_name,
+                &envelope.to,
+                state.channel(),
+                reply_to,
+            );
+        }
+    }
 
     if matches!(envelope.kind, MessageKind::Request | MessageKind::Handoff) {
         out!(

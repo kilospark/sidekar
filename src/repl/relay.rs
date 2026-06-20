@@ -166,26 +166,32 @@ fn bridge_tunnel_input(
                     body,
                     envelope,
                 } => {
-                        if let Some(envelope) = envelope {
-                            match envelope.kind {
-                                crate::message::MessageKind::Request
-                                | crate::message::MessageKind::Handoff => {
-                                    if envelope.requires_reply() {
-                                        let _ = broker::set_pending(&envelope);
-                                    } else {
-                                        let _ =
-                                            broker::dismiss_terminal_ack_request(&envelope.id);
-                                    }
+                    if let Some(ref envelope) = envelope {
+                        match envelope.kind {
+                            crate::message::MessageKind::Request
+                            | crate::message::MessageKind::Handoff => {
+                                if envelope.requires_reply() {
+                                    let _ = broker::set_pending(envelope);
+                                } else {
+                                    let _ = broker::dismiss_terminal_ack_request(&envelope.id);
                                 }
+                            }
                             crate::message::MessageKind::Response => {
                                 if let Some(reply_to) = envelope.reply_to.as_deref() {
-                                    let _ = broker::record_reply(reply_to, &envelope);
+                                    let _ = broker::record_reply(reply_to, envelope);
                                 }
                             }
                             crate::message::MessageKind::Fyi => {}
                         }
                     }
-                    let _ = broker::enqueue_message(&sender, &recipient, &body);
+                    let submit = envelope.as_ref().is_some_and(|e| e.requires_reply());
+                    let _ = broker::enqueue_bus_message(
+                        &recipient,
+                        &sender,
+                        &body,
+                        submit,
+                        envelope.as_ref(),
+                    );
                 }
                 crate::tunnel::TunnelEvent::BusPlain(text) => {
                     let _ = broker::enqueue_message("relay", &bus, &text);

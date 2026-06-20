@@ -123,16 +123,6 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         );
     }
     let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
-    let kind = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--kind="))
-        .unwrap_or_else(|| {
-            if reply_to.is_some() {
-                "response"
-            } else {
-                "request"
-            }
-        });
     let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
     let filtered: Vec<&str> = args
         .iter()
@@ -141,7 +131,8 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         })
         .map(String::as_str)
         .collect();
-    let to = filtered.first().copied().unwrap_or_default();
+    let to_raw = filtered.first().copied().unwrap_or_default();
+    let to = crate::message::parse_target(to_raw);
     let message = if let Some(path) = file_path {
         std::fs::read_to_string(path).with_context(|| format!("failed to read --file={path}"))?
     } else if filtered.len() > 1 {
@@ -149,13 +140,25 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     } else {
         String::new()
     };
+    let kind = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--kind="))
+        .unwrap_or_else(|| {
+            if reply_to.is_some() {
+                "response"
+            } else if crate::message::is_terminal_ack(&message) {
+                "fyi"
+            } else {
+                "fyi"
+            }
+        });
     if to.is_empty() || message.is_empty() {
         bail!(
             "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]"
         );
     }
     let mut bus_state = recovered_bus_state(ctx);
-    crate::bus::cmd_send_message(&mut bus_state, ctx, to, &message, kind, reply_to)?;
+    crate::bus::cmd_send_message(&mut bus_state, ctx, &to, &message, kind, reply_to)?;
     Ok(())
 }
 
@@ -177,6 +180,7 @@ fn cmd_bus_done(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             "Usage: sidekar bus done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]"
         );
     }
+    let next = crate::message::parse_target(filtered[0]);
     let request_body = if let Some(path) = file_path {
         std::fs::read_to_string(path).with_context(|| format!("failed to read --file={path}"))?
     } else {
@@ -186,7 +190,7 @@ fn cmd_bus_done(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     crate::bus::cmd_signal_done(
         &mut bus_state,
         ctx,
-        filtered[0],
+        &next,
         filtered[1],
         &request_body,
         reply_to,
