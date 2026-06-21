@@ -1,9 +1,7 @@
 //! PTY bus bridge — attaches to the daemon and writes delivered bus messages
 //! into the wrapped agent's PTY.
 
-use crate::activity::{ActivitySnapshot, ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
-use crate::broker;
-use crate::transport::{RelayHttp, Transport};
+use crate::activity::{ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,12 +10,6 @@ use std::time::Duration;
 
 static POLLER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
-const CLEANUP_INTERVAL_POLLS: u32 = 120; // clean old messages every 60s (120 * 500ms)
-const NUDGE_INTERVAL_POLLS: u32 = 120; // check nudges every 60s
-const MAX_MESSAGE_AGE_SECS: u64 = 3600;
-const NUDGE_SCHEDULE_SECS: [u64; 5] = [60, 120, 300, 600, 900];
-const NUDGE_MAX: u32 = 5;
 const USER_IDLE_BEFORE_INJECT: Duration = Duration::from_millis(1000);
 const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -441,180 +433,6 @@ fn run_daemon_bus_client(
         if stream.write_all(ack_line.as_bytes()).is_err() || stream.flush().is_err() {
             return false;
         }
-    }
-}
-
-/// Start the nudge + cleanup sweep for this agent. No PTY delivery — use this
-/// from embeds like the REPL that handle inbound messages on their own path.
-/// Stopped by `shutdown_poller`.
-pub fn start_nudger(agent_name: String) {
-    POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
-
-    std::thread::spawn(move || {
-        let _ = broker::repair_answered_outbounds(&agent_name);
-        let _ = broker::repair_dismiss_terminal_ack_outbounds(&agent_name);
-        let mut cleanup_poll_count: u32 = 0;
-        let mut nudge_poll_count: u32 = 0;
-
-        loop {
-            if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
-                break;
-            }
-            std::thread::sleep(POLL_INTERVAL);
-
-            cleanup_poll_count += 1;
-            if cleanup_poll_count >= CLEANUP_INTERVAL_POLLS {
-                cleanup_poll_count = 0;
-                let _ = broker::cleanup_old_messages(MAX_MESSAGE_AGE_SECS);
-            }
-
-            nudge_poll_count += 1;
-            if nudge_poll_count >= NUDGE_INTERVAL_POLLS {
-                nudge_poll_count = 0;
-                send_nudges(&agent_name);
-            }
-        }
-    });
-}
-
-/// Send nudges for this agent's unanswered outbound requests.
-fn send_nudges(agent_name: &str) {
-    let _ = broker::repair_answered_outbounds(agent_name);
-    let _ = broker::repair_dismiss_terminal_ack_outbounds(agent_name);
-
-    let requests = match broker::outbound_for_sender(agent_name) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    for request in requests {
-        let wait_secs = NUDGE_SCHEDULE_SECS
-            .get(request.nudge_count as usize)
-            .copied()
-            .unwrap_or(*NUDGE_SCHEDULE_SECS.last().unwrap_or(&900));
-        let last_event_at = request.last_nudged_at.unwrap_or(request.created_at);
-        let elapsed_since_last_event = now.saturating_sub(last_event_at);
-
-        if elapsed_since_last_event < wait_secs {
-            continue;
-        }
-
-        // Check if we've hit max nudges
-        if request.nudge_count >= NUDGE_MAX {
-            continue;
-        }
-
-        if !broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
-            continue;
-        }
-
-        // Check if recipient is still alive
-        if !is_recipient_alive(&request.transport_target) {
-            let _ = broker::delete_outbound_request(&request.msg_id);
-            let _ = broker::clear_pending(&request.msg_id);
-            continue;
-        }
-
-        if recipient_should_defer_nudge(&request.transport_name, &request.transport_target) {
-            crate::broker::try_log_event(
-                "debug",
-                "poller",
-                &format!(
-                    "nudge deferred: recipient busy transport={} target={} msg_id={}",
-                    request.transport_name, request.transport_target, request.msg_id,
-                ),
-                None,
-            );
-            continue;
-        }
-
-        // Claim the nudge slot before delivery so a concurrent record_reply cannot
-        // produce ghost text after the pre-check.
-        if !broker::try_increment_nudge_count(&request.msg_id, now).unwrap_or(false) {
-            continue;
-        }
-
-        if !broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
-            let _ = broker::revert_nudge_claim(&request.msg_id, now);
-            continue;
-        }
-
-        let nudge_msg = format!(
-            "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
-            request.sender_label, request.msg_id
-        );
-
-        let delivery_result = match request.transport_name.as_str() {
-            "broker" => match broker::enqueue_bus_message(
-                &request.transport_target,
-                "sidekar",
-                &nudge_msg,
-                true,
-                None,
-            ) {
-                Ok(()) => Ok(crate::message::DeliveryResult::Delivered),
-                Err(e) => Ok(crate::message::DeliveryResult::Failed(e.to_string())),
-            },
-            "relay_http" => RelayHttp.deliver(&request.transport_target, &nudge_msg, "sidekar"),
-            _ => {
-                let _ = broker::revert_nudge_claim(&request.msg_id, now);
-                continue;
-            }
-        };
-
-        let delivered = matches!(
-            delivery_result,
-            Ok(crate::message::DeliveryResult::Delivered | crate::message::DeliveryResult::Queued)
-        );
-        if !delivered {
-            let _ = broker::revert_nudge_claim(&request.msg_id, now);
-            continue;
-        }
-
-        crate::broker::try_log_event(
-            "debug",
-            "poller",
-            &format!(
-                "nudge delivered transport={} target={} msg_id={}",
-                request.transport_name, request.transport_target, request.msg_id,
-            ),
-            None,
-        );
-    }
-}
-
-/// Check if the recipient agent is still registered and alive.
-fn is_recipient_alive(recipient_name: &str) -> bool {
-    let agent = match broker::find_agent(recipient_name, None) {
-        Ok(Some(a)) => a,
-        _ => return false,
-    };
-
-    if let Some(ref pane) = agent.id.pane
-        && let Some(pid_str) = pane.strip_prefix("pty-")
-        && let Ok(pid) = pid_str.parse::<i32>()
-    {
-        return unsafe { libc::kill(pid, 0) } == 0;
-    }
-
-    // If we can't determine PID, assume alive (could be a relay agent)
-    true
-}
-
-fn recipient_should_defer_nudge(transport_name: &str, transport_target: &str) -> bool {
-    match transport_name {
-        "broker" => broker::get_agent_activity(transport_target)
-            .ok()
-            .flatten()
-            .unwrap_or(ActivitySnapshot::unknown())
-            .should_defer_nudge(),
-        "relay_http" => crate::transport::relay_recipient_should_defer_nudge(transport_target),
-        _ => false,
     }
 }
 

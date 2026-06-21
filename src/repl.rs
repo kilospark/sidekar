@@ -298,9 +298,6 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let cron_project = crate::scope::resolve_project_name(None);
     crate::commands::cron::start_default_cron_loop(bus_name.clone(), cron_project).await;
 
-    // Nudge unanswered outbound bus requests on the same schedule as PTY mode.
-    crate::poller::start_nudger(bus_name.clone());
-
     // Single-prompt mode: one turn, exit. Honors -r/--resume-session so the
     // prompt is appended to an existing session's history.
     if let Some(input) = prompt {
