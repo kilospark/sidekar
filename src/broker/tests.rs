@@ -834,6 +834,32 @@ fn purge_nudges_for_request_removes_queued_stale_nudges() -> Result<()> {
 }
 
 #[test]
+fn purge_all_queued_nudges_removes_only_generated_nudges() -> Result<()> {
+    with_test_db(|| {
+        enqueue_bus_message(
+            "receiver",
+            "sidekar",
+            "[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to=abc-123",
+            false,
+            None,
+        )?;
+        enqueue_bus_message(
+            "receiver",
+            "sender",
+            "[request from sender]: ping",
+            false,
+            None,
+        )?;
+
+        assert_eq!(purge_all_queued_nudges()?, 1);
+        let remaining = list_queued_messages("receiver")?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].body, "[request from sender]: ping");
+        Ok(())
+    })
+}
+
+#[test]
 fn ensure_proxy_log_status_adds_column_on_legacy_table() -> Result<()> {
     with_test_db(|| {
         let conn = open_raw()?;

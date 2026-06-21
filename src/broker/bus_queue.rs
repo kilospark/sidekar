@@ -185,3 +185,13 @@ pub fn purge_nudges_for_request(msg_id: &str) -> Result<usize> {
     )?;
     Ok(deleted)
 }
+
+/// Remove every generated nudge row from the bus queue.
+pub fn purge_all_queued_nudges() -> Result<usize> {
+    let conn = open()?;
+    let deleted = conn.execute(
+        "DELETE FROM bus_queue WHERE instr(body, '[sidekar] You have an unanswered request') = 1",
+        [],
+    )?;
+    Ok(deleted)
+}

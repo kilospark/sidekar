@@ -352,6 +352,20 @@ pub async fn start() -> Result<()> {
             Some(&format!("{e:#}")),
         ),
     }
+    match crate::broker::purge_all_queued_nudges() {
+        Ok(purged) if purged > 0 => crate::broker::try_log_event(
+            "info",
+            "daemon-bus",
+            &format!("purged {purged} queued nudge messages"),
+            None,
+        ),
+        Ok(_) => {}
+        Err(e) => crate::broker::try_log_error(
+            "daemon-bus",
+            "failed to purge queued nudge messages",
+            Some(&format!("{e:#}")),
+        ),
+    }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
@@ -405,8 +419,6 @@ pub async fn start() -> Result<()> {
 
     let bus_state_for_delivery = state.lock().await.bus_state.clone();
     tokio::spawn(bus::bus_delivery_loop(bus_state_for_delivery));
-    let bus_state_for_nudges = state.lock().await.bus_state.clone();
-    tokio::spawn(bus::bus_nudge_loop(bus_state_for_nudges));
 
     loop {
         match listener.accept().await {

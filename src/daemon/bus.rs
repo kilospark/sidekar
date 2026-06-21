@@ -1,10 +1,5 @@
 use super::*;
-use crate::transport::{RelayHttp, Transport};
 use tokio::sync::mpsc;
-
-const NUDGE_INTERVAL_SECS: u64 = 60;
-const NUDGE_SCHEDULE_SECS: [u64; 5] = [60, 120, 300, 600, 900];
-const NUDGE_MAX: u32 = 5;
 
 #[derive(Default)]
 pub(super) struct BusState {
@@ -156,15 +151,6 @@ pub(super) async fn bus_delivery_loop(bus_state: SharedBusState) {
     }
 }
 
-pub(super) async fn bus_nudge_loop(bus_state: SharedBusState) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(NUDGE_INTERVAL_SECS));
-    interval.tick().await;
-    loop {
-        interval.tick().await;
-        send_nudges(&bus_state).await;
-    }
-}
-
 async fn deliver_once(bus_state: &SharedBusState) {
     let clients: Vec<(String, u64, mpsc::UnboundedSender<Value>)> = {
         let bus = bus_state.lock().await;
@@ -188,9 +174,7 @@ async fn deliver_once(bus_state: &SharedBusState) {
             {
                 let _ = crate::broker::dismiss_terminal_ack_request(&envelope.id);
             }
-            if let Some(msg_id) = crate::message::nudge_msg_id_from_body(&msg.body)
-                && !crate::broker::outbound_nudgeable(&msg_id).unwrap_or(false)
-            {
+            if crate::message::nudge_msg_id_from_body(&msg.body).is_some() {
                 let _ = crate::broker::delete_queued_message(msg.id);
                 continue;
             }
@@ -219,126 +203,6 @@ async fn deliver_once(bus_state: &SharedBusState) {
                 break;
             }
         }
-    }
-}
-
-async fn send_nudges(bus_state: &SharedBusState) {
-    let requests = match crate::broker::all_open_outbound_requests() {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    let now = crate::message::epoch_secs();
-    let mut repaired_senders = std::collections::HashSet::new();
-    for request in requests {
-        if repaired_senders.insert(request.sender_name.clone()) {
-            let _ = crate::broker::repair_answered_outbounds(&request.sender_name);
-            let _ = crate::broker::repair_dismiss_terminal_ack_outbounds(&request.sender_name);
-        }
-        let sender_live = {
-            let bus = bus_state.lock().await;
-            bus.clients.contains_key(&request.sender_name)
-        };
-        if !sender_live {
-            continue;
-        }
-
-        let wait_secs = NUDGE_SCHEDULE_SECS
-            .get(request.nudge_count as usize)
-            .copied()
-            .unwrap_or(*NUDGE_SCHEDULE_SECS.last().unwrap_or(&900));
-        let last_event_at = request.last_nudged_at.unwrap_or(request.created_at);
-        if now.saturating_sub(last_event_at) < wait_secs {
-            continue;
-        }
-        if request.nudge_count >= NUDGE_MAX {
-            continue;
-        }
-        if !crate::broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
-            continue;
-        }
-        if !recipient_alive(&request).await {
-            let _ = crate::broker::delete_outbound_request(&request.msg_id);
-            let _ = crate::broker::clear_pending(&request.msg_id);
-            continue;
-        }
-        if recipient_should_defer_nudge(&request).await {
-            crate::broker::try_log_event(
-                "debug",
-                "daemon-bus",
-                &format!(
-                    "nudge deferred: recipient busy transport={} target={} msg_id={}",
-                    request.transport_name, request.transport_target, request.msg_id,
-                ),
-                None,
-            );
-            continue;
-        }
-        if !crate::broker::try_increment_nudge_count(&request.msg_id, now).unwrap_or(false) {
-            continue;
-        }
-        if !crate::broker::outbound_nudgeable(&request.msg_id).unwrap_or(false) {
-            let _ = crate::broker::revert_nudge_claim(&request.msg_id, now);
-            continue;
-        }
-
-        let nudge_msg = format!(
-            "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}",
-            request.sender_label, request.msg_id
-        );
-        let delivered = match request.transport_name.as_str() {
-            "broker" => crate::broker::enqueue_bus_message(
-                &request.transport_target,
-                "sidekar",
-                &nudge_msg,
-                true,
-                None,
-            )
-            .is_ok(),
-            "relay_http" => matches!(
-                RelayHttp.deliver(&request.transport_target, &nudge_msg, "sidekar"),
-                Ok(crate::message::DeliveryResult::Delivered
-                    | crate::message::DeliveryResult::Queued)
-            ),
-            _ => false,
-        };
-        if !delivered {
-            let _ = crate::broker::revert_nudge_claim(&request.msg_id, now);
-            continue;
-        }
-        crate::broker::try_log_event(
-            "debug",
-            "daemon-bus",
-            &format!(
-                "nudge delivered transport={} target={} msg_id={}",
-                request.transport_name, request.transport_target, request.msg_id,
-            ),
-            None,
-        );
-    }
-}
-
-async fn recipient_alive(request: &crate::broker::OutboundRequestRecord) -> bool {
-    match request.transport_name.as_str() {
-        "broker" => crate::broker::find_agent(&request.transport_target, None)
-            .ok()
-            .flatten()
-            .is_some(),
-        "relay_http" => true,
-        _ => false,
-    }
-}
-
-async fn recipient_should_defer_nudge(request: &crate::broker::OutboundRequestRecord) -> bool {
-    match request.transport_name.as_str() {
-        "broker" => crate::broker::get_agent_activity(&request.transport_target)
-            .ok()
-            .flatten()
-            .unwrap_or(crate::activity::ActivitySnapshot::unknown())
-            .should_defer_nudge(),
-        "relay_http" => {
-            crate::transport::relay_recipient_should_defer_nudge(&request.transport_target)
-        }
-        _ => false,
     }
 }
 
@@ -551,5 +415,26 @@ mod tests {
         }
         server_task.abort();
         anyhow::bail!("acked bus message remained queued");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliver_once_drops_queued_nudge_messages() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        crate::broker::enqueue_bus_message(
+            "receiver",
+            "sidekar",
+            "[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to=abc-123",
+            false,
+            None,
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let bus_state: SharedBusState = Arc::new(Mutex::new(BusState::default()));
+        bus_state.lock().await.attach("receiver".to_string(), tx);
+        deliver_once(&bus_state).await;
+
+        assert!(rx.try_recv().is_err());
+        assert!(crate::broker::list_queued_messages("receiver")?.is_empty());
+        Ok(())
     }
 }
