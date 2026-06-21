@@ -35,14 +35,7 @@ pub fn enqueue_bus_message(
     conn.execute(
         "INSERT INTO bus_queue (recipient, sender, body, created_at, submit_input, envelope_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            recipient,
-            sender,
-            body,
-            now,
-            true,
-            envelope_json,
-        ],
+        params![recipient, sender, body, now, true, envelope_json,],
     )?;
     Ok(())
 }
@@ -124,6 +117,19 @@ pub fn release_queued_message(id: i64) -> Result<()> {
         params![id],
     )?;
     Ok(())
+}
+
+/// Return all claimed messages to the pending queue.
+///
+/// Called when the daemon starts, before it accepts bus clients. Claimed rows
+/// from a dead daemon have no live owner and would otherwise be hidden forever.
+pub fn release_all_claimed_messages() -> Result<usize> {
+    let conn = open()?;
+    let released = conn.execute(
+        "UPDATE bus_queue SET claimed_at = 0 WHERE claimed_at != 0",
+        [],
+    )?;
+    Ok(released)
 }
 
 /// Remove one delivered message from the queue.

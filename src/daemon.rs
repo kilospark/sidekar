@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 use crate::ext::{ExtState, SharedExtState};
 
 mod admin;
+mod bus;
 mod command;
 mod housekeeping;
 mod http;
@@ -250,11 +251,7 @@ fn daemon_http_port() -> Option<u16> {
 pub fn status() -> Result<()> {
     let (pid, socket, http_port) = if let Some(pid) = get_pid() {
         let port = daemon_http_port();
-        (
-            Some(pid),
-            Some(socket_path().display().to_string()),
-            port,
-        )
+        (Some(pid), Some(socket_path().display().to_string()), port)
     } else {
         (None, None, None)
     };
@@ -296,6 +293,7 @@ pub fn send_command(cmd: &Value) -> Result<Value> {
 struct DaemonState {
     ext_state: SharedExtState,
     cdp_pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>,
+    bus_state: bus::SharedBusState,
     http_port: u16,
 }
 
@@ -304,6 +302,7 @@ impl DaemonState {
         Self {
             ext_state: Arc::new(Mutex::new(ExtState::default())),
             cdp_pool: Arc::new(Mutex::new(crate::cdp_proxy::CdpPool::new())),
+            bus_state: Arc::new(Mutex::new(bus::BusState::default())),
             http_port: 0,
         }
     }
@@ -339,6 +338,20 @@ pub async fn start() -> Result<()> {
         &format!("started (PID {pid})"),
         Some(&sock_path.display().to_string()),
     );
+    match crate::broker::release_all_claimed_messages() {
+        Ok(released) if released > 0 => crate::broker::try_log_event(
+            "info",
+            "daemon-bus",
+            &format!("released {released} orphaned claimed bus messages"),
+            None,
+        ),
+        Ok(_) => {}
+        Err(e) => crate::broker::try_log_error(
+            "daemon-bus",
+            "failed to release orphaned claimed bus messages",
+            Some(&format!("{e:#}")),
+        ),
+    }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
@@ -389,6 +402,11 @@ pub async fn start() -> Result<()> {
 
     let cdp_pool_for_reaper = state.lock().await.cdp_pool.clone();
     tokio::spawn(cdp_pool_reaper(cdp_pool_for_reaper));
+
+    let bus_state_for_delivery = state.lock().await.bus_state.clone();
+    tokio::spawn(bus::bus_delivery_loop(bus_state_for_delivery));
+    let bus_state_for_nudges = state.lock().await.bus_state.clone();
+    tokio::spawn(bus::bus_nudge_loop(bus_state_for_nudges));
 
     loop {
         match listener.accept().await {
@@ -446,6 +464,11 @@ async fn handle_connection(
         }
         let pool = state.lock().await.cdp_pool.clone();
         crate::cdp_proxy::handle_cdp_connection(ws_url, reader, writer, pool).await;
+        return;
+    }
+
+    if first.get("type").and_then(|v| v.as_str()) == Some("bus_attach") {
+        bus::handle_bus_client(first, reader, writer, state).await;
         return;
     }
 

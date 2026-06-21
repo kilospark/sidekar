@@ -517,6 +517,42 @@ fn cancel_all_outbound_for_sender_only_touches_open_rows() -> Result<()> {
 }
 
 #[test]
+fn all_open_outbound_requests_spans_senders_and_skips_closed() -> Result<()> {
+    with_test_db(|| {
+        let s1 = AgentId::new("sender-one");
+        let s2 = AgentId::new("sender-two");
+        register_agent(&s1, None)?;
+        register_agent(&s2, None)?;
+
+        let r1 = Envelope::new_request(s1.clone(), "receiver", "one");
+        let r2 = Envelope::new_request(s2.clone(), "receiver", "two");
+        let closed = Envelope::new_request(s1.clone(), "receiver", "closed");
+        set_outbound_request(&r1, &s1.display_name(), "broker", "receiver", None, None)?;
+        set_outbound_request(&r2, &s2.display_name(), "broker", "receiver", None, None)?;
+        set_outbound_request(
+            &closed,
+            &s1.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        let conn = open_raw()?;
+        conn.execute(
+            "UPDATE outbound_requests SET status = ?1 WHERE msg_id = ?2",
+            params![OUTBOUND_STATUS_CANCELLED, closed.id],
+        )?;
+
+        let open = all_open_outbound_requests()?;
+        let ids = open.iter().map(|r| r.msg_id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&r1.id.as_str()));
+        assert!(ids.contains(&r2.id.as_str()));
+        Ok(())
+    })
+}
+
+#[test]
 fn agent_activity_round_trip() -> Result<()> {
     use crate::activity::ActivityState;
 
@@ -750,6 +786,30 @@ fn claim_queued_message_hides_until_release_or_delete() -> Result<()> {
         assert_eq!(list_queued_messages("receiver")?.len(), 1);
         delete_queued_message(id)?;
         assert!(list_queued_messages("receiver")?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn release_all_claimed_messages_restores_orphaned_rows() -> Result<()> {
+    with_test_db(|| {
+        enqueue_bus_message("receiver", "sender", "one", false, None)?;
+        enqueue_bus_message("receiver", "sender", "two", false, None)?;
+        let ids = list_queued_messages("receiver")?
+            .into_iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>();
+
+        assert!(claim_queued_message(ids[0], "receiver")?.is_some());
+        assert!(claim_queued_message(ids[1], "receiver")?.is_some());
+        assert!(list_queued_messages("receiver")?.is_empty());
+
+        assert_eq!(release_all_claimed_messages()?, 2);
+        let restored = list_queued_messages("receiver")?;
+        assert_eq!(
+            restored.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
+            vec!["one", "two"]
+        );
         Ok(())
     })
 }

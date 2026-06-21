@@ -250,6 +250,24 @@ pub fn outbound_for_sender(name: &str) -> Result<Vec<OutboundRequestRecord>> {
     Ok(requests)
 }
 
+pub fn all_open_outbound_requests() -> Result<Vec<OutboundRequestRecord>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT msg_id, sender_name, sender_label, recipient_name, transport_name, transport_target,
+                kind, channel, project, message_preview, status, created_at, nudge_count,
+                last_nudged_at, answered_at, timed_out_at, closed_at
+         FROM outbound_requests
+         WHERE status = ?1
+         ORDER BY created_at ASC",
+    )?;
+    let mut rows = stmt.query(params![OUTBOUND_STATUS_OPEN])?;
+    let mut requests = Vec::new();
+    while let Some(row) = rows.next()? {
+        requests.push(row_to_outbound(row)?);
+    }
+    Ok(requests)
+}
+
 pub fn expired_outbound_for_sender(
     name: &str,
     created_at_cutoff: u64,
@@ -363,12 +381,7 @@ pub fn dismiss_terminal_ack_request(msg_id: &str) -> Result<bool> {
              answered_at = COALESCE(answered_at, ?3),
              closed_at = COALESCE(closed_at, ?3)
          WHERE msg_id = ?1 AND status = ?4",
-        params![
-            msg_id,
-            OUTBOUND_STATUS_ANSWERED,
-            now,
-            OUTBOUND_STATUS_OPEN,
-        ],
+        params![msg_id, OUTBOUND_STATUS_ANSWERED, now, OUTBOUND_STATUS_OPEN,],
     )?;
     conn.execute(
         "DELETE FROM pending_requests WHERE id = ?1",

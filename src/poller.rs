@@ -1,9 +1,8 @@
-//! Bus message poller — reads from the SQLite bus_queue and delivers
-//! messages to the local agent via PTY write.
+//! PTY bus bridge — attaches to the daemon and writes delivered bus messages
+//! into the wrapped agent's PTY.
 
 use crate::activity::{ActivitySnapshot, ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
 use crate::broker;
-use crate::message::Envelope;
 use crate::transport::{RelayHttp, Transport};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
@@ -317,8 +316,8 @@ pub fn shutdown_poller() {
     POLLER_SHUTDOWN.store(true, Ordering::Relaxed);
 }
 
-/// Start the full PTY poller: an inbound thread that delivers bus messages
-/// into the wrapped agent's PTY, plus the shared nudge+cleanup sweep.
+/// Start the PTY daemon bus client that delivers bus messages into the wrapped
+/// agent's PTY.
 pub fn start_poller(
     agent_name: String,
     pty_fd: Arc<OwnedFd>,
@@ -330,47 +329,119 @@ pub fn start_poller(
 
     let inject_agent = agent_name.clone();
     std::thread::spawn(move || {
-        loop {
-            if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
+        while !POLLER_SHUTDOWN.load(Ordering::Relaxed) {
+            if run_daemon_bus_client(&inject_agent, &pty_fd, &input_state, &notice_tx, child_pid) {
                 break;
             }
-            std::thread::sleep(POLL_INTERVAL);
-            if let Ok(messages) = broker::list_queued_messages(&inject_agent) {
-                for msg in messages {
-                    let Ok(Some(msg)) = broker::claim_queued_message(msg.id, &inject_agent) else {
-                        continue;
-                    };
-                    if let Some(ref envelope) = msg.envelope {
-                        if !envelope.requires_reply() {
-                            let _ = broker::dismiss_terminal_ack_request(&envelope.id);
-                        }
-                    }
-                    if let Some(msg_id) = crate::message::nudge_msg_id_from_body(&msg.body) {
-                        if !broker::outbound_nudgeable(&msg_id).unwrap_or(false) {
-                            let _ = broker::delete_queued_message(msg.id);
-                            continue;
-                        }
-                    }
-                    let submit =
-                        should_submit_queued_message(msg.submit_input, &msg.envelope, &msg.body);
-                    if deliver_to_pty(
-                        &pty_fd,
-                        &input_state,
-                        &notice_tx,
-                        &msg.body,
-                        submit,
-                        child_pid,
-                    ) {
-                        let _ = broker::delete_queued_message(msg.id);
-                    } else {
-                        let _ = broker::release_queued_message(msg.id);
-                    }
-                }
-            }
+            crate::broker::try_log_error(
+                "poller",
+                "daemon bus attach failed; retrying PTY bus delivery through daemon",
+                Some(&inject_agent),
+            );
+            std::thread::sleep(Duration::from_secs(1));
         }
     });
+}
 
-    start_nudger(agent_name);
+fn run_daemon_bus_client(
+    agent_name: &str,
+    pty_fd: &OwnedFd,
+    input_state: &UserInputState,
+    notice_tx: &tokio::sync::mpsc::UnboundedSender<PtyNotice>,
+    child_pid: i32,
+) -> bool {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixStream;
+
+    if crate::daemon::ensure_running().is_err() {
+        return false;
+    }
+    let Ok(mut stream) = UnixStream::connect(crate::daemon::socket_path()) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+    let attach = serde_json::json!({"type": "bus_attach", "agent": agent_name});
+    let Ok(mut attach_line) = serde_json::to_string(&attach) else {
+        return false;
+    };
+    attach_line.push('\n');
+    if stream.write_all(attach_line.as_bytes()).is_err() || stream.flush().is_err() {
+        return false;
+    }
+
+    let reader_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut reader = std::io::BufReader::new(reader_stream);
+    let mut line = String::new();
+    if reader
+        .read_line(&mut line)
+        .ok()
+        .filter(|n| *n > 0)
+        .is_none()
+    {
+        return false;
+    }
+    let Ok(attached) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+        return false;
+    };
+    if attached.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return false;
+    }
+    crate::broker::try_log_event(
+        "debug",
+        "poller",
+        &format!("attached daemon bus delivery for {agent_name}"),
+        None,
+    );
+
+    line.clear();
+    loop {
+        if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
+            return true;
+        }
+        match reader.read_line(&mut line) {
+            Ok(0) => return false,
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => return false,
+        }
+        let parsed = serde_json::from_str::<serde_json::Value>(line.trim());
+        line.clear();
+        let Ok(frame) = parsed else {
+            continue;
+        };
+        if frame.get("type").and_then(|v| v.as_str()) != Some("bus_message") {
+            continue;
+        }
+        let Some(id) = frame.get("id").and_then(|v| v.as_i64()) else {
+            continue;
+        };
+        let body = frame
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let ok = deliver_to_pty(pty_fd, input_state, notice_tx, &body, true, child_pid);
+        let ack = serde_json::json!({"type": "bus_ack", "id": id, "ok": ok});
+        let Ok(mut ack_line) = serde_json::to_string(&ack) else {
+            return false;
+        };
+        ack_line.push('\n');
+        if stream.write_all(ack_line.as_bytes()).is_err() || stream.flush().is_err() {
+            return false;
+        }
+    }
 }
 
 /// Start the nudge + cleanup sweep for this agent. No PTY delivery — use this
@@ -443,7 +514,7 @@ fn send_nudges(agent_name: &str) {
         }
 
         // Check if recipient is still alive
-        if !is_recipient_alive(&request.recipient_name) {
+        if !is_recipient_alive(&request.transport_target) {
             let _ = broker::delete_outbound_request(&request.msg_id);
             let _ = broker::clear_pending(&request.msg_id);
             continue;
@@ -545,14 +616,6 @@ fn recipient_should_defer_nudge(transport_name: &str, transport_target: &str) ->
         "relay_http" => crate::transport::relay_recipient_should_defer_nudge(transport_target),
         _ => false,
     }
-}
-
-fn should_submit_queued_message(
-    _submit_input: bool,
-    _envelope: &Option<Envelope>,
-    _body: &str,
-) -> bool {
-    true
 }
 
 /// Deliver one bus message. Returns true when the message can be acked/dequeued.
@@ -871,40 +934,5 @@ mod tests {
         let preview = format_draft_preview(long.as_bytes());
         assert!(preview.ends_with('…'));
         assert!(preview.chars().count() <= 80);
-    }
-
-    #[test]
-    fn should_submit_queued_message_submits_every_bus_row() {
-        use crate::message::{AgentId, Envelope};
-        let fyi = Envelope::new_fyi(AgentId::new("a"), "b", "closed.");
-        assert!(should_submit_queued_message(
-            false,
-            &Some(fyi),
-            "[fyi from a]: closed."
-        ));
-        let response =
-            Envelope::new_response(AgentId::new("a"), "b", "done", "msg-1".to_string());
-        assert!(should_submit_queued_message(
-            false,
-            &Some(response),
-            "[response from a]: done"
-        ));
-        let req = Envelope::new_request(AgentId::new("a"), "b", "ping");
-        assert!(should_submit_queued_message(
-            false,
-            &Some(req),
-            "[request from a]: ping"
-        ));
-        assert!(should_submit_queued_message(true, &None, "ping"));
-        assert!(should_submit_queued_message(
-            false,
-            &None,
-            "[request from a]: ping\n[reply with: sidekar bus send a \"ok\" --reply-to=abc]"
-        ));
-        assert!(should_submit_queued_message(
-            false,
-            &None,
-            "[sidekar] You have an unanswered request from a. Reply using bus send or bus done with --reply-to=abc"
-        ));
     }
 }
