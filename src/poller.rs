@@ -451,12 +451,13 @@ fn deliver_to_pty(
 
     let raw_fd = fd.as_raw_fd();
 
-    // Wait until terminal-facing delivery will not collide with user input or agent output.
+    // Wait until submitted input will not collide with user input or agent output.
+    //
+    // `sidecar_notice_allowed` only controls out-of-band terminal notices. It
+    // must not gate real prompt submission: some TUIs, notably Cursor Agent,
+    // hide the cursor or own the screen while idle at the prompt.
     let mut waited = 0u32;
-    while !input_state.is_idle()
-        || input_state.is_agent_working()
-        || (submit_input && !input_state.sidecar_notice_allowed())
-    {
+    while pty_submit_wait_blocked(input_state) {
         if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             return false;
         }
@@ -631,6 +632,10 @@ fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn pty_submit_wait_blocked(input_state: &UserInputState) -> bool {
+    !input_state.is_idle() || input_state.is_agent_working()
+}
+
 fn epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -744,6 +749,15 @@ mod tests {
         assert!(state.sidecar_notice_allowed());
         state.mark_pty_output_bytes(b"1049h");
         assert!(!state.sidecar_notice_allowed());
+    }
+
+    #[test]
+    fn terminal_notice_visibility_does_not_block_prompt_submission() {
+        let state = UserInputState::new();
+        state.update_terminal_state(b"\x1b[?1049h");
+
+        assert!(!state.sidecar_notice_allowed());
+        assert!(!pty_submit_wait_blocked(&state));
     }
 
     #[test]
