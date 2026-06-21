@@ -441,9 +441,6 @@ pub async fn get_opencode_go_token(nickname: Option<&str>) -> Result<String> {
 
 /// Get a valid Grok token (Sidekar OAuth, stored API key, or `XAI_API_KEY`).
 pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
-    if let Some(n) = nickname {
-        let _ = super::grok_oauth::sync_cli_session_from_disk_if_stale(n);
-    }
     let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
     get_token(&kv_key, "XAI_API_KEY", "Grok", refresh_token_grok).await
 }
@@ -1027,6 +1024,7 @@ pub(crate) async fn begin_anthropic_login(nickname: Option<&str>) -> Result<Inte
         ANTHROPIC_CLIENT_ID,
         ANTHROPIC_AUTHORIZE_URL,
         ANTHROPIC_TOKEN_URL,
+        "localhost",
         ANTHROPIC_CALLBACK_PORT,
         "/callback",
         ANTHROPIC_SCOPES,
@@ -1073,6 +1071,7 @@ pub(crate) async fn begin_codex_login(nickname: Option<&str>) -> Result<Interact
         CODEX_CLIENT_ID,
         CODEX_AUTHORIZE_URL,
         CODEX_TOKEN_URL,
+        "localhost",
         CODEX_CALLBACK_PORT,
         "/auth/callback",
         CODEX_SCOPES,
@@ -1105,8 +1104,9 @@ pub(crate) async fn begin_grok_login(nickname: Option<&str>) -> Result<Interacti
         super::grok_oauth::GROK_OAUTH_DEFAULT_CLIENT_ID,
         super::grok_oauth::GROK_OAUTH_AUTHORIZE_URL,
         super::grok_oauth::GROK_OAUTH_TOKEN_URL,
-        super::grok_oauth::GROK_OAUTH_CALLBACK_PORT,
-        "/callback",
+        "127.0.0.1",
+        0,
+        super::grok_oauth::GROK_OAUTH_CALLBACK_PATH,
         super::grok_oauth::GROK_OAUTH_SCOPES,
         &[],
         false,
@@ -1132,7 +1132,7 @@ pub(crate) async fn finish_grok_login(login: InteractiveOAuthLogin) -> Result<St
         oidc_issuer: super::grok_oauth::GROK_OAUTH_ISSUER.to_string(),
         email: email.clone(),
     };
-    super::grok_oauth::save_imported_credential(nickname, &session)?;
+    super::grok_oauth::save_oauth_credential(nickname, &session)?;
     Ok(email.unwrap_or_else(|| "Grok Build OAuth".to_string()))
 }
 
@@ -1148,6 +1148,7 @@ async fn begin_pkce_login(
     client_id: &'static str,
     authorize_url: &'static str,
     token_url: &'static str,
+    callback_host: &'static str,
     callback_port: u16,
     callback_path: &'static str,
     scopes: &'static str,
@@ -1158,7 +1159,10 @@ async fn begin_pkce_login(
     let challenge = pkce_challenge(&verifier);
     let state = generate_random_hex(32);
 
-    let callback = format!("http://localhost:{callback_port}{callback_path}");
+    let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
+    let (bound_port, server) =
+        start_callback_server(callback_host, callback_port, state.clone(), code_tx).await?;
+    let callback = format!("http://{callback_host}:{bound_port}{callback_path}");
     let mut auth_url = format!(
         "{authorize_url}?\
         response_type=code\
@@ -1174,9 +1178,6 @@ async fn begin_pkce_login(
     for (k, v) in extra_params {
         auth_url.push_str(&format!("&{k}={}", urlencoding::encode(v)));
     }
-
-    let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
-    let server = start_callback_server(callback_port, state.clone(), code_tx).await?;
 
     Ok((
         auth_url,
@@ -1533,13 +1534,18 @@ fn oauth_local_callback_error_html(message: &str) -> String {
 }
 
 async fn start_callback_server(
+    host: &str,
     port: u16,
     expected_state: String,
     code_tx: tokio::sync::oneshot::Sender<String>,
-) -> Result<tokio::task::JoinHandle<()>> {
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+) -> Result<(u16, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
         .await
-        .with_context(|| format!("Could not bind to port {port} for OAuth callback"))?;
+        .with_context(|| format!("Could not bind to {host}:{port} for OAuth callback"))?;
+    let bound_port = listener
+        .local_addr()
+        .context("Could not read OAuth callback bind address")?
+        .port();
 
     let handle = tokio::spawn(async move {
         let code_tx = std::sync::Mutex::new(Some(code_tx));
@@ -1612,7 +1618,7 @@ async fn start_callback_server(
         }
     });
 
-    Ok(handle)
+    Ok((bound_port, handle))
 }
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,8 @@
-//! Grok Build OAuth for Sidekar REPL: native PKCE login and optional import from `grok login`.
+//! Grok Build OAuth for Sidekar REPL (PKCE via `auth.x.ai`, stored in KV).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::oauth::{OAuthCredentials, kv_key_for, save_credentials};
@@ -11,8 +10,10 @@ use super::oauth::{OAuthCredentials, kv_key_for, save_credentials};
 pub const GROK_OAUTH_AUTHORIZE_URL: &str = "https://auth.x.ai/oauth2/authorize";
 pub const GROK_OAUTH_TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 pub const GROK_OAUTH_DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
-pub const GROK_OAUTH_CALLBACK_PORT: u16 = 17823;
-pub const GROK_OAUTH_SCOPES: &str = "grok-cli:access offline_access openid profile email";
+/// Loopback redirect path registered for the Grok CLI OAuth client (RFC 8252 port-agnostic).
+pub const GROK_OAUTH_CALLBACK_PATH: &str = "/callback";
+pub const GROK_OAUTH_SCOPES: &str =
+    "openid profile email offline_access grok-cli:access api:access";
 pub const GROK_OAUTH_ISSUER: &str = "https://auth.x.ai";
 pub const GROK_CLI_PROXY_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const GROK_CLI_CLIENT_IDENTIFIER: &str = "xai-grok-cli";
@@ -114,10 +115,6 @@ pub fn grok_home_dir() -> PathBuf {
         .join(".grok")
 }
 
-pub fn auth_json_path() -> PathBuf {
-    grok_home_dir().join("auth.json")
-}
-
 #[derive(Debug, Clone)]
 pub struct GrokCliSession {
     pub access_token: String,
@@ -126,28 +123,6 @@ pub struct GrokCliSession {
     pub oidc_client_id: String,
     pub oidc_issuer: String,
     pub email: Option<String>,
-}
-
-/// Load the first usable OAuth session from Grok Build's `auth.json`.
-pub fn load_cli_session() -> Option<GrokCliSession> {
-    load_cli_session_from_path(&auth_json_path()).ok().flatten()
-}
-
-pub fn load_cli_session_from_path(path: &Path) -> Result<Option<GrokCliSession>> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let root: HashMap<String, GrokCliAuthEntry> =
-        serde_json::from_str(&raw).context("failed to parse Grok auth.json")?;
-    for entry in root.into_values() {
-        let Some(session) = entry.into_session() else {
-            continue;
-        };
-        return Ok(Some(session));
-    }
-    Ok(None)
 }
 
 /// Email claim from a Grok access token JWT, when present.
@@ -162,7 +137,7 @@ pub fn email_from_access_token(access_token: &str) -> Option<String> {
         .filter(|e| !e.is_empty())
 }
 
-pub fn save_imported_credential(nickname: &str, session: &GrokCliSession) -> Result<()> {
+pub fn save_oauth_credential(nickname: &str, session: &GrokCliSession) -> Result<()> {
     let kv_key = kv_key_for(nickname);
     let creds = OAuthCredentials {
         access_token: session.access_token.clone(),
@@ -204,27 +179,6 @@ pub fn credential_has_refresh_token(nickname: &str) -> bool {
         .ok()
         .flatten()
         .is_some_and(|c| !c.refresh_token.is_empty())
-}
-
-/// Re-import `~/.grok/auth.json` when Sidekar's copy is expired but Grok CLI has fresher tokens.
-pub fn sync_cli_session_from_disk_if_stale(cred_name: &str) -> Result<()> {
-    if !credential_uses_cli_proxy(cred_name) {
-        return Ok(());
-    }
-    let kv_key = kv_key_for(cred_name);
-    let Some(stored) = super::oauth::load_credentials(&kv_key)? else {
-        return Ok(());
-    };
-    if !stored.is_expired() {
-        return Ok(());
-    }
-    let Some(session) = load_cli_session() else {
-        return Ok(());
-    };
-    if session.expires_at <= stored.expires_at && session.access_token == stored.access_token {
-        return Ok(());
-    }
-    save_imported_credential(cred_name, &session)
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,7 +268,7 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Parse `2026-06-15T15:06:00.076745Z` (Grok auth.json `expires_at`).
+/// Parse ISO8601 UTC expiry (fallback when JWT `exp` missing).
 fn parse_iso8601_utc_secs(raw: &str) -> Option<u64> {
     let s = raw.trim();
     if s.is_empty() {
@@ -361,94 +315,46 @@ mod tests {
     }
 
     #[test]
-    fn load_cli_session_from_fixture() {
-        let dir = std::env::temp_dir().join(format!("sidekar-grok-oauth-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("auth.json");
-        std::fs::write(
-            &path,
+    fn grok_cli_auth_entry_parses_fixture_shape() {
+        let entry: GrokCliAuthEntry = serde_json::from_str(
             r#"{
-  "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
-    "key": "access-token-value",
-    "refresh_token": "refresh-token-value",
-    "expires_at": "2026-06-15T15:06:00.076745Z",
-    "oidc_client_id": "client-id",
-    "oidc_issuer": "https://auth.x.ai",
-    "email": "dev@example.com"
-  }
+  "key": "access-token-value",
+  "refresh_token": "refresh-token-value",
+  "expires_at": "2026-06-15T15:06:00.076745Z",
+  "oidc_client_id": "client-id",
+  "oidc_issuer": "https://auth.x.ai",
+  "email": "dev@example.com"
 }"#,
         )
         .unwrap();
-        let session = load_cli_session_from_path(&path).unwrap().unwrap();
+        let session = entry.into_session().expect("session");
         assert_eq!(session.access_token, "access-token-value");
         assert_eq!(session.refresh_token, "refresh-token-value");
         assert_eq!(session.oidc_client_id, "client-id");
         assert_eq!(session.email.as_deref(), Some("dev@example.com"));
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_oauth_credential_marks_cli_proxy() {
+        let nickname = format!("grok-save-{}", std::process::id());
+        let kv_key = crate::providers::oauth::kv_key_for(&nickname);
+        let session = GrokCliSession {
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: 9_999_999_999,
+            oidc_client_id: GROK_OAUTH_DEFAULT_CLIENT_ID.to_string(),
+            oidc_issuer: GROK_OAUTH_ISSUER.to_string(),
+            email: Some("dev@example.com".into()),
+        };
+        save_oauth_credential(&nickname, &session).unwrap();
+        assert!(credential_uses_cli_proxy(&nickname));
+        let _ = crate::broker::kv_delete(&kv_key);
     }
 
     #[test]
     fn cli_proxy_base_detection() {
         assert!(is_cli_proxy_base(GROK_CLI_PROXY_BASE_URL));
         assert!(!is_cli_proxy_base("https://api.x.ai"));
-    }
-
-    #[test]
-    fn sync_cli_session_from_disk_if_stale_updates_expired_copy() {
-        let dir = std::env::temp_dir().join(format!("sidekar-grok-sync-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let auth_path = dir.join("auth.json");
-        std::fs::write(
-            &auth_path,
-            r#"{
-  "https://auth.x.ai/": {
-    "key": "eyJ0eXAiOiJhdCtqd3QiLCJhbGciOiJFUzI1NiIsImtpZCI6Im9hdXRoMi1wcm9kdWN0aW9uLTIwMjYtMDItMTkifQ.eyJleHAiOjE5OTk5OTk5OTl9.sig",
-    "refresh_token": "refresh-new",
-    "expires_at": "2099-01-01T00:00:00Z",
-    "oidc_client_id": "b1a00492-073a-47ea-816f-4c329264a828",
-    "oidc_issuer": "https://auth.x.ai",
-    "email": "dev@example.com"
-  }
-}"#,
-        )
-        .unwrap();
-
-        let nickname = format!("grok-sync-{}", std::process::id());
-        let kv_key = crate::providers::oauth::kv_key_for(&nickname);
-        let stale = crate::providers::oauth::OAuthCredentials {
-            access_token: "old-token".to_string(),
-            refresh_token: "refresh-old".to_string(),
-            expires_at: 1,
-            metadata: serde_json::json!({
-                "provider_type": "grok",
-                "auth": "grok_cli_oauth",
-            }),
-        };
-        crate::providers::oauth::save_credentials(&kv_key, &stale).unwrap();
-
-        let session = load_cli_session_from_path(&auth_path)
-            .unwrap()
-            .expect("fixture session");
-        assert!(session.expires_at > stale.expires_at);
-
-        unsafe {
-            std::env::set_var("GROK_HOME", &dir);
-        }
-        sync_cli_session_from_disk_if_stale(&nickname).unwrap();
-        let updated = crate::providers::oauth::load_credentials(&kv_key)
-            .unwrap()
-            .expect("updated creds");
-        assert_eq!(updated.access_token, session.access_token);
-        assert_eq!(updated.refresh_token, "refresh-new");
-        assert!(updated.expires_at > stale.expires_at);
-
-        let _ = crate::broker::kv_delete(&kv_key);
-        let _ = std::fs::remove_dir_all(&dir);
-        unsafe {
-            std::env::remove_var("GROK_HOME");
-        }
     }
 
     #[test]
