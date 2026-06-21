@@ -23,7 +23,7 @@ Providers (first argument to `credential add`):
   openrouter          OpenRouter — API key
   opencode-zen        OpenCode Zen — API key
   opencode-go         OpenCode Go — API key
-  grok                Grok (xAI) — `grok login` → Grok Build proxy; else API key on api.x.ai
+  grok                Grok Build — OAuth browser flow (cli-chat-proxy); or `--api-key` for console key
   gemini              Gemini (Google) — API key
   cursor              Cursor — `CURSOR_API_KEY` → `api2.cursor.sh` (Connect / MitM-visible path); REPL stream still blocked on protobuf `AgentService.Run`
   bedrock             Amazon Bedrock — IAM / SigV4
@@ -287,35 +287,40 @@ pub async fn perform_credential_add(
             Ok(format!("Logged in as '{nickname}' (OpenCode Go)."))
         }
         "grok" => {
-            if let Some(session) = crate::providers::grok_oauth::load_cli_session() {
-                crate::providers::grok_oauth::save_imported_credential(nickname, &session)?;
-                let who = session
-                    .email
-                    .as_deref()
-                    .unwrap_or("Grok Build OAuth");
+            if tokens.iter().any(|t| t == "--api-key") {
                 output_line(
                     output,
-                    &format!(
-                        "Imported Grok Build login from {} → cli-chat-proxy (subscription models).",
-                        crate::providers::grok_oauth::auth_json_path().display()
-                    ),
+                    "Paste an xAI API key from https://console.x.ai/ (uses api.x.ai, not Grok Build subscription).",
                 );
-                return Ok(format!("Logged in as '{nickname}' ({who})."));
+                open_browser_hint("https://console.x.ai/");
+                let key = prompt_required(output, relay_input_fd, "API key", None)?;
+                crate::providers::oauth::save_api_key_credential(
+                    &kv_key,
+                    "grok",
+                    &key,
+                    serde_json::json!({}),
+                )?;
+                output_line(output, "Grok API key saved.");
+                return Ok(format!("Logged in as '{nickname}' (Grok API key)."));
             }
             output_line(
                 output,
-                "No Grok Build login found. Run `grok login`, or paste an xAI API key from https://console.x.ai/",
+                "Starting Grok Build OAuth login (cli-chat-proxy subscription)...",
             );
-            open_browser_hint("https://console.x.ai/");
-            let key = prompt_required(output, relay_input_fd, "API key", None)?;
-            crate::providers::oauth::save_api_key_credential(
-                &kv_key,
-                "grok",
-                &key,
-                serde_json::json!({}),
-            )?;
-            output_line(output, "Grok API key saved.");
-            Ok(format!("Logged in as '{nickname}' (Grok API key)."))
+            let login = crate::providers::oauth::begin_grok_login(Some(nickname)).await?;
+            output_line(output, "");
+            output_line(
+                output,
+                &format!("Opening browser for {} login...", login.provider_name),
+            );
+            output_line(
+                output,
+                &format!("If browser doesn't open, visit:\n{}\n", login.auth_url),
+            );
+            open_browser_hint(&login.auth_url);
+            let who = crate::providers::oauth::finish_grok_login(login).await?;
+            output_line(output, "Logged in to Grok Build.");
+            Ok(format!("Logged in as '{nickname}' ({who})."))
         }
         "gemini" => {
             output_line(

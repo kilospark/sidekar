@@ -348,7 +348,8 @@ sidekar repl [-c <credential>] [-m <model>] [-p <prompt>] [-r [session_id]]
     sidekar repl credential add claude
     sidekar repl credential add claude work           → stored as 'work'
     sidekar repl credential add openrouter personal   → stored as 'personal'
-    sidekar repl credential add grok          # imports ~/.grok/auth.json after `grok login`
+    sidekar repl credential add grok          # Grok Build OAuth (browser)
+    sidekar repl credential add grok --api-key  # console.x.ai API key instead
     sidekar repl credential add vertex prod           → stored as 'prod'
     sidekar repl credential add openai-compat local http://localhost:11434/v1
     sidekar repl models -c claude-1

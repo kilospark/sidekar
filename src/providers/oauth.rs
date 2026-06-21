@@ -1,4 +1,4 @@
-//! PKCE OAuth 2.0 flow for Anthropic Claude and OpenAI Codex subscriptions.
+//! PKCE OAuth 2.0 flow for Anthropic Claude, OpenAI Codex, and Grok Build subscriptions.
 //!
 //! Tokens are stored encrypted in sidekar's KV store.
 
@@ -439,7 +439,7 @@ pub async fn get_opencode_go_token(nickname: Option<&str>) -> Result<String> {
     get_api_key_token(&kv_key, &["OPENCODE_API_KEY"], "OpenCode Go").await
 }
 
-/// Get a valid Grok token (OAuth from `grok login` import, stored API key, or `XAI_API_KEY`).
+/// Get a valid Grok token (Sidekar OAuth, stored API key, or `XAI_API_KEY`).
 pub async fn get_grok_token(nickname: Option<&str>) -> Result<String> {
     if let Some(n) = nickname {
         let _ = super::grok_oauth::sync_cli_session_from_disk_if_stale(n);
@@ -1098,6 +1098,44 @@ pub(crate) async fn finish_codex_login(login: InteractiveOAuthLogin) -> Result<(
     ))
 }
 
+pub(crate) async fn begin_grok_login(nickname: Option<&str>) -> Result<InteractiveOAuthLogin> {
+    validate_named_credential_nickname(nickname)?;
+    let kv_key = resolve_kv_key(nickname, KV_KEY_GROK);
+    let (auth_url, pending) = begin_pkce_login(
+        super::grok_oauth::GROK_OAUTH_DEFAULT_CLIENT_ID,
+        super::grok_oauth::GROK_OAUTH_AUTHORIZE_URL,
+        super::grok_oauth::GROK_OAUTH_TOKEN_URL,
+        super::grok_oauth::GROK_OAUTH_CALLBACK_PORT,
+        "/callback",
+        super::grok_oauth::GROK_OAUTH_SCOPES,
+        &[],
+        false,
+    )
+    .await?;
+    Ok(InteractiveOAuthLogin {
+        provider_name: "Grok Build",
+        auth_url,
+        kv_key,
+        pending,
+    })
+}
+
+pub(crate) async fn finish_grok_login(login: InteractiveOAuthLogin) -> Result<String> {
+    let creds = complete_pkce_login_form(login.pending).await?;
+    let nickname = login.kv_key.strip_prefix("oauth:").unwrap_or(&login.kv_key);
+    let email = super::grok_oauth::email_from_access_token(&creds.access_token);
+    let session = super::grok_oauth::GrokCliSession {
+        access_token: creds.access_token,
+        refresh_token: creds.refresh_token,
+        expires_at: creds.expires_at,
+        oidc_client_id: super::grok_oauth::GROK_OAUTH_DEFAULT_CLIENT_ID.to_string(),
+        oidc_issuer: super::grok_oauth::GROK_OAUTH_ISSUER.to_string(),
+        email: email.clone(),
+    };
+    super::grok_oauth::save_imported_credential(nickname, &session)?;
+    Ok(email.unwrap_or_else(|| "Grok Build OAuth".to_string()))
+}
+
 async fn complete_interactive_login(
     login: InteractiveOAuthLogin,
 ) -> Result<(String, OAuthCredentials)> {
@@ -1208,6 +1246,73 @@ async fn complete_pkce_login(pending: PendingPkceLogin) -> Result<OAuthCredentia
                         expires_at: now_secs() + token_resp.expires_in,
                         metadata: serde_json::Value::Null,
                     });
+                }
+                let resp_body = resp.text().await.unwrap_or_default();
+                if status.is_client_error() {
+                    bail!("Token exchange failed ({}): {}", status, resp_body);
+                }
+                last_err = Some(anyhow::anyhow!(
+                    "Token exchange failed ({}): {}",
+                    status,
+                    resp_body
+                ));
+            }
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt))).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Token exchange failed after retries")))
+}
+
+async fn complete_pkce_login_form(pending: PendingPkceLogin) -> Result<OAuthCredentials> {
+    let PendingPkceLogin {
+        client_id,
+        token_url,
+        callback,
+        verifier,
+        state: _state,
+        include_state_in_token_exchange: _,
+        code_rx,
+        server,
+    } = pending;
+    let code = tokio::time::timeout(std::time::Duration::from_secs(120), code_rx)
+        .await
+        .context("OAuth login timed out (120s)")?
+        .context("OAuth callback channel closed")?;
+
+    server.abort();
+
+    let client = reqwest::Client::new();
+    let mut last_err = None;
+    for attempt in 0..3u32 {
+        match client
+            .post(token_url)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("client_id", client_id),
+                ("code", code.as_str()),
+                ("redirect_uri", callback.as_str()),
+                ("code_verifier", verifier.as_str()),
+            ])
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    let token_resp: TokenResponse =
+                        resp.json().await.context("Invalid token response")?;
+                    let creds = OAuthCredentials {
+                        access_token: token_resp.access_token,
+                        refresh_token: token_resp.refresh_token,
+                        expires_at: now_secs() + token_resp.expires_in,
+                        metadata: serde_json::Value::Null,
+                    };
+                    return Ok(creds);
                 }
                 let resp_body = resp.text().await.unwrap_or_default();
                 if status.is_client_error() {

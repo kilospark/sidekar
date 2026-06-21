@@ -1,4 +1,4 @@
-//! Import Grok Build CLI OAuth sessions (`grok login`) for Sidekar REPL.
+//! Grok Build OAuth for Sidekar REPL: native PKCE login and optional import from `grok login`.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -8,8 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::oauth::{OAuthCredentials, kv_key_for, save_credentials};
 
+pub const GROK_OAUTH_AUTHORIZE_URL: &str = "https://auth.x.ai/oauth2/authorize";
 pub const GROK_OAUTH_TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 pub const GROK_OAUTH_DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+pub const GROK_OAUTH_CALLBACK_PORT: u16 = 17823;
+pub const GROK_OAUTH_SCOPES: &str = "grok-cli:access offline_access openid profile email";
+pub const GROK_OAUTH_ISSUER: &str = "https://auth.x.ai";
 pub const GROK_CLI_PROXY_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const GROK_CLI_CLIENT_IDENTIFIER: &str = "xai-grok-cli";
 const GROK_CLI_FALLBACK_VERSION: &str = "0.2.51";
@@ -144,6 +148,18 @@ pub fn load_cli_session_from_path(path: &Path) -> Result<Option<GrokCliSession>>
         return Ok(Some(session));
     }
     Ok(None)
+}
+
+/// Email claim from a Grok access token JWT, when present.
+pub fn email_from_access_token(access_token: &str) -> Option<String> {
+    decode_jwt_payload(access_token)
+        .and_then(|payload| {
+            payload
+                .get("email")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .filter(|e| !e.is_empty())
 }
 
 pub fn save_imported_credential(nickname: &str, session: &GrokCliSession) -> Result<()> {
