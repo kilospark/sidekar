@@ -48,7 +48,7 @@ pub fn enqueue_bus_message(
 pub fn has_pending_messages(recipient: &str) -> bool {
     with_cached_conn(|conn| {
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE recipient = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0)",
             params![recipient],
             |row| row.get::<_, bool>(0),
         )
@@ -154,11 +154,11 @@ pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
             .collect()
     };
 
-    if !messages.is_empty() {
-        tx.execute(
-            "DELETE FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0",
-            params![recipient],
-        )?;
+    let ids = messages.iter().map(|m| m.id).collect::<Vec<_>>();
+    if !ids.is_empty() {
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("DELETE FROM bus_queue WHERE id IN ({placeholders})");
+        tx.execute(&sql, rusqlite::params_from_iter(ids))?;
     }
     tx.commit()?;
     Ok(messages)

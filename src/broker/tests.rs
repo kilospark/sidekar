@@ -815,6 +815,60 @@ fn release_all_claimed_messages_restores_orphaned_rows() -> Result<()> {
 }
 
 #[test]
+fn claimed_messages_do_not_wake_repl_pending_check() -> Result<()> {
+    with_test_db(|| {
+        enqueue_bus_message("receiver", "sender", "one", false, None)?;
+        let id = list_queued_messages("receiver")?[0].id;
+
+        assert!(has_pending_messages("receiver"));
+        assert!(claim_queued_message(id, "receiver")?.is_some());
+        assert!(!has_pending_messages("receiver"));
+
+        release_queued_message(id)?;
+        assert!(has_pending_messages("receiver"));
+        Ok(())
+    })
+}
+
+#[test]
+fn poll_messages_deletes_only_returned_rows() -> Result<()> {
+    with_test_db(|| {
+        enqueue_bus_message("receiver", "sender", "one", false, None)?;
+        enqueue_bus_message("receiver", "sender", "two", false, None)?;
+        let claimed_id = list_queued_messages("receiver")?[1].id;
+        assert!(claim_queued_message(claimed_id, "receiver")?.is_some());
+
+        let polled = poll_messages("receiver")?;
+        assert_eq!(polled.len(), 1);
+        assert_eq!(polled[0].body, "one");
+        assert!(list_queued_messages("receiver")?.is_empty());
+
+        release_queued_message(claimed_id)?;
+        let restored = list_queued_messages("receiver")?;
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].body, "two");
+        Ok(())
+    })
+}
+
+#[test]
+fn unregister_and_reregister_clear_stale_recipient_queue() -> Result<()> {
+    with_test_db(|| {
+        let receiver = AgentId::new("receiver");
+        register_agent(&receiver, Some("pty-1"))?;
+        enqueue_bus_message("receiver", "sender", "old", false, None)?;
+
+        unregister_agent("receiver")?;
+        assert!(list_queued_messages("receiver")?.is_empty());
+
+        enqueue_bus_message("receiver", "sender", "orphaned", false, None)?;
+        register_agent(&receiver, Some("pty-2"))?;
+        assert!(list_queued_messages("receiver")?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
 fn purge_nudges_for_request_removes_queued_stale_nudges() -> Result<()> {
     with_test_db(|| {
         let msg_id = "abc-123";

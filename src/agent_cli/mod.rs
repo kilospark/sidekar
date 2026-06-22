@@ -190,6 +190,83 @@ impl AgentCliSpec for Codex {
     }
 }
 
+struct Copilot;
+
+const COPILOT_COMMANDS: &[&str] = &["help", "init", "login", "plugin", "update", "version"];
+
+const COPILOT_VALUE_FLAGS: &[&str] = &[
+    "--add-dir",
+    "--add-github-mcp-tool",
+    "--add-github-mcp-toolset",
+    "--additional-mcp-config",
+    "--agent",
+    "--allow-tool",
+    "--allow-url",
+    "--alt-screen",
+    "--available-tools",
+    "--config-dir",
+    "--deny-tool",
+    "--deny-url",
+    "--disable-mcp-server",
+    "--excluded-tools",
+    "-i",
+    "--interactive",
+    "--log-dir",
+    "--log-level",
+    "--max-autopilot-continues",
+    "--model",
+    "--mouse",
+    "--output-format",
+    "-p",
+    "--prompt",
+    "--plugin-dir",
+    "--reasoning-effort",
+    "--resume",
+    "--secret-env-vars",
+    "--share",
+    "--stream",
+];
+
+impl AgentCliSpec for Copilot {
+    fn ids(&self) -> &'static [&'static str] {
+        &["copilot"]
+    }
+
+    fn enrich_startup(&self, invoked_as: &str, user_args: &[String]) -> Vec<String> {
+        debug_assert_eq!(invoked_as, "copilot");
+        if has_flag(
+            user_args,
+            &[
+                "-h",
+                "--help",
+                "-v",
+                "--version",
+                "-p",
+                "--prompt",
+                "-i",
+                "--interactive",
+                "--continue",
+                "--resume",
+                "--acp",
+            ],
+        ) || first_positional(user_args, COPILOT_VALUE_FLAGS)
+            .is_some_and(|arg| COPILOT_COMMANDS.contains(&arg))
+        {
+            return user_args.to_vec();
+        }
+        let mut out = user_args.to_vec();
+        if !has_positional(user_args, COPILOT_VALUE_FLAGS) {
+            out.push("-i".into());
+            out.push(STARTUP_INJECT.to_string());
+        }
+        out
+    }
+
+    fn proxy_env_flags(&self, _invoked_as: &str) -> ProxyEnvFlags {
+        ProxyEnvFlags::default()
+    }
+}
+
 struct Gemini;
 
 impl AgentCliSpec for Gemini {
@@ -523,6 +600,7 @@ impl AgentCliSpec for Pi {
 
 static CLAUDE: Claude = Claude;
 static CODEX: Codex = Codex;
+static COPILOT: Copilot = Copilot;
 static CURSOR_FAMILY: CursorFamily = CursorFamily;
 static GEMINI: Gemini = Gemini;
 static GROK: Grok = Grok;
@@ -530,7 +608,7 @@ static OPENCODE: OpenCode = OpenCode;
 static PI: Pi = Pi;
 
 static REGISTRY: &[&dyn AgentCliSpec] =
-    &[&CLAUDE, &CODEX, &CURSOR_FAMILY, &GEMINI, &GROK, &OPENCODE, &PI];
+    &[&CLAUDE, &CODEX, &COPILOT, &CURSOR_FAMILY, &GEMINI, &GROK, &OPENCODE, &PI];
 
 pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
     REGISTRY

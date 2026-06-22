@@ -363,6 +363,7 @@ pub async fn run_agent(
         let (notice_tx, notice_rx) = tokio::sync::mpsc::unbounded_channel();
         crate::poller::start_poller(
             identity.name.clone(),
+            agent.to_string(),
             master_arc.clone(),
             input_state.clone(),
             child_pid,

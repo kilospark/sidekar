@@ -128,6 +128,30 @@ fn enrich_claude_codex_skip_option_values_before_injecting() {
 }
 
 #[test]
+fn enrich_copilot_uses_dash_i() {
+    assert_eq!(enrich("copilot", &[]), vec!["-i", STARTUP_INJECT]);
+    assert_eq!(
+        enrich("copilot", &["--model", "gpt-5.2"]),
+        vec!["--model", "gpt-5.2", "-i", STARTUP_INJECT]
+    );
+}
+
+#[test]
+fn enrich_copilot_resume_headless_and_management_skip_starter() {
+    assert_eq!(enrich("copilot", &["--continue"]), vec!["--continue"]);
+    assert_eq!(
+        enrich("copilot", &["--resume=session-id"]),
+        vec!["--resume=session-id"]
+    );
+    assert_eq!(
+        enrich("copilot", &["--prompt", "hello"]),
+        vec!["--prompt", "hello"]
+    );
+    assert_eq!(enrich("copilot", &["login"]), vec!["login"]);
+    assert_eq!(enrich("copilot", &["update"]), vec!["update"]);
+}
+
+#[test]
 fn enrich_claude_print_prompt_is_not_treated_as_option_value() {
     assert_eq!(enrich("claude", &["-p", "hello"]), vec!["-p", "hello"]);
 }
@@ -288,6 +312,7 @@ fn enrich_grok_management_subcommands_skip_starter() {
 #[test]
 fn is_pty_agent_matches_registry() {
     assert!(is_pty_agent("claude"));
+    assert!(is_pty_agent("copilot"));
     assert!(is_pty_agent("grok"));
     assert!(is_pty_agent("pi"));
     assert!(!is_pty_agent("aider"));

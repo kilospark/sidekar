@@ -18,6 +18,10 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
     let agent_type = agent.agent_type.as_deref();
     let pane_unique_id = pane_unique_id.map(str::to_string);
     let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM bus_queue WHERE recipient = ?1",
+        params![agent.name],
+    )?;
     tx.execute("DELETE FROM agents WHERE name = ?1", params![agent.name])?;
     if let Some(ref unique) = pane_unique_id {
         tx.execute(
@@ -64,6 +68,7 @@ pub fn unregister_agent(name: &str) -> Result<()> {
         "DELETE FROM pending_requests WHERE recipient_name = ?1",
         params![name],
     )?;
+    tx.execute("DELETE FROM bus_queue WHERE recipient = ?1", params![name])?;
     tx.execute(
         "DELETE FROM outbound_requests WHERE sender_name = ?1",
         params![name],

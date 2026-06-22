@@ -312,6 +312,7 @@ pub fn shutdown_poller() {
 /// agent's PTY.
 pub fn start_poller(
     agent_name: String,
+    agent_kind: String,
     pty_fd: Arc<OwnedFd>,
     input_state: Arc<UserInputState>,
     child_pid: i32,
@@ -321,8 +322,16 @@ pub fn start_poller(
 
     let inject_agent = agent_name.clone();
     std::thread::spawn(move || {
+        let submit_encoding = submit_encoding_for_agent(&agent_kind);
         while !POLLER_SHUTDOWN.load(Ordering::Relaxed) {
-            if run_daemon_bus_client(&inject_agent, &pty_fd, &input_state, &notice_tx, child_pid) {
+            if run_daemon_bus_client(
+                &inject_agent,
+                submit_encoding,
+                &pty_fd,
+                &input_state,
+                &notice_tx,
+                child_pid,
+            ) {
                 break;
             }
             crate::broker::try_log_error(
@@ -337,6 +346,7 @@ pub fn start_poller(
 
 fn run_daemon_bus_client(
     agent_name: &str,
+    submit_encoding: PtySubmitEncoding,
     pty_fd: &OwnedFd,
     input_state: &UserInputState,
     notice_tx: &tokio::sync::mpsc::UnboundedSender<PtyNotice>,
@@ -424,7 +434,15 @@ fn run_daemon_bus_client(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let ok = deliver_to_pty(pty_fd, input_state, notice_tx, &body, true, child_pid);
+        let ok = deliver_to_pty(
+            pty_fd,
+            input_state,
+            notice_tx,
+            &body,
+            true,
+            submit_encoding,
+            child_pid,
+        );
         let ack = serde_json::json!({"type": "bus_ack", "id": id, "ok": ok});
         let Ok(mut ack_line) = serde_json::to_string(&ack) else {
             return false;
@@ -443,6 +461,7 @@ fn deliver_to_pty(
     notice_tx: &tokio::sync::mpsc::UnboundedSender<PtyNotice>,
     message: &str,
     submit_input: bool,
+    submit_encoding: PtySubmitEncoding,
     child_pid: i32,
 ) -> bool {
     if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
@@ -552,7 +571,8 @@ fn deliver_to_pty(
         return false;
     }
 
-    if let Err(e) = write_all_raw(raw_fd, message.as_bytes()) {
+    let submit_bytes = encode_submit_input(message, submit_encoding);
+    if let Err(e) = write_all_raw(raw_fd, &submit_bytes) {
         crate::broker::try_log_event(
             "error",
             "poller",
@@ -577,8 +597,9 @@ fn deliver_to_pty(
         "debug",
         "poller",
         &format!(
-            "injected {}B + CR + SIGWINCH (stashed_draft={})",
+            "injected {}B via {:?} + SIGWINCH (stashed_draft={})",
             message.len(),
+            submit_encoding,
             stashed_draft.is_some(),
         ),
         None,
@@ -630,6 +651,33 @@ fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtySubmitEncoding {
+    Raw,
+    BracketedPaste,
+}
+
+fn submit_encoding_for_agent(agent_kind: &str) -> PtySubmitEncoding {
+    match agent_kind {
+        "agent" | "claude" | "codex" | "copilot" | "cursor" | "cursor-agent" | "gemini"
+        | "grok" | "opencode" | "pi" => PtySubmitEncoding::BracketedPaste,
+        _ => PtySubmitEncoding::Raw,
+    }
+}
+
+fn encode_submit_input(message: &str, encoding: PtySubmitEncoding) -> Vec<u8> {
+    match encoding {
+        PtySubmitEncoding::Raw => message.as_bytes().to_vec(),
+        PtySubmitEncoding::BracketedPaste => {
+            let mut out = Vec::with_capacity(message.len() + 12);
+            out.extend_from_slice(b"\x1b[200~");
+            out.extend_from_slice(message.as_bytes());
+            out.extend_from_slice(b"\x1b[201~");
+            out
+        }
+    }
 }
 
 fn pty_submit_wait_blocked(input_state: &UserInputState) -> bool {
@@ -758,6 +806,62 @@ mod tests {
 
         assert!(!state.sidecar_notice_allowed());
         assert!(!pty_submit_wait_blocked(&state));
+    }
+
+    #[test]
+    fn verified_tui_agents_use_bracketed_paste_submit_encoding() {
+        assert_eq!(
+            submit_encoding_for_agent("claude"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("codex"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("copilot"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("cursor-agent"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("agent"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("cursor"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("grok"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("opencode"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("gemini"),
+            PtySubmitEncoding::BracketedPaste
+        );
+        assert_eq!(
+            submit_encoding_for_agent("pi"),
+            PtySubmitEncoding::BracketedPaste
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_submit_wraps_message_without_enter() {
+        let bytes = encode_submit_input("line one\nline two", PtySubmitEncoding::BracketedPaste);
+        assert_eq!(bytes, b"\x1b[200~line one\nline two\x1b[201~");
+    }
+
+    #[test]
+    fn raw_submit_keeps_message_bytes_unchanged() {
+        let bytes = encode_submit_input("line one\nline two", PtySubmitEncoding::Raw);
+        assert_eq!(bytes, b"line one\nline two");
     }
 
     #[test]
