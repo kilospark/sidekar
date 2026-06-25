@@ -87,12 +87,18 @@ pub(crate) async fn event_loop(
 
     // Structured event parser — emits semantic events alongside raw PTY bytes
     let mut event_parser = crate::events::EventParser::new();
+    let mut activity_tick = tokio::time::interval(std::time::Duration::from_secs(30));
+    activity_tick.tick().await;
 
     crate::activity::publish(agent_name, crate::activity::ActivityState::Idle);
 
     loop {
         tokio::select! {
             biased;
+
+            _ = activity_tick.tick() => {
+                input_state.publish_activity(agent_name);
+            }
 
             notice = notice_rx.recv() => {
                 let Some(notice) = notice else {

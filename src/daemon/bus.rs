@@ -1,6 +1,9 @@
 use super::*;
 use tokio::sync::mpsc;
 
+const NUDGE_BACKOFF_SECS: [u64; 5] = [60, 120, 300, 600, 900];
+const NUDGE_LOOP_INTERVAL_SECS: u64 = 30;
+
 #[derive(Default)]
 pub(super) struct BusState {
     clients: std::collections::HashMap<String, BusClient>,
@@ -151,6 +154,114 @@ pub(super) async fn bus_delivery_loop(bus_state: SharedBusState) {
     }
 }
 
+pub(super) async fn bus_nudge_loop() {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        NUDGE_LOOP_INTERVAL_SECS,
+    ));
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        nudge_once();
+    }
+}
+
+fn nudge_once() {
+    let now = crate::message::epoch_secs();
+    let Ok(requests) = crate::broker::all_open_outbound_requests() else {
+        return;
+    };
+    for request in requests {
+        if !nudge_due(&request, now) {
+            continue;
+        }
+        if recipient_should_defer_nudge(&request) {
+            continue;
+        }
+        let Ok(true) = crate::broker::outbound_nudgeable(&request.msg_id) else {
+            continue;
+        };
+        let Ok(true) = crate::broker::try_increment_nudge_count(&request.msg_id, now) else {
+            continue;
+        };
+        let body = nudge_body(&request);
+        if let Err(e) = deliver_nudge(&request, &body) {
+            let _ = crate::broker::revert_nudge_claim(&request.msg_id, now);
+            crate::broker::try_log_error(
+                "daemon-bus",
+                "failed to deliver outbound nudge",
+                Some(&format!("{}: {e:#}", request.msg_id)),
+            );
+        }
+    }
+}
+
+fn nudge_due(request: &crate::broker::OutboundRequestRecord, now: u64) -> bool {
+    let index = request.nudge_count as usize;
+    let Some(delay) = NUDGE_BACKOFF_SECS.get(index).copied() else {
+        return false;
+    };
+    let base = request.last_nudged_at.unwrap_or(request.created_at);
+    now.saturating_sub(base) >= delay
+}
+
+fn recipient_should_defer_nudge(request: &crate::broker::OutboundRequestRecord) -> bool {
+    match request.transport_name.as_str() {
+        "broker" => crate::broker::get_agent_activity(&request.transport_target)
+            .ok()
+            .flatten()
+            .map(|snap| snap.should_defer_nudge())
+            .unwrap_or(false),
+        "relay_http" => crate::transport::relay_recipient_should_defer_nudge(
+            &request.transport_target,
+        ),
+        _ => false,
+    }
+}
+
+fn nudge_body(request: &crate::broker::OutboundRequestRecord) -> String {
+    let preview = request.message_preview.trim();
+    let preview = if preview.is_empty() {
+        "request pending"
+    } else {
+        preview
+    };
+    format!(
+        "[sidekar] You have an unanswered request from {}. Reply using bus send or bus done with --reply-to={}. Request: {}",
+        request.sender_name, request.msg_id, preview
+    )
+}
+
+fn deliver_nudge(
+    request: &crate::broker::OutboundRequestRecord,
+    body: &str,
+) -> anyhow::Result<()> {
+    match request.transport_name.as_str() {
+        "broker" => {
+            crate::broker::enqueue_bus_message(
+                &request.transport_target,
+                "sidekar",
+                body,
+                true,
+                None,
+            )?;
+            Ok(())
+        }
+        "relay_http" => {
+            use crate::transport::Transport;
+            match crate::transport::RelayHttp.deliver(
+                &request.transport_target,
+                body,
+                "sidekar",
+            )? {
+                crate::message::DeliveryResult::Delivered => Ok(()),
+                crate::message::DeliveryResult::Queued => Ok(()),
+                crate::message::DeliveryResult::Failed(reason) => anyhow::bail!(reason),
+            }
+        }
+        other => anyhow::bail!("unsupported transport {other}"),
+    }
+}
+
 async fn deliver_once(bus_state: &SharedBusState) {
     let clients: Vec<(String, u64, mpsc::UnboundedSender<Value>)> = {
         let bus = bus_state.lock().await;
@@ -174,11 +285,6 @@ async fn deliver_once(bus_state: &SharedBusState) {
             {
                 let _ = crate::broker::dismiss_terminal_ack_request(&envelope.id);
             }
-            if crate::message::nudge_msg_id_from_body(&msg.body).is_some() {
-                let _ = crate::broker::delete_queued_message(msg.id);
-                continue;
-            }
-
             {
                 let mut bus = bus_state.lock().await;
                 if !matches!(bus.clients.get(&agent), Some(client) if client.id == client_id) {
@@ -418,7 +524,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn deliver_once_drops_queued_nudge_messages() -> Result<()> {
+    async fn deliver_once_delivers_queued_nudge_messages() -> Result<()> {
         let _home = HomeGuard::new()?;
         crate::broker::enqueue_bus_message(
             "receiver",
@@ -430,11 +536,90 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let bus_state: SharedBusState = Arc::new(Mutex::new(BusState::default()));
-        bus_state.lock().await.attach("receiver".to_string(), tx);
+        let client_id = bus_state.lock().await.attach("receiver".to_string(), tx);
         deliver_once(&bus_state).await;
 
-        assert!(rx.try_recv().is_err());
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for nudge")
+            .expect("daemon bus sender closed");
+        assert_eq!(
+            frame.get("body").and_then(Value::as_str),
+            Some("[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to=abc-123")
+        );
+        assert_eq!(bus_state.lock().await.in_flight.len(), 1);
+        bus_state.lock().await.detach("receiver", client_id);
+        assert_eq!(crate::broker::list_queued_messages("receiver")?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn nudge_once_enqueues_due_idle_outbound() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        crate::broker::register_agent(&crate::message::AgentId::new("receiver"), None)?;
+        let mut envelope = crate::message::Envelope::new_request(
+            crate::message::AgentId::new("sender"),
+            "receiver",
+            "need update",
+        );
+        envelope.created_at = crate::message::epoch_secs().saturating_sub(61);
+        crate::broker::set_outbound_request(
+            &envelope,
+            "sender",
+            "broker",
+            "receiver",
+            Some("need update"),
+            None,
+        )?;
+
+        nudge_once();
+
+        let queued = crate::broker::list_queued_messages("receiver")?;
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].body.contains("--reply-to="));
+        assert_eq!(
+            crate::broker::outbound_request(&envelope.id)?
+                .expect("outbound")
+                .nudge_count,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nudge_once_skips_busy_recipient_without_claiming() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        crate::broker::register_agent(&crate::message::AgentId::new("receiver"), None)?;
+        let now = crate::message::epoch_secs();
+        crate::broker::update_agent_activity(
+            "receiver",
+            crate::activity::ActivityState::AgentWorking,
+            now,
+        )?;
+        let mut envelope = crate::message::Envelope::new_request(
+            crate::message::AgentId::new("sender"),
+            "receiver",
+            "need update",
+        );
+        envelope.created_at = now.saturating_sub(61);
+        crate::broker::set_outbound_request(
+            &envelope,
+            "sender",
+            "broker",
+            "receiver",
+            Some("need update"),
+            None,
+        )?;
+
+        nudge_once();
+
         assert!(crate::broker::list_queued_messages("receiver")?.is_empty());
+        assert_eq!(
+            crate::broker::outbound_request(&envelope.id)?
+                .expect("outbound")
+                .nudge_count,
+            0
+        );
         Ok(())
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 pub const ACTIVITY_STALE_SECS: u64 = 60;
 pub const PTY_OUTPUT_BUSY_MS: u64 = 3_000;
-pub const PTY_SPINNER_BUSY_MS: u64 = 10_000;
+pub const PTY_SPINNER_BUSY_MS: u64 = 180_000;
 const USER_TYPING_REFRESH_SECS: u64 = 5;
 const AGENT_WORKING_REFRESH_SECS: u64 = 30;
 
