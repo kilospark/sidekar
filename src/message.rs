@@ -126,6 +126,8 @@ pub struct Envelope {
     pub request: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub interrupt: bool,
     pub created_at: u64,
 }
 
@@ -145,6 +147,7 @@ impl Envelope {
             summary: None,
             request: None,
             reply_to: None,
+            interrupt: false,
             created_at: epoch_secs(),
         }
     }
@@ -238,6 +241,10 @@ impl Envelope {
         }
         &msg[..end]
     }
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +385,19 @@ mod tests {
         assert!(paste.starts_with("[fyi from quokka]: closed."));
         assert!(!paste.contains("[reply with:"));
         assert!(!env.requires_reply());
+    }
+
+    #[test]
+    fn envelope_interrupt_serializes_only_when_true() {
+        let mut env = Envelope::new_fyi(AgentId::new("quokka"), "toucan", "heads up");
+        let json = serde_json::to_string(&env).expect("serialize envelope");
+        assert!(!json.contains("interrupt"));
+
+        env.interrupt = true;
+        let json = serde_json::to_string(&env).expect("serialize envelope");
+        assert!(json.contains("\"interrupt\":true"));
+        let decoded: Envelope = serde_json::from_str(&json).expect("deserialize envelope");
+        assert!(decoded.interrupt);
     }
 
     #[test]

@@ -737,6 +737,7 @@ pub fn cmd_send_message(
     message: &str,
     kind: &str,
     reply_to: Option<&str>,
+    interrupt: bool,
 ) -> Result<()> {
     let from_id = state.agent_id();
     let msg_kind = MessageKind::from_str_lossy(kind);
@@ -744,6 +745,7 @@ pub fn cmd_send_message(
     if let Some(rt) = reply_to {
         envelope.reply_to = Some(rt.to_string());
     }
+    envelope.interrupt = interrupt;
     send_directed_envelope(state, ctx, envelope, reply_to, "Message sent")
 }
 
@@ -754,6 +756,7 @@ pub fn cmd_signal_done(
     summary: &str,
     request: &str,
     reply_to: Option<&str>,
+    interrupt: bool,
 ) -> Result<()> {
     let from_id = state.agent_id();
     let self_name = from_id.name.clone();
@@ -762,6 +765,7 @@ pub fn cmd_signal_done(
     if let Some(rt) = reply_to {
         envelope.reply_to = Some(rt.to_string());
     }
+    envelope.interrupt = interrupt;
     let keep_msg_id = envelope.id.clone();
     send_directed_envelope(state, ctx, envelope, reply_to, "Handed off")?;
     cleanup_completed_exchange(&self_name, next, channel.as_deref(), Some(&keep_msg_id));

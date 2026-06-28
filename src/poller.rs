@@ -323,10 +323,12 @@ pub fn start_poller(
     let inject_agent = agent_name.clone();
     std::thread::spawn(move || {
         let submit_encoding = submit_encoding_for_agent(&agent_kind);
+        let interrupt_sequence = interrupt_sequence_for_agent(&agent_kind);
         while !POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             if run_daemon_bus_client(
                 &inject_agent,
                 submit_encoding,
+                interrupt_sequence,
                 &pty_fd,
                 &input_state,
                 &notice_tx,
@@ -347,6 +349,7 @@ pub fn start_poller(
 fn run_daemon_bus_client(
     agent_name: &str,
     submit_encoding: PtySubmitEncoding,
+    interrupt_sequence: Option<&'static [u8]>,
     pty_fd: &OwnedFd,
     input_state: &UserInputState,
     notice_tx: &tokio::sync::mpsc::UnboundedSender<PtyNotice>,
@@ -434,6 +437,10 @@ fn run_daemon_bus_client(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let interrupt = frame
+            .get("interrupt")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let ok = deliver_to_pty(
             pty_fd,
             input_state,
@@ -441,6 +448,7 @@ fn run_daemon_bus_client(
             &body,
             true,
             submit_encoding,
+            interrupt.then_some(interrupt_sequence).flatten(),
             child_pid,
         );
         let ack = serde_json::json!({"type": "bus_ack", "id": id, "ok": ok});
@@ -462,6 +470,7 @@ fn deliver_to_pty(
     message: &str,
     submit_input: bool,
     submit_encoding: PtySubmitEncoding,
+    interrupt_sequence: Option<&[u8]>,
     child_pid: i32,
 ) -> bool {
     if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
@@ -476,7 +485,8 @@ fn deliver_to_pty(
     // must not gate real prompt submission: some TUIs, notably Cursor Agent,
     // hide the cursor or own the screen while idle at the prompt.
     let mut waited = 0u32;
-    while pty_submit_wait_blocked(input_state) {
+    let should_interrupt = interrupt_sequence.is_some();
+    while pty_submit_wait_blocked_for(input_state, should_interrupt) {
         if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             return false;
         }
@@ -571,6 +581,19 @@ fn deliver_to_pty(
         return false;
     }
 
+    if let Some(bytes) = interrupt_sequence {
+        if let Err(e) = write_all_raw(raw_fd, bytes) {
+            crate::broker::try_log_event(
+                "error",
+                "poller",
+                &format!("interrupt write failed: {e}"),
+                None,
+            );
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+
     let submit_bytes = encode_submit_input(message, submit_encoding);
     if let Err(e) = write_all_raw(raw_fd, &submit_bytes) {
         crate::broker::try_log_event(
@@ -611,6 +634,14 @@ fn deliver_to_pty(
         ));
     }
     true
+}
+
+fn interrupt_sequence_for_agent(agent_kind: &str) -> Option<&'static [u8]> {
+    match agent_kind {
+        "agent" | "claude" | "codex" | "copilot" | "cursor" | "cursor-agent" | "gemini"
+        | "grok" | "opencode" | "pi" => Some(b"\x1b"),
+        _ => None,
+    }
 }
 
 /// Clear the child readline/PTY input line (Ctrl+U) before bus inject.
@@ -680,8 +711,8 @@ fn encode_submit_input(message: &str, encoding: PtySubmitEncoding) -> Vec<u8> {
     }
 }
 
-fn pty_submit_wait_blocked(input_state: &UserInputState) -> bool {
-    !input_state.is_idle() || input_state.is_agent_working()
+fn pty_submit_wait_blocked_for(input_state: &UserInputState, interrupt: bool) -> bool {
+    !input_state.is_idle() || (!interrupt && input_state.is_agent_working())
 }
 
 fn epoch_millis() -> u64 {
@@ -805,7 +836,16 @@ mod tests {
         state.update_terminal_state(b"\x1b[?1049h");
 
         assert!(!state.sidecar_notice_allowed());
-        assert!(!pty_submit_wait_blocked(&state));
+        assert!(!pty_submit_wait_blocked_for(&state, false));
+    }
+
+    #[test]
+    fn interrupt_submit_does_not_wait_for_agent_output_busy() {
+        let state = UserInputState::new();
+        state.mark_pty_output();
+
+        assert!(pty_submit_wait_blocked_for(&state, false));
+        assert!(!pty_submit_wait_blocked_for(&state, true));
     }
 
     #[test]
@@ -862,6 +902,19 @@ mod tests {
     fn raw_submit_keeps_message_bytes_unchanged() {
         let bytes = encode_submit_input("line one\nline two", PtySubmitEncoding::Raw);
         assert_eq!(bytes, b"line one\nline two");
+    }
+
+    #[test]
+    fn interrupt_sequence_only_for_tui_submit_agents() {
+        assert_eq!(
+            interrupt_sequence_for_agent("codex"),
+            Some(b"\x1b".as_ref())
+        );
+        assert_eq!(
+            interrupt_sequence_for_agent("cursor-agent"),
+            Some(b"\x1b".as_ref())
+        );
+        assert_eq!(interrupt_sequence_for_agent("unknown"), None);
     }
 
     #[test]

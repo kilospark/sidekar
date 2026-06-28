@@ -300,6 +300,7 @@ async fn deliver_once(bus_state: &SharedBusState) {
                 "sender": msg.sender,
                 "recipient": msg.recipient,
                 "body": msg.body,
+                "interrupt": msg.envelope.as_ref().map(|e| e.interrupt).unwrap_or(false),
             });
             if tx.send(frame).is_err() {
                 let mut bus = bus_state.lock().await;
@@ -426,11 +427,18 @@ mod tests {
         deliver_once(&bus_state).await;
 
         let mut bodies = Vec::new();
+        let mut interrupts = Vec::new();
         for _ in 0..3 {
             let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
                 .await
                 .expect("timed out waiting for daemon bus frame")
                 .expect("daemon bus sender closed");
+            interrupts.push(
+                frame
+                    .get("interrupt")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            );
             bodies.push(
                 frame
                     .get("body")
@@ -447,6 +455,7 @@ mod tests {
                 "[fyi from sender]: closed.",
             ]
         );
+        assert_eq!(interrupts, vec![false, false, false]);
         assert!(crate::broker::list_queued_messages("receiver")?.is_empty());
 
         {
@@ -455,6 +464,36 @@ mod tests {
         }
         bus_state.lock().await.detach("receiver", client_id);
         assert_eq!(crate::broker::list_queued_messages("receiver")?.len(), 3);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliver_once_marks_interrupt_frame_from_envelope() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let mut envelope = crate::message::Envelope::new_fyi(
+            crate::message::AgentId::new("sender"),
+            "receiver",
+            "now",
+        );
+        envelope.interrupt = true;
+        crate::broker::enqueue_bus_message(
+            "receiver",
+            "sender",
+            "[fyi from sender]: now",
+            false,
+            Some(&envelope),
+        )?;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let bus_state: SharedBusState = Arc::new(Mutex::new(BusState::default()));
+        let _client_id = bus_state.lock().await.attach("receiver".to_string(), tx);
+        deliver_once(&bus_state).await;
+
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for daemon bus frame")
+            .expect("daemon bus sender closed");
+        assert_eq!(frame.get("interrupt").and_then(Value::as_bool), Some(true));
         Ok(())
     }
 

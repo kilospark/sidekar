@@ -43,9 +43,9 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
     requests [--status=open|answered|timed-out|cancelled|all] [--limit=N]
     replies [--msg-id=<request_id>] [--limit=N]
     show <msg_id>
-    send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]
+    send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt]
     (plain send defaults to fyi; use --kind=request to create tracked outbound that will nudge until replied)
-    done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]
+    done <next> <summary> <request|--file=path> [--reply-to=<msg_id>] [--interrupt]
     cancel <msg_id>... | --all
 
   Use --file to avoid shell quoting issues — write the message to a temp file
@@ -54,6 +54,10 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
   Cross-channel messages (recipient registered on another Sidekar channel than
   you, or delivered via relay) append a short note to the pasted body so the
   recipient knows which terminal or machine should run `bus send` / `bus done`.
+
+  `--interrupt` asks a receiving `sidekar repl` or known Sidekar PTY-wrapped
+  agent CLI (claude, codex, cursor-agent, gemini, grok, opencode, etc.) to
+  cancel its active turn before delivering the message.
 
   `cancel` stops any pending nudges for one or more of your own outbound
   requests. Pass explicit msg_ids or --all to close every open request

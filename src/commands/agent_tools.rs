@@ -124,10 +124,14 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
     let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
+    let interrupt = args.iter().any(|a| a == "--interrupt");
     let filtered: Vec<&str> = args
         .iter()
         .filter(|a| {
-            !a.starts_with("--kind=") && !a.starts_with("--reply-to=") && !a.starts_with("--file=")
+            !a.starts_with("--kind=")
+                && !a.starts_with("--reply-to=")
+                && !a.starts_with("--file=")
+                && a.as_str() != "--interrupt"
         })
         .map(String::as_str)
         .collect();
@@ -154,11 +158,19 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         });
     if to.is_empty() || message.is_empty() {
         bail!(
-            "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>]"
+            "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt]"
         );
     }
     let mut bus_state = recovered_bus_state(ctx);
-    crate::bus::cmd_send_message(&mut bus_state, ctx, &to, &message, kind, reply_to)?;
+    crate::bus::cmd_send_message(
+        &mut bus_state,
+        ctx,
+        &to,
+        &message,
+        kind,
+        reply_to,
+        interrupt,
+    )?;
     Ok(())
 }
 
@@ -170,14 +182,19 @@ fn cmd_bus_done(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
     let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
+    let interrupt = args.iter().any(|a| a == "--interrupt");
     let filtered: Vec<&str> = args
         .iter()
-        .filter(|a| !a.starts_with("--reply-to=") && !a.starts_with("--file="))
+        .filter(|a| {
+            !a.starts_with("--reply-to=")
+                && !a.starts_with("--file=")
+                && a.as_str() != "--interrupt"
+        })
         .map(String::as_str)
         .collect();
     if filtered.len() < 2 || (filtered.len() < 3 && file_path.is_none()) {
         bail!(
-            "Usage: sidekar bus done <next> <summary> <request|--file=path> [--reply-to=<msg_id>]"
+            "Usage: sidekar bus done <next> <summary> <request|--file=path> [--reply-to=<msg_id>] [--interrupt]"
         );
     }
     let next = crate::message::parse_target(filtered[0]);
@@ -194,6 +211,7 @@ fn cmd_bus_done(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         filtered[1],
         &request_body,
         reply_to,
+        interrupt,
     )?;
     Ok(())
 }

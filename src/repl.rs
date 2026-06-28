@@ -137,6 +137,50 @@ fn cancelled_turn_rollback_len(
     }
 }
 
+struct BusInterruptWatcher {
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BusInterruptWatcher {
+    fn start(bus_name: String, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let running_thread = running.clone();
+        let handle = std::thread::spawn(move || {
+            while running_thread.load(std::sync::atomic::Ordering::Relaxed)
+                && !cancel.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                if let Ok(messages) = crate::broker::list_queued_messages(&bus_name)
+                    && messages.iter().any(|msg| {
+                        msg.envelope
+                            .as_ref()
+                            .map(|envelope| envelope.interrupt)
+                            .unwrap_or(false)
+                    })
+                {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+        Self {
+            running,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for BusInterruptWatcher {
+    fn drop(&mut self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// REPL options parsed from CLI flags.
 pub struct ReplOptions {
     pub prompt: Option<String>,
@@ -731,6 +775,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         // Run agent loop
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _bus_interrupt_watch = BusInterruptWatcher::start(bus_name.clone(), cancel.clone());
         let active_prompt = ActivePromptSession::start(
             std::mem::take(&mut line_editor),
             cancel.clone(),
@@ -937,7 +982,50 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
 #[cfg(test)]
 mod cancel_turn_tests {
-    use super::cancelled_turn_rollback_len;
+    use super::{BusInterruptWatcher, cancelled_turn_rollback_len};
+    use crate::message::{AgentId, Envelope};
+    use std::{env, ffi::OsString, fs, sync::MutexGuard, time::Duration};
+
+    struct HomeGuard {
+        _lock: MutexGuard<'static, ()>,
+        old_home: Option<OsString>,
+        temp_home: std::path::PathBuf,
+    }
+
+    impl HomeGuard {
+        fn new() -> Self {
+            let lock = crate::test_home_lock()
+                .lock()
+                .expect("failed to lock test HOME mutex");
+            let suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before epoch")
+                .as_nanos();
+            let temp_home = env::temp_dir().join(format!(
+                "sidekar-repl-interrupt-test-{}-{}",
+                std::process::id(),
+                suffix
+            ));
+            fs::create_dir_all(&temp_home).expect("create temp home");
+            let old_home = env::var_os("HOME");
+            unsafe { env::set_var("HOME", &temp_home) };
+            Self {
+                _lock: lock,
+                old_home,
+                temp_home,
+            }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.old_home {
+                Some(home) => unsafe { env::set_var("HOME", home) },
+                None => unsafe { env::remove_var("HOME") },
+            }
+            let _ = fs::remove_dir_all(&self.temp_home);
+        }
+    }
 
     #[test]
     fn cancelled_typed_turn_rolls_back_user_prompt_too() {
@@ -955,5 +1043,31 @@ mod cancel_turn_tests {
             5,
             "bus-only or no-input turns should not discard prior history"
         );
+    }
+
+    #[test]
+    fn bus_interrupt_watcher_sets_cancel_for_interrupt_envelope() {
+        let _home = HomeGuard::new();
+        let mut envelope = Envelope::new_fyi(AgentId::new("sender"), "repl", "stop");
+        envelope.interrupt = true;
+        crate::broker::enqueue_bus_message(
+            "repl",
+            "sender",
+            "[fyi from sender]: stop",
+            true,
+            Some(&envelope),
+        )
+        .expect("enqueue interrupt message");
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _watcher = BusInterruptWatcher::start("repl".to_string(), cancel.clone());
+
+        for _ in 0..20 {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("interrupt watcher did not set cancel");
     }
 }
