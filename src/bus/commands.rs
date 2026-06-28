@@ -669,6 +669,42 @@ impl crate::output::CommandOutput for CancelOutput {
     }
 }
 
+#[derive(serde::Serialize)]
+struct DismissOutput {
+    dismissed: Vec<String>,
+    not_found: Vec<String>,
+    already_closed: Vec<String>,
+}
+
+impl crate::output::CommandOutput for DismissOutput {
+    fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        if self.dismissed.is_empty() && self.not_found.is_empty() && self.already_closed.is_empty()
+        {
+            writeln!(w, "No open requests to dismiss.")?;
+            return Ok(());
+        }
+        if !self.dismissed.is_empty() {
+            writeln!(w, "dismissed ({}):", self.dismissed.len())?;
+            for id in &self.dismissed {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        if !self.already_closed.is_empty() {
+            writeln!(w, "already closed ({}):", self.already_closed.len())?;
+            for id in &self.already_closed {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        if !self.not_found.is_empty() {
+            writeln!(w, "not found ({}):", self.not_found.len())?;
+            for id in &self.not_found {
+                writeln!(w, "  {id}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Cancel one or more outbound requests. If `all` is true, cancels every
 /// open request owned by the current agent and ignores `msg_ids`. Otherwise
 /// cancels each listed msg_id individually. Requires bus registration so
@@ -726,6 +762,56 @@ pub fn cmd_cancel_request(
         }
     };
 
+    out!(ctx, "{}", crate::output::to_string(&output)?);
+    Ok(())
+}
+
+/// Dismiss one or more requests addressed to the current agent. This records a
+/// local response without delivering text back into the sender's PTY, which
+/// closes the outbound row and purges queued nudges.
+pub fn cmd_dismiss_request(
+    state: &SidekarBusState,
+    ctx: &mut AppContext,
+    msg_ids: &[&str],
+) -> Result<()> {
+    let self_name = state.name().ok_or_else(|| {
+        anyhow!("Not registered on the bus. Relaunch your agent with: sidekar <agent-cli>")
+    })?;
+    if msg_ids.is_empty() {
+        bail!("Usage: sidekar bus dismiss <msg_id>...");
+    }
+
+    let mut dismissed = Vec::new();
+    let mut not_found = Vec::new();
+    let mut already_closed = Vec::new();
+    for id in msg_ids {
+        let record = broker::outbound_request(id)?;
+        match record {
+            None => not_found.push((*id).to_string()),
+            Some(r) if r.recipient_name != self_name && r.transport_target != self_name => {
+                bail!("Request {id} is not addressed to the current agent.");
+            }
+            Some(r) if r.status != broker::OUTBOUND_STATUS_OPEN => {
+                already_closed.push(r.msg_id);
+            }
+            Some(r) => {
+                let reply = Envelope::new_response(
+                    state.agent_id(),
+                    r.sender_name.clone(),
+                    "dismissed",
+                    r.msg_id.clone(),
+                );
+                broker::record_reply(&r.msg_id, &reply)?;
+                dismissed.push(r.msg_id);
+            }
+        }
+    }
+
+    let output = DismissOutput {
+        dismissed,
+        not_found,
+        already_closed,
+    };
     out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())
 }

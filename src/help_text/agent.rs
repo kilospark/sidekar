@@ -36,7 +36,7 @@ sidekar proxy <log|show|clear> [options]
         }
         "bus" => {
             "\
-sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
+sidekar bus <who|requests|replies|show|send|done|cancel|dismiss> [args...]
 
   Agent bus subcommands:
     who [--all]
@@ -47,6 +47,7 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
     (plain send defaults to fyi; use --kind=request to create tracked outbound that will nudge until replied)
     done <next> <summary> <request|--file=path> [--reply-to=<msg_id>] [--interrupt]
     cancel <msg_id>... | --all
+    dismiss <msg_id>...
 
   Use --file to avoid shell quoting issues — write the message to a temp file
   and pass the path instead.
@@ -63,6 +64,10 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
   requests. Pass explicit msg_ids or --all to close every open request
   owned by the current agent in one shot. The recipient is not notified.
 
+  `dismiss` stops future nudges for requests addressed to you without
+  delivering a response into the sender's terminal. It records a local
+  \"dismissed\" reply when both agents share the same broker DB.
+
   Examples:
     sidekar bus who
     sidekar bus who --all
@@ -73,7 +78,8 @@ sidekar bus <who|requests|replies|show|send|done|cancel> [args...]
     sidekar bus send claude-2 --file=/tmp/sidekar-msg.txt
     sidekar bus done claude-2 \"Done\" --file=/tmp/sidekar-handoff.txt
     sidekar bus cancel msg_123 msg_456
-    sidekar bus cancel --all"
+    sidekar bus cancel --all
+    sidekar bus dismiss msg_123"
         }
         "compact" => {
             "\

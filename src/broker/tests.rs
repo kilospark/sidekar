@@ -654,6 +654,100 @@ fn outbound_not_nudgeable_after_record_reply() -> Result<()> {
 }
 
 #[test]
+fn recipient_dismiss_closes_outbound_and_purges_nudges() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let receiver = AgentId::new("receiver");
+        register_agent(&sender, None)?;
+        register_agent(&receiver, None)?;
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "ping");
+        set_pending(&envelope)?;
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        enqueue_bus_message(
+            "receiver",
+            "sidekar",
+            &format!(
+                "[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to={}. Request: ping",
+                envelope.id
+            ),
+            true,
+            None,
+        )?;
+        assert!(outbound_nudgeable(&envelope.id)?);
+        assert_eq!(pending_for_agent("receiver")?.len(), 1);
+        assert_eq!(list_queued_messages("receiver")?.len(), 1);
+
+        let mut state = crate::bus::SidekarBusState::new();
+        state.identity = Some(receiver);
+        let mut ctx = crate::AppContext::new()?;
+        ctx.agent_name = Some("receiver".to_string());
+        crate::bus::cmd_dismiss_request(&state, &mut ctx, &[envelope.id.as_str()])?;
+
+        let outbound = outbound_request(&envelope.id)?.expect("outbound");
+        assert_eq!(outbound.status, OUTBOUND_STATUS_ANSWERED);
+        assert!(!outbound_nudgeable(&envelope.id)?);
+        assert!(pending_for_agent("receiver")?.is_empty());
+        assert!(list_queued_messages("receiver")?.is_empty());
+        let replies = replies_for_request(&envelope.id)?;
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].message, "dismissed");
+        assert!(ctx.drain_output().contains("dismissed (1):"));
+        Ok(())
+    })
+}
+
+#[test]
+fn recipient_dismiss_rejects_non_recipient() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let receiver = AgentId::new("receiver");
+        let other = AgentId::new("other");
+        register_agent(&sender, None)?;
+        register_agent(&receiver, None)?;
+        register_agent(&other, None)?;
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "ping");
+        set_pending(&envelope)?;
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+
+        let mut state = crate::bus::SidekarBusState::new();
+        state.identity = Some(other);
+        let mut ctx = crate::AppContext::new()?;
+        ctx.agent_name = Some("other".to_string());
+        let err = crate::bus::cmd_dismiss_request(&state, &mut ctx, &[envelope.id.as_str()])
+            .expect_err("non-recipient dismiss must fail");
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Request {} is not addressed to the current agent.",
+                envelope.id
+            )
+        );
+        assert_eq!(
+            outbound_request(&envelope.id)?.expect("outbound").status,
+            OUTBOUND_STATUS_OPEN
+        );
+        assert!(outbound_nudgeable(&envelope.id)?);
+        assert!(replies_for_request(&envelope.id)?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
 fn repair_dismiss_terminal_ack_outbounds_closes_ack_loops() -> Result<()> {
     with_test_db(|| {
         let sender = AgentId::new("sender");
