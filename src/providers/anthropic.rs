@@ -142,7 +142,10 @@ async fn stream_messages_once(
 
     if is_oauth {
         headers.insert("authorization", format!("Bearer {api_key}").parse()?);
-        headers.insert("user-agent", format!("claude-cli/{CLAUDE_CODE_VERSION}").parse()?);
+        headers.insert(
+            "user-agent",
+            format!("claude-cli/{CLAUDE_CODE_VERSION}").parse()?,
+        );
         headers.insert("x-app", "cli".parse()?);
     } else {
         headers.insert("x-api-key", api_key.parse()?);

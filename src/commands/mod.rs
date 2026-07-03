@@ -298,7 +298,10 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "download" => cmd_download(ctx, args).await,
         "tabs" => cmd_tabs(ctx, args).await,
         "tab" => {
-            let id = args.first().cloned().context("Usage: sidekar browser tab <id>")?;
+            let id = args
+                .first()
+                .cloned()
+                .context("Usage: sidekar browser tab <id>")?;
             cmd_tab(ctx, &id).await
         }
         "newtab" => {
@@ -371,9 +374,8 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
             if sub == "run" {
                 return cmd_browser_run(ctx, &args[1..]).await;
             }
-            let handler = crate::command_catalog::browser_subcommand_handler(sub).ok_or_else(|| {
-                anyhow::anyhow!("Unknown browser subcommand: {sub}")
-            })?;
+            let handler = crate::command_catalog::browser_subcommand_handler(sub)
+                .ok_or_else(|| anyhow::anyhow!("Unknown browser subcommand: {sub}"))?;
             Box::pin(dispatch(ctx, handler, &args[1..])).await
         }
         "desktop" => {

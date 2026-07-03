@@ -203,8 +203,7 @@ async fn proxy_log_finish_http(
 }
 
 async fn proxy_log_fail_async(id: i64) {
-    let _ =
-        tokio::task::spawn_blocking(move || crate::broker::proxy_log_fail(id)).await;
+    let _ = tokio::task::spawn_blocking(move || crate::broker::proxy_log_fail(id)).await;
 }
 
 const MAX_RESPONSE_CAPTURE: usize = 10 * 1024 * 1024; // 10MB

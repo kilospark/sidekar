@@ -145,6 +145,7 @@ async fn main() {
         .route("/sessions", get(bridge::handle_list_sessions))
         .route("/sessions/{session_id}", get(bridge::handle_get_session))
         .route("/relay/bus", post(bridge::handle_relay_bus))
+        .route("/relay/secrets", post(bridge::handle_relay_secrets))
         .route("/telegram/webhook", post(telegram::handle_webhook))
         .route("/telegram/deliver", post(telegram::handle_deliver))
         .route("/telegram/link", get(telegram::handle_mint_link_code))

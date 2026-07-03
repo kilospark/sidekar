@@ -155,9 +155,8 @@ pub(super) async fn bus_delivery_loop(bus_state: SharedBusState) {
 }
 
 pub(super) async fn bus_nudge_loop() {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        NUDGE_LOOP_INTERVAL_SECS,
-    ));
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(NUDGE_LOOP_INTERVAL_SECS));
     interval.tick().await;
     loop {
         interval.tick().await;
@@ -211,9 +210,9 @@ fn recipient_should_defer_nudge(request: &crate::broker::OutboundRequestRecord) 
             .flatten()
             .map(|snap| snap.should_defer_nudge())
             .unwrap_or(false),
-        "relay_http" => crate::transport::relay_recipient_should_defer_nudge(
-            &request.transport_target,
-        ),
+        "relay_http" => {
+            crate::transport::relay_recipient_should_defer_nudge(&request.transport_target)
+        }
         _ => false,
     }
 }
@@ -231,10 +230,7 @@ fn nudge_body(request: &crate::broker::OutboundRequestRecord) -> String {
     )
 }
 
-fn deliver_nudge(
-    request: &crate::broker::OutboundRequestRecord,
-    body: &str,
-) -> anyhow::Result<()> {
+fn deliver_nudge(request: &crate::broker::OutboundRequestRecord, body: &str) -> anyhow::Result<()> {
     match request.transport_name.as_str() {
         "broker" => {
             crate::broker::enqueue_bus_message(
@@ -248,11 +244,7 @@ fn deliver_nudge(
         }
         "relay_http" => {
             use crate::transport::Transport;
-            match crate::transport::RelayHttp.deliver(
-                &request.transport_target,
-                body,
-                "sidekar",
-            )? {
+            match crate::transport::RelayHttp.deliver(&request.transport_target, body, "sidekar")? {
                 crate::message::DeliveryResult::Delivered => Ok(()),
                 crate::message::DeliveryResult::Queued => Ok(()),
                 crate::message::DeliveryResult::Failed(reason) => anyhow::bail!(reason),
@@ -584,7 +576,9 @@ mod tests {
             .expect("daemon bus sender closed");
         assert_eq!(
             frame.get("body").and_then(Value::as_str),
-            Some("[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to=abc-123")
+            Some(
+                "[sidekar] You have an unanswered request from sender. Reply using bus send or bus done with --reply-to=abc-123"
+            )
         );
         assert_eq!(bus_state.lock().await.in_flight.len(), 1);
         bus_state.lock().await.detach("receiver", client_id);

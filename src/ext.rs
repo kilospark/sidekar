@@ -746,7 +746,9 @@ async fn send_command(
         let conn_id = if let Some(cid) = target_conn {
             // Explicit connection ID
             if !s.connections.contains_key(&cid) {
-                bail!("Connection {cid} not found. Use `sidekar browser ext status` to list connections.");
+                bail!(
+                    "Connection {cid} not found. Use `sidekar browser ext status` to list connections."
+                );
             }
             cid
         } else if let Some(profile) = target_profile {

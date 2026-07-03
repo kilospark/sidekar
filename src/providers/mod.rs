@@ -1279,19 +1279,14 @@ pub fn model_list_display_suffix(
 /// Map Grok Build CLI model ids to xAI API ids for REPL (public API only).
 pub fn resolve_model_id(provider_type: &str, model: &str, base_url: &str) -> String {
     match provider_type {
-        "grok"
-            if model == "grok-build" && !grok_oauth::is_cli_proxy_base(base_url) =>
-        {
+        "grok" if model == "grok-build" && !grok_oauth::is_cli_proxy_base(base_url) => {
             "grok-build-0.1".to_string()
         }
         _ => model.to_string(),
     }
 }
 
-async fn fetch_grok_model_list(
-    api_key: &str,
-    base_url: &str,
-) -> Result<Vec<RemoteModel>, String> {
+async fn fetch_grok_model_list(api_key: &str, base_url: &str) -> Result<Vec<RemoteModel>, String> {
     let mut models = if grok_oauth::is_cli_proxy_base(base_url) {
         fetch_grok_cli_proxy_model_list(api_key).await?
     } else {
@@ -1415,7 +1410,10 @@ pub async fn fetch_model_list_for_provider(
         Provider::Codex { api_key, .. } => fetch_codex_model_list(api_key).await,
         Provider::OpenRouter { api_key, .. } => fetch_openrouter_model_list(api_key).await,
         Provider::OpenAiCompat {
-            api_key, base_url, provider_type, ..
+            api_key,
+            base_url,
+            provider_type,
+            ..
         } if *provider_type == "grok" => fetch_grok_model_list(api_key, base_url).await,
         Provider::OpenAiCompat {
             api_key, base_url, ..
@@ -1823,12 +1821,9 @@ async fn fetch_opencode_public_model_list(
 }
 
 async fn fetch_opencode_model_list(_api_key: &str) -> Result<Vec<RemoteModel>, String> {
-    let mut models = fetch_opencode_public_model_list(
-        "https://opencode.ai/zen/v1/models",
-        "OpenCode Zen",
-        true,
-    )
-    .await?;
+    let mut models =
+        fetch_opencode_public_model_list("https://opencode.ai/zen/v1/models", "OpenCode Zen", true)
+            .await?;
     capabilities::enrich_opencode_catalog("opencode", &mut models).await;
     Ok(models)
 }
@@ -2160,9 +2155,7 @@ impl Provider {
         tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
         tokio::sync::oneshot::Receiver<Option<codex::CachedWs>>,
     )> {
-        let base_url = self
-            .openai_compat_base_url()
-            .unwrap_or("");
+        let base_url = self.openai_compat_base_url().unwrap_or("");
         let model = resolve_model_id(self.provider_type(), model, base_url);
         let max_retries = 3u32;
         let mut attempt = 0u32;

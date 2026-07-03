@@ -426,7 +426,9 @@ async fn mitm_passthrough() {
     let client = mitm_client(port, &ca_path).await;
 
     let resp = client
-        .get("https://httpbin.org/get")
+        // httpbin intermittently returns 503 from CI/local networks; this test
+        // only needs a small HTTPS origin that should return 2xx through MITM.
+        .get("https://example.com/")
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await

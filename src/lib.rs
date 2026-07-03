@@ -60,8 +60,8 @@ pub mod browser;
 pub mod browser_session;
 pub mod bus;
 
-pub mod agent;
 pub mod activity;
+pub mod agent;
 pub mod agent_cli;
 pub mod cdp;
 pub mod cdp_proxy;
@@ -91,6 +91,7 @@ pub mod rtk;
 pub mod runtime;
 pub mod scope;
 pub mod scripts;
+pub mod secrets;
 pub mod session;
 pub mod skill;
 pub mod tasks;

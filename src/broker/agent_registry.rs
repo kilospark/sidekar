@@ -118,7 +118,11 @@ pub fn list_agents(session: Option<&str>) -> Result<Vec<BrokerAgent>> {
 pub fn find_agent(target: &str, session: Option<&str>) -> Result<Option<BrokerAgent>> {
     let t = crate::message::parse_target(target);
     let conn = open()?;
-    let candidates: Vec<&str> = if t != target { vec![t.as_str(), target] } else { vec![target] };
+    let candidates: Vec<&str> = if t != target {
+        vec![t.as_str(), target]
+    } else {
+        vec![target]
+    };
     for cand in candidates {
         let mut stmt = if session.is_some() {
             conn.prepare(

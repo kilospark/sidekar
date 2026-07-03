@@ -11,7 +11,7 @@ export default async function handler(req, res) {
 
   if (req.method === "GET") {
     const db = await getDb();
-    const linkedIds = await expandLinkedUserObjectIds(db, userId);
+    const linkedIds = await expandLinkedUserObjectIds(db, userId, "devices");
 
     const userRows = await db
       .collection("users")

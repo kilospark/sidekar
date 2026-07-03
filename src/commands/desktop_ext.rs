@@ -19,15 +19,8 @@ pub(super) async fn cmd_desktop_see(ctx: &mut AppContext, args: &[String]) -> Re
             }
         }
     }
-    let snapshot = crate::desktop::build_see_snapshot(
-        pid,
-        &ctx.tmp_dir(),
-        annotate,
-        width,
-        12,
-        200,
-    )
-    .await?;
+    let snapshot =
+        crate::desktop::build_see_snapshot(pid, &ctx.tmp_dir(), annotate, width, 12, 200).await?;
     crate::desktop::persist_snapshot(&snapshot)?;
     out!(ctx, "{}", crate::output::to_string(&snapshot)?);
     Ok(())
@@ -181,7 +174,8 @@ async fn cmd_desktop_menu_click(ctx: &mut AppContext, args: &[String]) -> Result
     let pid = pid
         .or_else(crate::desktop::native::frontmost_app_pid)
         .ok_or_else(|| anyhow!("No app specified; pass --app or --pid"))?;
-    let path = path.context("Usage: sidekar desktop menu click --app <name> --path \"File > New\"")?;
+    let path =
+        path.context("Usage: sidekar desktop menu click --app <name> --path \"File > New\"")?;
     let msg = crate::desktop::click_menu_path(pid, &path)?;
     out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     Ok(())
@@ -307,7 +301,9 @@ pub(super) async fn cmd_desktop_window(ctx: &mut AppContext, args: &[String]) ->
             out!(
                 ctx,
                 "{}",
-                crate::output::to_string(&crate::desktop::DesktopWindowListOutput { windows: wins })?
+                crate::output::to_string(&crate::desktop::DesktopWindowListOutput {
+                    windows: wins
+                })?
             );
             Ok(())
         }
@@ -338,9 +334,8 @@ pub(super) async fn cmd_desktop_window(ctx: &mut AppContext, args: &[String]) ->
             Ok(())
         }
         "move" | "resize" | "set-bounds" => {
-            let msg = crate::desktop::native::set_window_bounds(
-                pid, window_index, x, y, width, height,
-            )?;
+            let msg =
+                crate::desktop::native::set_window_bounds(pid, window_index, x, y, width, height)?;
             out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
             Ok(())
         }
@@ -366,8 +361,13 @@ pub(super) async fn cmd_desktop_space(ctx: &mut AppContext, args: &[String]) -> 
             let index: usize = rest
                 .iter()
                 .find_map(|a| {
-                    a.strip_prefix("--to=")
-                        .or_else(|| if !a.starts_with("--") { Some(a.as_str()) } else { None })
+                    a.strip_prefix("--to=").or_else(|| {
+                        if !a.starts_with("--") {
+                            Some(a.as_str())
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .context("Usage: sidekar desktop space switch --to <1-9>")?
                 .parse()?;
@@ -483,10 +483,7 @@ fn parse_xy(raw: &str) -> Result<(f64, f64)> {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) async fn cmd_desktop_type_extended(
-    ctx: &mut AppContext,
-    args: &[String],
-) -> Result<()> {
+pub(super) async fn cmd_desktop_type_extended(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let (pid, remaining) = parse_desktop_pid_and_rest_optional(args);
     let mut profile = "linear".to_string();
     let mut delay_ms = None;

@@ -198,8 +198,7 @@ pub(super) async fn handle_connect_proxy(state: Arc<ProxyState>, stream: TcpStre
             body
         };
 
-        let log_id =
-            proxy_log_begin_http(method, path, &host, &parsed_headers, &body).await;
+        let log_id = proxy_log_begin_http(method, path, &host, &parsed_headers, &body).await;
 
         // Forward to upstream
         server_write

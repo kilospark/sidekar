@@ -72,7 +72,6 @@ const kAXPressAction: &str = "AXPress";
 const kAXRaiseAction: &str = "AXRaise";
 const kAXDescriptionAttribute: &str = "AXDescription";
 const kAXHelpAttribute: &str = "AXHelp";
-const kAXSubroleAttribute: &str = "AXSubrole";
 
 #[allow(clashing_extern_declarations)]
 unsafe extern "C" {
@@ -941,7 +940,10 @@ fn click_element_by_path(
 
 /// Walk the AX tree following a DesktopElementPath to find the actual element.
 /// Returns a retained AXUIElementRef that the caller must release, or None.
-pub(crate) fn resolve_element(root: AXUIElementRef, path: &DesktopElementPath) -> Option<AXUIElementRef> {
+pub(crate) fn resolve_element(
+    root: AXUIElementRef,
+    path: &DesktopElementPath,
+) -> Option<AXUIElementRef> {
     let mut current = root;
     // Retain root so we can release `current` uniformly in the loop
     unsafe { CFRetain(current as *const c_void) };
@@ -1182,7 +1184,8 @@ fn collect_tree(
     current_chain.push(step);
 
     let actions = ax_action_names(element);
-    let interactive = super::refs::INTERACTIVE_ROLES.contains(&role.as_str()) || !actions.is_empty();
+    let interactive =
+        super::refs::INTERACTIVE_ROLES.contains(&role.as_str()) || !actions.is_empty();
     if interactive {
         let position = ax_point_attribute(element, kAXPositionAttribute);
         let size = ax_size_attribute(element, kAXSizeAttribute);
@@ -1202,7 +1205,13 @@ fn collect_tree(
             },
             role,
             title,
-            value: value.map(|v| if v.len() > 200 { v[..200].to_string() } else { v }),
+            value: value.map(|v| {
+                if v.len() > 200 {
+                    v[..200].to_string()
+                } else {
+                    v
+                }
+            }),
             description,
             help,
             frame,
@@ -1397,10 +1406,7 @@ pub(crate) fn set_window_bounds(
         .ok_or_else(|| anyhow::anyhow!("Window index {window_index} not found"))?;
     let title = win.title.as_deref().unwrap_or("");
     let mut script = String::from("tell application \"System Events\"\n");
-    script.push_str(&format!(
-        "  tell process id {}\n",
-        pid
-    ));
+    script.push_str(&format!("  tell process id {}\n", pid));
     if !title.is_empty() {
         script.push_str(&format!(
             "    set targetWindow to first window whose name is \"{}\"\n",
@@ -1413,10 +1419,16 @@ pub(crate) fn set_window_bounds(
         ));
     }
     if let (Some(x), Some(y)) = (x, y) {
-        script.push_str(&format!("    set position of targetWindow to {{{}, {}}}\n", x as i64, y as i64));
+        script.push_str(&format!(
+            "    set position of targetWindow to {{{}, {}}}\n",
+            x as i64, y as i64
+        ));
     }
     if let (Some(w), Some(h)) = (width, height) {
-        script.push_str(&format!("    set size of targetWindow to {{{}, {}}}\n", w as i64, h as i64));
+        script.push_str(&format!(
+            "    set size of targetWindow to {{{}, {}}}\n",
+            w as i64, h as i64
+        ));
     }
     script.push_str("  end tell\nend tell");
     let output = std::process::Command::new("osascript")
@@ -1430,7 +1442,9 @@ pub(crate) fn set_window_bounds(
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(format!("Updated window bounds for pid {pid} index {window_index}"))
+    Ok(format!(
+        "Updated window bounds for pid {pid} index {window_index}"
+    ))
 }
 
 pub(crate) fn find_dialog_info(pid: i32) -> Result<DesktopDialogInfo> {
@@ -1499,12 +1513,7 @@ pub(crate) fn click_dialog_button(pid: i32, label: &str) -> Result<String> {
     }
 }
 
-fn click_button_recursive(
-    element: AXUIElementRef,
-    label: &str,
-    clicked: &mut bool,
-    depth: usize,
-) {
+fn click_button_recursive(element: AXUIElementRef, label: &str, clicked: &mut bool, depth: usize) {
     if *clicked || depth > 16 {
         return;
     }
@@ -1540,7 +1549,10 @@ pub(crate) fn set_dialog_field(
     set_field_recursive(app, text, field_label, index, &mut field_idx, &mut set, 0);
     unsafe { CFRelease(app as *const c_void) };
     if set {
-        Ok(format!("Set dialog field to {} chars", text.chars().count()))
+        Ok(format!(
+            "Set dialog field to {} chars",
+            text.chars().count()
+        ))
     } else {
         bail!("Dialog text field not found");
     }
@@ -1584,7 +1596,15 @@ fn set_field_recursive(
     }
     let children = ax_children(element);
     for child in &children {
-        set_field_recursive(*child, text, field_label, want_index, field_idx, set, depth + 1);
+        set_field_recursive(
+            *child,
+            text,
+            field_label,
+            want_index,
+            field_idx,
+            set,
+            depth + 1,
+        );
         unsafe { CFRelease(*child as *const c_void) };
         if *set {
             return;
@@ -1606,13 +1626,11 @@ pub(crate) fn dismiss_dialog(pid: i32, force: bool) -> Result<String> {
 }
 
 pub(crate) fn system_ui_pid() -> Option<i32> {
-    list_apps()
-        .ok()
-        .and_then(|apps| {
-            apps.into_iter()
-                .find(|a| a.bundle_id.as_deref() == Some("com.apple.systemuiserver"))
-                .map(|a| a.pid)
-        })
+    list_apps().ok().and_then(|apps| {
+        apps.into_iter()
+            .find(|a| a.bundle_id.as_deref() == Some("com.apple.systemuiserver"))
+            .map(|a| a.pid)
+    })
 }
 
 pub(crate) fn list_menubar_extras() -> Result<Vec<DesktopMenubarItem>> {

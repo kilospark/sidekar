@@ -194,8 +194,12 @@ fn parse_query_params(query: &str) -> HashMap<String, String> {
         match pair.split_once('=') {
             Some((k, v)) => {
                 out.insert(
-                    urlencoding::decode(k).unwrap_or_else(|_| k.into()).into_owned(),
-                    urlencoding::decode(v).unwrap_or_else(|_| v.into()).into_owned(),
+                    urlencoding::decode(k)
+                        .unwrap_or_else(|_| k.into())
+                        .into_owned(),
+                    urlencoding::decode(v)
+                        .unwrap_or_else(|_| v.into())
+                        .into_owned(),
                 );
             }
             None => {
@@ -230,7 +234,11 @@ fn truncate_string(s: &str, max: usize) -> Value {
     if s.len() <= max {
         Value::String(s.to_string())
     } else {
-        Value::String(format!("{}… [truncated, {} bytes total]", &s[..max], s.len()))
+        Value::String(format!(
+            "{}… [truncated, {} bytes total]",
+            &s[..max],
+            s.len()
+        ))
     }
 }
 
@@ -260,10 +268,7 @@ fn redact_cell(table: &str, column: &str, row: &HashMap<String, Value>, raw: Val
             }
         }
         ("config", "value") => {
-            let key = row
-                .get("key")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let key = row.get("key").and_then(|v| v.as_str()).unwrap_or("");
             if let Value::String(s) = &raw {
                 if config_value_redacted(key, s) {
                     mask_string(s)
@@ -314,11 +319,9 @@ fn query_table_rows(
     limit: usize,
     offset: usize,
 ) -> Result<(i64, Vec<String>, Vec<HashMap<String, Value>>)> {
-    let count: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM {}", spec.name),
-        [],
-        |r| r.get(0),
-    )?;
+    let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {}", spec.name), [], |r| {
+        r.get(0)
+    })?;
 
     let sql = format!(
         "SELECT * FROM {} ORDER BY {} LIMIT ?1 OFFSET ?2",
@@ -347,12 +350,7 @@ fn query_table_rows(
         let mut map = row?;
         let redacted = map
             .iter()
-            .map(|(col, val)| {
-                (
-                    col.clone(),
-                    redact_cell(spec.name, col, &map, val.clone()),
-                )
-            })
+            .map(|(col, val)| (col.clone(), redact_cell(spec.name, col, &map, val.clone())))
             .collect::<HashMap<_, _>>();
         map = redacted;
         rows.push(map);
@@ -480,11 +478,8 @@ pub fn runtime_json(ext_status: Value) -> Result<Value> {
 
     let logged_in = crate::auth::auth_token().is_some();
     let auth_created_at = crate::broker::auth_get("created_at");
-    let encryption_configured: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM encryption_meta",
-        [],
-        |r| r.get(0),
-    )?;
+    let encryption_configured: i64 =
+        conn.query_row("SELECT COUNT(*) FROM encryption_meta", [], |r| r.get(0))?;
 
     let agents = crate::broker::list_agents(None).unwrap_or_default();
     let mut pty = Vec::new();
@@ -516,11 +511,10 @@ pub fn runtime_json(ext_status: Value) -> Result<Value> {
     let repl_persisted_count: i64 =
         conn.query_row("SELECT COUNT(*) FROM repl_sessions", [], |r| r.get(0))?;
 
-    let (proxy_total, proxy_latest): (i64, Option<i64>) = conn.query_row(
-        "SELECT COUNT(*), MAX(created_at) FROM proxy_log",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (proxy_total, proxy_latest): (i64, Option<i64>) =
+        conn.query_row("SELECT COUNT(*), MAX(created_at) FROM proxy_log", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
 
     Ok(json!({
         "sidekar_version": env!("CARGO_PKG_VERSION"),
@@ -626,20 +620,15 @@ pub fn tables_json() -> Result<Value> {
     let mut groups: HashMap<&str, Vec<Value>> = HashMap::new();
     for spec in TABLES {
         let count: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {}", spec.name),
-                [],
-                |r| r.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM {}", spec.name), [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
-        groups
-            .entry(spec.group)
-            .or_default()
-            .push(json!({
-                "name": spec.name,
-                "label": spec.label,
-                "count": count,
-            }));
+        groups.entry(spec.group).or_default().push(json!({
+            "name": spec.name,
+            "label": spec.label,
+            "count": count,
+        }));
     }
 
     let group_list: Vec<Value> = GROUP_LABELS
@@ -707,7 +696,13 @@ pub async fn handle_admin_request(
     }
 
     if !method.eq_ignore_ascii_case("GET") {
-        write_http_response(stream, 405, "text/plain; charset=utf-8", "Method Not Allowed").await;
+        write_http_response(
+            stream,
+            405,
+            "text/plain; charset=utf-8",
+            "Method Not Allowed",
+        )
+        .await;
         return true;
     }
 
@@ -719,8 +714,12 @@ pub async fn handle_admin_request(
             let ext = ext_status.clone();
             match tokio::task::spawn_blocking(move || runtime_json(ext)).await {
                 Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
-                Ok(Err(e)) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
-                Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                Ok(Err(e)) => {
+                    write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                }
+                Err(e) => {
+                    write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                }
             }
         }
         "/api/proxy/log" => {
@@ -736,20 +735,20 @@ pub async fn handle_admin_request(
                     .unwrap_or(0);
                 let ids: Vec<i64> = params
                     .get("ids")
-                    .map(|s| {
-                        s.split(',')
-                            .filter_map(|p| p.trim().parse().ok())
-                            .collect()
-                    })
+                    .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
                     .unwrap_or_default();
-                match tokio::task::spawn_blocking(move || proxy_log_tail_json(since_id, &ids, limit))
-                    .await
+                match tokio::task::spawn_blocking(move || {
+                    proxy_log_tail_json(since_id, &ids, limit)
+                })
+                .await
                 {
                     Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
                     Ok(Err(e)) => {
                         write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
                     }
-                    Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                    Err(e) => {
+                        write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                    }
                 }
             } else {
                 let offset = params
@@ -761,7 +760,9 @@ pub async fn handle_admin_request(
                     Ok(Err(e)) => {
                         write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
                     }
-                    Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                    Err(e) => {
+                        write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                    }
                 }
             }
         }
@@ -781,18 +782,27 @@ pub async fn handle_admin_request(
                     };
                     write_json_response(stream, status, &json!({"error": format!("{e:#}")})).await
                 }
-                Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                Err(e) => {
+                    write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                }
             }
         }
-        "/api/overview" => match tokio::task::spawn_blocking(move || overview_json(http_port)).await
-        {
-            Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
-            Ok(Err(e)) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
-            Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
-        },
+        "/api/overview" => {
+            match tokio::task::spawn_blocking(move || overview_json(http_port)).await {
+                Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
+                Ok(Err(e)) => {
+                    write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                }
+                Err(e) => {
+                    write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                }
+            }
+        }
         "/api/tables" => match tokio::task::spawn_blocking(tables_json).await {
             Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
-            Ok(Err(e)) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+            Ok(Err(e)) => {
+                write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+            }
             Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
         },
         "/api/rows" => {
@@ -807,7 +817,8 @@ pub async fn handle_admin_request(
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             let table_for_task = table.clone();
-            match tokio::task::spawn_blocking(move || rows_json(&table_for_task, limit, offset)).await
+            match tokio::task::spawn_blocking(move || rows_json(&table_for_task, limit, offset))
+                .await
             {
                 Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
                 Ok(Err(e)) => {
@@ -818,7 +829,9 @@ pub async fn handle_admin_request(
                     };
                     write_json_response(stream, status, &json!({"error": format!("{e:#}")})).await
                 }
-                Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+                Err(e) => {
+                    write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await
+                }
             }
         }
         _ => write_http_response(stream, 404, "text/plain; charset=utf-8", "Not Found").await,

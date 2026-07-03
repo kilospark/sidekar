@@ -368,7 +368,7 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
             let arg = parts.get(1).copied();
             match arg {
                 Some("list") => {
-                    let creds = providers::oauth::list_credentials();
+                    let creds = crate::secrets::list_credentials();
                     if creds.is_empty() {
                         tunnel_println(
                             "No credentials stored. Use /credential add … or sidekar repl credential add …",
@@ -377,12 +377,21 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                     } else {
                         let current = cred_name.to_string();
                         tunnel_println("Stored credentials (pick to switch):");
-                        for (i, (name, provider)) in creds.iter().enumerate() {
-                            let marker = if *name == current { " (current)" } else { "" };
-                            let email = providers::oauth::credential_email(name)
+                        for (i, c) in creds.iter().enumerate() {
+                            let marker = if c.reference == current {
+                                " (current)"
+                            } else {
+                                ""
+                            };
+                            let email = c
+                                .email
+                                .as_ref()
                                 .map(|e| format!(" <{e}>"))
                                 .unwrap_or_default();
-                            tunnel_println(&format!("  [{i}] {name} ({provider}){email}{marker}"));
+                            tunnel_println(&format!(
+                                "  [{i}] {} ({}){email}{marker}",
+                                c.reference, c.provider
+                            ));
                         }
                         match read_stdin_menu_index("Enter number or Enter: ", ctx.tunnel_input_fd)
                         {
@@ -391,8 +400,8 @@ pub(super) fn handle_slash_command(ctx: &SlashContext<'_>) -> Option<SlashResult
                                 SlashResult::Continue
                             }
                             StdinMenuIndex::Index(idx) => {
-                                if let Some((name, _)) = creds.get(idx) {
-                                    SlashResult::SetCredential(name.clone())
+                                if let Some(c) = creds.get(idx) {
+                                    SlashResult::SetCredential(c.reference.clone())
                                 } else {
                                     tunnel_println("Invalid.");
                                     SlashResult::Continue
@@ -1250,7 +1259,7 @@ pub(super) async fn apply_slash_result(
                     {
                         g.clear();
                     }
-                    let email_info = providers::oauth::credential_email(&name)
+                    let email_info = crate::secrets::credential_email(&name)
                         .map(|e| format!(" <{e}>"))
                         .unwrap_or_default();
                     tunnel_println(&format!(
@@ -1850,69 +1859,41 @@ pub(super) async fn run_compact(
 }
 
 pub async fn build_provider(cred_name: &str) -> Result<Provider> {
-    let provider_type =
-        providers::oauth::resolve_provider_type_for_credential(cred_name).ok_or_else(|| {
+    let resolved = crate::secrets::resolve_credential_for_provider(cred_name)
+        .await
+        .map_err(|e| {
             anyhow::anyhow!(
-                "Unknown credential '{cred_name}'. No `oauth:{cred_name}` entry with recognizable metadata — run `credential list` or `sidekar repl credential add …`; see `sidekar repl --help`."
+                "Unknown credential '{cred_name}'. Run `credential list` or `sidekar repl credential add …`; see `sidekar repl --help`.\n{e:#}"
             )
         })?;
     let cred = Some(cred_name.to_string());
-    match provider_type {
-        "anthropic" => {
-            let api_key = providers::oauth::get_anthropic_token(Some(cred_name)).await?;
-            Ok(Provider::anthropic(api_key, cred))
-        }
-        "codex" => {
-            let (api_key, account_id) = providers::oauth::get_codex_token(Some(cred_name)).await?;
-            Ok(Provider::codex(api_key, account_id, cred))
-        }
-        "openrouter" => {
-            let api_key = providers::oauth::get_openrouter_token(Some(cred_name)).await?;
-            Ok(Provider::openrouter(api_key, cred))
-        }
-        "opencode-zen" => {
-            let api_key = providers::oauth::get_opencode_token(Some(cred_name)).await?;
-            Ok(Provider::opencode(api_key, cred))
-        }
-        "opencode-go" => {
-            let api_key = providers::oauth::get_opencode_go_token(Some(cred_name)).await?;
-            Ok(Provider::opencode_go(api_key, cred))
-        }
-        "grok" => {
-            let api_key = providers::oauth::get_grok_token(Some(cred_name)).await?;
-            let base_url = providers::grok_oauth::grok_repl_base_url(cred_name);
-            Ok(Provider::grok(api_key, base_url, cred))
-        }
-        "gemini" => {
-            let api_key = providers::oauth::get_gemini_token(Some(cred_name)).await?;
-            Ok(Provider::gemini(api_key, cred))
-        }
-        "cursor" => {
-            let api_key = providers::oauth::get_cursor_token(Some(cred_name)).await?;
-            Ok(Provider::cursor(api_key, cred))
-        }
-        "bedrock" => {
-            let b = providers::oauth::load_bedrock_stored(cred_name)?;
-            Ok(Provider::bedrock(b.region, b.aws_profile))
-        }
-        "gcp" => {
-            let creds = providers::oauth::get_gcp_vertex_credentials(cred_name).await?;
-            Ok(Provider::gcp_vertex(
-                creds.api_key,
-                creds.base_url,
-                creds.name,
-                cred,
-            ))
-        }
-        "oac" => {
-            let creds = providers::oauth::get_openai_compat_credentials(cred_name).await?;
-            Ok(Provider::openai_compat(
-                creds.api_key,
-                creds.base_url,
-                creds.name,
-                cred,
-            ))
-        }
-        _ => anyhow::bail!("Unknown provider type: {provider_type}"),
+    match resolved.provider_type.as_str() {
+        "anthropic" => Ok(Provider::anthropic(resolved.api_key, cred)),
+        "codex" => Ok(Provider::codex(resolved.api_key, resolved.account_id, cred)),
+        "openrouter" => Ok(Provider::openrouter(resolved.api_key, cred)),
+        "opencode-zen" => Ok(Provider::opencode(resolved.api_key, cred)),
+        "opencode-go" => Ok(Provider::opencode_go(resolved.api_key, cred)),
+        "grok" => Ok(Provider::grok(resolved.api_key, resolved.base_url, cred)),
+        "gemini" => Ok(Provider::gemini(resolved.api_key, cred)),
+        "cursor" => Ok(Provider::cursor(resolved.api_key, cred)),
+        "bedrock" => Ok(Provider::bedrock(
+            resolved
+                .region
+                .ok_or_else(|| anyhow::anyhow!("Bedrock credential missing region"))?,
+            resolved.aws_profile,
+        )),
+        "gcp" => Ok(Provider::gcp_vertex(
+            resolved.api_key,
+            resolved.base_url,
+            resolved.display_name,
+            cred,
+        )),
+        "oac" => Ok(Provider::openai_compat(
+            resolved.api_key,
+            resolved.base_url,
+            resolved.display_name,
+            cred,
+        )),
+        other => anyhow::bail!("Unknown provider type: {other}"),
     }
 }

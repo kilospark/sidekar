@@ -109,10 +109,13 @@ impl sidekar::output::CommandOutput for CredentialsListOutput {
 }
 
 fn handle_credentials() -> Result<()> {
-    let creds = sidekar::providers::oauth::list_credentials();
+    let creds = sidekar::secrets::list_credentials();
     let credentials = creds
         .into_iter()
-        .map(|(name, provider)| CredentialEntry { name, provider })
+        .map(|c| CredentialEntry {
+            name: c.reference,
+            provider: c.provider,
+        })
         .collect();
     sidekar::output::emit(&CredentialsListOutput { credentials })?;
     Ok(())

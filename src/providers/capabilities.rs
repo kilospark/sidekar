@@ -7,7 +7,7 @@ use std::sync::{LazyLock, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ContentBlock, RemoteModel, MODEL_CATALOG_TIMEOUT_SECS, catalog_http_client};
+use super::{ContentBlock, MODEL_CATALOG_TIMEOUT_SECS, RemoteModel, catalog_http_client};
 
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const PERSIST_FILE: &str = "model-capabilities.json";
@@ -107,8 +107,7 @@ pub fn vision_from_openrouter_architecture(model: &Value) -> VisionSupport {
 #[must_use]
 pub fn is_vision_rejection_error(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
-    (m.contains("image_url")
-        && (m.contains("expected 'text'") || m.contains("unknown variant")))
+    (m.contains("image_url") && (m.contains("expected 'text'") || m.contains("unknown variant")))
         || m.contains("does not support image")
         || m.contains("does not support vision")
         || (m.contains("multimodal") && m.contains("not support"))
@@ -249,10 +248,7 @@ pub fn ingest_model_catalog(provider_type: &str, models: &[RemoteModel]) {
     let mut catalog = CATALOG_VISION.lock().unwrap_or_else(|e| e.into_inner());
     for m in models {
         if m.capabilities.vision != VisionSupport::Unknown {
-            catalog.insert(
-                capability_key(provider_type, &m.id),
-                m.capabilities.vision,
-            );
+            catalog.insert(capability_key(provider_type, &m.id), m.capabilities.vision);
         }
     }
 }
@@ -267,7 +263,10 @@ pub fn record_vision_rejection(provider_type: &str, model_id: &str) {
     }
     {
         let mut catalog = CATALOG_VISION.lock().unwrap_or_else(|e| e.into_inner());
-        catalog.insert(capability_key(provider_type, model_id), VisionSupport::Unsupported);
+        catalog.insert(
+            capability_key(provider_type, model_id),
+            VisionSupport::Unsupported,
+        );
     }
     persist_learned();
 }
@@ -291,10 +290,7 @@ async fn models_dev_vision_map() -> Result<HashMap<String, VisionSupport>, Strin
         for (model_id, entry) in models {
             let vision = vision_from_models_dev_entry(entry);
             if vision != VisionSupport::Unknown {
-                out.insert(
-                    format!("{provider_slug}:{model_id}"),
-                    vision,
-                );
+                out.insert(format!("{provider_slug}:{model_id}"), vision);
             }
         }
     }
@@ -308,7 +304,10 @@ fn vision_from_models_dev_entry(entry: &Value) -> VisionSupport {
     if let Some(inputs) = entry.pointer("/modalities/input") {
         return vision_from_json_modalities(inputs);
     }
-    if let Some(image) = entry.pointer("/capabilities/input/image").and_then(|v| v.as_bool()) {
+    if let Some(image) = entry
+        .pointer("/capabilities/input/image")
+        .and_then(|v| v.as_bool())
+    {
         return if image {
             VisionSupport::Supported
         } else {

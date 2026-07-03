@@ -20,9 +20,9 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `memory_events` row count.
 const SCHEMA_VERSION: u32 = 9;
 
+mod activity;
 mod agent_registry;
 mod agent_sessions;
-mod activity;
 mod auth_store;
 mod bus_queue;
 mod cron;

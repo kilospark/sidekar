@@ -1,6 +1,25 @@
 import { ObjectId } from "mongodb";
 
 const COLL_LINKS = "account_links";
+export const DEFAULT_LINK_SCOPES = ["sessions", "devices"];
+const LINK_SCOPE_SET = new Set(["sessions", "devices", "credentials", "kv", "totp"]);
+
+export function normalizeLinkScopes(scopes) {
+  const raw = Array.isArray(scopes) ? scopes : DEFAULT_LINK_SCOPES;
+  const set = new Set();
+  for (const s of raw) {
+    if (typeof s !== "string") continue;
+    const t = s.trim().toLowerCase();
+    if (LINK_SCOPE_SET.has(t)) set.add(t);
+  }
+  return Array.from(set);
+}
+
+export function linkHasScope(link, scope) {
+  if (!scope) return true;
+  const scopes = normalizeLinkScopes(link?.scopes);
+  return scopes.includes(String(scope).trim().toLowerCase());
+}
 
 /**
  * User IDs whose devices/sessions the current user may aggregate (always includes self).
@@ -10,7 +29,7 @@ const COLL_LINKS = "account_links";
  * @param {ObjectId | string} userId
  * @returns {Promise<ObjectId[]>}
  */
-export async function expandLinkedUserObjectIds(db, userId) {
+export async function expandLinkedUserObjectIds(db, userId, scope = null) {
   await ensureAccountLinksIndexes(db);
   const uid = userId instanceof ObjectId ? userId : new ObjectId(String(userId));
   const ustr = uid.toString();
@@ -18,6 +37,7 @@ export async function expandLinkedUserObjectIds(db, userId) {
 
   const grants = await db.collection(COLL_LINKS).find({ grantee_id: uid }).toArray();
   for (const doc of grants) {
+    if (scope && !linkHasScope(doc, scope)) continue;
     if (doc.grantor_id) set.add(doc.grantor_id.toString());
   }
 
@@ -29,8 +49,8 @@ export async function expandLinkedUserObjectIds(db, userId) {
  * @param {import("mongodb").Db} db
  * @param {string} userIdStr — JWT `sub` / ObjectId string
  */
-export async function expandLinkedUserHexIds(db, userIdStr) {
-  const oids = await expandLinkedUserObjectIds(db, userIdStr);
+export async function expandLinkedUserHexIds(db, userIdStr, scope = null) {
+  const oids = await expandLinkedUserObjectIds(db, userIdStr, scope);
   return oids.map((o) => o.toString().toLowerCase());
 }
 

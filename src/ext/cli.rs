@@ -451,10 +451,9 @@ fn build_command(
             Ok(json!({"command": "history", "query": query, "maxResults": max_results}))
         }
         "watch" => {
-            let selector = args
-                .first()
-                .cloned()
-                .ok_or_else(|| anyhow!("Usage: sidekar browser ext watch <selector> [--tab <id>]"))?;
+            let selector = args.first().cloned().ok_or_else(|| {
+                anyhow!("Usage: sidekar browser ext watch <selector> [--tab <id>]")
+            })?;
             let tab_id = require_tab("watch", None, default_tab)?;
             let mut cmd = json!({"command": "watch", "selector": selector});
             cmd.as_object_mut()

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::types::SessionInfo;
 use sha2::{Digest, Sha256};
@@ -93,6 +93,16 @@ pub struct Registry {
     public_origin: String,
     /// In-memory map: session_id → live connection state.
     live: Arc<RwLock<HashMap<String, LiveSession>>>,
+    pending_secret_requests: Arc<RwLock<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SecretOwnerSession {
+    pub session_id: String,
+    pub owner_id: String,
+    pub owner_label: String,
+    pub owner_origin: String,
+    pub local_live: bool,
 }
 
 impl Registry {
@@ -106,6 +116,7 @@ impl Registry {
             instance_id,
             public_origin,
             live: Arc::new(RwLock::new(HashMap::new())),
+            pending_secret_requests: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -371,6 +382,170 @@ impl Registry {
         }
 
         result
+    }
+
+    pub async fn secret_owner_sessions(
+        &self,
+        requester_id: &str,
+        scope: &str,
+        owner_label: Option<&str>,
+    ) -> Vec<SecretOwnerSession> {
+        use futures_util::StreamExt;
+
+        let cutoff = mongodb::bson::DateTime::from_millis(
+            chrono::Utc::now().timestamp_millis() - (SESSION_TTL_SECS * 1000),
+        );
+        let requester_norm = requester_id.trim().to_ascii_lowercase();
+        let mut owner_ids =
+            crate::account_links::expand_linked_user_hex_ids_for_scope(&self.db, requester_id, scope)
+                .await;
+        owner_ids.retain(|id| !id.eq_ignore_ascii_case(&requester_norm));
+        if owner_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let labels = self.secret_owner_labels(&owner_ids).await;
+        if let Some(label) = owner_label.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            owner_ids.retain(|id| {
+                id.eq_ignore_ascii_case(label)
+                    || id.starts_with(&label.to_ascii_lowercase())
+                    || labels
+                        .get(id)
+                        .is_some_and(|owner_label| owner_label.eq_ignore_ascii_case(label))
+            });
+            if owner_ids.is_empty() {
+                return Vec::new();
+            }
+        }
+
+        let filter = mongodb::bson::doc! {
+            "user_id": { "$in": &owner_ids },
+            "last_heartbeat": { "$gt": cutoff },
+        };
+        let mut cursor = match self
+            .db
+            .collection::<mongodb::bson::Document>(SESSIONS_COLLECTION)
+            .find(filter)
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        let live = self.live.read().await;
+        let mut out = Vec::new();
+        while let Some(Ok(doc)) = cursor.next().await {
+            let session_id = doc.get_str("session_id").unwrap_or_default().to_string();
+            if session_id.is_empty() {
+                continue;
+            }
+            let Some(owner_id) = doc.get_str("user_id").ok().map(str::to_ascii_lowercase) else {
+                continue;
+            };
+            let local_live = live.get(&session_id).is_some_and(|s| s.multiplex);
+            let owner_origin = doc
+                .get_str("owner_origin")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&self.public_origin)
+                .to_string();
+            out.push(SecretOwnerSession {
+                session_id,
+                owner_id: owner_id.clone(),
+                owner_label: labels
+                    .get(&owner_id)
+                    .cloned()
+                    .unwrap_or_else(|| owner_id.chars().take(8).collect()),
+                owner_origin,
+                local_live,
+            });
+        }
+        out.sort_by(|a, b| a.owner_label.cmp(&b.owner_label));
+        out
+    }
+
+    async fn secret_owner_labels(&self, owner_ids: &[String]) -> HashMap<String, String> {
+        use futures_util::StreamExt;
+
+        let oids: Vec<mongodb::bson::oid::ObjectId> = owner_ids
+            .iter()
+            .filter_map(|id| mongodb::bson::oid::ObjectId::parse_str(id).ok())
+            .collect();
+        if oids.is_empty() {
+            return HashMap::new();
+        }
+        let mut cursor = match self
+            .db
+            .collection::<mongodb::bson::Document>("users")
+            .find(mongodb::bson::doc! { "_id": { "$in": oids } })
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return HashMap::new(),
+        };
+        let mut labels = HashMap::new();
+        while let Some(Ok(doc)) = cursor.next().await {
+            let Ok(id) = doc.get_object_id("_id") else {
+                continue;
+            };
+            let hex = id.to_hex();
+            let label = doc
+                .get_str("login")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| doc.get_str("name").ok().filter(|s| !s.is_empty()))
+                .map(str::to_string)
+                .unwrap_or_else(|| hex.chars().take(8).collect());
+            labels.insert(hex.to_ascii_lowercase(), label);
+        }
+        labels
+    }
+
+    pub async fn send_secret_request_to_session(
+        &self,
+        session_id: &str,
+        payload: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let tunnel_tx = {
+            let live = self.live.read().await;
+            live.get(session_id)
+                .filter(|session| session.multiplex)
+                .map(|session| session.tunnel_tx.clone())?
+        };
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.pending_secret_requests
+            .write()
+            .await
+            .insert(request_id.clone(), tx);
+
+        let mut msg = serde_json::json!({
+            "ch": "secret_request",
+            "v": 1,
+            "request_id": request_id,
+        });
+        if let Some(obj) = msg.as_object_mut() {
+            if let Some(extra) = payload.as_object() {
+                for (k, v) in extra {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        if tunnel_tx.send(TunnelMsg::Text(msg.to_string())).is_err() {
+            self.pending_secret_requests.write().await.remove(&request_id);
+            return None;
+        }
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(15), rx).await;
+        self.pending_secret_requests.write().await.remove(&request_id);
+        result.ok().and_then(Result::ok)
+    }
+
+    pub async fn complete_secret_response(&self, request_id: &str, response: serde_json::Value) {
+        if let Some(tx) = self.pending_secret_requests.write().await.remove(request_id) {
+            let _ = tx.send(response);
+        }
     }
 
     pub async fn get_session(&self, user_id: &str, session_id: &str) -> Option<SessionInfo> {

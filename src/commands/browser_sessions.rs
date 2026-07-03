@@ -142,9 +142,7 @@ pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
                 id: session.session_id,
                 browser: session.browser_name.unwrap_or_else(|| "-".into()),
                 profile: session.profile.unwrap_or_else(|| "default".into()),
-                host: session
-                    .host
-                    .unwrap_or_else(|| DEFAULT_CDP_HOST.into()),
+                host: session.host.unwrap_or_else(|| DEFAULT_CDP_HOST.into()),
                 port: session.port,
                 active_tab: session.active_tab_id,
                 tabs: session.tabs,

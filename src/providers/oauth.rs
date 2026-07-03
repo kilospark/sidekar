@@ -339,6 +339,13 @@ type OAuthRefreshFn = fn(&OAuthCredentials) -> PinOAuthFut;
 /// OpenAI-compat credentials configured with GCP ADC (`metadata.auth = gcp_adc`), or
 /// GCP Vertex credentials using `gcloud auth print-access-token` (`provider_type = gcp`).
 pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
+    if !crate::secrets::SecretNameRef::parse(cred_name)
+        .owner
+        .is_local()
+    {
+        return crate::secrets::refresh_remote_credential(cred_name).await;
+    }
+
     let provider_type = resolve_provider_type_for_credential(cred_name)
         .ok_or_else(|| anyhow::anyhow!("unknown credential '{cred_name}'"))?;
 
@@ -973,9 +980,9 @@ fn refresh_token_grok(
     let metadata = creds.metadata.clone();
     let client_id = super::grok_oauth::oauth_client_id(creds).to_string();
     let token_url = super::grok_oauth::oauth_token_url(creds);
-    Box::pin(async move {
-        refresh_token_form(&client_id, &token_url, &refresh_token, metadata).await
-    })
+    Box::pin(
+        async move { refresh_token_form(&client_id, &token_url, &refresh_token, metadata).await },
+    )
 }
 
 /// Decode JWT payload (base64url) and return as JSON value.

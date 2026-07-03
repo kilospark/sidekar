@@ -3,7 +3,6 @@
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::oauth::{OAuthCredentials, kv_key_for, save_credentials};
 
@@ -40,12 +39,7 @@ pub fn credential_uses_cli_proxy(cred_name: &str) -> bool {
     super::oauth::load_credentials(&kv_key)
         .ok()
         .flatten()
-        .is_some_and(|c| {
-            c.metadata
-                .get("auth")
-                .and_then(|v| v.as_str())
-                == Some("grok_cli_oauth")
-        })
+        .is_some_and(|c| c.metadata.get("auth").and_then(|v| v.as_str()) == Some("grok_cli_oauth"))
 }
 
 /// Grok Build CLI version sent as `x-grok-client-version` (426 without it).
@@ -81,7 +75,9 @@ pub fn apply_cli_proxy_headers(headers: &mut reqwest::header::HeaderMap) {
     let version = grok_cli_client_version();
     let _ = headers.insert(
         "x-grok-client-version",
-        version.parse().unwrap_or_else(|_| "0.2.51".parse().unwrap()),
+        version
+            .parse()
+            .unwrap_or_else(|_| "0.2.51".parse().unwrap()),
     );
     let _ = headers.insert(
         "x-grok-client-identifier",
@@ -181,6 +177,7 @@ pub fn credential_has_refresh_token(nickname: &str) -> bool {
         .is_some_and(|c| !c.refresh_token.is_empty())
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct GrokCliAuthEntry {
     #[serde(default)]
@@ -197,6 +194,7 @@ struct GrokCliAuthEntry {
     email: Option<String>,
 }
 
+#[cfg(test)]
 impl GrokCliAuthEntry {
     fn into_session(self) -> Option<GrokCliSession> {
         if self.key.trim().is_empty() || self.refresh_token.trim().is_empty() {
@@ -231,21 +229,23 @@ fn expand_tilde(path: PathBuf) -> PathBuf {
     if s == "~" {
         dirs::home_dir().unwrap_or(path)
     } else if let Some(rest) = s.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|h| h.join(rest))
-            .unwrap_or(path)
+        dirs::home_dir().map(|h| h.join(rest)).unwrap_or(path)
     } else {
         path
     }
 }
 
+#[cfg(test)]
 fn now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn jwt_exp_secs(token: &str) -> Option<u64> {
     let payload = decode_jwt_payload(token)?;
     payload.get("exp").and_then(|v| v.as_u64())
@@ -269,6 +269,7 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
 }
 
 /// Parse ISO8601 UTC expiry (fallback when JWT `exp` missing).
+#[cfg(test)]
 fn parse_iso8601_utc_secs(raw: &str) -> Option<u64> {
     let s = raw.trim();
     if s.is_empty() {
@@ -336,8 +337,20 @@ mod tests {
 
     #[test]
     fn save_oauth_credential_marks_cli_proxy() {
+        let _guard = crate::test_home_lock()
+            .lock()
+            .unwrap_or_else(|_| panic!("failed to lock test HOME mutex"));
+        let old_home = std::env::var_os("HOME");
+        let fake_home = std::env::temp_dir().join(format!(
+            "sidekar-grok-oauth-home-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&fake_home).expect("create fake home");
+        crate::broker::clear_current_user_id();
+        crate::broker::clear_encryption_key();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+
         let nickname = format!("grok-save-{}", std::process::id());
-        let kv_key = crate::providers::oauth::kv_key_for(&nickname);
         let session = GrokCliSession {
             access_token: "access".into(),
             refresh_token: "refresh".into(),
@@ -348,7 +361,14 @@ mod tests {
         };
         save_oauth_credential(&nickname, &session).unwrap();
         assert!(credential_uses_cli_proxy(&nickname));
-        let _ = crate::broker::kv_delete(&kv_key);
+
+        match old_home {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        crate::broker::clear_current_user_id();
+        crate::broker::clear_encryption_key();
+        let _ = std::fs::remove_dir_all(&fake_home);
     }
 
     #[test]

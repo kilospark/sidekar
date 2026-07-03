@@ -219,11 +219,7 @@ fn grok_build_model_alias_resolves_for_api() {
         "grok-build-0.1"
     );
     assert_eq!(
-        super::resolve_model_id(
-            "grok",
-            "grok-build",
-            grok_oauth::GROK_CLI_PROXY_BASE_URL,
-        ),
+        super::resolve_model_id("grok", "grok-build", grok_oauth::GROK_CLI_PROXY_BASE_URL,),
         "grok-build"
     );
     assert_eq!(
@@ -364,7 +360,13 @@ fn model_list_display_suffix_keeps_human_bedrock_label_when_verbose_off() {
     let prev = super::is_verbose();
     super::set_verbose(false);
     let caps = super::ModelCapabilities::default();
-    let s = super::model_list_display_suffix("bedrock", "anthropic.foo", "Claude Sonnet", 200_000, &caps);
+    let s = super::model_list_display_suffix(
+        "bedrock",
+        "anthropic.foo",
+        "Claude Sonnet",
+        200_000,
+        &caps,
+    );
     assert_eq!(s, "Claude Sonnet, 200k ctx");
     super::set_verbose(prev);
 }

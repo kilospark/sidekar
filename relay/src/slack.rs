@@ -1634,6 +1634,8 @@ mod tests {
             owner_origin: None,
             connected_at: chrono::Utc::now(),
             viewers: 0,
+            activity_state: "unknown".to_string(),
+            activity_at: 0,
         }
     }
 }

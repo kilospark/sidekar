@@ -80,7 +80,9 @@ pub fn install_skill(config_hint: Option<&str>) {
         println!("  For Codex:        ~/.codex/skills/sidekar/SKILL.md");
         println!("  For Grok:         ~/.grok/skills/sidekar/SKILL.md");
         println!();
-        println!("  Alternate profile: sidekar install <folder>  (e.g. claude-work → ~/.claude-work/)");
+        println!(
+            "  Alternate profile: sidekar install <folder>  (e.g. claude-work → ~/.claude-work/)"
+        );
     }
 }
 
@@ -109,9 +111,7 @@ pub fn remove_skill() {
     for subdir in skill_search_roots()
         .into_iter()
         .map(|root| root.join("sidekar"))
-        .chain([
-            home_dir().join(".claude/plugins/cache/sidekar"),
-        ])
+        .chain([home_dir().join(".claude/plugins/cache/sidekar")])
     {
         if subdir.is_dir() && fs::remove_dir_all(&subdir).is_ok() {
             any = true;

@@ -28,7 +28,7 @@ export default async function handler(req, res) {
     const cutoff = new Date(Date.now() - SESSION_TTL_MS);
 
     const oid = new ObjectId(userId);
-    const linkedOids = await expandLinkedUserObjectIds(db, oid);
+    const linkedOids = await expandLinkedUserObjectIds(db, oid, "sessions");
     const linkedHex = linkedOids.map((o) => o.toString().toLowerCase());
 
     const docs = await db

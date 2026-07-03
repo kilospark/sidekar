@@ -126,7 +126,10 @@ fn resolve_finder_alias_posix(bundle_alias: &Path) -> Option<PathBuf> {
 
 /// Extra Chromium bundles under `/Applications` and `~/Applications` (handles Finder aliases).
 #[cfg(target_os = "macos")]
-fn append_macos_chromium_bundle_candidates(candidates: &mut Vec<(String, String)>, user_apps: &Path) {
+fn append_macos_chromium_bundle_candidates(
+    candidates: &mut Vec<(String, String)>,
+    user_apps: &Path,
+) {
     for base in [Path::new("/Applications"), user_apps] {
         let Ok(entries) = fs::read_dir(base) else {
             continue;
@@ -316,8 +319,17 @@ fn all_browser_candidates() -> Vec<(String, String)> {
             ("Opera", "Opera.app/Contents/MacOS/Opera"),
             ("Chromium", "Chromium.app/Contents/MacOS/Chromium"),
         ] {
-            candidates.push((Path::new("/Applications").join(rel).to_string_lossy().into_owned(), name.to_string()));
-            candidates.push((user_apps.join(rel).to_string_lossy().into_owned(), name.to_string()));
+            candidates.push((
+                Path::new("/Applications")
+                    .join(rel)
+                    .to_string_lossy()
+                    .into_owned(),
+                name.to_string(),
+            ));
+            candidates.push((
+                user_apps.join(rel).to_string_lossy().into_owned(),
+                name.to_string(),
+            ));
         }
         #[cfg(target_os = "macos")]
         append_macos_chromium_bundle_candidates(&mut candidates, user_apps.as_path());

@@ -90,7 +90,9 @@ pub(crate) fn relay_recipient_should_defer_nudge(session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn relay_session_activity(session_id: &str) -> Result<crate::activity::ActivitySnapshot> {
+pub(crate) fn relay_session_activity(
+    session_id: &str,
+) -> Result<crate::activity::ActivitySnapshot> {
     let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("no device token"))?;
     let base = relay_http_base();
     let url = format!("{}/sessions/{}", base.trim_end_matches('/'), session_id);

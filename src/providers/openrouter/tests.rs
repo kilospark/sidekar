@@ -65,11 +65,9 @@ fn text_only_openai_compat_omits_image_url_blocks() {
         "text-only compat must not emit image_url: {content:?}"
     );
     assert!(
-        content
-            .iter()
-            .any(|p| p["text"]
-                .as_str()
-                .is_some_and(|t| t.contains("Image omitted"))),
+        content.iter().any(|p| p["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("Image omitted"))),
         "expected omission note: {content:?}"
     );
 }

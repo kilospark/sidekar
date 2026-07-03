@@ -20,7 +20,12 @@ struct DeliveryTarget {
 fn find_agent_on_channel(name_or_nick: &str, channel: &str) -> Option<BrokerAgent> {
     let agents = broker::list_agents(Some(channel)).unwrap_or_default();
     let t = crate::message::parse_target(name_or_nick);
-    if let Some(a) = agents.iter().find(|a| a.id.name == t || a.id.nick.as_deref() == Some(t.as_str()) || a.id.name == name_or_nick || a.id.nick.as_deref() == Some(name_or_nick)) {
+    if let Some(a) = agents.iter().find(|a| {
+        a.id.name == t
+            || a.id.nick.as_deref() == Some(t.as_str())
+            || a.id.name == name_or_nick
+            || a.id.nick.as_deref() == Some(name_or_nick)
+    }) {
         return Some(a.clone());
     }
     None
@@ -114,9 +119,12 @@ fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionIn
     crate::auth::auth_token()?;
     let sessions = crate::transport::fetch_relay_sessions().ok()?;
     let t = crate::message::parse_target(to);
-    sessions
-        .into_iter()
-        .find(|s| s.name == t || s.nickname.as_deref() == Some(t.as_str()) || s.name == to || s.nickname.as_deref() == Some(to))
+    sessions.into_iter().find(|s| {
+        s.name == t
+            || s.nickname.as_deref() == Some(t.as_str())
+            || s.name == to
+            || s.nickname.as_deref() == Some(to)
+    })
 }
 
 fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
@@ -249,12 +257,7 @@ fn send_directed_envelope(
     resolve_reply(&envelope, reply_to);
     if reply_to.is_some() {
         if let Some(self_name) = state.name() {
-            cleanup_completed_exchange(
-                self_name,
-                &envelope.to,
-                state.channel(),
-                reply_to,
-            );
+            cleanup_completed_exchange(self_name, &envelope.to, state.channel(), reply_to);
         }
     }
 

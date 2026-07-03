@@ -150,12 +150,12 @@ impl crate::output::CommandOutput for TotpListOutput {
 }
 
 async fn cmd_totp_list(ctx: &mut AppContext) -> Result<()> {
-    let secrets = crate::broker::totp_list()?;
+    let secrets = crate::secrets::list_totp()?;
     let output = TotpListOutput {
         items: secrets
             .into_iter()
             .map(|s| TotpSecretOut {
-                id: s.id,
+                id: s.id.unwrap_or_default(),
                 service: s.service,
                 account: s.account,
                 algorithm: s.algorithm,
@@ -175,45 +175,8 @@ async fn cmd_totp_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let service = &args[0];
     let account = &args[1];
 
-    let rec = crate::broker::totp_get(service, account)?
+    let code = crate::secrets::get_totp_code(service, account)?
         .ok_or_else(|| anyhow::anyhow!("No TOTP secret found for {} ({})", service, account))?;
-
-    let algo = match rec.algorithm.as_str() {
-        "SHA1" => Algorithm::SHA1,
-        "SHA256" => Algorithm::SHA256,
-        "SHA512" => Algorithm::SHA512,
-        _ => Algorithm::SHA1,
-    };
-
-    let secret_bytes = Secret::Encoded(rec.secret.clone())
-        .to_bytes()
-        .map_err(|e| anyhow::anyhow!("Invalid stored secret: {}", e))?;
-
-    validate_secret_length(&secret_bytes)?;
-
-    let totp = TOTP::new(
-        algo,
-        rec.digits as usize,
-        1,
-        rec.period as u64,
-        secret_bytes.clone(),
-        None,
-        rec.account.clone(),
-    )
-    .unwrap_or_else(|_| {
-        TOTP::new_unchecked(
-            algo,
-            rec.digits as usize,
-            1,
-            rec.period as u64,
-            secret_bytes.clone(),
-            None,
-            rec.account.clone(),
-        )
-    });
-
-    let now = unix_now();
-    let code = totp.generate(now);
     out!(
         ctx,
         "{}",

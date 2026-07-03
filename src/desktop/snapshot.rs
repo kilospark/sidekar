@@ -86,7 +86,14 @@ fn annotate_elements(img: &mut image::DynamicImage, elements: &[DesktopElementMa
     *img = image::DynamicImage::ImageRgba8(buf);
 }
 
-fn draw_rect_border(buf: &mut image::RgbaImage, x0: u32, y0: u32, x1: u32, y1: u32, color: [u8; 4]) {
+fn draw_rect_border(
+    buf: &mut image::RgbaImage,
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    color: [u8; 4],
+) {
     for x in x0..=x1 {
         if let Some(p) = buf.get_pixel_mut_checked(x, y0) {
             *p = image::Rgba(color);

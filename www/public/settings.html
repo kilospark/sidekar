@@ -310,7 +310,7 @@ main.container { padding: 32px 24px; }
         "</p>";
 
       html += '<h3 style="font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin:20px 0 12px;">Can see your sessions &amp; devices</h3>';
-      html += '<p style="color:var(--text-muted);font-size:12px;margin:-8px 0 12px;">These accounts accepted your invite and can see your devices and relay sessions.</p>';
+      html += '<p style="color:var(--text-muted);font-size:12px;margin:-8px 0 12px;">These accounts accepted your invite and can use only granted scopes.</p>';
       (collaborators.can_see_you || []).forEach(function(c) {
         var label = escapeHtml(c.login || c.name || c.id);
         var sub = c.name && c.login && c.name !== c.login ? '<span class="provider-detail">' + escapeHtml(c.name) + "</span>" : "";
@@ -321,6 +321,7 @@ main.container { padding: 32px 24px; }
           '<div class="provider-info">' +
           '<span class="provider-name">' + label + "</span>" +
           sub +
+          renderScopeBadges(c.scopes) +
           "</div>" +
           '<button type="button" class="btn-link-provider collab-unlink-btn" data-unlink-mode="' + um + '" data-unlink-value="' + uv + '">Revoke access</button>' +
           "</div>";
@@ -330,7 +331,7 @@ main.container { padding: 32px 24px; }
       }
 
       html += '<h3 style="font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin:24px 0 12px;">Sessions &amp; devices you can see</h3>';
-      html += '<p style="color:var(--text-muted);font-size:12px;margin:-8px 0 12px;">These accounts shared an invite code with you—you can see their devices and relay sessions.</p>';
+      html += '<p style="color:var(--text-muted);font-size:12px;margin:-8px 0 12px;">These accounts shared an invite code with you; access is limited to granted scopes.</p>';
       (collaborators.can_see || []).forEach(function(c) {
         var label = escapeHtml(c.login || c.name || c.id);
         var sub = c.name && c.login && c.name !== c.login ? '<span class="provider-detail">' + escapeHtml(c.name) + "</span>" : "";
@@ -341,6 +342,7 @@ main.container { padding: 32px 24px; }
           '<div class="provider-info">' +
           '<span class="provider-name">' + label + "</span>" +
           sub +
+          renderScopeBadges(c.scopes) +
           "</div>" +
           '<button type="button" class="btn-link-provider collab-unlink-btn" data-unlink-mode="' + um + '" data-unlink-value="' + uv + '">Remove access</button>' +
           "</div>";
@@ -352,8 +354,16 @@ main.container { padding: 32px 24px; }
       html +=
         '<div class="provider-row" style="flex-wrap:wrap;gap:10px;align-items:flex-start;">' +
         '<div class="provider-info" style="flex-direction:column;align-items:flex-start;gap:8px;">' +
+        '<div style="font-size:12px;color:var(--text-muted);">Grant scopes</div>' +
+        '<div id="collab-scope-list" style="display:flex;flex-wrap:wrap;gap:8px;font-size:13px;">' +
+        renderScopeCheckbox("sessions", "Sessions", true) +
+        renderScopeCheckbox("devices", "Devices", true) +
+        renderScopeCheckbox("credentials", "REPL credentials", false) +
+        renderScopeCheckbox("kv", "KV", false) +
+        renderScopeCheckbox("totp", "TOTP", false) +
+        "</div>" +
         '<button type="button" class="btn-link-provider" id="collab-invite-btn">Create invite code</button>' +
-        '<span class="provider-detail">Valid 15 minutes. The person who accepts can see <b>your</b> devices and relay sessions.</span>' +
+        '<span class="provider-detail">Valid 15 minutes. The person who accepts can use only selected scopes.</span>' +
         "</div></div>" +
         '<div id="collab-invite-out" style="margin-top:4px;margin-bottom:8px;"></div>' +
         '<div class="provider-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;">' +
@@ -392,6 +402,45 @@ main.container { padding: 32px 24px; }
       loadSlack();
     }
 
+    function scopeLabel(scope) {
+      switch (scope) {
+        case "sessions": return "sessions";
+        case "devices": return "devices";
+        case "credentials": return "credentials";
+        case "kv": return "kv";
+        case "totp": return "totp";
+        default: return scope || "";
+      }
+    }
+
+    function renderScopeBadges(scopes) {
+      var list = Array.isArray(scopes) && scopes.length ? scopes : ["sessions", "devices"];
+      var html = '<span class="provider-detail">Scopes: ';
+      for (var i = 0; i < list.length; i++) {
+        if (i > 0) html += ", ";
+        html += escapeHtml(scopeLabel(list[i]));
+      }
+      return html + "</span>";
+    }
+
+    function renderScopeCheckbox(value, label, checked) {
+      return '<label style="display:inline-flex;align-items:center;gap:5px;color:var(--text);">' +
+        '<input type="checkbox" class="collab-scope" value="' + escapeHtml(value) + '"' +
+        (checked ? " checked" : "") +
+        "> " +
+        escapeHtml(label) +
+        "</label>";
+    }
+
+    function selectedInviteScopes() {
+      var scopes = [];
+      var boxes = document.querySelectorAll(".collab-scope");
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].checked) scopes.push(boxes[i].value);
+      }
+      return scopes;
+    }
+
     function wireCollaboratorHandlers() {
       var inviteBtn = document.getElementById("collab-invite-btn");
       var inviteOut = document.getElementById("collab-invite-out");
@@ -400,11 +449,16 @@ main.container { padding: 32px 24px; }
 
       if (inviteBtn && inviteOut) {
         inviteBtn.addEventListener("click", function() {
+          var scopes = selectedInviteScopes();
+          if (scopes.length === 0) {
+            showToast("Select at least one scope");
+            return;
+          }
           inviteBtn.disabled = true;
           fetch("/api/auth/session?collaborators", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "invite" }),
+            body: JSON.stringify({ action: "invite", scopes: scopes }),
           })
             .then(function(r) {
               if (!r.ok) throw new Error("invite failed");

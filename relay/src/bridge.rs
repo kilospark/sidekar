@@ -3,18 +3,18 @@ use axum::{
         ws::{Message, WebSocket},
         Path, Query, State, WebSocketUpgrade,
     },
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::auth;
 use crate::registry::{Registry, ViewerRoute};
-use crate::types::{RegisterMsg, SessionInfo};
+use crate::types::RegisterMsg;
 
 /// Shared application state.
 #[derive(Clone)]
@@ -165,6 +165,17 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                             )
                                             .await;
                                     }
+                                }
+                                continue;
+                            }
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("secret_response") {
+                                if let Some(request_id) =
+                                    v.get("request_id").and_then(|x| x.as_str())
+                                {
+                                    state
+                                        .registry
+                                        .complete_secret_response(request_id, v.clone())
+                                        .await;
                                 }
                                 continue;
                             }
@@ -325,6 +336,207 @@ pub async fn handle_relay_bus(
     }
 
     Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+// ─── Relay secret RPC (device token) ──────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RelaySecretsIn {
+    pub action: String,
+    pub kind: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub forwarded: bool,
+    #[serde(flatten)]
+    pub payload: serde_json::Map<String, serde_json::Value>,
+}
+
+fn secret_scope(kind: &str) -> Option<&'static str> {
+    match kind {
+        "credentials" => Some("credentials"),
+        "kv" => Some("kv"),
+        "totp" => Some("totp"),
+        _ => None,
+    }
+}
+
+fn secret_http_json(status: StatusCode, value: serde_json::Value) -> Response {
+    (status, Json(value)).into_response()
+}
+
+/// POST /relay/secrets — request scoped secrets from linked owner tunnels.
+pub async fn handle_relay_secrets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RelaySecretsIn>,
+) -> Response {
+    let token = match extract_bearer_token(&headers) {
+        Some(t) => t,
+        None => {
+            return secret_http_json(
+                StatusCode::UNAUTHORIZED,
+                serde_json::json!({ "ok": false, "error": "missing Authorization header" }),
+            )
+        }
+    };
+    let user_id = match auth::validate_device_token(&state.db, &token).await {
+        Some(uid) => uid,
+        None => {
+            return secret_http_json(
+                StatusCode::UNAUTHORIZED,
+                serde_json::json!({ "ok": false, "error": "invalid device token" }),
+            )
+        }
+    };
+    let Some(scope) = secret_scope(&body.kind) else {
+        return secret_http_json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "ok": false, "error": "invalid kind" }),
+        );
+    };
+
+    let sessions = state
+        .registry
+        .secret_owner_sessions(&user_id, scope, body.owner.as_deref())
+        .await;
+
+    if body.action == "list"
+        || (body.kind == "kv" && body.action == "kv_exec" && body.owner.is_none())
+    {
+        let mut items = Vec::new();
+        for session in sessions.iter().filter(|s| s.local_live) {
+            if let Some(resp) = state
+                .registry
+                .send_secret_request_to_session(&session.session_id, secret_request_payload(&body))
+                .await
+            {
+                if resp.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                    append_rewritten_items(&mut items, &body.kind, &session.owner_label, &resp);
+                }
+            }
+        }
+        if !body.forwarded {
+            for origin in distinct_remote_origins(&sessions, state.registry.public_origin()) {
+                if let Ok(resp) = forward_secret_request(&origin, &token, &body).await {
+                    if resp.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                        if let Some(remote_items) = resp.get("items").and_then(|v| v.as_array()) {
+                            items.extend(remote_items.iter().cloned());
+                        }
+                    }
+                }
+            }
+        }
+        return Json(serde_json::json!({ "ok": true, "items": items })).into_response();
+    }
+
+    for session in sessions.iter().filter(|s| s.local_live) {
+        if let Some(resp) = state
+            .registry
+            .send_secret_request_to_session(&session.session_id, secret_request_payload(&body))
+            .await
+        {
+            return Json(resp).into_response();
+        }
+    }
+
+    if !body.forwarded {
+        for origin in distinct_remote_origins(&sessions, state.registry.public_origin()) {
+            if let Ok(resp) = forward_secret_request(&origin, &token, &body).await {
+                return Json(resp).into_response();
+            }
+        }
+    }
+
+    secret_http_json(
+        StatusCode::NOT_FOUND,
+        serde_json::json!({ "ok": false, "error": "secret_owner_offline" }),
+    )
+}
+
+fn secret_request_payload(body: &RelaySecretsIn) -> serde_json::Value {
+    let mut map = body.payload.clone();
+    map.insert("action".to_string(), body.action.clone().into());
+    map.insert("kind".to_string(), body.kind.clone().into());
+    serde_json::Value::Object(map)
+}
+
+fn append_rewritten_items(
+    items: &mut Vec<serde_json::Value>,
+    kind: &str,
+    owner_label: &str,
+    resp: &serde_json::Value,
+) {
+    let Some(local_items) = resp.get("items").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for item in local_items {
+        let mut obj = match item.as_object() {
+            Some(obj) => obj.clone(),
+            None => continue,
+        };
+        obj.insert("owner".to_string(), owner_label.to_string().into());
+        obj.insert("local".to_string(), false.into());
+        match kind {
+            "credentials" => {
+                if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                    obj.insert("reference".to_string(), format!("{owner_label}/{name}").into());
+                }
+            }
+            "kv" => {
+                if let Some(key) = obj.get("key").and_then(|v| v.as_str()) {
+                    let reference = format!("{owner_label}/{key}");
+                    obj.insert("reference".to_string(), reference.clone().into());
+                    obj.insert("key".to_string(), reference.into());
+                }
+            }
+            "totp" => {
+                if let Some(service) = obj
+                    .get("service")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                {
+                    obj.insert("reference".to_string(), format!("{owner_label}/{service}").into());
+                    obj.insert("service".to_string(), format!("{owner_label}/{service}").into());
+                }
+            }
+            _ => {}
+        }
+        items.push(serde_json::Value::Object(obj));
+    }
+}
+
+fn distinct_remote_origins(
+    sessions: &[crate::registry::SecretOwnerSession],
+    local_origin: &str,
+) -> Vec<String> {
+    let mut origins = Vec::new();
+    for session in sessions {
+        if session.local_live || session.owner_origin == local_origin {
+            continue;
+        }
+        if !origins.iter().any(|o| o == &session.owner_origin) {
+            origins.push(session.owner_origin.clone());
+        }
+    }
+    origins
+}
+
+async fn forward_secret_request(
+    origin: &str,
+    token: &str,
+    body: &RelaySecretsIn,
+) -> Result<serde_json::Value, reqwest::Error> {
+    let mut forwarded = body.clone();
+    forwarded.forwarded = true;
+    let url = format!("{}/relay/secrets", origin.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .post(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&forwarded)
+        .send()
+        .await?;
+    resp.json::<serde_json::Value>().await
 }
 
 // ─── Viewer handler ───────────────────────────────────────────────

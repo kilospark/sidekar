@@ -1,17 +1,18 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "./_db.js";
-import { ensureAccountLinksIndexes } from "./_linkedAccounts.js";
+import { DEFAULT_LINK_SCOPES, ensureAccountLinksIndexes, normalizeLinkScopes } from "./_linkedAccounts.js";
 import { randomBytes } from "crypto";
 
 const INVITE_TTL_MS = 15 * 60 * 1000;
 
-function packUser(uDoc, unlink_mode, unlink_value) {
+function packUser(uDoc, unlink_mode, unlink_value, scopes = DEFAULT_LINK_SCOPES) {
   if (!uDoc) return null;
   return {
     id: uDoc._id.toString(),
     login: uDoc.login || null,
     name: uDoc.name || null,
     email: uDoc.email || null,
+    scopes: normalizeLinkScopes(scopes),
     unlink_mode,
     unlink_value: unlink_value || uDoc._id.toString(),
   };
@@ -68,7 +69,7 @@ export async function handleCollaboratorsRequest(req, res, jwtSub) {
     for (const d of outgoing) {
       if (!d.grantee_id) continue;
       const uid = d.grantee_id.toString();
-      const row = packUser(byIdStr[uid], "grantee", uid);
+      const row = packUser(byIdStr[uid], "grantee", uid, d.scopes);
       pushUniqueById(can_see_you, row);
     }
 
@@ -76,7 +77,7 @@ export async function handleCollaboratorsRequest(req, res, jwtSub) {
     for (const d of incoming) {
       if (!d.grantor_id) continue;
       const uid = d.grantor_id.toString();
-      const row = packUser(byIdStr[uid], "grantor", uid);
+      const row = packUser(byIdStr[uid], "grantor", uid, d.scopes);
       pushUniqueById(can_see, row);
     }
 
@@ -98,13 +99,15 @@ export async function handleCollaboratorsRequest(req, res, jwtSub) {
     if (action === "invite") {
       const code = randomBytes(5).toString("hex").slice(0, 10);
       const expires_at = new Date(Date.now() + INVITE_TTL_MS);
+      const scopes = normalizeLinkScopes(body.scopes);
       await db.collection("account_link_invites").insertOne({
         code,
         from_user_id: selfId,
+        scopes,
         expires_at,
         created_at: new Date(),
       });
-      return res.json({ code, expires_at: expires_at.toISOString() });
+      return res.json({ code, scopes, expires_at: expires_at.toISOString() });
     }
 
     if (action === "accept") {
@@ -126,6 +129,9 @@ export async function handleCollaboratorsRequest(req, res, jwtSub) {
       await db.collection("account_links").updateOne(
         { grantor_id: grantorId, grantee_id: selfId },
         {
+          $set: {
+            scopes: normalizeLinkScopes(invite.scopes),
+          },
           $setOnInsert: {
             grantor_id: grantorId,
             grantee_id: selfId,

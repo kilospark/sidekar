@@ -176,8 +176,23 @@ async fn io_loop(
                         let _ = evt_tx.try_send(TunnelEvent::Data(data.into()));
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-                            && v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("secret_request") {
+                                let request_id = v
+                                    .get("request_id")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let mut response = crate::secrets::handle_local_secret_request(&v).await;
+                                response["ch"] = "secret_response".into();
+                                response["v"] = 1.into();
+                                response["request_id"] = request_id.into();
+                                if ws_sink.send(Message::Text(response.to_string().into())).await.is_err() {
+                                    return false;
+                                }
+                                continue;
+                            }
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("bus") {
                                 let body_str = v
                                     .get("body")
                                     .and_then(|b| b.as_str())
@@ -201,6 +216,7 @@ async fn io_loop(
                                     let _ = evt_tx.try_send(TunnelEvent::BusPlain(body_str));
                                 }
                             }
+                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_sink.send(Message::Pong(data)).await;

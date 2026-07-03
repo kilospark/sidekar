@@ -258,7 +258,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     // Validate credential name if provided at startup
     if let Some(ref name) = cred_name
-        && providers::oauth::resolve_provider_type_for_credential(name).is_none()
+        && crate::secrets::resolve_provider_type_for_credential(name).is_none()
     {
         anyhow::bail!(
             "Unknown credential: '{name}'. Use a stored credential key (`oauth:<name>`), e.g. default stems anthropic/codex/gemini or a name from `credential add`.\n\

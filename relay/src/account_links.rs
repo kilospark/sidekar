@@ -1,5 +1,5 @@
 //! Directed grants in MongoDB `account_links`: `grantor_id` → `grantee_id`.
-//! Grantee may use grantor relay sessions / see grantor devices in the dashboard API.
+//! Grantee may use grantor resources allowed by the link's `scopes`.
 
 use futures_util::StreamExt;
 use mongodb::bson::{doc, oid::ObjectId, Document};
@@ -8,6 +8,15 @@ use std::collections::HashSet;
 
 /// Hex `user_id` strings whose resources `user_hex` may aggregate (including self).
 pub async fn expand_linked_user_hex_ids(db: &Database, user_hex: &str) -> Vec<String> {
+    expand_linked_user_hex_ids_for_scope(db, user_hex, "sessions").await
+}
+
+/// Hex `user_id` strings whose scoped resources `user_hex` may aggregate (including self).
+pub async fn expand_linked_user_hex_ids_for_scope(
+    db: &Database,
+    user_hex: &str,
+    scope: &str,
+) -> Vec<String> {
     let user_norm = user_hex.trim().to_ascii_lowercase();
 
     let Ok(oid) = ObjectId::parse_str(&user_norm) else {
@@ -23,6 +32,9 @@ pub async fn expand_linked_user_hex_ids(db: &Database, user_hex: &str) -> Vec<St
     };
 
     while let Some(Ok(doc)) = cursor.next().await {
+        if !link_has_scope(&doc, scope) {
+            continue;
+        }
         let Ok(g) = doc.get_object_id("grantor_id") else {
             continue;
         };
@@ -30,4 +42,18 @@ pub async fn expand_linked_user_hex_ids(db: &Database, user_hex: &str) -> Vec<St
     }
 
     set.into_iter().collect()
+}
+
+fn link_has_scope(doc: &Document, scope: &str) -> bool {
+    let wanted = scope.trim().to_ascii_lowercase();
+    if wanted.is_empty() {
+        return true;
+    }
+    match doc.get_array("scopes") {
+        Ok(scopes) => scopes
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|s| s.trim().eq_ignore_ascii_case(&wanted)),
+        Err(_) => matches!(wanted.as_str(), "sessions" | "devices"),
+    }
 }

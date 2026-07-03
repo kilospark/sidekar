@@ -169,7 +169,9 @@ sidekar browser clipboard --html <html> [--text <text>]
             "sidekar browser hover <target>\n\n  Hover over an element (same targeting as click: ref, --text, selector, x,y)."
         }
         "focus" => "sidekar browser focus <selector>\n\n  Focus an element without clicking it.",
-        "clear" => "sidekar browser clear <selector>\n\n  Clear an input or contenteditable element.",
+        "clear" => {
+            "sidekar browser clear <selector>\n\n  Clear an input or contenteditable element."
+        }
         "storage" => {
             "\
 sidekar browser storage <action> [key] [value] [--session]
@@ -233,7 +235,9 @@ sidekar browser grid [spec]
 
   Example: sidekar browser grid 8x6"
         }
-        "pdf" => "sidekar browser pdf [path]\n\n  Save current page as PDF. Default: temp directory.",
+        "pdf" => {
+            "sidekar browser pdf [path]\n\n  Save current page as PDF. Default: temp directory."
+        }
         "download" => {
             "sidekar browser download [action] [path]\n\n  Actions: path (set download dir), list (show downloads)\n\n  Example: sidekar browser download path /tmp/downloads"
         }
@@ -245,7 +249,9 @@ sidekar browser grid [spec]
             "sidekar browser lock [seconds]\n\n  Lock the active tab for exclusive access (default: 300s)."
         }
         "unlock" => "sidekar browser unlock\n\n  Release the tab lock.",
-        "activate" => "sidekar browser activate\n\n  Bring the browser window to the front (macOS).",
+        "activate" => {
+            "sidekar browser activate\n\n  Bring the browser window to the front (macOS)."
+        }
         "minimize" => "sidekar browser minimize\n\n  Minimize the browser window (macOS).",
         "kill" => "sidekar browser kill\n\n  Kill the custom profile browser session.",
         "geo" => {

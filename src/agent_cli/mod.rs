@@ -567,8 +567,7 @@ impl AgentCliSpec for Grok {
         ) {
             return args.to_vec();
         }
-        if first_positional(args, GROK_VALUE_FLAGS)
-            .is_some_and(|arg| GROK_COMMANDS.contains(&arg))
+        if first_positional(args, GROK_VALUE_FLAGS).is_some_and(|arg| GROK_COMMANDS.contains(&arg))
         {
             return args.to_vec();
         }
@@ -607,8 +606,16 @@ static GROK: Grok = Grok;
 static OPENCODE: OpenCode = OpenCode;
 static PI: Pi = Pi;
 
-static REGISTRY: &[&dyn AgentCliSpec] =
-    &[&CLAUDE, &CODEX, &COPILOT, &CURSOR_FAMILY, &GEMINI, &GROK, &OPENCODE, &PI];
+static REGISTRY: &[&dyn AgentCliSpec] = &[
+    &CLAUDE,
+    &CODEX,
+    &COPILOT,
+    &CURSOR_FAMILY,
+    &GEMINI,
+    &GROK,
+    &OPENCODE,
+    &PI,
+];
 
 pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
     REGISTRY

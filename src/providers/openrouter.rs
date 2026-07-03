@@ -74,7 +74,9 @@ pub async fn stream_with_provider(
     .await
     {
         Ok(rx) => Ok(rx),
-        Err(e) if allow_vision && super::capabilities::is_vision_rejection_error(&e.to_string()) => {
+        Err(e)
+            if allow_vision && super::capabilities::is_vision_rejection_error(&e.to_string()) =>
+        {
             super::capabilities::record_vision_rejection(provider_type, model);
             crate::broker::try_log_event(
                 "debug",
@@ -280,9 +282,12 @@ pub(super) fn openai_compat_chat_completion_body(
                             } else {
                                 let n = content_images.len();
                                 let suffix = if n == 1 {
-                                    "\n\n[1 image omitted: model does not support vision input.]".to_string()
+                                    "\n\n[1 image omitted: model does not support vision input.]"
+                                        .to_string()
                                 } else {
-                                    format!("\n\n[{n} images omitted: model does not support vision input.]")
+                                    format!(
+                                        "\n\n[{n} images omitted: model does not support vision input.]"
+                                    )
                                 };
                                 json!(format!("{content}{suffix}"))
                             };

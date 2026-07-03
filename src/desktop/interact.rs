@@ -9,9 +9,7 @@ use anyhow::{Context, Result, bail};
 use std::ffi::c_void;
 use std::ptr;
 
-const kAXValueAttribute: &str = "AXValue";
-const kAXPressAction: &str = "AXPress";
-const kAXWebAreaRole: &str = "AXWebArea";
+const K_AX_VALUE_ATTRIBUTE: &str = "AXValue";
 
 #[derive(Debug, Clone)]
 pub struct ResolvedTarget {
@@ -25,9 +23,9 @@ pub fn resolve_target(pid: i32, target: &str) -> Result<ResolvedTarget> {
     if let Some(ref_id) = refs::parse_ref(target) {
         refs::load_refs();
         let refmap = refs::ref_map().lock().unwrap();
-        let entry = refmap
-            .get(ref_id)
-            .with_context(|| format!("Ref {ref_id} not found. Run `sidekar desktop see` or `find`."))?;
+        let entry = refmap.get(ref_id).with_context(|| {
+            format!("Ref {ref_id} not found. Run `sidekar desktop see` or `find`.")
+        })?;
         return Ok(ResolvedTarget {
             pid: entry.pid,
             path: entry.path.clone(),
@@ -62,7 +60,10 @@ where
     result
 }
 
-pub fn perform_action_on_target(target: &ResolvedTarget, action: &str) -> Result<DesktopActionResult> {
+pub fn perform_action_on_target(
+    target: &ResolvedTarget,
+    action: &str,
+) -> Result<DesktopActionResult> {
     if action.trim().is_empty() {
         bail!("action name required");
     }
@@ -91,7 +92,7 @@ pub fn set_value_on_target(target: &ResolvedTarget, value: &str) -> Result<Deskt
         if !macos::ax_is_value_settable(element) {
             bail!("AXValue is not settable on this element");
         }
-        let old_value = macos::ax_string_attribute_pub(element, kAXValueAttribute);
+        let old_value = macos::ax_string_attribute_pub(element, K_AX_VALUE_ATTRIBUTE);
         let err = macos::ax_set_value(element, value);
         if err != macos::AX_ERROR_SUCCESS {
             bail!("AXUIElementSetAttributeValue failed (error {err})");
@@ -112,9 +113,11 @@ pub fn snapshot_interactive_elements(
 ) -> Result<Vec<DesktopElementMatch>> {
     super::focus_guard::ax_enablement().assert_for_pid(pid);
     let mut elements = macos::collect_interactive_elements(pid, max_depth, max_elements)?;
-    if !elements.iter().any(|e| {
-        e.role == "AXTextField" || e.role == "AXTextArea" || e.role == "AXComboBox"
-    }) && macos::try_web_area_focus(pid)? {
+    if !elements
+        .iter()
+        .any(|e| e.role == "AXTextField" || e.role == "AXTextArea" || e.role == "AXComboBox")
+        && macos::try_web_area_focus(pid)?
+    {
         elements = macos::collect_interactive_elements(pid, max_depth, max_elements)?;
     }
     refs::assign_refs_for_pid(pid, &mut elements);

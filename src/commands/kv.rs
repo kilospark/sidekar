@@ -67,7 +67,7 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
 
     let entry =
-        crate::broker::kv_get(key)?.ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
+        crate::secrets::get_kv(key)?.ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
 
     let text = if !entry.tags.is_empty() {
         format!("{} [{}]", entry.value, entry.tags.join(","))
@@ -126,7 +126,7 @@ async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .and_then(|i| args.get(i + 1).cloned())
         });
 
-    let entries = crate::broker::kv_list(filter_tag.as_deref())?;
+    let entries = crate::secrets::list_kv(filter_tag.as_deref())?;
     let output = KvListOutput {
         items: entries
             .into_iter()
@@ -329,7 +329,7 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         );
     }
 
-    let entries = crate::broker::kv_get_for_exec(&keys, filter_tag.as_deref())?;
+    let entries = crate::secrets::get_kv_for_exec(&keys, filter_tag.as_deref())?;
     if entries.is_empty() {
         bail!("No matching KV entries to inject.");
     }

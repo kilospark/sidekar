@@ -157,8 +157,9 @@ pub fn proxy_log_recent(limit: usize) -> Result<Vec<ProxyLogRow>> {
 pub fn proxy_log_since(since_id: i64, limit: usize) -> Result<Vec<ProxyLogRow>> {
     let conn = open()?;
     let lim = limit.clamp(1, 200) as i64;
-    let mut stmt =
-        conn.prepare(&format!("{PROXY_ROW_SELECT} WHERE id > ?1 ORDER BY id ASC LIMIT ?2"))?;
+    let mut stmt = conn.prepare(&format!(
+        "{PROXY_ROW_SELECT} WHERE id > ?1 ORDER BY id ASC LIMIT ?2"
+    ))?;
     let rows = stmt.query_map(params![since_id, lim], map_proxy_row)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
@@ -172,8 +173,10 @@ pub fn proxy_log_by_ids(ids: &[i64]) -> Result<Vec<ProxyLogRow>> {
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let sql = format!("{PROXY_ROW_SELECT} WHERE id IN ({placeholders}) ORDER BY id DESC");
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<Box<dyn rusqlite::types::ToSql>> =
-        ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
+    let params: Vec<Box<dyn rusqlite::types::ToSql>> = ids
+        .iter()
+        .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(param_refs.as_slice(), map_proxy_row)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -185,8 +188,9 @@ pub fn proxy_log_page(limit: usize, offset: usize) -> Result<(i64, Vec<ProxyLogR
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM proxy_log", [], |r| r.get(0))?;
     let lim = limit.clamp(1, 200) as i64;
     let off = offset as i64;
-    let mut stmt =
-        conn.prepare(&format!("{PROXY_ROW_SELECT} ORDER BY id DESC LIMIT ?1 OFFSET ?2"))?;
+    let mut stmt = conn.prepare(&format!(
+        "{PROXY_ROW_SELECT} ORDER BY id DESC LIMIT ?1 OFFSET ?2"
+    ))?;
     let rows = stmt.query_map(params![lim, off], map_proxy_row)?;
     let page = rows.collect::<std::result::Result<Vec<_>, _>>()?;
     Ok((total, page))
@@ -194,8 +198,7 @@ pub fn proxy_log_page(limit: usize, offset: usize) -> Result<(i64, Vec<ProxyLogR
 
 pub fn proxy_log_max_id() -> Result<i64> {
     let conn = open()?;
-    let max_id: Option<i64> =
-        conn.query_row("SELECT MAX(id) FROM proxy_log", [], |r| r.get(0))?;
+    let max_id: Option<i64> = conn.query_row("SELECT MAX(id) FROM proxy_log", [], |r| r.get(0))?;
     Ok(max_id.unwrap_or(0))
 }
 

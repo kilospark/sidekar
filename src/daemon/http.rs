@@ -137,7 +137,8 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
         let s = state.lock().await;
         crate::ext::get_status(&s.ext_state).await
     };
-    if admin::handle_admin_request(&method, &path, &query, http_port, ext_status, &mut stream).await {
+    if admin::handle_admin_request(&method, &path, &query, http_port, ext_status, &mut stream).await
+    {
         return;
     }
 

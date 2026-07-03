@@ -414,7 +414,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
 fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
     command == "browser"
         && matches!(
-            (args.first().map(String::as_str), args.get(1).map(String::as_str)),
+            (
+                args.first().map(String::as_str),
+                args.get(1).map(String::as_str)
+            ),
             (Some("network"), Some("passive")) | (Some("network"), Some("sse"))
         )
 }
