@@ -85,6 +85,21 @@ fn empty_enter_is_silent_noop() {
 }
 
 #[test]
+fn active_draft_blocks_bus_poll() {
+    let mut editor = LineEditor::with_history(Vec::new());
+    assert!(!editor.has_active_draft());
+
+    editor
+        .process_input_bytes(b"half typed", |_, _| {})
+        .unwrap();
+    editor.force_flush_paste_burst();
+    assert!(editor.has_active_draft());
+
+    editor.process_input_bytes(b"\n", |_, _| {}).unwrap();
+    assert!(!editor.has_active_draft());
+}
+
+#[test]
 fn whitespace_only_enter_is_silent_noop() {
     let mut editor = LineEditor::with_history(Vec::new());
     let mut lines = Vec::new();

@@ -17,6 +17,73 @@ async fn write_sidekar_notice(
     crate::tunnel::tunnel_write_async(stdout, tunnel_tx, out.as_bytes()).await
 }
 
+fn track_user_input_chunk(
+    input_state: &crate::poller::UserInputState,
+    line_buf: &mut Vec<u8>,
+    chunk: &[u8],
+) {
+    if chunk.is_empty() {
+        return;
+    }
+    input_state.mark_activity();
+    if chunk.contains(&0x1b) {
+        return;
+    }
+    if input_state.take_line_tracking_reset() {
+        line_buf.clear();
+    }
+    for &byte in chunk {
+        input_state.discard_stashed_draft();
+        if byte == b'\r' || byte == b'\n' {
+            line_buf.clear();
+            input_state.clear_pending_line();
+        } else if byte == 0x7f || byte == 0x08 {
+            line_buf.pop();
+            input_state.set_pending_line(line_buf);
+        } else if byte >= 0x20 {
+            line_buf.push(byte);
+            input_state.set_pending_line(line_buf);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tunnel_input_tracking_marks_pending_line() {
+        let state = crate::poller::UserInputState::new();
+        let mut line = Vec::new();
+
+        track_user_input_chunk(&state, &mut line, b"abc");
+        assert!(state.has_pending_line());
+        assert_eq!(line, b"abc");
+        assert_eq!(
+            state.current_activity_state(),
+            crate::activity::ActivityState::UserTyping
+        );
+
+        track_user_input_chunk(&state, &mut line, b"\n");
+        assert!(!state.has_pending_line());
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn tunnel_escape_input_counts_as_activity_without_line_text() {
+        let state = crate::poller::UserInputState::new();
+        let mut line = Vec::new();
+
+        track_user_input_chunk(&state, &mut line, b"\x1b[A");
+        assert!(line.is_empty());
+        assert!(!state.has_pending_line());
+        assert_eq!(
+            state.current_activity_state(),
+            crate::activity::ActivityState::UserTyping
+        );
+    }
+}
+
 pub(crate) async fn event_loop(
     master: &Arc<OwnedFd>,
     child_pid: libc::pid_t,
@@ -147,7 +214,9 @@ pub(crate) async fn event_loop(
                     Some(crate::tunnel::TunnelEvent::Data(data)) => {
                         // Filter out OSC color queries from browser's xterm.js
                         let filtered = filter_osc_color_sequences(&data);
+                        track_user_input_chunk(input_state, &mut line_buf, &filtered);
                         let _ = write_all_fd(master_fd, &filtered);
+                        input_state.publish_activity(agent_name);
                     }
                     Some(crate::tunnel::TunnelEvent::BusRelay {
                         recipient,
@@ -241,29 +310,8 @@ pub(crate) async fn event_loop(
                             continue;
                         }
 
-                        if input_state.take_line_tracking_reset() {
-                            line_buf.clear();
-                        }
-
-                        input_state.mark_activity();
-
-                        for &byte in chunk {
-                            input_state.discard_stashed_draft();
-
-                            if byte == b'\r' || byte == b'\n' {
-                                line_buf.clear();
-                                input_state.clear_pending_line();
-                                let _ = write_all_fd(master_fd, &[byte]);
-                            } else if byte == 0x7f || byte == 0x08 {
-                                line_buf.pop();
-                                input_state.set_pending_line(&line_buf);
-                                let _ = write_all_fd(master_fd, &[byte]);
-                            } else {
-                                line_buf.push(byte);
-                                input_state.set_pending_line(&line_buf);
-                                let _ = write_all_fd(master_fd, &[byte]);
-                            }
-                        }
+                        track_user_input_chunk(input_state, &mut line_buf, chunk);
+                        let _ = write_all_fd(master_fd, chunk);
                         input_state.publish_activity(agent_name);
                     }
                 }

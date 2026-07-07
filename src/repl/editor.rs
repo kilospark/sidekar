@@ -804,6 +804,13 @@ impl LineEditor {
         self.pending_submits.pop_front()
     }
 
+    fn has_active_draft(&self) -> bool {
+        !self.buffer.is_empty()
+            || !self.attached_images.is_empty()
+            || self.paste_buffer.is_some()
+            || self.paste_burst_is_active()
+    }
+
     fn queue_pending_followup(&mut self, line: SubmittedLine) {
         self.pending_followups.push_back(line);
         self.redraw_inner();
@@ -2448,7 +2455,7 @@ pub(super) fn read_input_or_bus(
 
         if check_bus_now {
             check_bus_now = false;
-            if broker::has_pending_messages(bus_name) {
+            if !editor.has_active_draft() && broker::has_pending_messages(bus_name) {
                 editor.clear_display();
                 return InputEvent::Bus;
             }
@@ -2542,6 +2549,9 @@ pub(super) fn read_input_or_bus(
                 let _ = editor.maybe_resolve_pending_escape();
                 if let Some(line) = drain_editor_pending_submit(editor) {
                     return InputEvent::User(line);
+                }
+                if editor.has_active_draft() {
+                    crate::activity::publish(bus_name, crate::activity::ActivityState::UserTyping);
                 }
                 check_bus_now = true;
             } else if ready < 0 {

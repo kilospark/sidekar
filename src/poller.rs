@@ -10,7 +10,7 @@ use std::time::Duration;
 
 static POLLER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-const USER_IDLE_BEFORE_INJECT: Duration = Duration::from_millis(1000);
+const USER_IDLE_BEFORE_INJECT: Duration = Duration::from_millis(5000);
 const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct UserInputState {
@@ -712,7 +712,10 @@ fn encode_submit_input(message: &str, encoding: PtySubmitEncoding) -> Vec<u8> {
 }
 
 fn pty_submit_wait_blocked_for(input_state: &UserInputState, interrupt: bool) -> bool {
-    !input_state.is_idle() || (!interrupt && input_state.is_agent_working())
+    !input_state.is_idle()
+        || input_state.has_pending_line()
+        || input_state.has_stashed_draft()
+        || (!interrupt && input_state.is_agent_working())
 }
 
 fn epoch_millis() -> u64 {
@@ -786,11 +789,12 @@ mod tests {
     }
 
     #[test]
-    fn is_idle_can_be_true_while_draft_pending() {
+    fn draft_pending_blocks_submit_even_without_recent_keystroke() {
         let state = UserInputState::new();
         state.set_pending_line(b"half typed");
         assert!(state.is_idle());
         assert!(state.has_pending_line());
+        assert!(pty_submit_wait_blocked_for(&state, false));
     }
 
     #[test]
