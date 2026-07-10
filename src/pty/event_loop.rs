@@ -47,6 +47,12 @@ fn track_user_input_chunk(
     }
 }
 
+fn pty_ads_enabled() -> bool {
+    std::env::var("SIDEKAR_PTY_ADS")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +93,7 @@ mod tests {
 pub(crate) async fn event_loop(
     master: &Arc<OwnedFd>,
     child_pid: libc::pid_t,
+    agent_kind: &str,
     tunnel: Option<(crate::tunnel::TunnelSender, crate::tunnel::TunnelReceiver)>,
     nick: &str,
     agent_name: &str,
@@ -154,6 +161,12 @@ pub(crate) async fn event_loop(
 
     // Structured event parser — emits semantic events alongside raw PTY bytes
     let mut event_parser = crate::events::EventParser::new();
+    let mut ad_overlay = if pty_ads_enabled() {
+        super::ad_overlay::AgentKind::parse(agent_kind)
+            .map(|kind| super::ad_overlay::PtyAdOverlay::new(kind, current_terminal_size()))
+    } else {
+        None
+    };
     let mut activity_tick = tokio::time::interval(std::time::Duration::from_secs(30));
     activity_tick.tick().await;
 
@@ -187,6 +200,9 @@ pub(crate) async fn event_loop(
                 }
             } => {
                 let _ = copy_terminal_size(master_fd);
+                if let Some(ref mut overlay) = ad_overlay {
+                    overlay.resize(current_terminal_size());
+                }
                 if let (Some(tx), Some((cols, rows))) = (tunnel_tx.as_ref(), current_terminal_size()) {
                     tx.send_terminal_resize(cols, rows);
                 }
@@ -350,19 +366,37 @@ pub(crate) async fn event_loop(
                                 } else {
                                     rewrite_osc_titles(raw, &nick_prefix)
                                 };
-                                if stdout.write_all(&local_data).await.is_err() {
-                                    break;
+                                let overlay_data = ad_overlay
+                                    .as_mut()
+                                    .and_then(|overlay| overlay.feed(&local_data));
+                                match overlay_data.as_ref() {
+                                    Some(patch) => {
+                                        let mut out = Vec::with_capacity(local_data.len() + patch.len());
+                                        out.extend_from_slice(&local_data);
+                                        out.extend_from_slice(patch);
+                                        if stdout.write_all(&out).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    None => {
+                                        if stdout.write_all(&local_data).await.is_err() {
+                                            break;
+                                        }
+                                    }
                                 }
                                 let _ = stdout.flush().await;
 
                                 // Fan-out to tunnel with normalized control sequences for the web terminal.
                                 if let Some(ref tx) = tunnel_tx {
                                     let filtered = filter_osc_color_sequences(raw);
-                                    let tunnel_data = if nick_prefix.is_empty() {
+                                    let mut tunnel_data = if nick_prefix.is_empty() {
                                         filtered.into_owned()
                                     } else {
                                         rewrite_osc_titles(&filtered, &nick_prefix).into_owned()
                                     };
+                                    if let Some(data) = overlay_data.as_ref() {
+                                        tunnel_data.extend_from_slice(data);
+                                    }
                                     tx.send_data(tunnel_data);
 
                                     // Emit structured events alongside raw bytes

@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 
+mod ad_overlay;
 mod chrome;
 mod escape_filter;
 mod event_loop;
@@ -492,6 +493,7 @@ pub async fn run_agent(
     let exit_code = event_loop(
         &master_arc,
         child_pid,
+        agent,
         tunnel,
         &nick,
         &identity.name,
