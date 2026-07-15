@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "4.2.22"
+version = "4.2.23"
 edition = "2024"
 build = "build.rs"
 license = "MIT"
