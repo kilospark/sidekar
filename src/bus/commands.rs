@@ -173,7 +173,13 @@ fn format_delivered_bus_body(
     sender_channel: &str,
     route: &BusDeliveryRoute,
 ) -> String {
-    let mut body = envelope.format_for_paste();
+    let reply_target = match route {
+        BusDeliveryRoute::SameChannel => envelope.from.address(),
+        BusDeliveryRoute::CrossChannelBroker { .. } | BusDeliveryRoute::Relay { .. } => {
+            envelope.from.name.as_str()
+        }
+    };
+    let mut body = envelope.format_for_paste_with_reply_target(reply_target);
     match route {
         BusDeliveryRoute::SameChannel => {}
         BusDeliveryRoute::CrossChannelBroker { recipient_session } => {
@@ -192,6 +198,58 @@ fn format_delivered_bus_body(
         }
     }
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_from_nick() -> Envelope {
+        let mut from = AgentId::new("codex-/tmp/project-1");
+        from.nick = Some("bison".into());
+        Envelope::new_request(from, "receiver", "review this")
+    }
+
+    #[test]
+    fn same_channel_reply_hint_uses_sender_address() {
+        let env = request_from_nick();
+        let body = format_delivered_bus_body(&env, "/tmp/project", &BusDeliveryRoute::SameChannel);
+        assert!(body.contains("sidekar bus send bison \"<your response>\" --reply-to="));
+    }
+
+    #[test]
+    fn cross_channel_reply_hint_uses_stable_sender_name() {
+        let env = request_from_nick();
+        let body = format_delivered_bus_body(
+            &env,
+            "/tmp/project",
+            &BusDeliveryRoute::CrossChannelBroker {
+                recipient_session: Some("/tmp/other".into()),
+            },
+        );
+        assert!(
+            body.contains("sidekar bus send codex-/tmp/project-1 \"<your response>\" --reply-to=")
+        );
+        assert!(!body.contains("sidekar bus send bison \"<your response>\""));
+        assert!(body.contains("[cross-channel: sender session \"/tmp/project\""));
+    }
+
+    #[test]
+    fn relay_reply_hint_uses_stable_sender_name() {
+        let env = request_from_nick();
+        let body = format_delivered_bus_body(
+            &env,
+            "/tmp/project",
+            &BusDeliveryRoute::Relay {
+                hostname: "workstation".into(),
+            },
+        );
+        assert!(
+            body.contains("sidekar bus send codex-/tmp/project-1 \"<your response>\" --reply-to=")
+        );
+        assert!(!body.contains("sidekar bus send bison \"<your response>\""));
+        assert!(body.contains("[relay: delivered through Sidekar relay"));
+    }
 }
 
 fn send_directed_envelope(

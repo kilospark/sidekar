@@ -197,8 +197,12 @@ impl Envelope {
 
     /// Format the message for display in a terminal paste.
     pub fn format_for_paste(&self) -> String {
+        self.format_for_paste_with_reply_target(self.from.address())
+    }
+
+    /// Format the message for display with an explicit reply target.
+    pub fn format_for_paste_with_reply_target(&self, target: &str) -> String {
         let from = self.from.display_name();
-        let target = self.from.address();
         let reply_hint = format!(
             "\n[reply with: sidekar bus send {target} \"<your response>\" --reply-to={}]",
             self.id
@@ -385,6 +389,18 @@ mod tests {
         assert!(paste.starts_with("[fyi from quokka]: closed."));
         assert!(!paste.contains("[reply with:"));
         assert!(!env.requires_reply());
+    }
+
+    #[test]
+    fn reply_hint_can_use_explicit_stable_target() {
+        let mut from = AgentId::new("codex-/tmp/project-1");
+        from.nick = Some("bison".into());
+        let env = Envelope::new_request(from, "toucan", "review this");
+        let paste = env.format_for_paste_with_reply_target("codex-/tmp/project-1");
+        assert!(paste.contains(
+            "[reply with: sidekar bus send codex-/tmp/project-1 \"<your response>\" --reply-to="
+        ));
+        assert!(!paste.contains("sidekar bus send bison \"<your response>\""));
     }
 
     #[test]
