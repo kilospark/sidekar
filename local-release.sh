@@ -78,10 +78,22 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
 else
   gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes ""
 fi
-RELEASE_ID="$(
-  gh api "repos/${REPO}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" \
-    | head -n 1
-)"
+# The releases list is eventually consistent: a draft created moments ago
+# can be missing from the first response (observed on v4.2.24, which failed
+# the release after the binary was already built and signed). Retry before
+# treating the absence as fatal.
+RELEASE_ID=""
+for attempt in 1 2 3 4 5 6; do
+  RELEASE_ID="$(
+    gh api "repos/${REPO}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" \
+      | head -n 1
+  )"
+  if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+    break
+  fi
+  echo "Release id for ${TAG} not visible yet (attempt ${attempt}); retrying in 5s."
+  sleep 5
+done
 if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
   echo "Error: could not resolve GitHub release id for ${TAG}"
   exit 1
