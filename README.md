@@ -161,7 +161,7 @@ sidekar claude [args]                     # Launch Claude Code in a sidekar PTY
 sidekar codex [args]                      # Launch Codex in a sidekar PTY
 sidekar repl -c claude -m claude-sonnet-4-5-20250514
 sidekar bus who                           # List agents on your channel
-sidekar bus send claude-2 "Review the PR" # Send a request or FYI
+sidekar bus send claude-2 "Review the PR" # Tracked request (use --kind=fyi for a note)
 sidekar memory context                    # Show scoped startup memory brief
 sidekar tasks list --ready                # Show unblocked tasks
 sidekar repo pack                         # Pack repo files for model context

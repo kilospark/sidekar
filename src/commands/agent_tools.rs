@@ -120,6 +120,19 @@ fn cmd_bus_show(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Kind for a `bus send` that omitted `--kind`. Requests are the default so the
+/// recipient gets a reply hint and the sender gets nudges until answered;
+/// closing acks stay untracked to avoid ack loops.
+fn default_send_kind(reply_to: Option<&str>, message: &str) -> &'static str {
+    if reply_to.is_some() {
+        "response"
+    } else if crate::message::is_terminal_ack(message) {
+        "fyi"
+    } else {
+        "request"
+    }
+}
+
 fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if ctx.agent_name.is_none() {
         eprintln!(
@@ -151,15 +164,7 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let kind = args
         .iter()
         .find_map(|a| a.strip_prefix("--kind="))
-        .unwrap_or_else(|| {
-            if reply_to.is_some() {
-                "response"
-            } else if crate::message::is_terminal_ack(&message) {
-                "fyi"
-            } else {
-                "fyi"
-            }
-        });
+        .unwrap_or_else(|| default_send_kind(reply_to, &message));
     if to.is_empty() || message.is_empty() {
         bail!(
             "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt]"
@@ -403,4 +408,24 @@ fn recovered_bus_state(ctx: &AppContext) -> crate::bus::SidekarBusState {
     }
     state.do_register(None);
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_send_defaults_to_request() {
+        assert_eq!(default_send_kind(None, "review the PR"), "request");
+    }
+
+    #[test]
+    fn closing_ack_defaults_to_fyi() {
+        assert_eq!(default_send_kind(None, "ok. closed."), "fyi");
+    }
+
+    #[test]
+    fn reply_to_defaults_to_response() {
+        assert_eq!(default_send_kind(Some("msg_123"), "here it is"), "response");
+    }
 }

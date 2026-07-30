@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Appended to pasted `fyi` bodies so recipients do not stall waiting for a
+/// reply prompt that only `request` and `handoff` carry.
+pub const NO_REPLY_MARKER: &str = "\n[no reply needed]";
+
 // ---------------------------------------------------------------------------
 // Agent identity
 // ---------------------------------------------------------------------------
@@ -215,13 +219,13 @@ impl Envelope {
                 )
             }
             MessageKind::Request if !self.requires_reply() => {
-                format!("[fyi from {from}]: {}", self.message)
+                format!("[fyi from {from}]: {}{NO_REPLY_MARKER}", self.message)
             }
             MessageKind::Request => {
                 format!("[request from {from}]: {}{reply_hint}", self.message)
             }
             MessageKind::Fyi => {
-                format!("[fyi from {from}]: {}", self.message)
+                format!("[fyi from {from}]: {}{NO_REPLY_MARKER}", self.message)
             }
             MessageKind::Response => {
                 format!("[response from {from}]: {}", self.message)
@@ -389,6 +393,25 @@ mod tests {
         assert!(paste.starts_with("[fyi from quokka]: closed."));
         assert!(!paste.contains("[reply with:"));
         assert!(!env.requires_reply());
+    }
+
+    #[test]
+    fn fyi_paste_ends_with_no_reply_marker() {
+        let env = Envelope::new_fyi(AgentId::new("quokka"), "toucan", "heads up");
+        let paste = env.format_for_paste();
+        assert_eq!(paste, "[fyi from quokka]: heads up\n[no reply needed]");
+    }
+
+    #[test]
+    fn terminal_ack_request_paste_ends_with_no_reply_marker() {
+        let env = Envelope::new_request(AgentId::new("quokka"), "toucan", "closed.");
+        assert!(env.format_for_paste().ends_with(NO_REPLY_MARKER));
+    }
+
+    #[test]
+    fn request_paste_has_no_no_reply_marker() {
+        let env = Envelope::new_request(AgentId::new("quokka"), "toucan", "review this");
+        assert!(!env.format_for_paste().contains("[no reply needed]"));
     }
 
     #[test]

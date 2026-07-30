@@ -40,7 +40,7 @@ SQLite-backed broker on the machine. Agents discover and message each other with
 
 **Commands:** `bus who`, `bus send`, `bus done`, `bus requests`, `bus replies`
 
-**Message kinds:** request (expects response), response, fyi (informational)
+**Message kinds:** request (expects response, nudges until replied), response, fyi (informational, tagged `[no reply needed]`). Plain `bus send` defaults to request; closing acks ("ok", "done") auto-downgrade to fyi.
 
 **Note:** bus registration is separate from Chrome/CDP session ownership.
 
