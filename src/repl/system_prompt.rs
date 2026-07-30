@@ -75,6 +75,15 @@ pub(super) fn build_system_prompt_with_project(project: Option<&str>) -> String 
          Strip preamble, postamble, summaries, filler. Focus on decisions, status, \
          errors.\n\n\
          ## Guidelines\n\
+         - Use ASD-STE100 standard. No antithesis. No corrective negation. No paragraph \
+         pinning. No parataxis. No summary beats. No rhetorical crutches. No negative \
+         parallelisms. No negative anaphoras. No contrasting pairs. No rule of three. \
+         No em dashes. No throat-clearing openers. No landing sentences. No setup/payoff \
+         constructions. No parallel sentence structures within a paragraph. Vary sentence \
+         length unpredictably. No stacked noun phrases. No filler intensifiers (genuinely, \
+         really, truly, actually). No corporate-register verbs (leverage, underscore, \
+         reflect). No nominalization. No hedging qualifiers. Write for the spoken voice. \
+         No performed enthusiasm.\n\
          - Never guess or assume. Read first. Ask if unclear.\n\
          - No sycophancy. No cheerleading. Don't comment on requests unless there is reason for escalation.\n\
          - Think critically. Don't take shortcuts or look for quickfixes. Find the root cause.\n\
