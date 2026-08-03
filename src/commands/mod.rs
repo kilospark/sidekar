@@ -17,6 +17,7 @@ mod interaction;
 mod journal;
 pub mod kv;
 pub mod monitor;
+mod prompt;
 mod session;
 mod system;
 pub mod totp;

@@ -332,6 +332,58 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .prompt-list { display: flex; flex-direction: column; gap: 6px; }
+  .prompt-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    cursor: pointer;
+  }
+  .prompt-row:hover { background: var(--hover); }
+  .prompt-row.selected { border-color: var(--accent); }
+  .prompt-row .key { font-family: var(--mono); font-size: 12px; }
+  .prompt-row .desc { color: var(--muted); font-size: 12px; flex: 1; }
+  .badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge.edited { color: var(--accent); border-color: var(--accent); }
+  .badge.drift { color: var(--danger); border-color: var(--danger); }
+  .prompt-editor textarea {
+    width: 100%;
+    min-height: 380px;
+    margin-top: 10px;
+    padding: 10px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .prompt-editor .actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .prompt-editor .actions button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .prompt-editor .actions button:hover { background: var(--hover); }
   @media (max-width: 800px) {
     .layout { grid-template-columns: 1fr; }
     nav { border-right: 0; border-bottom: 1px solid var(--border); }
@@ -377,6 +429,9 @@ let applyingRoute = false;
 
 function hashForRoute(route) {
   if (route.view === 'overview') return '#/overview';
+  if (route.view === 'prompts') {
+    return route.key ? '#/prompts/' + encodeURIComponent(route.key) : '#/prompts';
+  }
   if (route.view === 'proxy') {
     const p = new URLSearchParams();
     if (route.offset) p.set('offset', String(route.offset));
@@ -401,6 +456,9 @@ function routeFromHash() {
   const segments = pathPart.split('/').filter(s => s.length);
   const head = segments[0] || 'overview';
   if (head === 'overview') return { view: 'overview' };
+  if (head === 'prompts') {
+    return { view: 'prompts', key: segments[1] ? decodeURIComponent(segments[1]) : null };
+  }
   if (head === 'proxy') {
     return {
       view: 'proxy',
@@ -435,6 +493,13 @@ async function applyRoute(route) {
       setActiveNav('overview');
       syncAutoRefresh();
       await showOverview(false, true);
+    } else if (route.view === 'prompts') {
+      currentView = 'prompts';
+      currentTable = null;
+      offset = 0;
+      setActiveNav('prompts');
+      stopAutoRefresh();
+      await showPrompts(route.key);
     } else if (route.view === 'proxy') {
       currentView = 'proxy';
       currentTable = null;
@@ -516,8 +581,22 @@ async function api(path) {
   return j;
 }
 
+// The daemon only accepts writes with a JSON content type, which forces
+// a CORS preflight it never answers. That is what keeps another site's
+// page from posting here.
+async function postJson(path, payload) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
 function currentNavId() {
-  if (currentView === 'overview' || currentView === 'proxy') return currentView;
+  if (currentView === 'overview' || currentView === 'proxy' || currentView === 'prompts') return currentView;
   if (currentTable) return currentTable;
   return 'overview';
 }
@@ -533,6 +612,7 @@ function setActiveNav(id) {
 function navigate(id) {
   if (id === 'overview') navigateTo({ view: 'overview' });
   else if (id === 'proxy') navigateTo({ view: 'proxy', offset: 0 });
+  else if (id === 'prompts') navigateTo({ view: 'prompts', key: null });
   else navigateTo({ view: 'table', table: id, offset: 0 });
 }
 
@@ -565,6 +645,11 @@ function renderNav() {
   proxyBtn.textContent = 'Proxy MITM';
   proxyBtn.onclick = () => navigate('proxy');
   home.appendChild(proxyBtn);
+  const promptsBtn = document.createElement('button');
+  promptsBtn.dataset.navId = 'prompts';
+  promptsBtn.textContent = 'Prompts';
+  promptsBtn.onclick = () => navigate('prompts');
+  home.appendChild(promptsBtn);
   nav.appendChild(home);
 
   for (const g of groups) {
@@ -817,6 +902,106 @@ async function showProxyLog(newOffset = 0, silent = false, skipRoute = false) {
   }
 }
 
+let prompts = [];
+let promptKey = null;
+
+function promptBadges(p) {
+  let out = '';
+  if (p.edited) out += '<span class="badge edited">edited</span>';
+  else out += '<span class="badge">default</span>';
+  if (p.drifted) out += '<span class="badge drift">default changed</span>';
+  return out;
+}
+
+function renderPrompts() {
+  const el = document.getElementById('content');
+  const selected = prompts.find(p => p.key === promptKey) || null;
+  const rows = prompts.map(p => `
+    <div class="prompt-row${p.key === promptKey ? ' selected' : ''}" onclick="selectPrompt('${esc(p.key)}')">
+      <span class="key">${esc(p.key)}</span>
+      <span class="desc">${esc(p.description)}</span>
+      ${promptBadges(p)}
+    </div>`).join('');
+
+  let editor = '<div class="notice">Select a prompt to view or edit its text.</div>';
+  if (selected) {
+    // Keys come from the server-side registry and are plain identifiers,
+    // so a single-quoted JS string in the attribute is safe here.
+    const keyJs = `'${esc(selected.key)}'`;
+    editor = `
+      <div class="prompt-editor">
+        <div class="section-title">${esc(selected.key)}</div>
+        <div class="notice">${esc(selected.description)}</div>
+        ${selected.drifted ? '<div class="notice"><span class="danger">This release ships a different default.</span> Your edit is kept as-is; reset to take the new default.</div>' : ''}
+        <textarea id="prompt-text" spellcheck="false">${esc(selected.value)}</textarea>
+        <div class="actions">
+          <button onclick="savePrompt(${keyJs})">Save</button>
+          <button onclick="resetPrompt(${keyJs})">Reset to default</button>
+          <span class="stats" id="prompt-status"></span>
+        </div>
+      </div>`;
+  }
+
+  el.innerHTML = `
+    <div class="toolbar">
+      <h2>Prompts</h2>
+      <span class="stats">${prompts.length} prompts · stored in the prompts table</span>
+      <button onclick="applyRoute(routeFromHash())">Refresh</button>
+    </div>
+    <div class="notice">Edits take effect on the next agent launch, REPL session, or summarization. An edited prompt is never overwritten by an update.</div>
+    <div class="prompt-list">${rows}</div>
+    ${editor}`;
+}
+
+async function showPrompts(key) {
+  promptKey = key || null;
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const data = await api('/api/prompts');
+    prompts = data.prompts || [];
+    renderPrompts();
+  } catch (e) {
+    el.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+
+function selectPrompt(key) {
+  navigateTo({ view: 'prompts', key });
+}
+
+function setPromptStatus(text, isError) {
+  const el = document.getElementById('prompt-status');
+  if (el) el.innerHTML = isError ? `<span class="danger">${esc(text)}</span>` : esc(text);
+}
+
+async function savePrompt(key) {
+  const box = document.getElementById('prompt-text');
+  if (!box) return;
+  setPromptStatus('Saving…', false);
+  try {
+    const data = await postJson('/api/prompts/set', { key, value: box.value });
+    prompts = data.prompts || prompts;
+    renderPrompts();
+    setPromptStatus('Saved.', false);
+  } catch (e) {
+    setPromptStatus(e.message, true);
+  }
+}
+
+async function resetPrompt(key) {
+  if (!confirm(`Discard your edit to "${key}" and restore the shipped default?`)) return;
+  setPromptStatus('Resetting…', false);
+  try {
+    const data = await postJson('/api/prompts/reset', { key });
+    prompts = data.prompts || prompts;
+    renderPrompts();
+    setPromptStatus('Reset to default.', false);
+  } catch (e) {
+    setPromptStatus(e.message, true);
+  }
+}
+
 async function loadTable(name, newOffset = 0, skipRoute = false) {
   if (!skipRoute) {
     navigateTo({ view: 'table', table: name, offset: newOffset });
@@ -888,6 +1073,9 @@ window.showOverview = showOverview;
 window.showProxyLog = showProxyLog;
 window.loadTable = loadTable;
 window.showProxyDetail = showProxyDetail;
+window.selectPrompt = selectPrompt;
+window.savePrompt = savePrompt;
+window.resetPrompt = resetPrompt;
 </script>
 </body>
 </html>

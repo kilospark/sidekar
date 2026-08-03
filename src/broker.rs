@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 9;
+const SCHEMA_VERSION: u32 = 10;
 
 mod activity;
 mod agent_registry;
@@ -30,6 +30,7 @@ mod encryption;
 mod event_log;
 mod kv_store;
 mod outbound;
+mod prompts;
 mod proxy_log_store;
 mod totp;
 
@@ -43,6 +44,7 @@ pub use encryption::*;
 pub use event_log::*;
 pub use kv_store::*;
 pub use outbound::*;
+pub use prompts::*;
 pub use proxy_log_store::*;
 pub use totp::*;
 
@@ -525,6 +527,24 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS config (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        ",
+    )?;
+
+    // Agent prompts. Kept out of `config` on purpose: `config` also holds
+    // the device auth token, and prompts are writable from the local admin
+    // UI. `edited` marks rows the user changed, which the seeding pass in
+    // `crate::prompts` must never overwrite; `default_hash` is the shipped
+    // default this row came from, so an upgrade can tell "still stock" from
+    // "customized, and the default has since moved on".
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS prompts (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            default_hash TEXT NOT NULL,
+            edited INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
         );
         ",
     )?;

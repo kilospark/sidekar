@@ -9,7 +9,7 @@ fn enrich(agent: &str, args: &[&str]) -> Vec<String> {
 fn enrich_opencode_prepends_prompt_before_project() {
     let out = enrich("opencode", &["."]);
     assert_eq!(out[0], "--prompt");
-    assert_eq!(out[1], STARTUP_INJECT);
+    assert_eq!(out[1], startup_inject());
     assert_eq!(out[2], ".");
 }
 
@@ -40,13 +40,13 @@ fn enrich_opencode_resume_and_management_skip_starter() {
 #[test]
 fn enrich_cursor_agent_tail_gets_starter() {
     let out = enrich("cursor", &["agent"]);
-    assert_eq!(out, vec!["agent", STARTUP_INJECT]);
+    assert_eq!(out, vec!["agent", startup_inject()]);
 }
 
 #[test]
 fn enrich_cursor_empty_inserts_agent_and_starter() {
     let out = enrich("cursor", &[]);
-    assert_eq!(out, vec!["agent", STARTUP_INJECT]);
+    assert_eq!(out, vec!["agent", startup_inject()]);
 }
 
 #[test]
@@ -87,12 +87,12 @@ fn enrich_cursor_resume_and_picker_paths_skip_starter() {
 #[test]
 fn enrich_agent_binary_empty_gets_starter() {
     let out = enrich("agent", &[]);
-    assert_eq!(out, vec![STARTUP_INJECT]);
+    assert_eq!(out, vec![startup_inject()]);
 }
 
 #[test]
 fn enrich_cursor_agent_binary_matches_agent() {
-    assert_eq!(enrich("cursor-agent", &[]), vec![STARTUP_INJECT]);
+    assert_eq!(enrich("cursor-agent", &[]), vec![startup_inject()]);
     assert_eq!(enrich("cursor-agent", &["login"]), vec!["login"]);
 }
 
@@ -105,34 +105,34 @@ fn enrich_agent_login_skips_starter() {
 #[test]
 fn enrich_agent_flags_only_gets_starter() {
     let out = enrich("agent", &["--model", "x"]);
-    assert_eq!(out, vec!["--model", "x", STARTUP_INJECT]);
+    assert_eq!(out, vec!["--model", "x", startup_inject()]);
 }
 
 #[test]
 fn enrich_claude_codex_trailing_prompt_unchanged() {
-    assert_eq!(enrich("claude", &[]), vec![STARTUP_INJECT]);
+    assert_eq!(enrich("claude", &[]), vec![startup_inject()]);
     assert_eq!(enrich("claude", &["hi"]), vec!["hi"]);
-    assert_eq!(enrich("codex", &[]), vec![STARTUP_INJECT]);
+    assert_eq!(enrich("codex", &[]), vec![startup_inject()]);
 }
 
 #[test]
 fn enrich_claude_codex_skip_option_values_before_injecting() {
     assert_eq!(
         enrich("claude", &["--model", "sonnet"]),
-        vec!["--model", "sonnet", STARTUP_INJECT]
+        vec!["--model", "sonnet", startup_inject()]
     );
     assert_eq!(
         enrich("codex", &["--model", "gpt-5.4"]),
-        vec!["--model", "gpt-5.4", STARTUP_INJECT]
+        vec!["--model", "gpt-5.4", startup_inject()]
     );
 }
 
 #[test]
 fn enrich_copilot_uses_dash_i() {
-    assert_eq!(enrich("copilot", &[]), vec!["-i", STARTUP_INJECT]);
+    assert_eq!(enrich("copilot", &[]), vec!["-i", startup_inject()]);
     assert_eq!(
         enrich("copilot", &["--model", "gpt-5.2"]),
-        vec!["--model", "gpt-5.2", "-i", STARTUP_INJECT]
+        vec!["--model", "gpt-5.2", "-i", startup_inject()]
     );
 }
 
@@ -189,13 +189,16 @@ fn enrich_codex_resume_subcommand_skips_starter() {
 #[test]
 fn enrich_gemini_uses_dash_i() {
     let out = enrich("gemini", &[]);
-    assert_eq!(out, vec!["-i", STARTUP_INJECT]);
+    assert_eq!(out, vec!["-i", startup_inject()]);
 }
 
 #[test]
 fn enrich_gemini_skip_option_values_before_injecting() {
     let out = enrich("gemini", &["--model", "gemini-2.5-pro"]);
-    assert_eq!(out, vec!["--model", "gemini-2.5-pro", "-i", STARTUP_INJECT]);
+    assert_eq!(
+        out,
+        vec!["--model", "gemini-2.5-pro", "-i", startup_inject()]
+    );
 }
 
 #[test]
@@ -223,14 +226,14 @@ fn enrich_gemini_resume_and_session_management_skip_starter() {
 fn enrich_pi_prepends_append_system_prompt() {
     let out = enrich("pi", &[]);
     assert_eq!(out[0], "--append-system-prompt");
-    assert_eq!(out[1], STARTUP_INJECT);
+    assert_eq!(out[1], startup_inject());
     assert_eq!(out.len(), 2);
 }
 
 #[test]
 fn enrich_pi_skips_duplicate_starter_arg() {
-    let out = enrich("pi", &[STARTUP_INJECT]);
-    assert_eq!(out, vec![STARTUP_INJECT]);
+    let out = enrich("pi", &[startup_inject()]);
+    assert_eq!(out, vec![startup_inject()]);
 }
 
 #[test]
@@ -260,7 +263,7 @@ fn unknown_binary_passes_args_through() {
 
 #[test]
 fn enrich_grok_empty_gets_starter() {
-    assert_eq!(enrich("grok", &[]), vec![STARTUP_INJECT]);
+    assert_eq!(enrich("grok", &[]), vec![startup_inject()]);
 }
 
 #[test]
@@ -281,7 +284,7 @@ fn enrich_grok_headless_single_skips_starter() {
 fn enrich_grok_skip_option_values_before_injecting() {
     assert_eq!(
         enrich("grok", &["--model", "grok-build-0.1"]),
-        vec!["--model", "grok-build-0.1", STARTUP_INJECT]
+        vec!["--model", "grok-build-0.1", startup_inject()]
     );
 }
 

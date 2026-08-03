@@ -18,6 +18,8 @@ www/public/binaries/
 relay/target/
 minisign.key
 prompts/
+# …but the prompt registry is source, not scratch.
+!src/prompts/
 
 
 ios/build/

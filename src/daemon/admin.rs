@@ -26,6 +26,12 @@ const TABLES: &[TableSpec] = &[
         order_by: "key ASC",
     },
     TableSpec {
+        name: "prompts",
+        group: "secrets",
+        label: "Prompts",
+        order_by: "key ASC",
+    },
+    TableSpec {
         name: "kv_store",
         group: "secrets",
         label: "KV Store",
@@ -678,21 +684,98 @@ pub fn ui_html() -> &'static str {
     UI_HTML
 }
 
-fn is_ui_route(path: &str) -> bool {
+pub(super) fn is_ui_route(path: &str) -> bool {
     path == "/" || path.starts_with("/api/")
 }
 
+/// Routes that change state. Kept as a standalone predicate because the
+/// HTTP loop consults it before reading a body off the socket.
+pub(super) fn is_admin_write(method: &str, path: &str) -> bool {
+    method.eq_ignore_ascii_case("POST") && is_ui_route(path)
+}
+
+pub(super) struct AdminRequest<'a> {
+    pub method: &'a str,
+    pub path: &'a str,
+    pub query: &'a str,
+    pub origin: Option<&'a str>,
+    pub host: Option<&'a str>,
+    pub content_type: Option<&'a str>,
+    pub body: &'a str,
+    pub http_port: u16,
+    pub ext_status: Value,
+}
+
+/// Why write requests are checked at all: this server has no
+/// authentication, only a 127.0.0.1 bind. Any page the user visits can
+/// make their browser POST here, and CORS blocks reading the response,
+/// not sending the request. DNS rebinding can also point a hostile name
+/// at the loopback address.
+///
+/// Three checks together close that off. Requiring a JSON content type
+/// means a browser must send a CORS preflight, which is never answered
+/// (OPTIONS falls through to 405). Rejecting any non-loopback `Origin`
+/// stops same-site form posts. Validating `Host` stops rebinding, since
+/// the attacker's page carries their hostname, not `127.0.0.1`.
+fn write_request_allowed(req: &AdminRequest<'_>) -> Result<(), (u16, String)> {
+    let content_type = req.content_type.unwrap_or("");
+    if !content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("application/json")
+    {
+        return Err((415, "Content-Type must be application/json".to_string()));
+    }
+
+    let expected_hosts = [
+        format!("127.0.0.1:{}", req.http_port),
+        format!("localhost:{}", req.http_port),
+    ];
+    let host = req.host.unwrap_or("");
+    if !expected_hosts.iter().any(|h| h == host) {
+        return Err((403, format!("Unexpected Host header: {host:?}")));
+    }
+
+    if let Some(origin) = req.origin {
+        let allowed = [
+            format!("http://127.0.0.1:{}", req.http_port),
+            format!("http://localhost:{}", req.http_port),
+        ];
+        if !allowed.iter().any(|o| o == origin) {
+            return Err((403, format!("Cross-origin write rejected: {origin:?}")));
+        }
+    }
+
+    Ok(())
+}
+
 /// Handle web UI HTTP routes. Returns true if the request was handled.
-pub async fn handle_admin_request(
-    method: &str,
-    path: &str,
-    query: &str,
-    http_port: u16,
-    ext_status: Value,
+pub(super) async fn handle_admin_request(
+    req: AdminRequest<'_>,
     stream: &mut tokio::net::TcpStream,
 ) -> bool {
+    let AdminRequest {
+        method,
+        path,
+        query,
+        http_port,
+        ref ext_status,
+        ..
+    } = req;
+
     if !is_ui_route(path) {
         return false;
+    }
+
+    if is_admin_write(method, path) {
+        if let Err((status, message)) = write_request_allowed(&req) {
+            write_json_response(stream, status, &json!({ "error": message })).await;
+            return true;
+        }
+        handle_admin_write(&req, stream).await;
+        return true;
     }
 
     if !method.eq_ignore_ascii_case("GET") {
@@ -706,6 +789,7 @@ pub async fn handle_admin_request(
         return true;
     }
 
+    let ext_status = ext_status.clone();
     match path {
         "/" => {
             write_http_response(stream, 200, "text/html; charset=utf-8", ui_html()).await;
@@ -798,6 +882,10 @@ pub async fn handle_admin_request(
                 }
             }
         }
+        "/api/prompts" => match tokio::task::spawn_blocking(prompts_json).await {
+            Ok(body) => write_json_response(stream, 200, &body).await,
+            Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+        },
         "/api/tables" => match tokio::task::spawn_blocking(tables_json).await {
             Ok(Ok(body)) => write_json_response(stream, 200, &body).await,
             Ok(Err(e)) => {
@@ -840,6 +928,81 @@ pub async fn handle_admin_request(
     true
 }
 
+/// Every prompt with its stored text and status.
+fn prompts_json() -> Value {
+    let items: Vec<Value> = crate::prompts::list()
+        .into_iter()
+        .map(|(builtin, row)| {
+            let edited = row.as_ref().map(|r| r.edited).unwrap_or(false);
+            let drifted = row
+                .as_ref()
+                .map(crate::prompts::is_drifted)
+                .unwrap_or(false);
+            let value = row
+                .map(|r| r.value)
+                .unwrap_or_else(|| builtin.default.to_string());
+            json!({
+                "key": builtin.key,
+                "description": builtin.description,
+                "value": value,
+                "default": builtin.default,
+                "edited": edited,
+                "drifted": drifted,
+            })
+        })
+        .collect();
+    json!({ "prompts": items })
+}
+
+async fn handle_admin_write(req: &AdminRequest<'_>, stream: &mut tokio::net::TcpStream) {
+    let payload: Value = match serde_json::from_str(req.body) {
+        Ok(v) => v,
+        Err(e) => {
+            write_json_response(stream, 400, &json!({"error": format!("invalid JSON: {e}")})).await;
+            return;
+        }
+    };
+    let key = payload
+        .get("key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let result = match req.path {
+        "/api/prompts/set" => {
+            let value = payload
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if value.trim().is_empty() {
+                Err(anyhow::anyhow!(
+                    "refusing to store an empty prompt; use reset instead"
+                ))
+            } else {
+                tokio::task::spawn_blocking(move || crate::prompts::set(&key, &value))
+                    .await
+                    .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")))
+            }
+        }
+        "/api/prompts/reset" => tokio::task::spawn_blocking(move || crate::prompts::reset(&key))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}"))),
+        _ => {
+            write_http_response(stream, 404, "text/plain; charset=utf-8", "Not Found").await;
+            return;
+        }
+    };
+
+    match result {
+        Ok(()) => match tokio::task::spawn_blocking(prompts_json).await {
+            Ok(body) => write_json_response(stream, 200, &body).await,
+            Err(e) => write_json_response(stream, 500, &json!({"error": format!("{e:#}")})).await,
+        },
+        Err(e) => write_json_response(stream, 400, &json!({"error": format!("{e:#}")})).await,
+    }
+}
+
 async fn write_http_response(
     stream: &mut tokio::net::TcpStream,
     status: u16,
@@ -849,8 +1012,11 @@ async fn write_http_response(
     use tokio::io::AsyncWriteExt;
     let reason = match status {
         200 => "OK",
+        400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        415 => "Unsupported Media Type",
         500 => "Internal Server Error",
         _ => "Error",
     };
@@ -904,5 +1070,95 @@ mod tests {
     fn unknown_table_errors() {
         let err = rows_json("not_a_real_table;", 10, 0).unwrap_err();
         assert!(err.to_string().contains("unknown table"));
+    }
+
+    fn write_req<'a>(
+        content_type: Option<&'a str>,
+        host: Option<&'a str>,
+        origin: Option<&'a str>,
+    ) -> AdminRequest<'a> {
+        AdminRequest {
+            method: "POST",
+            path: "/api/prompts/set",
+            query: "",
+            origin,
+            host,
+            content_type,
+            body: "{}",
+            http_port: 21517,
+            ext_status: Value::Null,
+        }
+    }
+
+    #[test]
+    fn write_from_the_admin_page_itself_is_allowed() {
+        let req = write_req(
+            Some("application/json"),
+            Some("127.0.0.1:21517"),
+            Some("http://127.0.0.1:21517"),
+        );
+        assert!(write_request_allowed(&req).is_ok());
+    }
+
+    #[test]
+    fn write_without_an_origin_header_is_allowed() {
+        // curl and the CLI send no Origin; browsers always do.
+        let req = write_req(Some("application/json"), Some("localhost:21517"), None);
+        assert!(write_request_allowed(&req).is_ok());
+    }
+
+    #[test]
+    fn form_content_types_are_rejected_so_writes_must_preflight() {
+        for ct in [
+            Some("application/x-www-form-urlencoded"),
+            Some("text/plain"),
+            Some("multipart/form-data; boundary=x"),
+            None,
+        ] {
+            let req = write_req(ct, Some("127.0.0.1:21517"), None);
+            let (status, _) = write_request_allowed(&req).unwrap_err();
+            assert_eq!(status, 415, "content type {ct:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn a_rebound_hostname_is_rejected() {
+        let req = write_req(
+            Some("application/json"),
+            Some("evil.example.com:21517"),
+            None,
+        );
+        let (status, _) = write_request_allowed(&req).unwrap_err();
+        assert_eq!(status, 403);
+    }
+
+    #[test]
+    fn a_cross_origin_write_is_rejected() {
+        let req = write_req(
+            Some("application/json"),
+            Some("127.0.0.1:21517"),
+            Some("https://evil.example.com"),
+        );
+        let (status, _) = write_request_allowed(&req).unwrap_err();
+        assert_eq!(status, 403);
+    }
+
+    #[test]
+    fn charset_suffix_on_the_content_type_is_accepted() {
+        let req = write_req(
+            Some("application/json; charset=utf-8"),
+            Some("127.0.0.1:21517"),
+            None,
+        );
+        assert!(write_request_allowed(&req).is_ok());
+    }
+
+    #[test]
+    fn only_posts_to_ui_routes_count_as_writes() {
+        assert!(is_admin_write("POST", "/api/prompts/set"));
+        assert!(is_admin_write("post", "/api/prompts/reset"));
+        assert!(!is_admin_write("GET", "/api/prompts"));
+        assert!(!is_admin_write("POST", "/ext"));
+        assert!(!is_admin_write("OPTIONS", "/api/prompts/set"));
     }
 }

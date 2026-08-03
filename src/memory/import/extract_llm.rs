@@ -23,29 +23,6 @@ use std::path::{Path, PathBuf};
 /// multi-hour session).
 const MAX_INPUT_CHARS: usize = 24_000;
 
-const SYSTEM_PROMPT: &str = "\
-You extract durable user preferences, conventions, and workflow patterns \
-from AI coding tool configuration and conversation history.
-
-Rules:
-- Only extract statements that represent LASTING preferences the user \
-  wants remembered across future sessions.
-- Ignore one-time debugging instructions, questions, status updates, and \
-  operational chatter.
-- Restate each memory as a clean, specific imperative sentence.
-- Assign a confidence score (0.0-1.0) reflecting how clearly this is a \
-  durable preference vs a one-off instruction. Floor 0.4.
-- Only use types: \"preference\" (personal taste), \"convention\" \
-  (project/code standards), \"constraint\" (things to avoid/never do), \
-  \"decision\" (architectural choices).
-- If no durable preferences exist, return { \"memories\": [] }.
-
-Return valid JSON exactly matching this schema:
-{ \"memories\": [ { \"summary\": string, \"type\": string, \
-\"confidence\": number, \"evidence\": string } ] }
-
-Do not wrap the JSON in markdown fences or add commentary.";
-
 #[derive(Debug, Clone, Deserialize)]
 struct LlmResponse {
     memories: Vec<LlmMemory>,
@@ -142,10 +119,11 @@ async fn call_provider(provider: &Provider, model: &str, user_prompt: &str) -> R
         }],
     }];
 
+    let system = crate::prompts::get(crate::prompts::KEY_MEMORY_EXTRACT_SYSTEM);
     let (mut rx, _reclaim) = provider
         .stream(
             model,
-            SYSTEM_PROMPT,
+            &system,
             &messages,
             &[],
             Some("sidekar-memory-import"),

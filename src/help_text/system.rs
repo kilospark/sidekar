@@ -1,6 +1,6 @@
 pub const COMMANDS: &[&str] = &[
-    "config", "device", "relay", "event", "daemon", "totp", "pack", "unpack", "kv", "install",
-    "skill",
+    "config", "prompt", "device", "relay", "event", "daemon", "totp", "pack", "unpack", "kv",
+    "install", "skill",
 ];
 
 pub fn get(command: &str) -> Option<&'static str> {
@@ -24,6 +24,36 @@ sidekar config [list|get|set|reset] [key] [value]
     sidekar config set relay off
     sidekar config set browser brave
     sidekar config reset browser"
+        }
+        "prompt" => {
+            "\
+sidekar prompt [list|get|set|edit|reset|diff] [key] [text|--file=path]
+
+  View or edit the prompts Sidekar sends to models. Defaults ship in the
+  binary and are seeded into the `prompts` table on first use. An edited
+  prompt is protected: later releases refresh only the prompts you never
+  touched, and `prompt list` flags yours when the default has moved on.
+
+  Commands:
+    prompt list              Show every prompt with size and status
+    prompt get <key>         Print the active text
+    prompt set <key> <text>  Replace the text (also reads --file or stdin)
+    prompt edit <key>        Open the text in $EDITOR
+    prompt reset <key>       Restore the shipped default
+    prompt diff <key>        Show how the stored text differs from the default
+
+  Keys: pty.starter, repl.system, journal.header, journal.schema,
+        journal.mode.iterative, journal.mode.fresh,
+        journal.summarizer.system, compaction.system,
+        compaction.instructions, memory.extract.system
+
+  Examples:
+    sidekar prompt list
+    sidekar prompt get pty.starter
+    sidekar prompt set repl.system --file=/tmp/system.md
+    sidekar prompt edit compaction.instructions
+    sidekar prompt diff repl.system
+    sidekar prompt reset repl.system"
         }
         "device" => {
             "\

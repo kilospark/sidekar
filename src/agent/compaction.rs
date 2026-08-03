@@ -276,27 +276,10 @@ async fn phase2_summarize(
         }
     }
 
-    let summary_prompt = format!(
-        "Summarize the following conversation turns into a structured context summary. \
-        Be specific — include file paths, decisions, errors encountered, and current state.\n\n\
-        Use this format:\n\
-        ## Goal\n[User's objective]\n\n\
-        ## Progress\n### Done\n[Completed work]\n### In Progress\n[Current work]\n\n\
-        ## Key Decisions\n[Technical decisions made]\n\n\
-        ## Relevant Files\n[Files read/modified]\n\n\
-        ## Next Steps\n[What must happen next]\n\n\
-        ## Critical Context\n[Values, errors, config details]\n\n\
-        ## Awaiting User Response\n\
-        [If the assistant's LAST message in this range posed a question, \
-        offered options, or requested a decision from the user, quote it \
-        verbatim here and label it \"OPEN QUESTION — do not answer until \
-        the user addresses it\". If the user's next message pivots to a \
-        different topic, the open question remains parked — acknowledge \
-        the pivot explicitly rather than silently dropping it. If no open \
-        question exists, write \"None\".]\n\n\
-        ---\n\
-        Conversation to summarize:\n\n{summary_input}"
-    );
+    // Instructions are user-editable (`compaction.instructions`); the
+    // transcript is appended here so an edit cannot drop it.
+    let instructions = crate::prompts::get(crate::prompts::KEY_COMPACTION_INSTRUCTIONS);
+    let summary_prompt = format!("{}\n\n{summary_input}", instructions.trim_end());
 
     // Call the LLM for summarization (no tools, single turn)
     let summary_messages = vec![ChatMessage {
@@ -327,10 +310,11 @@ async fn phase2_summarize(
     // the user already saw "[Compaction phase 2: summarizing
     // old context...]" from compact_history. A second
     // Connecting indicator would race with the first.
+    let summary_system = crate::prompts::get(crate::prompts::KEY_COMPACTION_SYSTEM);
     let (mut rx, _reclaim) = provider
         .stream(
             model,
-            "You are a precise conversation summarizer. Output only the structured summary.",
+            &summary_system,
             &summary_messages,
             &[],
             None,

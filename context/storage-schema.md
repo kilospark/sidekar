@@ -7,6 +7,7 @@ All persistent state lives in `~/.sidekar/sidekar.sqlite3`.
 | Table | Purpose | Encrypted |
 |-------|---------|-----------|
 | `config` | System settings and auth tokens | No |
+| `prompts` | Agent prompt texts, editable via `sidekar prompt` | No |
 | `kv_store` | User key-value storage | Yes |
 | `totp_secrets` | TOTP authentication secrets | Yes |
 | `cron_jobs` | Scheduled tasks | No |
@@ -34,6 +35,24 @@ Example keys:
 - `auth:created_at` - When device token was issued
 - `telemetry` - Whether to send anonymous usage counts
 - `browser` - Preferred browser for CDP sessions
+
+## Prompts table
+
+Every prompt an agent sees ships as a default in `src/prompts/` and is seeded
+into `prompts` on first read. Callers go through `crate::prompts::get(key)`,
+which falls back to the compiled default when the row is missing, blank, or the
+database will not open.
+
+`edited = 1` marks a row the user changed, through `sidekar prompt set|edit` or
+the daemon admin UI. Seeding refreshes only unedited rows, so an update never
+overwrites a customization. `default_hash` records the default the row came
+from; when it no longer matches the shipped default, an edited row is reported
+as drifted so the user can compare and decide.
+
+Reseeding is keyed off a hash of all defaults, stored in `config` under
+`prompts:builtins_hash`, rather than `SCHEMA_VERSION`. Prompt wording changes
+far more often than the schema, and tying the two together would mean every
+prompt tweak needs a schema bump to reach existing installs.
 
 ## REPL tables
 
@@ -74,6 +93,10 @@ local SQLite broker.
 ## Encryption
 
 `kv_store` and `totp_secrets` are encrypted at rest using AES-256-GCM. The encryption key is derived from the device token and stored markers in `encryption_meta`.
+
+`prompts` is deliberately its own table rather than a `config` namespace: the
+daemon admin UI can write prompts, and a generic web-writable path into `config`
+would expose `auth:token` to the same route.
 
 System tables (`config`, `cron_jobs`, etc.) are unencrypted because:
 - `config` bootstraps auth (chicken-and-egg)

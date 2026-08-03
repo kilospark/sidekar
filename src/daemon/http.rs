@@ -1,7 +1,47 @@
 use super::{admin, *};
 
-fn parse_http_request(request: &str) -> Option<(String, String, String)> {
-    let first = request.lines().next()?;
+use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::protocol::Message;
+
+/// Largest request body the admin API will read. Prompts are the only
+/// thing posted here and the longest one ships at ~5 KB, so this is
+/// generous while still bounding what an unauthenticated localhost
+/// caller can make the daemon allocate.
+const MAX_BODY_BYTES: usize = 256 * 1024;
+
+pub(super) struct RequestHead {
+    pub method: String,
+    pub path: String,
+    pub query: String,
+    pub headers: std::collections::HashMap<String, String>,
+    /// Byte length of the request line plus headers, including the
+    /// blank line that terminates them. The body starts here.
+    pub head_len: usize,
+    pub content_length: usize,
+}
+
+impl RequestHead {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(|s| s.as_str())
+    }
+}
+
+/// Parse the request line and headers out of a peeked buffer.
+///
+/// Returns `None` when the headers are incomplete, which for the peek
+/// buffer means either a truncated request or a header block larger
+/// than the buffer. Header names are lowercased; values are trimmed.
+pub(super) fn parse_request_head(raw: &str) -> Option<RequestHead> {
+    let (head, terminator_len) = match raw.find("\r\n\r\n") {
+        Some(i) => (&raw[..i], 4),
+        None => (&raw[..raw.find("\n\n")?], 2),
+    };
+
+    let mut lines = head.split('\n').map(|l| l.trim_end_matches('\r'));
+    let first = lines.next()?;
     let mut parts = first.split_whitespace();
     let method = parts.next()?.to_string();
     let target = parts.next()?;
@@ -9,12 +49,63 @@ fn parse_http_request(request: &str) -> Option<(String, String, String)> {
         Some((p, q)) => (p.to_string(), q.to_string()),
         None => (target.to_string(), String::new()),
     };
-    Some((method, path, query))
+
+    let mut headers = std::collections::HashMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+
+    let content_length = headers
+        .get("content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    Some(RequestHead {
+        method,
+        path,
+        query,
+        headers,
+        head_len: head.len() + terminator_len,
+        content_length,
+    })
 }
 
-use futures_util::{SinkExt, StreamExt};
-use tokio::io::AsyncWriteExt;
-use tokio_tungstenite::tungstenite::protocol::Message;
+/// Consume the request off the socket and return the body.
+///
+/// Called for every admin route, including GETs with no body: closing a
+/// socket that still holds unread inbound bytes makes the peer send RST,
+/// which throws away the response we just wrote. Non-admin paths keep
+/// the peek-only behaviour so the `/ext` WebSocket upgrade can still
+/// hand tungstenite an untouched stream.
+async fn read_request_body(
+    stream: &mut tokio::net::TcpStream,
+    head: &RequestHead,
+) -> Result<String, (u16, &'static str)> {
+    let mut head_buf = vec![0u8; head.head_len];
+    stream
+        .read_exact(&mut head_buf)
+        .await
+        .map_err(|_| (400, "Bad Request"))?;
+
+    if head.header("transfer-encoding").is_some() {
+        return Err((411, "Length Required"));
+    }
+    if head.content_length > MAX_BODY_BYTES {
+        return Err((413, "Payload Too Large"));
+    }
+    if head.content_length == 0 {
+        return Ok(String::new());
+    }
+
+    let mut body = vec![0u8; head.content_length];
+    stream
+        .read_exact(&mut body)
+        .await
+        .map_err(|_| (400, "Bad Request"))?;
+    String::from_utf8(body).map_err(|_| (400, "Bad Request"))
+}
 
 /// Request target path for `/health` probes (Chrome extension port discovery).
 /// Query string is stripped so `/health?x=1` still matches.
@@ -67,6 +158,56 @@ pub(super) async fn accept_http_connections(
             }
         }
     }
+}
+
+/// Parse a request off the socket and let the admin router answer it.
+///
+/// Returns false when the path is not an admin route, leaving the stream
+/// untouched so the `/ext` WebSocket upgrade can still take it over.
+pub(super) async fn serve_admin_request(
+    stream: &mut tokio::net::TcpStream,
+    http_port: u16,
+    ext_status: Value,
+) -> bool {
+    let mut buf = [0u8; 4096];
+    let n = match stream.peek(&mut buf).await {
+        Ok(n) if n > 0 => n,
+        _ => return false,
+    };
+    let Ok(raw) = std::str::from_utf8(&buf[..n]) else {
+        return false;
+    };
+    let Some(head) = parse_request_head(raw) else {
+        let response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes()).await;
+        return true;
+    };
+
+    if !admin::is_ui_route(&head.path) {
+        return false;
+    }
+
+    let body = match read_request_body(stream, &head).await {
+        Ok(b) => b,
+        Err((status, reason)) => {
+            let response = format!("HTTP/1.1 {status} {reason}\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(response.as_bytes()).await;
+            return true;
+        }
+    };
+
+    let request = admin::AdminRequest {
+        method: &head.method,
+        path: &head.path,
+        query: &head.query,
+        origin: head.header("origin"),
+        host: head.header("host"),
+        content_type: head.header("content-type"),
+        body: &body,
+        http_port,
+        ext_status,
+    };
+    admin::handle_admin_request(request, stream).await
 }
 
 async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mutex<DaemonState>>) {
@@ -123,22 +264,12 @@ async fn handle_http_connection(mut stream: tokio::net::TcpStream, state: Arc<Mu
         }
     }
 
-    let (method, path, query) = match parse_http_request(request) {
-        Some(v) => v,
-        None => {
-            let response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
-            let _ = stream.write_all(response.as_bytes()).await;
-            return;
-        }
-    };
-
     let http_port = state.lock().await.http_port;
     let ext_status = {
         let s = state.lock().await;
         crate::ext::get_status(&s.ext_state).await
     };
-    if admin::handle_admin_request(&method, &path, &query, http_port, ext_status, &mut stream).await
-    {
+    if serve_admin_request(&mut stream, http_port, ext_status).await {
         return;
     }
 
@@ -546,6 +677,239 @@ async fn handle_ext_websocket(
         &format!("bridge disconnected (conn: {conn_id})"),
         None,
     );
+}
+
+#[cfg(test)]
+mod admin_socket_tests {
+    use super::serve_admin_request;
+    use anyhow::{Result, anyhow};
+    use rand::RngCore;
+    use std::{env, ffi::OsString, fs, path::PathBuf, sync::MutexGuard};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct HomeGuard {
+        _lock: MutexGuard<'static, ()>,
+        old_home: Option<OsString>,
+        home: PathBuf,
+    }
+
+    impl HomeGuard {
+        fn new() -> Result<Self> {
+            let lock = crate::test_home_lock()
+                .lock()
+                .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+            let old_home = env::var_os("HOME");
+            let mut bytes = [0u8; 8];
+            rand::rng().fill_bytes(&mut bytes);
+            let home = env::temp_dir().join(format!(
+                "sidekar-admin-http-test-{}",
+                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ));
+            fs::create_dir_all(&home)?;
+            unsafe { env::set_var("HOME", &home) };
+            crate::prompts::enable_db_reads_for_test(true);
+            Ok(Self {
+                _lock: lock,
+                old_home,
+                home,
+            })
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            crate::prompts::enable_db_reads_for_test(false);
+            match &self.old_home {
+                Some(home) => unsafe { env::set_var("HOME", home) },
+                None => unsafe { env::remove_var("HOME") },
+            }
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+
+    /// Send one raw request to a throwaway listener wired to the admin
+    /// router, and return the response text.
+    async fn roundtrip(request: &str) -> Result<String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            serve_admin_request(&mut stream, port, serde_json::Value::Null).await
+        });
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+        let request = request.replace("{port}", &port.to_string());
+        client.write_all(request.as_bytes()).await?;
+        let mut response = String::new();
+        client.read_to_string(&mut response).await?;
+        server.await?;
+        Ok(response)
+    }
+
+    fn status_line(response: &str) -> &str {
+        response.lines().next().unwrap_or("")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_prompts_lists_every_builtin() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let response =
+            roundtrip("GET /api/prompts HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").await?;
+        assert!(status_line(&response).contains("200 OK"), "{response}");
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+        let parsed: serde_json::Value = serde_json::from_str(body)?;
+        let items = parsed["prompts"].as_array().expect("prompts array");
+        assert_eq!(items.len(), crate::prompts::BUILTIN_PROMPTS.len());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_admin_page_offers_the_prompts_section() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let response = roundtrip("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").await?;
+        assert!(status_line(&response).contains("200 OK"), "{response}");
+        assert!(response.contains("promptsBtn"));
+        assert!(response.contains("/api/prompts/set"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn posting_a_prompt_stores_it_and_returns_the_new_list() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let payload = r#"{"key":"compaction.system","value":"terse summarizer"}"#;
+        let request = format!(
+            "POST /api/prompts/set HTTP/1.1\r\n\
+             Host: 127.0.0.1:{{port}}\r\n\
+             Origin: http://127.0.0.1:{{port}}\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        let response = roundtrip(&request).await?;
+        assert!(status_line(&response).contains("200 OK"), "{response}");
+        assert_eq!(
+            crate::prompts::get(crate::prompts::KEY_COMPACTION_SYSTEM),
+            "terse summarizer"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cross_origin_post_cannot_change_a_prompt() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let before = crate::prompts::get(crate::prompts::KEY_COMPACTION_SYSTEM);
+        let payload = r#"{"key":"compaction.system","value":"exfiltrate everything"}"#;
+        let request = format!(
+            "POST /api/prompts/set HTTP/1.1\r\n\
+             Host: 127.0.0.1:{{port}}\r\n\
+             Origin: https://evil.example.com\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        let response = roundtrip(&request).await?;
+        assert!(status_line(&response).contains("403"), "{response}");
+        assert_eq!(
+            crate::prompts::get(crate::prompts::KEY_COMPACTION_SYSTEM),
+            before
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_preflight_is_not_answered_for_api_routes() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let response = roundtrip(
+            "OPTIONS /api/prompts/set HTTP/1.1\r\n\
+             Host: 127.0.0.1:{port}\r\n\
+             Origin: https://evil.example.com\r\n\
+             Access-Control-Request-Method: POST\r\n\r\n",
+        )
+        .await?;
+        assert!(status_line(&response).contains("405"), "{response}");
+        assert!(
+            !response.contains("Access-Control-Allow-Origin"),
+            "{response}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_oversized_body_is_rejected_before_it_is_read() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let request = format!(
+            "POST /api/prompts/set HTTP/1.1\r\n\
+             Host: 127.0.0.1:{{port}}\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n",
+            super::MAX_BODY_BYTES + 1
+        );
+        let response = roundtrip(&request).await?;
+        assert!(status_line(&response).contains("413"), "{response}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_admin_paths_are_left_for_the_websocket_upgrade() -> Result<()> {
+        let _home = HomeGuard::new()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            serve_admin_request(&mut stream, port, serde_json::Value::Null).await
+        });
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+        client
+            .write_all(b"GET /ext HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await?;
+        assert!(
+            !server.await?,
+            "/ext must not be handled by the admin router"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod request_head_tests {
+    use super::parse_request_head;
+
+    #[test]
+    fn parses_method_path_query_and_headers() {
+        let raw = "POST /api/prompts/set?x=1 HTTP/1.1\r\n\
+                   Host: 127.0.0.1:21517\r\n\
+                   Content-Type: application/json\r\n\
+                   Content-Length: 9\r\n\
+                   \r\n\
+                   {\"key\":1}";
+        let head = parse_request_head(raw).expect("head");
+        assert_eq!(head.method, "POST");
+        assert_eq!(head.path, "/api/prompts/set");
+        assert_eq!(head.query, "x=1");
+        assert_eq!(head.header("host"), Some("127.0.0.1:21517"));
+        assert_eq!(head.header("CONTENT-TYPE"), Some("application/json"));
+        assert_eq!(head.content_length, 9);
+        assert_eq!(&raw[head.head_len..], "{\"key\":1}");
+    }
+
+    #[test]
+    fn missing_content_length_reads_as_zero() {
+        let head = parse_request_head("GET / HTTP/1.1\r\nHost: x\r\n\r\n").expect("head");
+        assert_eq!(head.content_length, 0);
+        assert_eq!(head.query, "");
+    }
+
+    #[test]
+    fn incomplete_headers_are_rejected() {
+        assert!(parse_request_head("POST /api/prompts/set HTTP/1.1\r\nHost: x").is_none());
+    }
+
+    #[test]
+    fn bare_lf_request_still_parses() {
+        let head = parse_request_head("GET /health HTTP/1.1\nHost: x\n\n").expect("head");
+        assert_eq!(head.path, "/health");
+        assert_eq!(head.header("host"), Some("x"));
+    }
 }
 
 #[cfg(test)]

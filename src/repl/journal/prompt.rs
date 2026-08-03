@@ -25,8 +25,44 @@
 //!
 //! Output expected from the LLM is a single JSON object (parsed by
 //! `parse.rs`). This module's only job is to ask for it clearly.
+//!
+//! The four instruction texts are user-editable and live in the
+//! `prompts` table. `JournalPrompts::load` is the one function here
+//! that touches the database; `format_prompt` takes the resolved
+//! texts so it stays pure and testable without a DB.
 
 use crate::providers::{ChatMessage, ContentBlock, Role};
+
+/// Resolved instruction texts for one journaling pass.
+pub(super) struct JournalPrompts {
+    pub header: String,
+    pub mode_iterative: String,
+    pub mode_fresh: String,
+    pub schema: String,
+}
+
+impl JournalPrompts {
+    pub(super) fn load() -> Self {
+        use crate::prompts;
+        Self {
+            header: prompts::get(prompts::KEY_JOURNAL_HEADER),
+            mode_iterative: prompts::get(prompts::KEY_JOURNAL_MODE_ITERATIVE),
+            mode_fresh: prompts::get(prompts::KEY_JOURNAL_MODE_FRESH),
+            schema: prompts::get(prompts::KEY_JOURNAL_SCHEMA),
+        }
+    }
+
+    #[cfg(test)]
+    fn defaults() -> Self {
+        use crate::prompts;
+        Self {
+            header: prompts::default_for(prompts::KEY_JOURNAL_HEADER).to_string(),
+            mode_iterative: prompts::default_for(prompts::KEY_JOURNAL_MODE_ITERATIVE).to_string(),
+            mode_fresh: prompts::default_for(prompts::KEY_JOURNAL_MODE_FRESH).to_string(),
+            schema: prompts::default_for(prompts::KEY_JOURNAL_SCHEMA).to_string(),
+        }
+    }
+}
 
 /// How many chars of each content block to include verbatim before
 /// we truncate with `… [truncated, N more chars]`. Keeps the prompt
@@ -57,10 +93,13 @@ const PREVIOUS_JOURNAL_CAP: usize = 12_000;
 ///   so the LLM can anchor relative time phrases ("just now",
 ///   "an hour ago"). Passed in rather than read here to keep the
 ///   function pure.
+/// * `texts`: instruction texts resolved from the `prompts` table by
+///   the caller, for the same purity reason.
 pub(super) fn format_prompt(
     history: &[ChatMessage],
     previous_structured_json: Option<&str>,
     now_iso: &str,
+    texts: &JournalPrompts,
 ) -> String {
     let mut out = String::with_capacity(8_192);
 
@@ -68,7 +107,7 @@ pub(super) fn format_prompt(
     // prompt — we inject this as a user message because some
     // providers don't distinguish, and keeping it all in one place
     // makes testing trivial.
-    out.push_str(include_str!("prompt_header.txt"));
+    out.push_str(&texts.header);
     out.push_str("\nCurrent time: ");
     out.push_str(now_iso);
     out.push_str("\n\n");
@@ -81,29 +120,15 @@ pub(super) fn format_prompt(
     // under-preserve because they weren't told it mattered.
     if let Some(prev) = previous_structured_json {
         out.push_str("## Mode: iterative update\n\n");
-        out.push_str(
-            "A previous journal for this session exists. Your job is to\n\
-             UPDATE it: PRESERVE every entry in \"decisions\", \"constraints\",\n\
-             \"resolved_questions\", \"relevant_files\" and \"completed\" that is\n\
-             still relevant. APPEND new completed actions (continue numbering\n\
-             from the previous list). MOVE items from \"in_progress\" to\n\
-             \"completed\" when they finished. MOVE questions from \"pending\"\n\
-             to \"resolved_questions\" when answered. UPDATE \"active_state\" to\n\
-             reflect current state. The \"active_task\" field must reflect the\n\
-             user's most recent unfulfilled request — this is the most\n\
-             important field for continuity. DO NOT delete information\n\
-             unless it is clearly obsolete.\n\n",
-        );
+        out.push_str(texts.mode_iterative.trim_end());
+        out.push_str("\n\n");
         out.push_str("### Previous journal (to update):\n\n");
         out.push_str(&truncate_with_note(prev, PREVIOUS_JOURNAL_CAP));
         out.push_str("\n\n");
     } else {
         out.push_str("## Mode: fresh summary\n\n");
-        out.push_str(
-            "This is the first journal for this session. Summarize the\n\
-             conversation below into the structured format described at the\n\
-             end of this message.\n\n",
-        );
+        out.push_str(texts.mode_fresh.trim_end());
+        out.push_str("\n\n");
     }
 
     // The conversation slice itself. Render each message as a
@@ -129,7 +154,7 @@ pub(super) fn format_prompt(
     // response and hardest to forget. Repeating the field names
     // three times (here, in the template, and in the closing
     // reminder) is hermes's belt-and-suspenders pattern.
-    out.push_str(include_str!("prompt_schema.txt"));
+    out.push_str(&texts.schema);
     out.push('\n');
 
     out
@@ -235,7 +260,12 @@ mod tests {
             usr("Fix the OAuth bug"),
             asst("I'll look at src/auth.rs first."),
         ];
-        let out = format_prompt(&hist, None, "2026-04-22T12:00Z");
+        let out = format_prompt(
+            &hist,
+            None,
+            "2026-04-22T12:00Z",
+            &JournalPrompts::defaults(),
+        );
 
         // Top framing landed.
         assert!(out.contains("Current time: 2026-04-22T12:00Z"));
@@ -271,7 +301,12 @@ mod tests {
     fn iterative_mode_includes_previous_and_preserve_instruction() {
         let prev = r#"{"active_task":"refactor auth","completed":["1. read src/auth.rs"]}"#;
         let hist = vec![usr("continue from where you left off")];
-        let out = format_prompt(&hist, Some(prev), "2026-04-22T13:00Z");
+        let out = format_prompt(
+            &hist,
+            Some(prev),
+            "2026-04-22T13:00Z",
+            &JournalPrompts::defaults(),
+        );
         assert!(out.contains("## Mode: iterative update"));
         assert!(out.contains("PRESERVE"));
         assert!(out.contains("refactor auth"));
@@ -307,7 +342,12 @@ mod tests {
                 },
             ],
         }];
-        let out = format_prompt(&hist, None, "2026-04-22T14:00Z");
+        let out = format_prompt(
+            &hist,
+            None,
+            "2026-04-22T14:00Z",
+            &JournalPrompts::defaults(),
+        );
         assert!(out.contains("[tool-call Read]"));
         assert!(out.contains("src/auth.rs"));
         assert!(out.contains("[tool-result] fn login()"));
@@ -333,7 +373,7 @@ mod tests {
                 },
             ],
         }];
-        let out = format_prompt(&hist, None, "0");
+        let out = format_prompt(&hist, None, "0", &JournalPrompts::defaults());
         assert!(out.contains("visible text"));
         // Neither the base64 data nor the opaque blob leaked in.
         assert!(!out.contains("IMAGEDATA"));
@@ -348,7 +388,7 @@ mod tests {
         s.push('é'); // boundary char; bytes != chars here.
         s.push_str(&"b".repeat(500));
         let hist = vec![usr(&s)];
-        let out = format_prompt(&hist, None, "0");
+        let out = format_prompt(&hist, None, "0", &JournalPrompts::defaults());
         // Truncation note present; no panic means UTF-8 boundary
         // logic worked.
         assert!(out.contains("[truncated,"));
@@ -357,7 +397,7 @@ mod tests {
     #[test]
     fn empty_history_still_produces_valid_prompt() {
         let hist: Vec<ChatMessage> = vec![];
-        let out = format_prompt(&hist, None, "0");
+        let out = format_prompt(&hist, None, "0", &JournalPrompts::defaults());
         // Framing and schema still present; conversation section
         // is empty but correctly labeled.
         assert!(out.contains("### Conversation slice"));

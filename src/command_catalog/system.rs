@@ -20,6 +20,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
+        "prompt",
+        "list|get|set|edit|reset|diff [key] [text|--file=path]",
+        "View or edit the agent prompts stored in SQLite",
+        CommandGroup::System,
+        false,
+        false,
+        false,
+    ),
+    spec(
         "event",
         "<list|clear> [--level=error|debug|info] [N|--limit=N]",
         "View or clear the local event log",

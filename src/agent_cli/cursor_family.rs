@@ -1,6 +1,6 @@
 //! Cursor `cursor` shim vs `agent` / `cursor-agent` argv shaping.
 
-use super::{AgentCliSpec, ProxyEnvFlags, STARTUP_INJECT, has_flag};
+use super::{AgentCliSpec, ProxyEnvFlags, has_flag, startup_inject};
 
 /// Subcommands that are not an interactive agent session (no initial prompt slot).
 const MGMT_COMMANDS: &[&str] = &[
@@ -109,18 +109,18 @@ fn should_inject_initial_prompt(args: &[String]) -> bool {
 fn enrich_cursor(user_args: &[String]) -> Vec<String> {
     let has_positional = user_args.iter().any(|a| !a.starts_with('-'));
     if user_args.is_empty() {
-        return vec!["agent".into(), STARTUP_INJECT.to_string()];
+        return vec!["agent".into(), startup_inject().to_string()];
     }
     if user_args.first().map(|s| s.as_str()) == Some("agent") {
         let mut o = user_args.to_vec();
         if should_inject_initial_prompt(&user_args[1..]) {
-            o.push(STARTUP_INJECT.to_string());
+            o.push(startup_inject().to_string());
         }
         return o;
     }
     let mut out = user_args.to_vec();
     if !has_positional {
-        out.push(STARTUP_INJECT.to_string());
+        out.push(startup_inject().to_string());
     }
     out
 }
@@ -129,7 +129,7 @@ fn enrich_cursor(user_args: &[String]) -> Vec<String> {
 fn enrich_agent_binary(user_args: &[String]) -> Vec<String> {
     let mut out = user_args.to_vec();
     if should_inject_initial_prompt(user_args) {
-        out.push(STARTUP_INJECT.to_string());
+        out.push(startup_inject().to_string());
     }
     out
 }

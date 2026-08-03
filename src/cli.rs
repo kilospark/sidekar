@@ -93,6 +93,7 @@ pub fn render_help(version: &str) -> String {
             ("daemon", "Background daemon"),
             ("proxy", "Captured proxy traffic"),
             ("config", "Settings"),
+            ("prompt", "Agent prompts"),
             ("event", "Event log"),
             ("install", "Install skill file"),
             ("uninstall", "Remove local data and skill files"),

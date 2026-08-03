@@ -82,6 +82,7 @@ pub mod message;
 pub mod output;
 pub mod pakt;
 pub mod poller;
+pub mod prompts;
 pub mod providers;
 pub mod proxy;
 pub mod pty;

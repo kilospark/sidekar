@@ -26,6 +26,7 @@ pub(super) async fn dispatch_agent_command(
         "agent-sessions" => cmd_agent_sessions(ctx, args),
         "repo" => cmd_repo(ctx, args),
         "compact" => cmd_compact(ctx, args),
+        "prompt" => super::prompt::cmd_prompt(ctx, args),
         "bus" => dispatch_bus_root(ctx, args).await,
         "bus-who" => cmd_bus_who(ctx, args),
         "bus-requests" => cmd_bus_requests(ctx, args),

@@ -200,7 +200,13 @@ pub(crate) async fn run_once(ctx: &Context) -> Outcome {
     redact::redact_history_in_place(&mut messages);
 
     let now_iso = format_iso_now();
-    let user_prompt = prompt::format_prompt(&messages, prev_structured.as_deref(), &now_iso);
+    let prompt_texts = prompt::JournalPrompts::load();
+    let user_prompt = prompt::format_prompt(
+        &messages,
+        prev_structured.as_deref(),
+        &now_iso,
+        &prompt_texts,
+    );
     let tokens_in_est = estimate_tokens(&user_prompt);
 
     // LLM call. Resolve the model override if the user set one
@@ -408,15 +414,15 @@ async fn call_summarizer(
         }],
     }];
 
+    // System prompt: crisp role instruction. The real content
+    // instructions live in the user message (the journal header +
+    // schema + transcript).
+    let system = crate::prompts::get(crate::prompts::KEY_JOURNAL_SUMMARIZER_SYSTEM);
+
     let (mut rx, _reclaim) = provider
         .stream(
             model,
-            // System prompt: crisp role instruction. The real
-            // content instructions live in the user message (the
-            // prompt_header.txt + schema + transcript).
-            "You are a precise session summarizer. Follow the \
-             user-message instructions exactly and output only \
-             valid JSON matching the schema. No commentary.",
+            &system,
             &messages,
             &[],
             // Prompt cache key: per-session, lets providers like

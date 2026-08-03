@@ -1007,6 +1007,126 @@ fn purge_all_queued_nudges_removes_only_generated_nudges() -> Result<()> {
     })
 }
 
+/// Lets a test read prompts from the (temp-HOME) database instead of the
+/// compiled defaults, and turns that back off on the way out so a later
+/// test cannot reach the developer's real database.
+struct PromptDbReads;
+
+impl PromptDbReads {
+    fn on() -> Self {
+        crate::prompts::enable_db_reads_for_test(true);
+        Self
+    }
+}
+
+impl Drop for PromptDbReads {
+    fn drop(&mut self) {
+        crate::prompts::enable_db_reads_for_test(false);
+    }
+}
+
+#[test]
+fn sync_seeds_every_builtin_prompt() -> Result<()> {
+    with_test_db(|| {
+        crate::prompts::sync_builtin_prompts()?;
+        let rows = prompt_list()?;
+        assert_eq!(rows.len(), crate::prompts::BUILTIN_PROMPTS.len());
+        for builtin in crate::prompts::BUILTIN_PROMPTS {
+            let row = rows
+                .iter()
+                .find(|r| r.key == builtin.key)
+                .unwrap_or_else(|| panic!("{} was not seeded", builtin.key));
+            assert_eq!(row.value, builtin.default);
+            assert!(!row.edited);
+            assert!(!crate::prompts::is_drifted(row));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn sync_refreshes_an_unedited_row_when_the_default_changes() -> Result<()> {
+    with_test_db(|| {
+        let key = crate::prompts::KEY_COMPACTION_SYSTEM;
+        prompt_seed(key, "text from an older release", "stale-hash")?;
+
+        crate::prompts::sync_builtin_prompts()?;
+
+        let row = prompt_get(key)?.expect("row");
+        assert_eq!(row.value, crate::prompts::default_for(key));
+        assert!(!row.edited);
+        assert!(!crate::prompts::is_drifted(&row));
+        Ok(())
+    })
+}
+
+#[test]
+fn sync_preserves_an_edited_row_and_reports_drift() -> Result<()> {
+    with_test_db(|| {
+        let key = crate::prompts::KEY_COMPACTION_SYSTEM;
+        // `stale-hash` stands in for the default this edit was based on,
+        // which the current release has since changed.
+        prompt_set(key, "my own summarizer instructions", "stale-hash")?;
+
+        crate::prompts::sync_builtin_prompts()?;
+
+        let row = prompt_get(key)?.expect("row");
+        assert_eq!(row.value, "my own summarizer instructions");
+        assert!(row.edited);
+        assert!(crate::prompts::is_drifted(&row));
+
+        let _reads = PromptDbReads::on();
+        assert_eq!(crate::prompts::get(key), "my own summarizer instructions");
+        Ok(())
+    })
+}
+
+#[test]
+fn reset_restores_the_shipped_default_immediately() -> Result<()> {
+    with_test_db(|| {
+        let key = crate::prompts::KEY_JOURNAL_MODE_FRESH;
+        crate::prompts::set(key, "custom")?;
+        assert!(prompt_get(key)?.expect("row").edited);
+
+        crate::prompts::reset(key)?;
+
+        let row = prompt_get(key)?.expect("row");
+        assert_eq!(row.value, crate::prompts::default_for(key));
+        assert!(!row.edited);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_blank_stored_prompt_falls_back_to_the_compiled_default() -> Result<()> {
+    with_test_db(|| {
+        let key = crate::prompts::KEY_COMPACTION_SYSTEM;
+        prompt_set(key, "   \n  ", "stale-hash")?;
+
+        let _reads = PromptDbReads::on();
+        assert_eq!(
+            crate::prompts::get(key),
+            crate::prompts::default_for(key),
+            "a blank row must never leave a model without instructions"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn deleting_a_prompt_row_leaves_the_default_readable() -> Result<()> {
+    with_test_db(|| {
+        let key = crate::prompts::KEY_COMPACTION_SYSTEM;
+        crate::prompts::sync_builtin_prompts()?;
+        assert!(prompt_delete(key)?);
+        assert!(prompt_get(key)?.is_none());
+
+        let _reads = PromptDbReads::on();
+        assert_eq!(crate::prompts::get(key), crate::prompts::default_for(key));
+        Ok(())
+    })
+}
+
 #[test]
 fn ensure_proxy_log_status_adds_column_on_legacy_table() -> Result<()> {
     with_test_db(|| {

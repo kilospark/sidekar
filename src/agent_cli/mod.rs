@@ -13,7 +13,18 @@ use proxy_env::ProxyEnvFlags;
 pub(crate) use proxy_env::build_proxy_child_env;
 
 /// Starter prompt passed via each tool’s native "initial prompt" mechanism.
-pub const STARTUP_INJECT: &str = "use ASD-STE100 standard. No antithesis. No corrective negation. No paragraph pinning. No parataxis. No summary beats. No rhetorical crutches. No negative parallelisms. No negative anaphoras. No contrasting pairs. No rule of three. No em dashes. No throat-clearing openers. No landing sentences. No setup/payoff constructions. No parallel sentence structures within a paragraph. Vary sentence length unpredictably. No stacked noun phrases. No filler intensifiers (genuinely, really, truly, actually). No corporate-register verbs (leverage, underscore, reflect). No nominalization. No hedging qualifiers. Write for the spoken voice. No performed enthusiasm.\nnever guess or assume. ask if unclear. no sycophancy. think critically. when working on a problem, do not take shortcuts or look for quickfixes. find the root cause. load sidekar skill.\noutput rules: terse, technical, no fluff. all substance stays, only filler dies. drop articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. fragments OK. short synonyms. technical terms exact. code blocks unchanged. errors quoted exact. pattern: [thing] [action] [reason]. [next step]. lead with the answer, not the reasoning. do not drift verbose over long conversations. code output, commits, file contents: write normally, not compressed. exception: use full clear prose for security warnings, irreversible action confirmations, and multi-step sequences where terse fragments risk misread. resume terse after.";
+///
+/// Resolved once per process from the `prompts` table (see
+/// `crate::prompts`), falling back to the shipped default. Cached because
+/// argv shaping consults it several times per launch and the text must be
+/// identical across those calls — the pi path compares an existing argv
+/// entry against it to avoid double-injection.
+pub fn startup_inject() -> &'static str {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| crate::prompts::get(crate::prompts::KEY_PTY_STARTER))
+        .as_str()
+}
 
 /// Registry spec: one type per agent **family** (or single binary). No default `proxy_env_flags`.
 pub trait AgentCliSpec: Send + Sync {
@@ -64,7 +75,7 @@ fn enrich_with_startup_prompt(args: &[String], value_flags: &[&str]) -> Vec<Stri
     let has_positional = has_positional(args, value_flags);
     let mut out = args.to_vec();
     if !has_positional {
-        out.push(STARTUP_INJECT.to_string());
+        out.push(startup_inject().to_string());
     }
     out
 }
@@ -257,7 +268,7 @@ impl AgentCliSpec for Copilot {
         let mut out = user_args.to_vec();
         if !has_positional(user_args, COPILOT_VALUE_FLAGS) {
             out.push("-i".into());
-            out.push(STARTUP_INJECT.to_string());
+            out.push(startup_inject().to_string());
         }
         out
     }
@@ -329,7 +340,7 @@ impl AgentCliSpec for Gemini {
         let mut out = user_args.to_vec();
         if !has_positional && !has_flag(&["-i", "--prompt-interactive", "-p", "--prompt"]) {
             out.push("-i".into());
-            out.push(STARTUP_INJECT.to_string());
+            out.push(startup_inject().to_string());
         }
         out
     }
@@ -407,7 +418,7 @@ impl AgentCliSpec for OpenCode {
         if !has_flag(user_args, &["--prompt"]) {
             let mut prefixed = Vec::with_capacity(user_args.len().saturating_add(2));
             prefixed.push("--prompt".into());
-            prefixed.push(STARTUP_INJECT.to_string());
+            prefixed.push(startup_inject().to_string());
             prefixed.extend(user_args.iter().cloned());
             return prefixed;
         }
@@ -470,12 +481,12 @@ fn enrich_pi_startup(user_args: &[String]) -> Vec<String> {
     }) {
         return user_args.to_vec();
     }
-    if user_args.iter().any(|a| a.as_str() == STARTUP_INJECT) {
+    if user_args.iter().any(|a| a.as_str() == startup_inject()) {
         return user_args.to_vec();
     }
     let mut out = Vec::with_capacity(user_args.len().saturating_add(2));
     out.push("--append-system-prompt".into());
-    out.push(STARTUP_INJECT.to_string());
+    out.push(startup_inject().to_string());
     out.extend(user_args.iter().cloned());
     out
 }

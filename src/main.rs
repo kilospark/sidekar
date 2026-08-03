@@ -272,7 +272,7 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // Fetch encryption key from server if logged in
     if !matches!(
         command.as_str(),
-        "device" | "config" | "memory" | "tasks" | "compact" | "pack" | "unpack"
+        "device" | "config" | "prompt" | "memory" | "tasks" | "compact" | "pack" | "unpack"
     ) && crate::auth::auth_token().is_some()
         && let Err(e) = crate::broker::fetch_encryption_key().await
     {
