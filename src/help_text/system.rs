@@ -120,9 +120,12 @@ sidekar totp <add|list|get|remove> [args...]
 
   Store and retrieve TOTP secrets for automated login flows.
   `totp get` prints the current code only, so it is safe to pipe into other commands.
+  Secrets accept the format authenticator screens show: any case, spaces, dashes,
+  trailing `=` padding. Base32 alphabet only (A-Z, 2-7), 80 bits or more.
 
   Examples:
     sidekar totp add github alice BASE32SECRET
+    sidekar totp add microsoft alice '5qgf dbjw ysyr w2qb'
     sidekar totp list
     sidekar totp get github alice
     sidekar totp remove 12"

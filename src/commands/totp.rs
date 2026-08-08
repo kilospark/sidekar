@@ -1,16 +1,6 @@
 use crate::*;
 use qrcode::{EcLevel, QrCode};
-use totp_rs::{Algorithm, Secret, TOTP};
-
-fn validate_secret_length(secret_bytes: &[u8]) -> Result<()> {
-    if secret_bytes.len() < 10 {
-        bail!(
-            "Invalid TOTP: shared secret too short: need at least 80 bits, got {} bits",
-            secret_bytes.len() * 8
-        );
-    }
-    Ok(())
-}
+use totp_rs::{Algorithm, TOTP};
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -45,7 +35,7 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let service = &args[0];
     let account = &args[1];
-    let secret = &args[2];
+    let secret = crate::secrets::normalize_totp_secret(&args[2])?;
 
     let mut algorithm = "SHA1".to_string();
     let mut digits: i32 = 6;
@@ -71,11 +61,7 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         ),
     };
 
-    let secret_bytes = Secret::Encoded(secret.to_string())
-        .to_bytes()
-        .map_err(|e| anyhow::anyhow!("Invalid secret (expected base32): {}", e))?;
-
-    validate_secret_length(&secret_bytes)?;
+    let secret_bytes = crate::secrets::totp_secret_bytes(&secret)?;
 
     let totp = TOTP::new(
         algo,
@@ -101,7 +87,7 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let now = unix_now();
     let _ = totp.generate(now);
 
-    crate::broker::totp_add(service, account, secret, &algorithm, digits, period)?;
+    crate::broker::totp_add(service, account, &secret, &algorithm, digits, period)?;
     let msg = format!(
         "Added TOTP for {} ({}). Current code: {}",
         service,
@@ -224,11 +210,8 @@ async fn cmd_totp_qr(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         _ => Algorithm::SHA1,
     };
 
-    let secret_bytes = Secret::Encoded(rec.secret.clone())
-        .to_bytes()
-        .map_err(|e| anyhow::anyhow!("Invalid stored secret: {}", e))?;
-
-    validate_secret_length(&secret_bytes)?;
+    let secret_bytes = crate::secrets::totp_secret_bytes(&rec.secret)
+        .with_context(|| format!("stored TOTP secret for {service} ({account})"))?;
 
     let totp = TOTP::new(
         algo,

@@ -542,6 +542,42 @@ fn local_token_credential(
     })
 }
 
+/// Clean a user-supplied base32 TOTP secret into the form `base32` accepts.
+///
+/// Authenticator setup screens print secrets lowercase, in space- or dash-separated
+/// groups, and sometimes padded; the RFC4648 decode table matches uppercase
+/// unpadded input only and returns `None` for anything else.
+pub fn normalize_totp_secret(raw: &str) -> Result<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .flat_map(char::to_uppercase)
+        .collect();
+    let cleaned = cleaned.trim_end_matches('=');
+    if cleaned.is_empty() {
+        bail!("Invalid TOTP secret: no base32 characters found");
+    }
+    if let Some(bad) = cleaned.chars().find(|c| !matches!(c, 'A'..='Z' | '2'..='7')) {
+        bail!("Invalid TOTP secret: '{bad}' is not a base32 character (allowed: A-Z, 2-7)");
+    }
+    Ok(cleaned.to_string())
+}
+
+/// Decode a base32 TOTP secret to key bytes, tolerating authenticator formatting.
+pub fn totp_secret_bytes(secret: &str) -> Result<Vec<u8>> {
+    let normalized = normalize_totp_secret(secret)?;
+    let bytes = totp_rs::Secret::Encoded(normalized)
+        .to_bytes()
+        .map_err(|e| anyhow!("Invalid TOTP secret: {e}"))?;
+    if bytes.len() < 10 {
+        bail!(
+            "Invalid TOTP secret: too short: need at least 80 bits, got {} bits",
+            bytes.len() * 8
+        );
+    }
+    Ok(bytes)
+}
+
 fn local_totp_code(service: &str, account: &str) -> Result<Option<String>> {
     let Some(rec) = crate::broker::totp_get(service, account)? else {
         return Ok(None);
@@ -552,15 +588,8 @@ fn local_totp_code(service: &str, account: &str) -> Result<Option<String>> {
         "SHA512" => totp_rs::Algorithm::SHA512,
         _ => totp_rs::Algorithm::SHA1,
     };
-    let secret_bytes = totp_rs::Secret::Encoded(rec.secret.clone())
-        .to_bytes()
-        .map_err(|e| anyhow!("Invalid stored secret: {e}"))?;
-    if secret_bytes.len() < 10 {
-        bail!(
-            "Invalid stored TOTP: shared secret too short: need at least 80 bits, got {} bits",
-            secret_bytes.len() * 8
-        );
-    }
+    let secret_bytes = totp_secret_bytes(&rec.secret)
+        .with_context(|| format!("stored TOTP secret for {service} ({account})"))?;
     let totp = totp_rs::TOTP::new(
         algo,
         rec.digits as usize,
@@ -806,6 +835,45 @@ mod tests {
         crate::broker::clear_encryption_key();
         let _ = fs::remove_dir_all(&temp_home);
         result
+    }
+
+    #[test]
+    fn normalizes_authenticator_formatted_secrets() {
+        assert_eq!(
+            normalize_totp_secret("5qgfdbjwysyrw2qb").unwrap(),
+            "5QGFDBJWYSYRW2QB"
+        );
+        assert_eq!(
+            normalize_totp_secret(" 5qgf dbjw ysyr w2qb ").unwrap(),
+            "5QGFDBJWYSYRW2QB"
+        );
+        assert_eq!(
+            normalize_totp_secret("5qgf-dbjw-ysyr-w2qb").unwrap(),
+            "5QGFDBJWYSYRW2QB"
+        );
+        assert_eq!(
+            normalize_totp_secret("KRSXG5CTMVRXEZLU======").unwrap(),
+            "KRSXG5CTMVRXEZLU"
+        );
+    }
+
+    #[test]
+    fn rejects_non_base32_secrets() {
+        assert!(normalize_totp_secret("  ").is_err());
+        assert!(normalize_totp_secret("abcd0189").is_err());
+    }
+
+    #[test]
+    fn lowercase_secret_decodes_to_ten_bytes() {
+        let bytes = totp_secret_bytes("5qgfdbjwysyrw2qb").unwrap();
+        assert_eq!(bytes.len(), 10);
+        assert_eq!(bytes, totp_secret_bytes("5QGFDBJWYSYRW2QB").unwrap());
+    }
+
+    #[test]
+    fn rejects_secret_below_eighty_bits() {
+        let err = totp_secret_bytes("KRSXG5CT").unwrap_err().to_string();
+        assert!(err.contains("80 bits"), "unexpected error: {err}");
     }
 
     #[test]
