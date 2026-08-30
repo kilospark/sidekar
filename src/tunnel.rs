@@ -28,6 +28,14 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RECONNECT_BASE: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const CHANNEL_CAPACITY: usize = 256;
+/// Ceiling on PTY output queued for a viewer that is not draining.
+///
+/// Sized well above any normal in-flight burst — a viewer that keeps up never
+/// approaches it — but low enough that a stalled socket crosses it long before
+/// memory becomes a problem. Past the ceiling sidekar stops streaming bytes and
+/// resyncs the viewer from the replay buffer instead of shipping a stream with
+/// silent holes in it.
+const MAX_QUEUED_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Global output tunnel — lets any module forward println-style output to
@@ -149,6 +157,16 @@ pub enum TunnelEvent {
     },
     /// Legacy/simple bus frame (body only) — written to PTY.
     BusPlain(String),
+    /// A viewer resized its window and wants the child PTY to match.
+    Resize {
+        cols: u16,
+        rows: u16,
+        /// `claim` takes ownership of the size; `update` only applies if the
+        /// remote already owns it.
+        intent: String,
+    },
+    /// A viewer attached (or asked to resync) and needs the session replayed.
+    ReplayRequested,
     /// The tunnel has disconnected (reconnect is happening in the background).
     Disconnected,
 }
@@ -175,12 +193,64 @@ enum TunnelCommand {
 pub struct TunnelSender {
     tx: mpsc::Sender<TunnelCommand>,
     session_id: Arc<Mutex<String>>,
+    /// Output bytes accepted but not yet written to the socket.
+    queued_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    /// Set when output was dropped, so the caller can resync instead of
+    /// streaming a corrupted byte stream.
+    overflowed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TunnelSender {
-    /// Send raw PTY output bytes to the tunnel (non-blocking, drops on full channel).
+    /// Send raw PTY output bytes to the tunnel (non-blocking).
+    ///
+    /// Drops the payload and raises the overflow flag when the viewer is too far
+    /// behind. Dropping bytes mid-stream leaves a viewer rendering garbage, so
+    /// the flag tells the event loop to replay a clean snapshot once the socket
+    /// drains — see [`TunnelSender::take_overflow`].
     pub fn send_data(&self, data: Vec<u8>) {
-        let _ = self.tx.try_send(TunnelCommand::Data(data));
+        use std::sync::atomic::Ordering;
+
+        let queued = self.queued_bytes.load(Ordering::Relaxed);
+        if queued.saturating_add(data.len()) > MAX_QUEUED_OUTPUT_BYTES {
+            self.overflowed.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        let len = data.len();
+        self.queued_bytes.fetch_add(len, Ordering::Relaxed);
+        if self.tx.try_send(TunnelCommand::Data(data)).is_err() {
+            self.queued_bytes.fetch_sub(len, Ordering::Relaxed);
+            self.overflowed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Send a replay snapshot, bypassing the backpressure ceiling.
+    ///
+    /// A resync is what clears the backlog condition; refusing it because the
+    /// queue is full would leave the viewer permanently stale.
+    pub fn send_resync(&self, data: Vec<u8>) {
+        use std::sync::atomic::Ordering;
+        let len = data.len();
+        self.queued_bytes.fetch_add(len, Ordering::Relaxed);
+        if self.tx.try_send(TunnelCommand::Data(data)).is_err() {
+            self.queued_bytes.fetch_sub(len, Ordering::Relaxed);
+        }
+    }
+
+    /// Bytes accepted for delivery but not yet written to the socket.
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Take the overflow flag: true once per backlog episode.
+    pub fn take_overflow(&self) -> bool {
+        self.overflowed
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// True once the socket has drained enough to be worth resyncing.
+    pub fn is_drained(&self) -> bool {
+        self.queued_bytes() == 0
     }
 
     /// Send a routed bus message to other multiplex tunnels for this user (non-blocking).
@@ -217,6 +287,16 @@ impl TunnelSender {
             "event": "resize",
             "cols": cols,
             "rows": rows,
+        });
+        let _ = self.tx.try_send(TunnelCommand::PtyText(json.to_string()));
+    }
+
+    /// Tell viewers the session was resynced, so they can clear before replay.
+    pub fn send_resync_notice(&self) {
+        let json = serde_json::json!({
+            "ch": "pty",
+            "v": 1,
+            "event": "resync",
         });
         let _ = self.tx.try_send(TunnelCommand::PtyText(json.to_string()));
     }
@@ -336,6 +416,7 @@ pub async fn connect(
     let (cmd_tx, cmd_rx) = mpsc::channel::<TunnelCommand>(CHANNEL_CAPACITY);
     let (evt_tx, evt_rx) = mpsc::channel::<TunnelEvent>(CHANNEL_CAPACITY);
     let session_id_shared = Arc::new(Mutex::new(session_id));
+    let queued_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     // Spawn the background I/O loop
     tokio::spawn(tunnel_task(
@@ -344,12 +425,15 @@ pub async fn connect(
         params,
         cmd_rx,
         evt_tx,
+        queued_bytes.clone(),
     ));
 
     Ok((
         TunnelSender {
             tx: cmd_tx,
             session_id: session_id_shared,
+            queued_bytes,
+            overflowed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
         evt_rx,
     ))

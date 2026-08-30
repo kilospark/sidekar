@@ -1,5 +1,35 @@
 use super::escape_filter::{filter_osc_color_sequences, rewrite_osc_titles};
+use super::query_responder::QueryResponder;
+use super::replay::ReplayBuffer;
+use super::size_owner::{SizeIntent, SizeOwner, SizeOwnership};
+use super::waiting::WaitingDetector;
 use super::*;
+
+/// Send a viewer everything it needs to render the session as it stands: the
+/// terminal modes the agent set, then the retained output.
+///
+/// The preamble goes first so the replayed bytes land on the same screen buffer
+/// and in the same input modes the agent has been drawing with; replaying raw
+/// output into a default-mode terminal renders wrong.
+fn send_replay(
+    tx: &crate::tunnel::TunnelSender,
+    input_state: &crate::poller::UserInputState,
+    replay: &ReplayBuffer,
+) {
+    let mut payload = input_state.input_mode().preamble();
+    if payload.is_empty() && replay.is_empty() {
+        return;
+    }
+    payload.extend_from_slice(&replay.snapshot());
+    tx.send_resync_notice();
+    tx.send_resync(payload);
+    crate::broker::try_log_event(
+        "debug",
+        "tunnel",
+        &format!("replayed {}B to viewers", replay.len()),
+        None,
+    );
+}
 
 async fn write_sidekar_notice(
     stdout: &mut tokio::io::Stdout,
@@ -47,47 +77,18 @@ fn track_user_input_chunk(
     }
 }
 
+/// True when the chunk commits an answer to whatever the agent asked.
+///
+/// Arrow keys move a selection but decide nothing; Enter is what resolves the
+/// prompt, so that is what releases the injection block.
+fn answers_question(chunk: &[u8]) -> bool {
+    chunk.iter().any(|b| *b == b'\r' || *b == b'\n')
+}
+
 fn pty_ads_enabled() -> bool {
     std::env::var("SIDEKAR_PTY_ADS")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tunnel_input_tracking_marks_pending_line() {
-        let state = crate::poller::UserInputState::new();
-        let mut line = Vec::new();
-
-        track_user_input_chunk(&state, &mut line, b"abc");
-        assert!(state.has_pending_line());
-        assert_eq!(line, b"abc");
-        assert_eq!(
-            state.current_activity_state(),
-            crate::activity::ActivityState::UserTyping
-        );
-
-        track_user_input_chunk(&state, &mut line, b"\n");
-        assert!(!state.has_pending_line());
-        assert!(line.is_empty());
-    }
-
-    #[test]
-    fn tunnel_escape_input_counts_as_activity_without_line_text() {
-        let state = crate::poller::UserInputState::new();
-        let mut line = Vec::new();
-
-        track_user_input_chunk(&state, &mut line, b"\x1b[A");
-        assert!(line.is_empty());
-        assert!(!state.has_pending_line());
-        assert_eq!(
-            state.current_activity_state(),
-            crate::activity::ActivityState::UserTyping
-        );
-    }
 }
 
 pub(crate) async fn event_loop(
@@ -170,6 +171,17 @@ pub(crate) async fn event_loop(
     let mut activity_tick = tokio::time::interval(std::time::Duration::from_secs(30));
     activity_tick.tick().await;
 
+    // Retained output so a viewer attaching mid-session has something to render.
+    let mut replay = ReplayBuffer::default();
+    // Who currently owns the child PTY's window size.
+    let mut size_ownership = SizeOwnership::new();
+    // Tracks whether the agent is parked on a question a human must answer.
+    let mut waiting = WaitingDetector::new();
+    // With no local terminal, sidekar answers the agent's capability probes itself.
+    let mut query_responder = (!stdin_is_tty()).then(QueryResponder::new);
+    // Set while a viewer is waiting on a full replay after a backlog cut-off.
+    let mut pending_resync = false;
+
     crate::activity::publish(agent_name, crate::activity::ActivityState::Idle);
 
     loop {
@@ -199,6 +211,9 @@ pub(crate) async fn event_loop(
                     None => std::future::pending().await,
                 }
             } => {
+                // The physical terminal changed shape, so the local viewer takes
+                // the size back from any remote claimant.
+                size_ownership.apply(SizeOwner::Local, SizeIntent::Claim);
                 let _ = copy_terminal_size(master_fd);
                 if let Some(ref mut overlay) = ad_overlay {
                     overlay.resize(current_terminal_size());
@@ -231,7 +246,11 @@ pub(crate) async fn event_loop(
                         // Filter out OSC color queries from browser's xterm.js
                         let filtered = filter_osc_color_sequences(&data);
                         track_user_input_chunk(input_state, &mut line_buf, &filtered);
-                        let _ = write_all_fd(master_fd, &filtered);
+                        if answers_question(&filtered) {
+                            waiting.clear();
+                            input_state.set_awaiting_user_input(false);
+                        }
+                        let _ = write_all_fd_async(&master_async, &filtered).await;
                         input_state.publish_activity(agent_name);
                     }
                     Some(crate::tunnel::TunnelEvent::BusRelay {
@@ -272,8 +291,32 @@ pub(crate) async fn event_loop(
                         }
                     }
                     Some(crate::tunnel::TunnelEvent::BusPlain(body)) => {
-                        let _ = write_all_fd(master_fd, body.as_bytes());
-                        let _ = write_all_fd(master_fd, b"\r\n");
+                        let _ = write_all_fd_async(&master_async, body.as_bytes()).await;
+                        let _ = write_all_fd_async(&master_async, b"\r\n").await;
+                    }
+                    Some(crate::tunnel::TunnelEvent::Resize { cols, rows, intent }) => {
+                        let intent = SizeIntent::parse(Some(intent.as_str()));
+                        if !size_ownership.apply(SizeOwner::Remote, intent) {
+                            crate::broker::try_log_event(
+                                "debug",
+                                "tunnel",
+                                &format!(
+                                    "ignored viewer resize {cols}x{rows}: size owned by {:?}",
+                                    size_ownership.owner()
+                                ),
+                                None,
+                            );
+                        } else if set_terminal_size(master_fd, cols, rows).is_ok() {
+                            unsafe { libc::kill(child_pid, libc::SIGWINCH) };
+                            if let Some(ref mut overlay) = ad_overlay {
+                                overlay.resize(Some((cols, rows)));
+                            }
+                        }
+                    }
+                    Some(crate::tunnel::TunnelEvent::ReplayRequested) => {
+                        if let Some(ref tx) = tunnel_tx {
+                            send_replay(tx, input_state, &replay);
+                        }
                     }
                     Some(crate::tunnel::TunnelEvent::Disconnected) => {}
                     None => {
@@ -301,7 +344,7 @@ pub(crate) async fn event_loop(
                                     line_buf.clear();
                                     line_buf.extend_from_slice(&draft);
                                     input_state.set_pending_line(&line_buf);
-                                    let _ = write_all_fd(master_fd, &draft);
+                                    let _ = write_all_fd_async(&master_async, &draft).await;
                                     crate::tunnel::tunnel_println(
                                         "\x1b[33m[sidekar]\x1b[0m Draft restored.",
                                     );
@@ -310,7 +353,7 @@ pub(crate) async fn event_loop(
                             }
                             crate::poller::DraftRecallInput::Forward(bytes) => {
                                 input_state.mark_activity();
-                                let _ = write_all_fd(master_fd, &bytes);
+                                let _ = write_all_fd_async(&master_async, &bytes).await;
                                 continue;
                             }
                             crate::poller::DraftRecallInput::NotApplicable => {}
@@ -322,12 +365,17 @@ pub(crate) async fn event_loop(
                         // Don't mark as user activity — these are terminal auto-replies,
                         // not real user input.
                         if chunk.contains(&0x1b) {
-                            let _ = write_all_fd(master_fd, chunk);
+                            let _ = write_all_fd_async(&master_async, chunk).await;
                             continue;
                         }
 
                         track_user_input_chunk(input_state, &mut line_buf, chunk);
-                        let _ = write_all_fd(master_fd, chunk);
+                        // Enter commits the answer to whatever the agent asked.
+                        if answers_question(chunk) {
+                            waiting.clear();
+                            input_state.set_awaiting_user_input(false);
+                        }
+                        let _ = write_all_fd_async(&master_async, chunk).await;
                         input_state.publish_activity(agent_name);
                     }
                 }
@@ -352,6 +400,23 @@ pub(crate) async fn event_loop(
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
                                 input_state.mark_pty_output_bytes(raw);
+
+                                // Detached session: no terminal exists to answer the
+                                // agent's capability probes, so sidekar answers them.
+                                if let Some(ref mut responder) = query_responder
+                                    && let Some(reply) = responder.feed(raw)
+                                {
+                                    let _ = write_all_fd_async(&master_async, &reply).await;
+                                }
+
+                                // A full repaint invalidates the tracked screen tail.
+                                if super::waiting::resets_screen(raw) {
+                                    waiting.clear();
+                                }
+                                waiting.feed_text(&crate::events::strip_ansi(raw));
+                                input_state
+                                    .set_awaiting_user_input(waiting.is_question_on_screen());
+
                                 let parsed_events = event_parser.feed(raw);
                                 for event in &parsed_events {
                                     if matches!(event, crate::events::AgentEvent::Status { .. }) {
@@ -397,11 +462,29 @@ pub(crate) async fn event_loop(
                                     if let Some(data) = overlay_data.as_ref() {
                                         tunnel_data.extend_from_slice(data);
                                     }
+                                    replay.push(&tunnel_data);
                                     tx.send_data(tunnel_data);
 
                                     // Emit structured events alongside raw bytes
                                     for event in parsed_events {
                                         tx.send_event(crate::events::event_to_json(&event));
+                                    }
+
+                                    // A viewer that fell too far behind was cut off
+                                    // rather than fed a stream with holes in it.
+                                    // Replay it whole once the socket drains.
+                                    if tx.take_overflow() {
+                                        pending_resync = true;
+                                        crate::broker::try_log_event(
+                                            "debug",
+                                            "tunnel",
+                                            "viewer backlog exceeded; queued resync",
+                                            None,
+                                        );
+                                    }
+                                    if pending_resync && tx.is_drained() {
+                                        pending_resync = false;
+                                        send_replay(tx, input_state, &replay);
                                     }
                                 }
                             }
@@ -434,3 +517,6 @@ pub(crate) async fn event_loop(
 
     wait_child_exit_or_terminate(child_pid)
 }
+
+#[cfg(test)]
+mod tests;

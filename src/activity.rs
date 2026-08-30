@@ -15,6 +15,8 @@ pub enum ActivityState {
     Idle,
     UserTyping,
     AgentWorking,
+    /// The agent is parked on a question and is waiting for a human answer.
+    NeedsInput,
 }
 
 impl ActivityState {
@@ -24,6 +26,7 @@ impl ActivityState {
             Self::Idle => "idle",
             Self::UserTyping => "user_typing",
             Self::AgentWorking => "agent_working",
+            Self::NeedsInput => "needs_input",
         }
     }
 
@@ -32,6 +35,7 @@ impl ActivityState {
             "idle" => Self::Idle,
             "user_typing" => Self::UserTyping,
             "agent_working" => Self::AgentWorking,
+            "needs_input" => Self::NeedsInput,
             _ => Self::Unknown,
         }
     }
@@ -64,7 +68,7 @@ impl ActivitySnapshot {
         }
         matches!(
             self.state,
-            ActivityState::UserTyping | ActivityState::AgentWorking
+            ActivityState::UserTyping | ActivityState::AgentWorking | ActivityState::NeedsInput
         )
     }
 
@@ -86,8 +90,10 @@ pub fn publish(agent_name: &str, state: ActivityState) {
             Some((prev, at)) if *prev == state => {
                 state == ActivityState::UserTyping
                     && now.saturating_sub(*at) >= USER_TYPING_REFRESH_SECS
-                    || state == ActivityState::AgentWorking
-                        && now.saturating_sub(*at) >= AGENT_WORKING_REFRESH_SECS
+                    || matches!(
+                        state,
+                        ActivityState::AgentWorking | ActivityState::NeedsInput
+                    ) && now.saturating_sub(*at) >= AGENT_WORKING_REFRESH_SECS
             }
             _ => true,
         };

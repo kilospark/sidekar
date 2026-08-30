@@ -56,7 +56,7 @@ enum LineKind {
 }
 
 /// Strip all ANSI escape sequences from a byte slice, returning plain text.
-fn strip_ansi(raw: &[u8]) -> String {
+pub(crate) fn strip_ansi(raw: &[u8]) -> String {
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {

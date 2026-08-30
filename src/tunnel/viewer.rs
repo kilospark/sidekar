@@ -81,6 +81,16 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
         .0
         .split();
 
+    // Claim the session size for this viewer and ask the host to replay what it
+    // has, so an attach mid-session paints immediately instead of waiting for
+    // the agent to repaint on its own.
+    if let Some((cols, rows)) = viewer_terminal_size() {
+        let _ = ws_write
+            .send(Message::Text(resize_frame(cols, rows, "claim").into()))
+            .await;
+    }
+    let _ = ws_write.send(Message::Text(attach_frame().into())).await;
+
     struct RawRestore {
         saved: libc::termios,
         fd: libc::c_int,
@@ -153,6 +163,9 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
         }
     });
 
+    let mut sigwinch =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()).ok();
+
     let mut detach = false;
     let result: Result<()> = async {
         loop {
@@ -160,6 +173,20 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
                 break;
             }
             tokio::select! {
+                _ = async {
+                    match &mut sigwinch {
+                        Some(sig) => sig.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some((cols, rows)) = viewer_terminal_size() {
+                        // `update`, not `claim`: a reflow of an already-owned
+                        // session must not steal the size from the local user.
+                        let _ = ws_write
+                            .send(Message::Text(resize_frame(cols, rows, "update").into()))
+                            .await;
+                    }
+                }
                 msg = ws_read.next() => {
                     match msg {
                         Some(Ok(Message::Binary(data))) => {
@@ -167,8 +194,15 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
                             lock.write_all(&data).context("write PTY bytes to stdout")?;
                             lock.flush().ok();
                         }
-                        Some(Ok(Message::Text(_))) => {
-                            // Session hello and control JSON — browser applies local layout; we stream binary PTY only.
+                        Some(Ok(Message::Text(text))) => {
+                            // Session hello and control JSON — the browser applies
+                            // local layout; here only the resync notice matters,
+                            // which precedes a full replay of the session.
+                            if is_resync_notice(&text) {
+                                let mut lock = stdout.lock();
+                                let _ = lock.write_all(b"\x1b[2J\x1b[H");
+                                lock.flush().ok();
+                            }
                         }
                         Some(Ok(Message::Ping(p))) => {
                             let _ = ws_write.send(Message::Pong(p)).await;
@@ -209,6 +243,45 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
     let _ = std::io::stderr().flush();
 
     Ok(())
+}
+
+/// Current size of the viewer's own terminal.
+fn viewer_terminal_size() -> Option<(u16, u16)> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 {
+        return None;
+    }
+    (ws.ws_col != 0 && ws.ws_row != 0).then_some((ws.ws_col, ws.ws_row))
+}
+
+fn resize_frame(cols: u16, rows: u16, intent: &str) -> String {
+    serde_json::json!({
+        "ch": "pty",
+        "v": 1,
+        "event": "resize",
+        "cols": cols,
+        "rows": rows,
+        "intent": intent,
+    })
+    .to_string()
+}
+
+/// True for the host's "everything after this is a full replay" control frame.
+fn is_resync_notice(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    value.get("ch").and_then(|c| c.as_str()) == Some("pty")
+        && value.get("event").and_then(|e| e.as_str()) == Some("resync")
+}
+
+fn attach_frame() -> String {
+    serde_json::json!({
+        "ch": "pty",
+        "v": 1,
+        "event": "attach",
+    })
+    .to_string()
 }
 
 fn origin_to_ws_origin(origin: &str) -> Result<String> {

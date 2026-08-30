@@ -78,6 +78,7 @@ pub(super) async fn tunnel_task(
     params: ConnectParams,
     mut cmd_rx: mpsc::Receiver<TunnelCommand>,
     evt_tx: mpsc::Sender<TunnelEvent>,
+    queued_bytes: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let mut ws = Some(ws);
     let mut backoff = RECONNECT_BASE;
@@ -85,7 +86,7 @@ pub(super) async fn tunnel_task(
     loop {
         if let Some(stream) = ws.take() {
             // Run the I/O loop; returns when the connection drops or shutdown is requested.
-            let shutdown = io_loop(stream, &mut cmd_rx, &evt_tx).await;
+            let shutdown = io_loop(stream, &mut cmd_rx, &evt_tx, &queued_bytes).await;
             if shutdown {
                 return; // clean shutdown
             }
@@ -105,6 +106,9 @@ pub(super) async fn tunnel_task(
                     }
                     ws = Some(stream);
                     backoff = RECONNECT_BASE;
+                    // Viewers that reattach after the gap have missed output;
+                    // ask the event loop to replay from the top.
+                    let _ = evt_tx.try_send(TunnelEvent::ReplayRequested);
                     break;
                 }
                 Err(_) => {
@@ -125,6 +129,7 @@ async fn io_loop(
     ws: WsStream,
     cmd_rx: &mut mpsc::Receiver<TunnelCommand>,
     evt_tx: &mpsc::Sender<TunnelEvent>,
+    queued_bytes: &std::sync::atomic::AtomicUsize,
 ) -> bool {
     let (mut ws_sink, mut ws_stream) = ws.split();
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -138,7 +143,12 @@ async fn io_loop(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(TunnelCommand::Data(data)) => {
-                        if ws_sink.send(Message::Binary(data.into())).await.is_err() {
+                        let len = data.len();
+                        let sent = ws_sink.send(Message::Binary(data.into())).await;
+                        // Release the reservation whether or not the write
+                        // succeeded, so a dead socket cannot pin the counter.
+                        queued_bytes.fetch_sub(len, std::sync::atomic::Ordering::Relaxed);
+                        if sent.is_err() {
                             return false;
                         }
                     }
@@ -189,6 +199,31 @@ async fn io_loop(
                                 response["request_id"] = request_id.into();
                                 if ws_sink.send(Message::Text(response.to_string().into())).await.is_err() {
                                     return false;
+                                }
+                                continue;
+                            }
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("pty") {
+                                match v.get("event").and_then(|x| x.as_str()) {
+                                    Some("resize") => {
+                                        let cols = v.get("cols").and_then(|x| x.as_u64());
+                                        let rows = v.get("rows").and_then(|x| x.as_u64());
+                                        if let (Some(cols), Some(rows)) = (cols, rows) {
+                                            let intent = v
+                                                .get("intent")
+                                                .and_then(|x| x.as_str())
+                                                .unwrap_or("claim")
+                                                .to_string();
+                                            let _ = evt_tx.try_send(TunnelEvent::Resize {
+                                                cols: cols.min(u16::MAX as u64) as u16,
+                                                rows: rows.min(u16::MAX as u64) as u16,
+                                                intent,
+                                            });
+                                        }
+                                    }
+                                    Some("attach") | Some("request_replay") => {
+                                        let _ = evt_tx.try_send(TunnelEvent::ReplayRequested);
+                                    }
+                                    _ => {}
                                 }
                                 continue;
                             }

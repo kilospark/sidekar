@@ -2,6 +2,7 @@
 //! into the wrapped agent's PTY.
 
 use crate::activity::{ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
+use crate::input_mode::TerminalInputMode;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,6 +13,8 @@ static POLLER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const USER_IDLE_BEFORE_INJECT: Duration = Duration::from_millis(5000);
 const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+/// How long a detected question may defer injection before sidekar proceeds anyway.
+const AWAITING_INPUT_MAX: Duration = Duration::from_secs(600);
 
 pub struct UserInputState {
     last_user_input_at_ms: std::sync::atomic::AtomicU64,
@@ -22,9 +25,10 @@ pub struct UserInputState {
     line_tracking_reset: std::sync::atomic::AtomicBool,
     last_pty_output_at_ms: std::sync::atomic::AtomicU64,
     last_spinner_at_ms: std::sync::atomic::AtomicU64,
-    alternate_screen: std::sync::atomic::AtomicBool,
-    cursor_hidden: std::sync::atomic::AtomicBool,
-    terminal_parse_tail: Mutex<Vec<u8>>,
+    /// Terminal modes the agent announced on its own output stream.
+    input_mode: TerminalInputMode,
+    /// When the agent's screen started showing an unanswered question (0 = none).
+    awaiting_since_ms: std::sync::atomic::AtomicU64,
 }
 
 pub struct PtyNotice {
@@ -55,9 +59,8 @@ impl UserInputState {
             line_tracking_reset: std::sync::atomic::AtomicBool::new(false),
             last_pty_output_at_ms: std::sync::atomic::AtomicU64::new(0),
             last_spinner_at_ms: std::sync::atomic::AtomicU64::new(0),
-            alternate_screen: std::sync::atomic::AtomicBool::new(false),
-            cursor_hidden: std::sync::atomic::AtomicBool::new(false),
-            terminal_parse_tail: Mutex::new(Vec::new()),
+            input_mode: TerminalInputMode::new(),
+            awaiting_since_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -77,13 +80,44 @@ impl UserInputState {
     }
 
     pub fn sidecar_notice_allowed(&self) -> bool {
-        !self.alternate_screen.load(Ordering::Relaxed)
-            && !self.cursor_hidden.load(Ordering::Relaxed)
+        !self.input_mode.alternate_screen() && !self.input_mode.cursor_hidden()
+    }
+
+    /// Terminal modes observed on the agent's output stream.
+    pub fn input_mode(&self) -> &TerminalInputMode {
+        &self.input_mode
     }
 
     pub fn mark_spinner_activity(&self) {
         self.last_spinner_at_ms
             .store(epoch_millis(), Ordering::Relaxed);
+    }
+
+    /// Record whether the agent's screen currently shows an unanswered question.
+    pub fn set_awaiting_user_input(&self, waiting: bool) {
+        if !waiting {
+            self.awaiting_since_ms.store(0, Ordering::Relaxed);
+            return;
+        }
+        // Keep the original timestamp so a redrawn prompt does not refresh the cap.
+        let _ = self.awaiting_since_ms.compare_exchange(
+            0,
+            epoch_millis(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// True when the agent is parked on a prompt that needs a human answer.
+    ///
+    /// Expires after [`AWAITING_INPUT_MAX`]: question detection reads the
+    /// screen, and a false positive must not defer bus delivery forever.
+    pub fn is_awaiting_user_input(&self) -> bool {
+        let since = self.awaiting_since_ms.load(Ordering::Relaxed);
+        if since == 0 {
+            return false;
+        }
+        epoch_millis().saturating_sub(since) < AWAITING_INPUT_MAX.as_millis() as u64
     }
 
     pub fn is_agent_working(&self) -> bool {
@@ -99,6 +133,8 @@ impl UserInputState {
     pub fn current_activity_state(&self) -> ActivityState {
         if !self.is_idle() || self.has_pending_line() || self.has_stashed_draft() {
             ActivityState::UserTyping
+        } else if self.is_awaiting_user_input() {
+            ActivityState::NeedsInput
         } else if self.is_agent_working() {
             ActivityState::AgentWorking
         } else {
@@ -111,73 +147,7 @@ impl UserInputState {
     }
 
     fn update_terminal_state(&self, bytes: &[u8]) {
-        let mut data = Vec::new();
-        if let Ok(mut tail) = self.terminal_parse_tail.lock() {
-            if !tail.is_empty() {
-                data.extend_from_slice(&tail);
-                tail.clear();
-            }
-        }
-        data.extend_from_slice(bytes);
-
-        let bytes = data.as_slice();
-        let mut next_tail = Vec::new();
-        let mut i = 0usize;
-        while i < bytes.len() {
-            if bytes[i] != 0x1b {
-                i += 1;
-                continue;
-            }
-            let esc_start = i;
-            if i + 1 >= bytes.len() {
-                next_tail.extend_from_slice(&bytes[esc_start..]);
-                break;
-            }
-            if bytes[i + 1] != b'[' {
-                i += 2;
-                continue;
-            }
-            if i + 2 >= bytes.len() {
-                next_tail.extend_from_slice(&bytes[esc_start..]);
-                break;
-            }
-            i += 2;
-            let private = if i < bytes.len() && bytes[i] == b'?' {
-                i += 1;
-                true
-            } else {
-                false
-            };
-            let params_start = i;
-            while i < bytes.len() && matches!(bytes[i], b'0'..=b'9' | b';') {
-                i += 1;
-            }
-            if i >= bytes.len() {
-                next_tail.extend_from_slice(&bytes[esc_start..]);
-                break;
-            }
-            let final_byte = bytes[i];
-            let params = &bytes[params_start..i];
-            if private && (final_byte == b'h' || final_byte == b'l') {
-                let enabled = final_byte == b'h';
-                for param in params.split(|b| *b == b';') {
-                    match param {
-                        b"47" | b"1047" | b"1049" => {
-                            self.alternate_screen.store(enabled, Ordering::Relaxed);
-                        }
-                        b"25" => {
-                            self.cursor_hidden
-                                .store(final_byte == b'l', Ordering::Relaxed);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            i += 1;
-        }
-        if let Ok(mut tail) = self.terminal_parse_tail.lock() {
-            *tail = next_tail;
-        }
+        self.input_mode.feed(bytes);
     }
 
     pub fn set_pending_line(&self, line: &[u8]) {
@@ -496,9 +466,10 @@ fn deliver_to_pty(
                 "debug",
                 "poller",
                 &format!(
-                    "inject blocked: idle={} agent_working={} pending_line={} waited={}s msg_len={} submit={}",
+                    "inject blocked: idle={} agent_working={} awaiting_input={} pending_line={} waited={}s msg_len={} submit={}",
                     input_state.is_idle(),
                     input_state.is_agent_working(),
+                    input_state.is_awaiting_user_input(),
                     input_state.has_pending_line(),
                     waited / 10,
                     message.len(),
@@ -582,7 +553,7 @@ fn deliver_to_pty(
     }
 
     if let Some(bytes) = interrupt_sequence {
-        if let Err(e) = write_all_raw(raw_fd, bytes) {
+        if let Err(e) = crate::pty::write_all_fd(raw_fd, bytes) {
             crate::broker::try_log_event(
                 "error",
                 "poller",
@@ -594,8 +565,9 @@ fn deliver_to_pty(
         std::thread::sleep(Duration::from_millis(150));
     }
 
+    let submit_encoding = resolve_submit_encoding(input_state, submit_encoding);
     let submit_bytes = encode_submit_input(message, submit_encoding);
-    if let Err(e) = write_all_raw(raw_fd, &submit_bytes) {
+    if let Err(e) = crate::pty::write_all_fd(raw_fd, &submit_bytes) {
         crate::broker::try_log_event(
             "error",
             "poller",
@@ -605,7 +577,7 @@ fn deliver_to_pty(
         return false;
     }
     std::thread::sleep(Duration::from_millis(150));
-    if let Err(e) = write_all_raw(raw_fd, b"\r") {
+    if let Err(e) = crate::pty::write_all_fd(raw_fd, b"\r") {
         crate::broker::try_log_event(
             "error",
             "poller",
@@ -646,7 +618,7 @@ fn interrupt_sequence_for_agent(agent_kind: &str) -> Option<&'static [u8]> {
 
 /// Clear the child readline/PTY input line (Ctrl+U) before bus inject.
 fn clear_pty_input_line(raw_fd: i32) -> anyhow::Result<()> {
-    write_all_raw(raw_fd, b"\x15")?;
+    crate::pty::write_all_fd(raw_fd, b"\x15")?;
     std::thread::sleep(Duration::from_millis(50));
     Ok(())
 }
@@ -662,34 +634,28 @@ fn format_draft_preview(draft: &[u8]) -> String {
     }
 }
 
-fn write_all_raw(fd: i32, mut buf: &[u8]) -> anyhow::Result<()> {
-    while !buf.is_empty() {
-        let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
-        if n > 0 {
-            buf = &buf[n as usize..];
-        } else if n == 0 {
-            anyhow::bail!("write returned 0");
-        } else {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            if err.kind() == std::io::ErrorKind::WouldBlock {
-                std::thread::sleep(Duration::from_millis(10));
-                continue;
-            }
-            anyhow::bail!("write failed: {err}");
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PtySubmitEncoding {
     Raw,
     BracketedPaste,
 }
 
+/// Prefer the paste mode the agent announced on its own output stream over the
+/// per-agent default. An agent that turned bracketed paste off — permission
+/// prompts routinely do — would otherwise receive the `ESC [ 200 ~` wrapper as
+/// literal text.
+fn resolve_submit_encoding(
+    input_state: &UserInputState,
+    fallback: PtySubmitEncoding,
+) -> PtySubmitEncoding {
+    match input_state.input_mode().bracketed_paste_observed() {
+        Some(true) => PtySubmitEncoding::BracketedPaste,
+        Some(false) => PtySubmitEncoding::Raw,
+        None => fallback,
+    }
+}
+
+/// Default used until the agent announces a bracketed-paste mode of its own.
 fn submit_encoding_for_agent(agent_kind: &str) -> PtySubmitEncoding {
     match agent_kind {
         "agent" | "claude" | "codex" | "copilot" | "cursor" | "cursor-agent" | "gemini"
@@ -712,9 +678,12 @@ fn encode_submit_input(message: &str, encoding: PtySubmitEncoding) -> Vec<u8> {
 }
 
 fn pty_submit_wait_blocked_for(input_state: &UserInputState, interrupt: bool) -> bool {
+    // A question on screen blocks even the interrupt path: ESC would dismiss the
+    // prompt, which decides the answer on the human's behalf.
     !input_state.is_idle()
         || input_state.has_pending_line()
         || input_state.has_stashed_draft()
+        || input_state.is_awaiting_user_input()
         || (!interrupt && input_state.is_agent_working())
 }
 
@@ -928,4 +897,90 @@ mod tests {
         assert!(preview.ends_with('…'));
         assert!(preview.chars().count() <= 80);
     }
+}
+
+#[test]
+fn observed_bracketed_paste_overrides_agent_default() {
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(b"\x1b[?2004h");
+    assert_eq!(
+        resolve_submit_encoding(&state, PtySubmitEncoding::Raw),
+        PtySubmitEncoding::BracketedPaste
+    );
+}
+
+#[test]
+fn observed_raw_mode_overrides_agent_default() {
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(b"\x1b[?2004h");
+    state.mark_pty_output_bytes(b"\x1b[?2004l");
+    assert_eq!(
+        resolve_submit_encoding(&state, PtySubmitEncoding::BracketedPaste),
+        PtySubmitEncoding::Raw
+    );
+}
+
+#[test]
+fn unobserved_paste_mode_falls_back_to_agent_default() {
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(b"plain output");
+    assert_eq!(
+        resolve_submit_encoding(&state, PtySubmitEncoding::BracketedPaste),
+        PtySubmitEncoding::BracketedPaste
+    );
+    assert_eq!(
+        resolve_submit_encoding(&state, PtySubmitEncoding::Raw),
+        PtySubmitEncoding::Raw
+    );
+}
+
+#[test]
+fn question_on_screen_blocks_submit_including_the_interrupt_path() {
+    let state = UserInputState::new();
+    state.set_awaiting_user_input(true);
+    assert!(state.is_awaiting_user_input());
+    assert!(pty_submit_wait_blocked_for(&state, false));
+    assert!(pty_submit_wait_blocked_for(&state, true));
+}
+
+#[test]
+fn answering_the_question_unblocks_submit() {
+    let state = UserInputState::new();
+    state.set_awaiting_user_input(true);
+    state.set_awaiting_user_input(false);
+    assert!(!state.is_awaiting_user_input());
+    assert!(!pty_submit_wait_blocked_for(&state, true));
+}
+
+#[test]
+fn question_reported_again_does_not_extend_the_block_window() {
+    let state = UserInputState::new();
+    state.set_awaiting_user_input(true);
+    let first = state.awaiting_since_ms.load(Ordering::Relaxed);
+    state.set_awaiting_user_input(true);
+    assert_eq!(state.awaiting_since_ms.load(Ordering::Relaxed), first);
+}
+
+#[test]
+fn stale_question_stops_blocking_after_the_cap() {
+    let state = UserInputState::new();
+    state.set_awaiting_user_input(true);
+    let stale = epoch_millis() - AWAITING_INPUT_MAX.as_millis() as u64 - 1;
+    state.awaiting_since_ms.store(stale, Ordering::Relaxed);
+    assert!(!state.is_awaiting_user_input());
+}
+
+#[test]
+fn needs_input_is_published_as_its_own_activity_state() {
+    let state = UserInputState::new();
+    state.set_awaiting_user_input(true);
+    assert_eq!(state.current_activity_state(), ActivityState::NeedsInput);
+}
+
+#[test]
+fn user_typing_outranks_needs_input() {
+    let state = UserInputState::new();
+    state.set_awaiting_user_input(true);
+    state.set_pending_line(b"partial answer");
+    assert_eq!(state.current_activity_state(), ActivityState::UserTyping);
 }

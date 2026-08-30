@@ -195,7 +195,11 @@ fn bridge_tunnel_input(
                 crate::tunnel::TunnelEvent::BusPlain(text) => {
                     let _ = broker::enqueue_message("relay", &bus, &text);
                 }
-                crate::tunnel::TunnelEvent::Disconnected => {}
+                // The REPL owns its own rendering and sizing, so viewer resize
+                // and replay requests are not actionable here.
+                crate::tunnel::TunnelEvent::Resize { .. }
+                | crate::tunnel::TunnelEvent::ReplayRequested
+                | crate::tunnel::TunnelEvent::Disconnected => {}
             }
         }
         drop(pipe);

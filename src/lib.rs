@@ -76,6 +76,7 @@ pub mod events;
 pub mod ext;
 pub mod help;
 pub mod help_text;
+pub mod input_mode;
 pub mod md;
 pub mod memory;
 pub mod message;

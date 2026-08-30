@@ -17,7 +17,11 @@ mod chrome;
 mod escape_filter;
 mod event_loop;
 mod identity;
+mod query_responder;
+mod replay;
 mod session;
+mod size_owner;
+mod waiting;
 
 use chrome::{cleanup_chrome_session, watch_session_file};
 use event_loop::event_loop;
@@ -47,15 +51,31 @@ pub fn is_agent_command(command: &str) -> bool {
 // Terminal raw mode
 // ---------------------------------------------------------------------------
 
+/// True when stdin is a real terminal.
+///
+/// Detached sessions (no controlling terminal) have no terminal to put into raw
+/// mode and nothing to answer the agent's capability probes; both paths key off
+/// this.
+pub(super) fn stdin_is_tty() -> bool {
+    unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
+}
+
 /// RAII guard that restores terminal settings on drop.
+///
+/// Without a TTY on stdin the guard is inert rather than an error: a detached
+/// session still has a perfectly good PTY for the child, it just has no local
+/// terminal to configure.
 struct RawModeGuard {
-    saved: libc::termios,
+    saved: Option<libc::termios>,
     fd: i32,
 }
 
 impl RawModeGuard {
     fn enter() -> Result<Self> {
         let fd = libc::STDIN_FILENO;
+        if !stdin_is_tty() {
+            return Ok(Self { saved: None, fd });
+        }
         let mut saved: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
             bail!("tcgetattr failed: {}", std::io::Error::last_os_error());
@@ -65,13 +85,18 @@ impl RawModeGuard {
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
             bail!("tcsetattr failed: {}", std::io::Error::last_os_error());
         }
-        Ok(Self { saved, fd })
+        Ok(Self {
+            saved: Some(saved),
+            fd,
+        })
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
+        if let Some(saved) = self.saved {
+            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &saved) };
+        }
     }
 }
 
@@ -121,6 +146,11 @@ fn fork_pty(
     Ok((master, pid))
 }
 
+/// Size the child PTY gets when there is no local terminal to copy from.
+/// `forkpty` with a null winsize leaves the PTY at 0x0, which most TUIs render
+/// as a blank screen.
+pub(super) const DEFAULT_PTY_SIZE: (u16, u16) = (120, 32);
+
 pub(super) fn current_terminal_size() -> Option<(u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 {
@@ -132,11 +162,11 @@ pub(super) fn current_terminal_size() -> Option<(u16, u16)> {
     Some((ws.ws_col, ws.ws_row))
 }
 
-/// Copy the parent terminal size to the child PTY.
-pub(super) fn copy_terminal_size(master_fd: i32) -> Result<()> {
-    let Some((cols, rows)) = current_terminal_size() else {
-        return Ok(());
-    };
+/// Set an explicit window size on the child PTY.
+pub(super) fn set_terminal_size(master_fd: i32, cols: u16, rows: u16) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        bail!("refusing zero PTY window size");
+    }
     let ws = libc::winsize {
         ws_col: cols,
         ws_row: rows,
@@ -147,6 +177,13 @@ pub(super) fn copy_terminal_size(master_fd: i32) -> Result<()> {
         bail!("failed to set PTY window size");
     }
     Ok(())
+}
+
+/// Copy the parent terminal size to the child PTY, falling back to a usable
+/// default when stdin is not a terminal.
+pub(super) fn copy_terminal_size(master_fd: i32) -> Result<()> {
+    let (cols, rows) = current_terminal_size().unwrap_or(DEFAULT_PTY_SIZE);
+    set_terminal_size(master_fd, cols, rows)
 }
 
 /// Set an fd to non-blocking mode for async I/O.
@@ -195,30 +232,95 @@ fn child_exit_code(status: libc::c_int) -> i32 {
     }
 }
 
-/// Write an entire buffer to a raw fd, retrying on short writes, EINTR, and EAGAIN.
-pub(super) fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<()> {
-    let mut retries = 0u32;
-    while !buf.is_empty() {
+/// Attempt one write, classifying the outcome for the blocking and async paths.
+enum WriteStep {
+    /// Wrote `n` bytes.
+    Wrote(usize),
+    /// The child's input buffer is full; wait for writability and retry.
+    Blocked,
+    Failed(anyhow::Error),
+}
+
+fn write_step(fd: i32, buf: &[u8]) -> WriteStep {
+    loop {
         let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if n > 0 {
-            buf = &buf[n as usize..];
-            retries = 0;
-        } else if n == 0 {
-            bail!("write returned 0");
-        } else {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
+            return WriteStep::Wrote(n as usize);
+        }
+        if n == 0 {
+            return WriteStep::Failed(anyhow::anyhow!("write returned 0"));
+        }
+        let err = std::io::Error::last_os_error();
+        match err.kind() {
+            std::io::ErrorKind::Interrupted => continue,
+            std::io::ErrorKind::WouldBlock => return WriteStep::Blocked,
+            _ => return WriteStep::Failed(anyhow::anyhow!("write failed: {err}")),
+        }
+    }
+}
+
+/// Write an entire buffer to a raw fd, retrying on short writes, EINTR, and EAGAIN.
+///
+/// This blocks the calling thread while the child's input buffer is full, so it
+/// belongs on a dedicated thread (the bus poller). Async callers on the event
+/// loop must use [`write_all_fd_async`] instead — sleeping there would stall
+/// the child's output forwarding.
+pub(super) fn write_all_fd(fd: i32, mut buf: &[u8]) -> Result<()> {
+    const MAX_BLOCKED_RETRIES: u32 = 50;
+    let mut retries = 0u32;
+    while !buf.is_empty() {
+        match write_step(fd, buf) {
+            WriteStep::Wrote(n) => {
+                buf = &buf[n..];
+                retries = 0;
             }
-            if err.kind() == std::io::ErrorKind::WouldBlock {
+            WriteStep::Blocked => {
                 retries += 1;
-                if retries > 50 {
-                    bail!("write to fd: buffer full after 50 retries");
+                if retries > MAX_BLOCKED_RETRIES {
+                    bail!("write to fd: buffer full after {MAX_BLOCKED_RETRIES} retries");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                continue;
             }
-            bail!("write failed: {err}");
+            WriteStep::Failed(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// How long a single PTY write may wait for the child to consume input.
+///
+/// The event loop awaits this inline, so an unbounded wait would stop it from
+/// draining the child's output — and a child blocked on a full output buffer
+/// never drains its input either. The bound turns that standoff into a dropped
+/// write instead of a wedged session.
+const PTY_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Write an entire buffer to the PTY master without blocking the runtime.
+///
+/// Waits on writability through the same `AsyncFd` the event loop reads from,
+/// so a child that is slow to consume input parks this task instead of the
+/// reactor thread.
+pub(super) async fn write_all_fd_async(
+    async_fd: &tokio::io::unix::AsyncFd<i32>,
+    mut buf: &[u8],
+) -> Result<()> {
+    let fd = *async_fd.get_ref();
+    let deadline = tokio::time::Instant::now() + PTY_WRITE_TIMEOUT;
+    while !buf.is_empty() {
+        match write_step(fd, buf) {
+            WriteStep::Wrote(n) => buf = &buf[n..],
+            WriteStep::Blocked => {
+                let ready = tokio::time::timeout_at(deadline, async_fd.writable()).await;
+                match ready {
+                    Ok(Ok(mut guard)) => guard.clear_ready(),
+                    Ok(Err(e)) => bail!("await PTY writability: {e}"),
+                    Err(_) => bail!(
+                        "write to PTY: child did not accept input within {}s",
+                        PTY_WRITE_TIMEOUT.as_secs()
+                    ),
+                }
+            }
+            WriteStep::Failed(e) => return Err(e),
         }
     }
     Ok(())
