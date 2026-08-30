@@ -181,6 +181,8 @@ pub(crate) async fn event_loop(
     let mut query_responder = (!stdin_is_tty()).then(QueryResponder::new);
     // Set while a viewer is waiting on a full replay after a backlog cut-off.
     let mut pending_resync = false;
+    // Last preamble published to the relay, so unchanged modes cost nothing.
+    let mut published_preamble: Vec<u8> = Vec::new();
 
     crate::activity::publish(agent_name, crate::activity::ActivityState::Idle);
 
@@ -464,6 +466,13 @@ pub(crate) async fn event_loop(
                                     }
                                     replay.push(&tunnel_data);
                                     tx.send_data(tunnel_data);
+
+                                    // Modes change rarely; only publish on a diff.
+                                    let preamble = input_state.input_mode().preamble();
+                                    if preamble != published_preamble {
+                                        tx.send_input_mode(&preamble);
+                                        published_preamble = preamble;
+                                    }
 
                                     // Emit structured events alongside raw bytes
                                     for event in parsed_events {

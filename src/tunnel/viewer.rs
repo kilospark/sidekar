@@ -81,15 +81,14 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
         .0
         .split();
 
-    // Claim the session size for this viewer and ask the host to replay what it
-    // has, so an attach mid-session paints immediately instead of waiting for
-    // the agent to repaint on its own.
+    // Claim the session size for this viewer. The relay replays its own
+    // scrollback right after the connect, so no replay is requested here —
+    // asking would deliver the session tail a second time.
     if let Some((cols, rows)) = viewer_terminal_size() {
         let _ = ws_write
             .send(Message::Text(resize_frame(cols, rows, "claim").into()))
             .await;
     }
-    let _ = ws_write.send(Message::Text(attach_frame().into())).await;
 
     struct RawRestore {
         saved: libc::termios,
@@ -273,15 +272,6 @@ fn is_resync_notice(text: &str) -> bool {
     };
     value.get("ch").and_then(|c| c.as_str()) == Some("pty")
         && value.get("event").and_then(|e| e.as_str()) == Some("resync")
-}
-
-fn attach_frame() -> String {
-    serde_json::json!({
-        "ch": "pty",
-        "v": 1,
-        "event": "attach",
-    })
-    .to_string()
 }
 
 fn origin_to_ws_origin(origin: &str) -> Result<String> {

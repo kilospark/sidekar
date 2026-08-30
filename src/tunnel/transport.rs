@@ -220,7 +220,7 @@ async fn io_loop(
                                             });
                                         }
                                     }
-                                    Some("attach") | Some("request_replay") => {
+                                    Some("request_replay") => {
                                         let _ = evt_tx.try_send(TunnelEvent::ReplayRequested);
                                     }
                                     _ => {}

@@ -291,6 +291,21 @@ impl TunnelSender {
         let _ = self.tx.try_send(TunnelCommand::PtyText(json.to_string()));
     }
 
+    /// Publish the terminal modes the agent is currently in.
+    ///
+    /// The relay prepends this to the scrollback it hands a newly attached
+    /// viewer; without it, output captured mid-stream replays into a terminal
+    /// that is not in the alternate screen or the agent's key-encoding modes.
+    pub fn send_input_mode(&self, preamble: &[u8]) {
+        let json = serde_json::json!({
+            "ch": "pty",
+            "v": 1,
+            "event": "mode",
+            "preamble": String::from_utf8_lossy(preamble),
+        });
+        let _ = self.tx.try_send(TunnelCommand::PtyText(json.to_string()));
+    }
+
     /// Tell viewers the session was resynced, so they can clear before replay.
     pub fn send_resync_notice(&self) {
         let json = serde_json::json!({

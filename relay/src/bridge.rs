@@ -179,15 +179,49 @@ async fn handle_tunnel_socket(socket: WebSocket, user_id: String, state: AppStat
                                 }
                                 continue;
                             }
-                            if v.get("ch").and_then(|x| x.as_str()) == Some("pty")
-                                && v.get("event").and_then(|x| x.as_str()) == Some("resize")
-                            {
-                                let cols = v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16;
-                                let rows = v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16;
-                                state
-                                    .registry
-                                    .update_terminal_size(&session_id, cols, rows)
-                                    .await;
+                            if v.get("ch").and_then(|x| x.as_str()) == Some("pty") {
+                                match v.get("event").and_then(|x| x.as_str()) {
+                                    Some("resize") => {
+                                        let cols = v.get("cols").and_then(|x| x.as_u64()).unwrap_or(80) as u16;
+                                        let rows = v.get("rows").and_then(|x| x.as_u64()).unwrap_or(24) as u16;
+                                        state
+                                            .registry
+                                            .update_terminal_size(&session_id, cols, rows)
+                                            .await;
+                                    }
+                                    // The host is about to replay the session from
+                                    // the top. Drop retained scrollback first, or
+                                    // viewers attaching later see the session twice,
+                                    // and tell live viewers to clear their screen.
+                                    Some("resync") => {
+                                        state.registry.clear_scrollback(&session_id).await;
+                                        let notice = serde_json::json!({
+                                            "type": "pty",
+                                            "v": 1,
+                                            "event": "resync",
+                                        })
+                                        .to_string();
+                                        state
+                                            .registry
+                                            .broadcast_control_to_viewers(&session_id, &notice)
+                                            .await;
+                                    }
+                                    // Terminal modes changed; future snapshots must
+                                    // re-establish them before replaying output.
+                                    Some("mode") => {
+                                        let preamble = v
+                                            .get("preamble")
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .as_bytes()
+                                            .to_vec();
+                                        state
+                                            .registry
+                                            .set_input_mode_preamble(&session_id, preamble)
+                                            .await;
+                                    }
+                                    _ => {}
+                                }
                                 continue;
                             }
                             // Structured agent events: forward to all viewers as control frames
@@ -656,6 +690,53 @@ pub async fn handle_resolve_session(
     }
 }
 
+/// Validate a viewer text frame and rebuild it before it reaches the host.
+///
+/// Viewers are far less trusted than the host: the host tunnel treats inbound
+/// text frames as relay-authored and acts on `ch: "bus"` and
+/// `ch: "secret_response"` without further checks. Forwarding viewer JSON
+/// verbatim would let any viewer forge those. So only `ch: "pty"` is accepted,
+/// only three events within it, and the frame handed to the host is constructed
+/// here from validated fields rather than passed through.
+///
+/// Returns the frame to send to the host, or `None` to drop it.
+fn viewer_control_frame(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    if value.get("ch").and_then(|c| c.as_str()) != Some("pty") {
+        return None;
+    }
+
+    match value.get("event").and_then(|e| e.as_str())? {
+        "request_replay" => Some(
+            serde_json::json!({ "ch": "pty", "v": 1, "event": "request_replay" }).to_string(),
+        ),
+        "resize" => {
+            let cols = value.get("cols").and_then(|c| c.as_u64())?;
+            let rows = value.get("rows").and_then(|r| r.as_u64())?;
+            // A zero or absurd geometry would wedge the child's renderer.
+            if !(1..=1000).contains(&cols) || !(1..=1000).contains(&rows) {
+                return None;
+            }
+            let intent = match value.get("intent").and_then(|i| i.as_str()) {
+                Some("update") => "update",
+                _ => "claim",
+            };
+            Some(
+                serde_json::json!({
+                    "ch": "pty",
+                    "v": 1,
+                    "event": "resize",
+                    "cols": cols,
+                    "rows": rows,
+                    "intent": intent,
+                })
+                .to_string(),
+            )
+        }
+        _ => None,
+    }
+}
+
 async fn handle_viewer_socket(
     socket: WebSocket,
     session_id: String,
@@ -734,7 +815,11 @@ async fn handle_viewer_socket(
                     Some(Ok(Message::Binary(data))) => {
                         let _ = tunnel_tx.send(crate::registry::TunnelMsg::Data(data.to_vec()));
                     }
-                    Some(Ok(Message::Text(_text))) => {}
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(frame) = viewer_control_frame(&text) {
+                            let _ = tunnel_tx.send(crate::registry::TunnelMsg::Text(frame));
+                        }
+                    }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;
@@ -851,4 +936,87 @@ fn extract_cookie_token(headers: &HeaderMap, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn forwarded(text: &str) -> Option<serde_json::Value> {
+        serde_json::from_str(&viewer_control_frame(text)?).ok()
+    }
+
+    #[test]
+    fn resize_is_rebuilt_with_validated_fields() {
+        let frame = forwarded(r#"{"ch":"pty","event":"resize","cols":120,"rows":40}"#).unwrap();
+        assert_eq!(frame["ch"], "pty");
+        assert_eq!(frame["event"], "resize");
+        assert_eq!(frame["cols"], 120);
+        assert_eq!(frame["rows"], 40);
+        // Absent intent defaults to claim.
+        assert_eq!(frame["intent"], "claim");
+    }
+
+    #[test]
+    fn resize_preserves_update_intent() {
+        let frame =
+            forwarded(r#"{"ch":"pty","event":"resize","cols":80,"rows":24,"intent":"update"}"#)
+                .unwrap();
+        assert_eq!(frame["intent"], "update");
+    }
+
+    #[test]
+    fn unknown_intent_falls_back_to_claim() {
+        let frame =
+            forwarded(r#"{"ch":"pty","event":"resize","cols":80,"rows":24,"intent":"steal"}"#)
+                .unwrap();
+        assert_eq!(frame["intent"], "claim");
+    }
+
+    #[test]
+    fn resize_rejects_degenerate_geometry() {
+        for body in [
+            r#"{"ch":"pty","event":"resize","cols":0,"rows":24}"#,
+            r#"{"ch":"pty","event":"resize","cols":80,"rows":0}"#,
+            r#"{"ch":"pty","event":"resize","cols":99999,"rows":24}"#,
+            r#"{"ch":"pty","event":"resize","cols":80}"#,
+        ] {
+            assert!(viewer_control_frame(body).is_none(), "accepted {body}");
+        }
+    }
+
+    #[test]
+    fn request_replay_is_forwarded() {
+        let frame = forwarded(r#"{"ch":"pty","event":"request_replay"}"#).unwrap();
+        assert_eq!(frame["event"], "request_replay");
+    }
+
+    #[test]
+    fn viewers_cannot_forge_privileged_channels() {
+        // The host acts on these without further checks, so they must never
+        // survive a trip through a viewer socket.
+        for body in [
+            r#"{"ch":"bus","recipient":"agent","sender":"attacker","body":"rm -rf /"}"#,
+            r#"{"ch":"secret_response","request_id":"abc","secret":"stolen"}"#,
+            r#"{"ch":"activity","state":"idle","at":0}"#,
+            r#"{"ch":"events","kind":"text"}"#,
+        ] {
+            assert!(viewer_control_frame(body).is_none(), "accepted {body}");
+        }
+    }
+
+    #[test]
+    fn unknown_pty_events_are_dropped() {
+        assert!(viewer_control_frame(r#"{"ch":"pty","event":"resync"}"#).is_none());
+        assert!(viewer_control_frame(r#"{"ch":"pty","event":"attach"}"#).is_none());
+        assert!(viewer_control_frame(r#"{"ch":"pty","event":"mode"}"#).is_none());
+        assert!(viewer_control_frame(r#"{"ch":"pty"}"#).is_none());
+    }
+
+    #[test]
+    fn malformed_frames_are_dropped() {
+        assert!(viewer_control_frame("not json").is_none());
+        assert!(viewer_control_frame("").is_none());
+        assert!(viewer_control_frame("[]").is_none());
+    }
 }

@@ -191,10 +191,25 @@
                   // Clear stale content before receiving fresh scrollback
                   term.reset();
                   setRemoteGeometry(j.cols | 0, j.rows | 0);
+                  // The relay replays its own scrollback right after this hello.
+                  // An empty buffer means it has none to give — typically the
+                  // host reconnected — so ask the host to replay instead of
+                  // leaving a blank screen until the agent repaints.
+                  if (expectScrollbackBytes === 0) {
+                    ws.send(
+                      JSON.stringify({ ch: "pty", v: 1, event: "request_replay" })
+                    );
+                  }
                   return;
                 }
                 if (j.type === "pty" && j.v === 1 && j.event === "resize") {
                   setRemoteGeometry(j.cols | 0, j.rows | 0);
+                  return;
+                }
+                if (j.type === "pty" && j.v === 1 && j.event === "resync") {
+                  // Everything after this is a full replay of the session;
+                  // without the reset it would append to what is already shown.
+                  term.reset();
                   return;
                 }
               } catch (e) {}

@@ -54,33 +54,74 @@ pub struct LiveSession {
     pub scrollback_buffer: Arc<RwLock<ScrollbackBuffer>>,
     pub terminal_size: Arc<RwLock<TerminalSize>>,
     pub activity: Arc<RwLock<SessionActivity>>,
+    /// Escape sequences that re-establish the agent's terminal modes.
+    ///
+    /// Scrollback is raw output captured mid-stream, so replaying it into a
+    /// fresh viewer that is not in the same modes (alternate screen, bracketed
+    /// paste, application cursor keys) renders wrong. The host publishes its
+    /// current preamble and it is prepended to every snapshot.
+    pub input_mode_preamble: Arc<RwLock<Vec<u8>>>,
 }
 
-/// A simple ring buffer that keeps the most recent PTY output bytes for web scrollback.
+/// Ring buffer holding the most recent PTY output for web scrollback.
+///
+/// Chunks are retained and evicted whole rather than byte by byte. Evicting
+/// single bytes lets the retained window start in the middle of an escape
+/// sequence, and a viewer that receives the snapshot then renders the tail of a
+/// CSI as literal text. Chunk boundaries are where the host framed its writes,
+/// which is the closest thing to a safe cut point available here.
 pub struct ScrollbackBuffer {
-    buf: VecDeque<u8>,
+    chunks: VecDeque<Vec<u8>>,
+    bytes: usize,
     capacity: usize,
 }
 
 impl ScrollbackBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
-            buf: VecDeque::with_capacity(capacity),
+            chunks: VecDeque::new(),
+            bytes: 0,
             capacity,
         }
     }
 
     pub fn push(&mut self, data: &[u8]) {
-        for &byte in data {
-            if self.buf.len() == self.capacity {
-                self.buf.pop_front();
+        if data.is_empty() {
+            return;
+        }
+        self.chunks.push_back(data.to_vec());
+        self.bytes += data.len();
+
+        // Drop whole leading chunks while the remainder still covers the cap.
+        while self.chunks.len() > 1
+            && self.bytes - self.chunks.front().map_or(0, |c| c.len()) >= self.capacity
+        {
+            if let Some(front) = self.chunks.pop_front() {
+                self.bytes -= front.len();
             }
-            self.buf.push_back(byte);
+        }
+
+        // A lone chunk larger than the cap is the one case that must be sliced.
+        if self.chunks.len() == 1 && self.bytes > self.capacity {
+            if let Some(only) = self.chunks.front_mut() {
+                let tail = only.split_off(only.len() - self.capacity);
+                *only = tail;
+                self.bytes = only.len();
+            }
         }
     }
 
     pub fn snapshot(&self) -> Vec<u8> {
-        self.buf.iter().copied().collect()
+        let mut out = Vec::with_capacity(self.bytes);
+        for chunk in &self.chunks {
+            out.extend_from_slice(chunk);
+        }
+        out
+    }
+
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.bytes = 0;
     }
 }
 
@@ -316,6 +357,7 @@ impl Registry {
             scrollback_buffer: Arc::new(RwLock::new(ScrollbackBuffer::new(SCROLLBACK_BUFFER_SIZE))),
             terminal_size: Arc::new(RwLock::new(TerminalSize { cols, rows })),
             activity: Arc::new(RwLock::new(SessionActivity::default())),
+            input_mode_preamble: Arc::new(RwLock::new(Vec::new())),
         };
         self.live
             .write()
@@ -658,7 +700,8 @@ impl Registry {
         let scrollback_guard = session.scrollback_buffer.read().await;
         let terminal_size = *session.terminal_size.read().await;
         let mut viewers = session.viewers.write().await;
-        let scrollback = scrollback_guard.snapshot();
+        let mut scrollback = session.input_mode_preamble.read().await.clone();
+        scrollback.extend_from_slice(&scrollback_guard.snapshot());
         viewers.push(ViewerHandle {
             id: viewer_id.clone(),
             tx,
@@ -801,6 +844,25 @@ impl Registry {
             for viewer in viewers.iter() {
                 let _ = viewer.tx.send(ViewerMsg::Control(msg.clone()));
             }
+        }
+    }
+
+    /// Record the terminal modes the host is currently in.
+    pub async fn set_input_mode_preamble(&self, session_id: &str, preamble: Vec<u8>) {
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
+            *session.input_mode_preamble.write().await = preamble;
+        }
+    }
+
+    /// Drop retained scrollback ahead of a full replay from the host.
+    ///
+    /// Without this the replay is appended to output the viewer has already
+    /// seen, so the session appears twice.
+    pub async fn clear_scrollback(&self, session_id: &str) {
+        let live = self.live.read().await;
+        if let Some(session) = live.get(session_id) {
+            session.scrollback_buffer.write().await.clear();
         }
     }
 
@@ -948,4 +1010,61 @@ fn stable_session_id(user_id: &str, name: &str, hostname: &str) -> String {
 pub enum ViewerRoute {
     Local,
     Remote { owner_origin: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrollback_retains_everything_under_capacity() {
+        let mut buf = ScrollbackBuffer::new(64);
+        buf.push(b"hello ");
+        buf.push(b"world");
+        assert_eq!(buf.snapshot(), b"hello world");
+    }
+
+    #[test]
+    fn scrollback_evicts_whole_chunks() {
+        let mut buf = ScrollbackBuffer::new(10);
+        for _ in 0..6 {
+            buf.push(b"abcd");
+        }
+        assert!(buf.snapshot().len() >= 10);
+        assert_eq!(buf.snapshot().len() % 4, 0);
+    }
+
+    #[test]
+    fn scrollback_never_slices_an_escape_sequence() {
+        let mut buf = ScrollbackBuffer::new(16);
+        for _ in 0..10 {
+            buf.push(b"\x1b[?2004h");
+        }
+        let snapshot = buf.snapshot();
+        assert!(snapshot.starts_with(b"\x1b["));
+        assert_eq!(snapshot.len() % 8, 0);
+    }
+
+    #[test]
+    fn scrollback_tail_trims_an_oversized_lone_chunk() {
+        let mut buf = ScrollbackBuffer::new(8);
+        let big: Vec<u8> = (0..32u8).collect();
+        buf.push(&big);
+        assert_eq!(buf.snapshot(), (24..32u8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn scrollback_clear_empties_the_buffer() {
+        let mut buf = ScrollbackBuffer::new(16);
+        buf.push(b"data");
+        buf.clear();
+        assert!(buf.snapshot().is_empty());
+    }
+
+    #[test]
+    fn scrollback_ignores_empty_pushes() {
+        let mut buf = ScrollbackBuffer::new(16);
+        buf.push(b"");
+        assert!(buf.snapshot().is_empty());
+    }
 }
