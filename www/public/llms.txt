@@ -1,6 +1,6 @@
 # sidekar
 
-> A sidecar binary and skill for agent CLIs. Wrap Claude Code, Codex, Cursor, Gemini CLI, and others, or run Sidekar as its own REPL agent. Not an orchestrator, harness, or agent OS.
+> The utility layer for coding agents. One binary and one skill file give Claude Code, Codex, Copilot, Cursor, Gemini CLI, Grok, OpenCode, and Pi a real browser, macOS desktop control, an inter-agent bus, encrypted secrets, and durable memory. MIT licensed, runs locally, no MCP server.
 
 ## What is sidekar?
 
@@ -36,7 +36,7 @@ sidekar gives agents browser and desktop control, a local message bus, backgroun
 
 ## Supported agents
 
-Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, OpenCode, and others via `sidekar install` or the skills registry.
+`sidekar install` writes the skill file for Claude Code, Codex, Gemini CLI, Grok, OpenCode, and Pi. `sidekar <agent>` PTY-wrapping additionally covers Copilot and Cursor. Any other agent can call the `sidekar` CLI directly.
 
 ## Pricing
 

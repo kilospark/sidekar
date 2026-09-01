@@ -26,7 +26,7 @@ curl -fsSL sidekar.dev/install | sh
 
 ### Runtime (PTY wrapper + REPL)
 
-**PTY:** `sidekar <agent> [args]` wraps Claude Code, Codex, Cursor, Gemini CLI, etc. Registers on the bus, wires browser integration, optional `--relay` and `--proxy`.
+**PTY:** `sidekar <agent> [args]` wraps claude, codex, copilot, cursor (cursor-agent), gemini, grok, opencode, pi. Registers on the bus, wires browser integration, optional `--relay` and `--proxy`.
 
 **REPL:** `sidekar repl` is Sidekar's own agent loop. Session persistence, slash commands (`/model`, `/session`, `/compact`, `/relay`, `/proxy`, `/journal`).
 
@@ -162,7 +162,7 @@ Multiple agents share the same Chrome instance. Each session owns its tabs. Neve
 
 ## Supported agents
 
-Claude Code, Codex, Cursor, Copilot, Gemini CLI, Windsurf, Cline, ChatGPT Desktop, OpenCode, Pi, and others via `sidekar install` or the skills registry.
+`sidekar install` writes the skill file for Claude Code, Codex, Gemini CLI, Grok, OpenCode, and Pi. `sidekar <agent>` PTY-wrapping additionally covers Copilot and Cursor. Any other agent can call the `sidekar` CLI directly.
 
 ## Pricing
 
