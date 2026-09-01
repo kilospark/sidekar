@@ -206,19 +206,9 @@ h1 {
 }
 
 .panel-header {
-  display: grid;
-  grid-template-columns: 180px 1fr;
-  gap: 20px;
-  align-items: start;
   margin-bottom: 24px;
 }
 
-.label {
-  font: 12px/1.2 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--page-muted);
-}
 
 .panel-header h2 {
   font-size: clamp(2rem, 4vw, 3.2rem);
@@ -327,8 +317,7 @@ footer {
 
 @media (max-width: 980px) {
   .hero,
-  .layout,
-  .panel-header {
+  .layout {
     grid-template-columns: 1fr;
   }
 }
@@ -407,7 +396,6 @@ footer {
     <section class="layout">
       <section class="panel">
         <div class="panel-header">
-          <div class="label">What it does</div>
           <div>
             <h2>Why the extension exists</h2>
             <p>CDP is enough for a lot of browser automation. The extension is for the cases where an in-page bridge is more reliable: rich editors, dense client-side UIs, and apps that keep most of their behavior inside the page.</p>
@@ -447,7 +435,6 @@ footer {
     <section class="layout" style="margin-top:18px;">
       <section class="panel">
         <div class="panel-header">
-          <div class="label">Permissions</div>
           <div>
             <h2>Why it needs native messaging and broad host access</h2>
             <p>The extension needs native messaging to talk to the local Sidekar process and broad host access because agents may need to act on any page you explicitly direct them to.</p>
@@ -486,7 +473,6 @@ footer {
 
     <section class="panel" style="margin-top:18px;">
       <div class="panel-header">
-        <div class="label">FAQ</div>
         <div>
           <h2>What people will ask first</h2>
           <p>This page covers the first questions people ask before they trust a local browser bridge.</p>
