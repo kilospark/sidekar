@@ -630,13 +630,13 @@ h1 {
   }
 }
 
-/* --- animated three-agent demo --- */
+/* --- three-agent demo: each pane is the wrapped agent's own interface --- */
 .demo-stage {
   position: relative;
   display: grid;
   grid-template-columns: 1.05fr 0.95fr;
   gap: 14px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .demo-col {
@@ -646,44 +646,39 @@ h1 {
   min-width: 0;
 }
 
+/* Fixed height so the transcript scrolls inside the pane like a real
+   terminal. Without a cap each pane grows to fit its whole transcript, the
+   internal auto-scroll never engages, and the stage outgrows the viewport. */
 .demo-pane {
   border: 1px solid var(--page-line);
   background: var(--page-panel-strong);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   overflow: hidden;
+  height: 470px;
 }
 
-.demo-pane-lead {
-  min-height: 420px;
+.demo-col .demo-pane {
+  height: 228px;
 }
 
 .demo-bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--page-line);
   font: 11px/1 var(--mono);
   color: var(--page-muted);
 }
 
-.demo-agent {
-  color: var(--page-ink);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.demo-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.demo-nick::before {
-  content: "\201C";
-}
-
-.demo-nick::after {
-  content: "\201D";
-}
-
-/* State chip. Mirrors the vocabulary `sidekar bus who` actually reports. */
 .demo-state {
   margin-left: auto;
   display: inline-flex;
@@ -694,6 +689,7 @@ h1 {
   color: var(--page-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  white-space: nowrap;
 }
 
 .demo-state::before {
@@ -713,130 +709,133 @@ h1 {
   animation: demo-pulse 1.1s steps(2, end) infinite;
 }
 
-.demo-state[data-state="waiting"] {
-  color: var(--page-warm);
-}
+.demo-state[data-state="waiting"] { color: var(--page-warm); }
 
 @keyframes demo-pulse {
-  0%, 49% { opacity: 1; }
+  0%, 49%   { opacity: 1; }
   50%, 100% { opacity: 0.15; }
 }
 
+/* The banner each agent prints on launch. */
+.demo-head {
+  padding: 12px 16px 6px;
+  font: 12px/1.55 var(--mono);
+  color: var(--page-ink);
+  white-space: pre;
+  overflow: hidden;
+}
+
+.demo-head b { font-weight: 600; }
+.demo-head .dim { color: var(--page-muted); }
+
 .demo-out {
   margin: 0;
-  padding: 16px;
-  flex: 1;
+  padding: 8px 16px 12px;
   overflow-y: auto;
   overflow-x: hidden;
-  font: 12.5px/1.75 var(--mono);
+  font: 12px/1.55 var(--mono);
   color: var(--page-muted);
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* pre-wrap per line, not on the container: the newlines between the source
+   spans would otherwise each render as an extra blank line. */
+.demo-out .l {
+  display: block;
+  white-space: pre-wrap;
+  margin-bottom: 2px;
+}
+
+/* Claude Code: filled circle for a tool call, corner for its result. */
+.demo-out .tool::before { content: "\23FA\00a0\00a0"; color: var(--page-warm); }
+.demo-out .tool { color: var(--page-ink); font-weight: 500; }
+.demo-out .res::before  { content: "\00a0\00a0\23BF\00a0\00a0"; color: var(--page-line); }
+.demo-out .resc::before { content: "     "; }
+.demo-out .res, .demo-out .resc { color: var(--page-muted); }
+.demo-out .meta::before { content: "\273B\00a0\00a0"; color: var(--page-warm); }
+.demo-out .meta { color: var(--page-muted); }
+.demo-out .asst::before { content: "\23FA\00a0\00a0"; color: var(--page-warm); }
+.demo-out .asst { color: var(--page-ink); }
+
+/* Each agent's own prompt glyph, taken from the running CLIs. */
+.demo-out .usr::before { content: "\276F\00a0"; color: var(--page-warm); }
+.demo-out .arw::before { content: "\2192\00a0";  color: var(--page-warm); }
+.demo-out .bar::before { content: "\2503\00a0";  color: var(--page-warm); }
+.demo-out .usr,
+.demo-out .arw,
+.demo-out .bar { color: var(--page-ink); font-weight: 500; }
+
+/* Readable, not a border colour: this line is how the agent knows to reply. */
+/* An agent running a command in its own transcript. */
+.demo-out .cmd::before { content: "$\00a0"; color: var(--page-warm); }
+.demo-out .cmd { color: var(--page-ink); font-weight: 500; }
+
+.demo-out .hint { color: var(--page-muted); padding-left: 2ch; }
+.demo-out .plain { color: var(--page-muted); padding-left: 2ch; }
+.demo-out .ok::before { content: "\2713\00a0"; color: var(--page-warm); }
+.demo-out .ok { color: var(--page-ink); padding-left: 1ch; }
+.demo-out i { color: var(--page-ink); font-style: normal; }
+
+/* Pinned composer and status line, as each agent draws them. */
+.demo-foot {
+  padding: 8px 16px 12px;
+  font: 12px/1.5 var(--mono);
+  color: var(--page-muted);
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid transparent;
+}
+
+.demo-foot .rule {
+  display: block;
+  height: 1px;
+  background: var(--page-line);
+}
+
+.demo-foot .prompt {
+  display: block;
+  color: var(--page-warm);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.demo-out .l {
+.demo-foot .prompt::after {
+  content: "\2588";
+  color: var(--page-line);
+}
+
+/* What is currently being typed at this agent's prompt — by the human in
+   the lead pane, and by sidekar in the other two. */
+.demo-foot .ctext {
+  color: var(--page-ink);
+  font-weight: 500;
+}
+
+.claude-prompt::before   { content: "\276F\00a0"; }
+.cursor-prompt::before   { content: "\2192\00a0"; }
+.opencode-prompt::before { content: "\2503\00a0"; }
+
+.demo-foot .status {
   display: block;
-}
-
-/* Line-kind markers live in CSS so the text itself stays copyable. */
-.demo-out .run::before {
-  content: "$ ";
-  color: var(--page-warm);
-}
-
-.demo-out .run {
-  color: var(--page-ink);
-  font-weight: 500;
-}
-
-/* The agent invoking a tool, inside its own TUI. */
-.demo-out .tool::before {
-  content: "\25CF  ";
-  color: var(--page-warm);
-}
-
-.demo-out .tool {
-  color: var(--page-ink);
-  font-weight: 500;
-}
-
-.demo-out .res::before {
-  content: "   \23BF  ";
-  color: var(--page-line);
-}
-
-.demo-out .res {
-  color: var(--page-muted);
-}
-
-/* What the human typed at the agent's own prompt. */
-.demo-out .usr::before,
-.demo-out .paste::before {
-  content: "> ";
-  color: var(--page-warm);
-}
-
-.demo-out .usr {
-  color: var(--page-ink);
-  font-weight: 500;
-}
-
-/* Injected by sidekar rather than typed by a person: same prompt, because
-   that is exactly how the receiving agent sees it. */
-.demo-out .paste {
-  color: var(--page-ink);
-  font-weight: 500;
-}
-
-.demo-out .hint {
-  color: var(--page-line);
-  padding-left: 2ch;
-}
-
-.demo-out .ok::before {
-  content: "\2713  ";
-  color: var(--page-warm);
-}
-
-.demo-out .ok,
-.demo-out .asst {
-  color: var(--page-ink);
-}
-
-.demo-out .asst {
-  font-weight: 500;
-}
-
-.demo-out i {
-  color: var(--page-ink);
-  font-style: normal;
-}
-
-.demo-title {
   color: var(--page-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.demo-key {
-  display: inline-block;
-  font: 11px/1 var(--mono);
-  border: 1px solid var(--page-line);
-  padding: 2px 6px;
-  color: var(--page-ink);
+.demo-foot .status.split {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-/* Hidden until the replay reaches this line. Static (no-JS) render shows
+.demo-foot .accent { color: var(--page-ink); }
+
+/* Hidden until the replay reaches this line. The static (no-JS) render shows
    everything, so the animation is additive rather than load-bearing. */
-.demo-stage[data-playing] .l {
-  visibility: hidden;
-}
-
-.demo-stage[data-playing] .l.shown {
-  visibility: visible;
-}
-
+.demo-stage[data-playing] .l { visibility: hidden; }
+.demo-stage[data-playing] .l.shown { visibility: visible; }
 .demo-stage[data-playing] .l.typing::after {
   content: "\2588";
   color: var(--page-warm);
@@ -856,32 +855,20 @@ h1 {
   cursor: pointer;
 }
 
-.demo-replay:hover {
-  color: var(--page-ink);
-  background: var(--page-panel);
-}
+.demo-replay:hover { color: var(--page-ink); background: var(--page-panel); }
 
 @media (max-width: 900px) {
-  .demo-stage {
-    grid-template-columns: 1fr;
-  }
-  .demo-pane-lead {
-    min-height: 320px;
-  }
-  .demo-col {
-    grid-template-rows: auto auto;
-  }
+  .demo-stage { grid-template-columns: 1fr; }
+  .demo-pane { height: 380px; }
+  .demo-col .demo-pane { height: 260px; }
 }
 
 /* Motion is decoration here; the transcript is the content. */
 @media (prefers-reduced-motion: reduce) {
-  .demo-stage[data-playing] .l {
-    visibility: visible;
-  }
-  .demo-state[data-state="working"]::before {
-    animation: none;
-  }
+  .demo-stage[data-playing] .l { visibility: visible; }
+  .demo-state[data-state="working"]::before { animation: none; }
 }
+
 </style>
 </head>
 <body>
@@ -950,7 +937,7 @@ h1 {
     <div class="section-header">
       <div>
         <h2>Wrap the agent. It joins a channel.</h2>
-        <p>Prefix the CLI you already run. Sidekar owns the PTY, registers the session on a channel keyed to the working directory, and gives it a name. A message sent to that name is typed into the agent's own prompt and submitted, so it arrives as a turn in its conversation rather than as something you relayed.</p>
+        <p>Prefix the CLI you already run. Sidekar owns the PTY, registers the session on a channel keyed to the working directory, and gives it a name. A message sent to that name is typed into the agent's own prompt and submitted, so it lands as a turn in that agent's conversation rather than as something you relayed.</p>
       </div>
     </div>
 
@@ -962,27 +949,34 @@ h1 {
           <span class="demo-title">viper (claude-storefront-1) &mdash; claude</span>
           <span class="demo-state" data-state="idle">idle</span>
         </div>
-        <pre class="demo-out"><span class="l run" data-step="1">sidekar claude</span>
-<span class="l usr" data-step="4" data-state="working">add stripe checkout. get ember and pike on it.</span>
-<span class="l tool" data-step="5">sidekar bus who</span>
-<span class="l res" data-step="6">Channel "~/src/storefront":</span>
-<span class="l res" data-step="7">claude-storefront-1   <i>"viper"</i> (you)</span>
-<span class="l res" data-step="8">cursor-storefront-1   <i>"ember"</i></span>
-<span class="l res" data-step="9">opencode-storefront-1 <i>"pike"</i></span>
-<span class="l asst" data-step="10">ember takes the page, pike takes the endpoint.</span>
-<span class="l tool" data-step="11">sidekar bus send ember "build /checkout with stripe elements"</span>
-<span class="l res" data-step="12">sent to ember (msg 7f2a91)</span>
-<span class="l tool" data-step="15">sidekar bus send pike "add POST /api/checkout/session"</span>
-<span class="l res" data-step="16">sent to pike (msg 3c8d04)</span>
-<span class="l tool" data-step="21" data-state="waiting">sidekar bus wait pike --until=settled</span>
-<span class="l res" data-step="27">pike (opencode-storefront-1) is idle.</span>
-<span class="l paste" data-step="28">[response from pike]: POST /api/checkout/session live</span>
-<span class="l paste" data-step="31">[response from ember]: checkout page wired to the new endpoint</span>
-<span class="l tool" data-step="32" data-state="working">sidekar browser read localhost:3000/checkout</span>
-<span class="l res" data-step="33"># Checkout</span>
-<span class="l res" data-step="34">Order summary &middot; Total $42.00</span>
-<span class="l res" data-step="35">[button] Pay now</span>
-<span class="l asst" data-step="36" data-state="idle">Both replied. Checkout works end to end.</span></pre>
+        <div class="demo-head"><b>Claude Code</b> <span class="dim">v2.1.259</span>
+<span class="dim">Opus 5 (1M context) &middot; Claude Team</span>
+<span class="dim">~/src/storefront</span></div>
+        <pre class="demo-out"><span class="l usr" data-step="1" data-state="working">add stripe checkout. get ember and pike on it.</span>
+<span class="l tool" data-step="2">Bash(sidekar bus who)</span>
+<span class="l res" data-step="3">Channel "~/src/storefront":</span>
+<span class="l resc" data-step="4">claude-storefront-1   <i>"viper"</i> (you)</span>
+<span class="l resc" data-step="5">cursor-storefront-1   <i>"ember"</i></span>
+<span class="l resc" data-step="6">opencode-storefront-1 <i>"pike"</i></span>
+<span class="l asst" data-step="7">ember takes the page, pike takes the endpoint.</span>
+<span class="l tool" data-step="8">Bash(sidekar bus send ember "build /checkout with stripe elements")</span>
+<span class="l res" data-step="9">sent to ember (msg 7f2a91)</span>
+<span class="l tool" data-step="12">Bash(sidekar bus send pike "add POST /api/checkout/session")</span>
+<span class="l res" data-step="13">sent to pike (msg 3c8d04)</span>
+<span class="l tool" data-step="18" data-state="waiting">Bash(sidekar bus wait pike --until=settled)</span>
+<span class="l res" data-step="24">pike (opencode-storefront-1) is idle.</span>
+<span class="l usr" data-step="25">[response from pike]: POST /api/checkout/session live</span>
+<span class="l usr" data-step="28">[response from ember]: checkout page wired to the new endpoint</span>
+<span class="l tool" data-step="29" data-state="working">Bash(sidekar browser read localhost:3000/checkout)</span>
+<span class="l res" data-step="30"># Checkout</span>
+<span class="l resc" data-step="31">Order summary &middot; Total $42.00</span>
+<span class="l resc" data-step="32">[button] Pay now</span>
+<span class="l asst" data-step="33">Both replied. Checkout works end to end.</span>
+<span class="l meta" data-step="34" data-state="idle">Crunched for 41s &middot; done</span></pre>
+        <div class="demo-foot"><span class="rule"></span>
+<span class="prompt claude-prompt"><span class="ctext"></span></span>
+<span class="rule"></span>
+<span class="status">storefront (main) | Opus 5 (1M context)</span></div>
       </div>
 
       <div class="demo-col">
@@ -991,13 +985,17 @@ h1 {
             <span class="demo-title">ember (cursor-storefront-1) &mdash; cursor</span>
             <span class="demo-state" data-state="idle">idle</span>
           </div>
-          <pre class="demo-out"><span class="l run" data-step="2">sidekar cursor</span>
-<span class="l paste" data-step="13" data-state="working">[request from viper]: build /checkout with stripe elements</span>
-<span class="l hint" data-step="14">[reply with: sidekar bus send viper "&lt;your response&gt;" --reply-to=7f2a91]</span>
-<span class="l ok" data-step="19">edited src/routes/checkout.tsx</span>
-<span class="l ok" data-step="22">edited src/components/PaymentForm.tsx</span>
-<span class="l tool" data-step="29">sidekar bus send viper "checkout page wired to the new endpoint" --reply-to=7f2a91</span>
-<span class="l res" data-step="30" data-state="idle">sent to viper</span></pre>
+          <div class="demo-head"><b>Cursor Agent</b>
+<span class="dim">v2026.08.25-3e8eec8</span></div>
+          <pre class="demo-out"><span class="l arw" data-step="10" data-state="working">[request from viper]: build /checkout with stripe elements</span>
+<span class="l hint" data-step="11">[reply with: sidekar bus send viper "&lt;your response&gt;" --reply-to=7f2a91]</span>
+<span class="l plain" data-step="16">edited src/routes/checkout.tsx</span>
+<span class="l plain" data-step="19">edited src/components/PaymentForm.tsx</span>
+<span class="l cmd" data-step="26">sidekar bus send viper "checkout page wired to the new endpoint" --reply-to=7f2a91</span>
+<span class="l plain" data-step="27" data-state="idle">sent to viper</span></pre>
+          <div class="demo-foot"><span class="prompt cursor-prompt"><span class="ctext"></span></span>
+<span class="status split"><span>Auto</span><span class="accent">Run Everything</span></span>
+<span class="status">~/src/storefront &middot; main</span></div>
         </div>
 
         <div class="demo-pane" data-pane="c">
@@ -1005,20 +1003,22 @@ h1 {
             <span class="demo-title">pike (opencode-storefront-1) &mdash; opencode</span>
             <span class="demo-state" data-state="idle">idle</span>
           </div>
-          <pre class="demo-out"><span class="l run" data-step="3">sidekar opencode</span>
-<span class="l paste" data-step="17" data-state="working">[request from viper]: add POST /api/checkout/session</span>
-<span class="l hint" data-step="18">[reply with: sidekar bus send viper "&lt;your response&gt;" --reply-to=3c8d04]</span>
-<span class="l ok" data-step="20">edited api/checkout/session.ts</span>
-<span class="l tool" data-step="23">npm test -- checkout</span>
-<span class="l ok" data-step="24">12 passing</span>
-<span class="l tool" data-step="25">sidekar bus send viper "POST /api/checkout/session live" --reply-to=3c8d04</span>
-<span class="l res" data-step="26" data-state="idle">sent to viper</span></pre>
+          <div class="demo-head"><b>opencode</b> <span class="dim">1.18.0 &middot; ~/src/storefront:main</span></div>
+          <pre class="demo-out"><span class="l bar" data-step="14" data-state="working">[request from viper]: add POST /api/checkout/session</span>
+<span class="l hint" data-step="15">[reply with: sidekar bus send viper "&lt;your response&gt;" --reply-to=3c8d04]</span>
+<span class="l plain" data-step="17">edited api/checkout/session.ts</span>
+<span class="l plain" data-step="20">npm test -- checkout</span>
+<span class="l ok" data-step="21">12 passing</span>
+<span class="l cmd" data-step="22">sidekar bus send viper "POST /api/checkout/session live" --reply-to=3c8d04</span>
+<span class="l plain" data-step="23" data-state="idle">sent to viper</span></pre>
+          <div class="demo-foot"><span class="prompt opencode-prompt"><span class="ctext"></span></span>
+<span class="status split"><span class="accent">Build</span><span>tab agents &nbsp;ctrl+p commands</span></span></div>
         </div>
       </div>
     </div>
 
     <div class="demo-note">
-      Nobody copy-pasted between windows. Lines marked <span class="demo-key paste-key">&gt;</span> arrived in that agent's prompt because another agent addressed it by name &mdash; sidekar typed them in and pressed enter. Full command reference in the <a href="/docs">docs</a>.
+      Nobody copy-pasted between windows. Each pane is the agent's own interface, wrapped by <code>sidekar &lt;agent&gt;</code> &mdash; which is why work from another agent shows up at its prompt like anything you would have typed there yourself. Full command reference in the <a href="/docs">docs</a>.
     </div>
   </div>
 </section>
@@ -1421,6 +1421,7 @@ function copyInstall() {
   var TYPE_MS = 16;          // per character on typed lines
   var LINE_MS = 260;         // pause after an instant line
   var THINK_MS = 620;        // pause before an agent answers
+  var SUBMIT_MS = 520;      // pause on a finished prompt before enter
   var END_MS = 4200;         // hold on the finished screen before looping
 
   var timer = null;
@@ -1440,7 +1441,43 @@ function copyInstall() {
       chip.setAttribute('data-state', 'idle');
       chip.textContent = 'idle';
     });
+    stage.querySelectorAll('.ctext').forEach(function(c) { c.textContent = ''; });
     stage.querySelectorAll('.demo-out').forEach(function(p) { p.scrollTop = 0; });
+  }
+
+  /* A line that arrives at the agent's prompt rather than being printed by
+     it. In the lead pane that is the human typing; in the other two it is
+     sidekar typing the delivered message in and submitting it, which is the
+     whole point of owning the PTY. Either way it is typed at the composer
+     first, then committed to the transcript on enter. */
+  function entersAtPrompt(el) {
+    return el.classList.contains('usr')
+      || el.classList.contains('arw')
+      || el.classList.contains('bar');
+  }
+
+  function typeAtPrompt(el, done) {
+    var composer = el.closest('.demo-pane').querySelector('.ctext');
+    var plain = el.textContent;
+    var i = 0;
+    (function step() {
+      if (!running) return;
+      i++;
+      composer.textContent = plain.slice(0, i);
+      if (i < plain.length) {
+        timer = setTimeout(step, TYPE_MS);
+        return;
+      }
+      // Enter: the prompt clears and the line lands in the transcript.
+      timer = setTimeout(function() {
+        if (!running) return;
+        composer.textContent = '';
+        el.classList.add('shown');
+        applyState(el);
+        scrollPane(el);
+        done();
+      }, SUBMIT_MS);
+    })();
   }
 
   function applyState(el) {
@@ -1486,15 +1523,20 @@ function copyInstall() {
       return;
     }
     var el = lines[index];
-    var typed = el.classList.contains('run') || el.classList.contains('usr')
-      || el.classList.contains('tool') || el.classList.contains('paste');
+    var next = function() {
+      timer = setTimeout(function() { play(index + 1); }, THINK_MS);
+    };
+
+    if (entersAtPrompt(el)) {
+      typeAtPrompt(el, next);
+      return;
+    }
+
     el.classList.add('shown');
     applyState(el);
 
-    if (typed) {
-      typeInto(el, function() {
-        timer = setTimeout(function() { play(index + 1); }, THINK_MS);
-      });
+    if (el.classList.contains('tool') || el.classList.contains('cmd')) {
+      typeInto(el, next);
     } else {
       scrollPane(el);
       timer = setTimeout(function() { play(index + 1); }, LINE_MS);
