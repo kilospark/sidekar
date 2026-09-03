@@ -464,62 +464,6 @@ h1 {
   background: var(--page-panel);
 }
 
-/* --- terminal demo --- */
-.demo {
-  border: 1px solid var(--page-line);
-  background: var(--page-panel-strong);
-}
-
-.demo-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--page-line);
-  font: 11px/1 var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--page-muted);
-}
-
-.demo-bar::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  background: var(--page-warm);
-}
-
-.demo pre {
-  margin: 0;
-  padding: 22px;
-  overflow-x: auto;
-  font: 13px/1.85 var(--mono);
-  color: var(--page-muted);
-  white-space: pre;
-}
-
-.demo pre b {
-  color: var(--page-ink);
-  font-weight: 600;
-}
-
-.demo pre i {
-  color: var(--page-warm);
-  font-style: normal;
-}
-
-.demo-note {
-  border-top: 1px solid var(--page-line);
-  padding: 14px 22px;
-  color: var(--page-muted);
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.demo-note a {
-  color: var(--page-ink);
-}
-
 /* --- install command block --- */
 .install-cmd {
   display: flex;
@@ -685,6 +629,209 @@ h1 {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- animated three-agent demo --- */
+.demo-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.demo-col {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 14px;
+  min-width: 0;
+}
+
+.demo-pane {
+  border: 1px solid var(--page-line);
+  background: var(--page-panel-strong);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.demo-pane-lead {
+  min-height: 420px;
+}
+
+.demo-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--page-line);
+  font: 11px/1 var(--mono);
+  color: var(--page-muted);
+}
+
+.demo-agent {
+  color: var(--page-ink);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.demo-nick::before {
+  content: "\201C";
+}
+
+.demo-nick::after {
+  content: "\201D";
+}
+
+/* State chip. Mirrors the vocabulary `sidekar bus who` actually reports. */
+.demo-state {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--page-line);
+  padding: 3px 8px;
+  color: var(--page-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.demo-state::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  background: var(--page-warm);
+}
+
+.demo-state[data-state="working"] {
+  color: var(--page-ink);
+  border-color: var(--page-ink);
+}
+
+.demo-state[data-state="working"]::before {
+  background: var(--page-ink);
+  animation: demo-pulse 1.1s steps(2, end) infinite;
+}
+
+.demo-state[data-state="waiting"] {
+  color: var(--page-warm);
+}
+
+@keyframes demo-pulse {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.15; }
+}
+
+.demo-out {
+  margin: 0;
+  padding: 16px;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font: 12.5px/1.75 var(--mono);
+  color: var(--page-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.demo-out .l {
+  display: block;
+}
+
+/* Command lines carry the prompt marker in CSS so the text stays copyable. */
+.demo-out .cmd::before {
+  content: "$ ";
+  color: var(--page-warm);
+}
+
+.demo-out .cmd {
+  color: var(--page-ink);
+  font-weight: 500;
+}
+
+.demo-out .usr::before {
+  content: "";
+}
+
+.demo-out .usr {
+  color: var(--page-ink);
+  font-weight: 500;
+}
+
+.demo-out .msg {
+  color: var(--page-ink);
+}
+
+.demo-out .ok,
+.demo-out .asst {
+  color: var(--page-ink);
+}
+
+.demo-out .dim,
+.demo-out .out {
+  color: var(--page-muted);
+}
+
+.demo-out i {
+  color: var(--page-ink);
+  font-style: normal;
+}
+
+/* Hidden until the replay reaches this line. Static (no-JS) render shows
+   everything, so the animation is additive rather than load-bearing. */
+.demo-stage[data-playing] .l {
+  visibility: hidden;
+}
+
+.demo-stage[data-playing] .l.shown {
+  visibility: visible;
+}
+
+.demo-stage[data-playing] .l.typing::after {
+  content: "\2588";
+  color: var(--page-warm);
+}
+
+.demo-replay {
+  position: absolute;
+  top: -34px;
+  right: 0;
+  font: 11px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--page-muted);
+  background: transparent;
+  border: 1px solid var(--page-line);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.demo-replay:hover {
+  color: var(--page-ink);
+  background: var(--page-panel);
+}
+
+@media (max-width: 900px) {
+  .demo-stage {
+    grid-template-columns: 1fr;
+  }
+  .demo-pane-lead {
+    min-height: 320px;
+  }
+  .demo-col {
+    grid-template-rows: auto auto;
+  }
+}
+
+/* Motion is decoration here; the transcript is the content. */
+@media (prefers-reduced-motion: reduce) {
+  .demo-stage[data-playing] .l {
+    visibility: visible;
+  }
+  .demo-state[data-state="working"]::before {
+    animation: none;
+  }
+}
 </style>
 </head>
 <body>
@@ -752,32 +899,73 @@ h1 {
   <div class="container section-shell">
     <div class="section-header">
       <div>
-        <h2>Wrap your agent. It gets a name.</h2>
-        <p>Prefix the CLI you already use. Sidekar registers the session on a channel keyed to the working directory, so agents in the same repo can find and message each other by name.</p>
+        <h2>Agents that work with each other.</h2>
+        <p>Wrap each agent with <code>sidekar</code> and they register on a channel keyed to the working directory. From then on they have names, and can hand work to each other by name instead of routing every step through you.</p>
       </div>
     </div>
-    <div class="demo">
-      <div class="demo-bar">~/src/storefront</div>
-<pre><b>$ sidekar claude</b>
-<i>viper (claude-storefront-1) registered on channel /Users/you/src/storefront</i>
 
-<b>$ sidekar bus who</b>
-Channel "/Users/you/src/storefront":
-- claude-storefront-1 <i>"viper"</i> (you) (pane cli-89170)
-- codex-storefront-1  <i>"ember"</i>      (pane cli-89204)
+    <div class="demo-stage" id="demo-stage" aria-label="Three coding agents coordinating over the sidekar bus">
+      <button type="button" class="demo-replay" id="demo-replay" hidden>Replay</button>
 
-<b>$ sidekar bus send ember "checkout branch is on staging, verify the payment step"</b>
-<i>sent to ember (msg 7f2a91)</i>
-
-<b>$ sidekar browser read https://staging.storefront.dev/checkout</b>
-<i># Checkout
-Order summary . Total $42.00
-[button] Pay now
-[link] Back to cart</i>
-</pre>
-      <div class="demo-note">
-        Every command works the same way from your shell and from the agent, because the agent reads the same <code>SKILL.md</code> you do. Full command reference in the <a href="/docs">docs</a>.
+      <div class="demo-pane demo-pane-lead" data-pane="a">
+        <div class="demo-bar">
+          <span class="demo-agent">claude</span>
+          <span class="demo-nick">viper</span>
+          <span class="demo-state" data-state="idle">idle</span>
+        </div>
+        <pre class="demo-out"><span class="l usr" data-step="1" data-state="working">&gt; add stripe checkout. get ember and pike to help.</span>
+<span class="l cmd" data-step="2">sidekar bus who</span>
+<span class="l out" data-step="3">Channel "~/src/storefront":</span>
+<span class="l out" data-step="4">- claude-storefront-1   <i>"viper"</i>  (you)</span>
+<span class="l out" data-step="5">- cursor-storefront-1   <i>"ember"</i></span>
+<span class="l out" data-step="6">- opencode-storefront-1 <i>"pike"</i></span>
+<span class="l cmd" data-step="7">sidekar bus send ember "build /checkout with stripe elements"</span>
+<span class="l dim" data-step="8">sent to ember (msg 7f2a91)</span>
+<span class="l cmd" data-step="10">sidekar bus send pike "add POST /api/checkout/session"</span>
+<span class="l dim" data-step="11">sent to pike (msg 3c8d04)</span>
+<span class="l cmd" data-step="18" data-state="waiting">sidekar bus wait pike --until=settled</span>
+<span class="l dim" data-step="21">pike (opencode-storefront-1) is idle.</span>
+<span class="l msg" data-step="22">[sidekar] pike: POST /api/checkout/session live</span>
+<span class="l msg" data-step="25">[sidekar] ember: checkout page wired to the new endpoint</span>
+<span class="l cmd" data-step="26" data-state="working">sidekar browser read localhost:3000/checkout</span>
+<span class="l out" data-step="27"># Checkout</span>
+<span class="l out" data-step="28">Order summary &middot; Total $42.00</span>
+<span class="l out" data-step="29">[button] Pay now</span>
+<span class="l asst" data-step="30" data-state="idle">Both agents reported back. Checkout works end to end.</span></pre>
       </div>
+
+      <div class="demo-col">
+        <div class="demo-pane" data-pane="b">
+          <div class="demo-bar">
+            <span class="demo-agent">cursor</span>
+            <span class="demo-nick">ember</span>
+            <span class="demo-state" data-state="idle">idle</span>
+          </div>
+          <pre class="demo-out"><span class="l msg" data-step="9" data-state="working">[sidekar] viper: build /checkout with stripe elements</span>
+<span class="l out" data-step="12">edit src/routes/checkout.tsx</span>
+<span class="l out" data-step="15">edit src/components/PaymentForm.tsx</span>
+<span class="l cmd" data-step="23">sidekar bus done viper "checkout page wired to the new endpoint"</span>
+<span class="l dim" data-step="24" data-state="idle">reported to viper</span></pre>
+        </div>
+
+        <div class="demo-pane" data-pane="c">
+          <div class="demo-bar">
+            <span class="demo-agent">opencode</span>
+            <span class="demo-nick">pike</span>
+            <span class="demo-state" data-state="idle">idle</span>
+          </div>
+          <pre class="demo-out"><span class="l msg" data-step="13" data-state="working">[sidekar] viper: add POST /api/checkout/session</span>
+<span class="l out" data-step="14">edit api/checkout/session.ts</span>
+<span class="l cmd" data-step="16">npm test -- checkout</span>
+<span class="l ok" data-step="17">&#10003; 12 passing</span>
+<span class="l cmd" data-step="19">sidekar bus done viper "POST /api/checkout/session live"</span>
+<span class="l dim" data-step="20" data-state="idle">reported to viper</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="demo-note">
+      Nobody copy-pasted between windows. <code>bus send</code> hands work over, <code>bus wait</code> blocks until an agent is actually done, and <code>bus done</code> reports back. Full command reference in the <a href="/docs">docs</a>.
     </div>
   </div>
 </section>
@@ -1155,6 +1343,154 @@ function copyInstall() {
   }).catch(function() {
     wrap.classList.add('visible');
   });
+})();
+/* --- animated three-agent demo ---------------------------------------- */
+/* The transcript lives in the HTML, one <span data-step> per line, so a
+   reader without JS (or a screen reader) gets the whole thing. This only
+   hides those lines and reveals them in global step order. */
+(function() {
+  var stage = document.getElementById('demo-stage');
+  if (!stage) return;
+
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) return;
+
+  var lines = Array.prototype.slice.call(stage.querySelectorAll('.l[data-step]'));
+  if (!lines.length) return;
+  lines.sort(function(a, b) {
+    return (+a.getAttribute('data-step')) - (+b.getAttribute('data-step'));
+  });
+
+  // Cache the final text so typing can rebuild it a character at a time.
+  lines.forEach(function(el) { el.dataset.full = el.innerHTML; });
+
+  var replay = document.getElementById('demo-replay');
+  var TYPE_MS = 16;          // per character on typed lines
+  var LINE_MS = 260;         // pause after an instant line
+  var THINK_MS = 620;        // pause before an agent answers
+  var END_MS = 4200;         // hold on the finished screen before looping
+
+  var timer = null;
+  var running = false;
+
+  function clearTimer() {
+    if (timer) { clearTimeout(timer); timer = null; }
+  }
+
+  function reset() {
+    clearTimer();
+    lines.forEach(function(el) {
+      el.classList.remove('shown', 'typing');
+      el.innerHTML = el.dataset.full;
+    });
+    stage.querySelectorAll('.demo-state').forEach(function(chip) {
+      chip.setAttribute('data-state', 'idle');
+      chip.textContent = 'idle';
+    });
+    stage.querySelectorAll('.demo-out').forEach(function(p) { p.scrollTop = 0; });
+  }
+
+  function applyState(el) {
+    var state = el.getAttribute('data-state');
+    if (!state) return;
+    var chip = el.closest('.demo-pane').querySelector('.demo-state');
+    chip.setAttribute('data-state', state);
+    chip.textContent = state === 'waiting' ? 'waiting' : state;
+  }
+
+  function scrollPane(el) {
+    var pane = el.closest('.demo-out');
+    pane.scrollTop = pane.scrollHeight;
+  }
+
+  // Type visible characters while leaving markup intact: walk the finished
+  // HTML and stop at a character budget, closing any open tag.
+  function typeInto(el, done) {
+    var full = el.dataset.full;
+    var plain = el.textContent;
+    var i = 0;
+    el.classList.add('typing');
+    (function step() {
+      if (!running) return;
+      i++;
+      if (i >= plain.length) {
+        el.innerHTML = full;
+        el.classList.remove('typing');
+        scrollPane(el);
+        done();
+        return;
+      }
+      el.textContent = plain.slice(0, i);
+      scrollPane(el);
+      timer = setTimeout(step, TYPE_MS);
+    })();
+  }
+
+  function play(index) {
+    if (!running) return;
+    if (index >= lines.length) {
+      timer = setTimeout(function() { reset(); play(0); }, END_MS);
+      return;
+    }
+    var el = lines[index];
+    var typed = el.classList.contains('cmd') || el.classList.contains('usr');
+    el.classList.add('shown');
+    applyState(el);
+
+    if (typed) {
+      typeInto(el, function() {
+        timer = setTimeout(function() { play(index + 1); }, THINK_MS);
+      });
+    } else {
+      scrollPane(el);
+      timer = setTimeout(function() { play(index + 1); }, LINE_MS);
+    }
+  }
+
+  function start() {
+    if (running) return;
+    running = true;
+    stage.setAttribute('data-playing', '');
+    reset();
+    play(0);
+  }
+
+  function stop() {
+    running = false;
+    clearTimer();
+  }
+
+  // Only animate while on screen: off-screen typing is wasted battery.
+  // Driven by geometry rather than IntersectionObserver alone — IO callbacks
+  // do not fire in a throttled or occluded tab, and the demo silently never
+  // starting is a worse failure than running when it did not need to.
+  function inView() {
+    var r = stage.getBoundingClientRect();
+    return r.top < window.innerHeight * 0.9 && r.bottom > window.innerHeight * 0.1;
+  }
+
+  function sync() {
+    if (inView()) start();
+    else stop();
+  }
+
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver(sync, { threshold: [0, 0.25] }).observe(stage);
+  }
+  window.addEventListener('scroll', sync, { passive: true });
+  window.addEventListener('resize', sync, { passive: true });
+  // Re-check once webfonts have settled: the stage can be pushed in or out of
+  // view by the reflow, and the init call above measured the pre-reflow layout.
+  window.addEventListener('load', sync);
+  sync();
+
+  if (replay) {
+    replay.hidden = false;
+    replay.addEventListener('click', function() {
+      stop();
+      start();
+    });
+  }
 })();
 </script>
 </body>
