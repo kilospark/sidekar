@@ -83,6 +83,11 @@ static LAST_PUBLISHED: std::sync::LazyLock<
 
 /// Persist local activity and mirror to relay when a tunnel is registered.
 pub fn publish(agent_name: &str, state: ActivityState) {
+    publish_with_reason(agent_name, state, None)
+}
+
+/// As [`publish`], carrying the wrapper's account of why it concluded `state`.
+pub fn publish_with_reason(agent_name: &str, state: ActivityState, reason: Option<String>) {
     let now = epoch_secs();
     let should_write = {
         let mut last = LAST_PUBLISHED.lock().unwrap_or_else(|e| e.into_inner());
@@ -106,7 +111,8 @@ pub fn publish(agent_name: &str, state: ActivityState) {
         return;
     }
 
-    let _ = crate::broker::update_agent_activity(agent_name, state, now);
+    let _ =
+        crate::broker::update_agent_activity_with_reason(agent_name, state, now, reason.as_deref());
     publish_relay(state, now);
 }
 

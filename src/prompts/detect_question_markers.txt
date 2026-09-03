@@ -1,0 +1,26 @@
+# Phrases that only appear when an agent is blocking on a human answer.
+#
+# Matched case-insensitively, as substrings, against the lines the agent
+# drew — never against the composer, where the human's own draft lives.
+#
+# One phrase per line. Blank lines and lines starting with # are ignored.
+# Edits survive upgrades; `sidekar prompt reset` restores this list.
+#
+# Keep these specific. A phrase loose enough to appear in ordinary agent
+# prose will park the bus on a question that was never asked, deferring
+# delivery until the stale-tail cap expires.
+do you want to
+do you want me to
+would you like me to
+press enter to continue
+press enter to confirm
+waiting for your input
+waiting for user input
+allow this command
+allow command
+approve this
+apply this change
+continue?
+proceed?
+overwrite?
+are you sure

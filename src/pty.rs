@@ -17,6 +17,7 @@ mod chrome;
 mod escape_filter;
 mod event_loop;
 mod identity;
+mod osc_state;
 mod query_responder;
 mod replay;
 mod session;

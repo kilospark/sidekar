@@ -177,6 +177,8 @@ pub(crate) async fn event_loop(
     let mut size_ownership = SizeOwnership::new();
     // Tracks whether the agent is parked on a question a human must answer.
     let mut waiting = WaitingDetector::new();
+    // Reads turn state out of the agent's own OSC title and progress reports.
+    let mut osc_state = super::osc_state::OscStateDetector::new();
     // With no local terminal, sidekar answers the agent's capability probes itself.
     let mut query_responder = (!stdin_is_tty()).then(QueryResponder::new);
     // Set while a viewer is waiting on a full replay after a backlog cut-off.
@@ -416,14 +418,26 @@ pub(crate) async fn event_loop(
                                     waiting.clear();
                                 }
                                 waiting.feed_text(&crate::events::strip_ansi(raw));
-                                input_state
-                                    .set_awaiting_user_input(waiting.is_question_on_screen());
+                                input_state.set_awaiting_user_input_because(
+                                    waiting.question_on_screen().map(|q| q.describe()),
+                                );
 
                                 let parsed_events = event_parser.feed(raw);
                                 for event in &parsed_events {
                                     if matches!(event, crate::events::AgentEvent::Status { .. }) {
                                         input_state.mark_spinner_activity();
                                     }
+                                }
+                                // OSC state is what the agent says about itself, so it
+                                // is applied after the line-based guess and overrides it.
+                                match osc_state.feed(raw) {
+                                    Some(super::osc_state::OscSignal::Working) => {
+                                        input_state.mark_spinner_activity()
+                                    }
+                                    Some(super::osc_state::OscSignal::Idle) => {
+                                        input_state.clear_spinner_activity()
+                                    }
+                                    None => {}
                                 }
                                 input_state.publish_activity(agent_name);
                                 // Preserve terminal transparency except for OSC window-title

@@ -29,6 +29,8 @@ pub struct UserInputState {
     input_mode: TerminalInputMode,
     /// When the agent's screen started showing an unanswered question (0 = none).
     awaiting_since_ms: std::sync::atomic::AtomicU64,
+    /// The detector's account of the current question, for `bus explain`.
+    awaiting_reason: Mutex<Option<String>>,
 }
 
 pub struct PtyNotice {
@@ -61,6 +63,7 @@ impl UserInputState {
             last_spinner_at_ms: std::sync::atomic::AtomicU64::new(0),
             input_mode: TerminalInputMode::new(),
             awaiting_since_ms: std::sync::atomic::AtomicU64::new(0),
+            awaiting_reason: Mutex::new(None),
         }
     }
 
@@ -93,8 +96,27 @@ impl UserInputState {
             .store(epoch_millis(), Ordering::Relaxed);
     }
 
+    /// Stop treating the agent as working.
+    ///
+    /// Line-based spinner detection can only ever say "still going"; it never
+    /// sees the frame that would say "finished", so the clock relies on
+    /// [`PTY_SPINNER_BUSY_MS`] expiring. An agent that declares the end of its
+    /// turn over OSC (see `pty::osc_state`) is more definite than that timeout,
+    /// so it clears the clock outright.
+    pub fn clear_spinner_activity(&self) {
+        self.last_spinner_at_ms.store(0, Ordering::Relaxed);
+    }
+
     /// Record whether the agent's screen currently shows an unanswered question.
-    pub fn set_awaiting_user_input(&self, waiting: bool) {
+    ///
+    /// `reason` is the detector's account of why, kept so `bus explain` can
+    /// report which rule fired rather than only that something did.
+    pub fn set_awaiting_user_input_because(&self, reason: Option<String>) {
+        let waiting = reason.is_some();
+        *self
+            .awaiting_reason
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = reason;
         if !waiting {
             self.awaiting_since_ms.store(0, Ordering::Relaxed);
             return;
@@ -106,6 +128,11 @@ impl UserInputState {
             Ordering::Relaxed,
             Ordering::Relaxed,
         );
+    }
+
+    /// Record whether the agent's screen currently shows an unanswered question.
+    pub fn set_awaiting_user_input(&self, waiting: bool) {
+        self.set_awaiting_user_input_because(waiting.then(|| "question on screen".to_string()));
     }
 
     /// True when the agent is parked on a prompt that needs a human answer.
@@ -131,19 +158,64 @@ impl UserInputState {
     }
 
     pub fn current_activity_state(&self) -> ActivityState {
-        if !self.is_idle() || self.has_pending_line() || self.has_stashed_draft() {
-            ActivityState::UserTyping
-        } else if self.is_awaiting_user_input() {
-            ActivityState::NeedsInput
-        } else if self.is_agent_working() {
-            ActivityState::AgentWorking
-        } else {
-            ActivityState::Idle
+        self.current_activity().0
+    }
+
+    /// The current state together with the evidence for it.
+    ///
+    /// Both come from one pass so a reported reason can never describe a
+    /// different branch than the state it is stored beside.
+    pub fn current_activity(&self) -> (ActivityState, String) {
+        let now = epoch_millis();
+        if !self.is_idle() {
+            return (ActivityState::UserTyping, "user typed recently".into());
         }
+        if self.has_pending_line() {
+            return (
+                ActivityState::UserTyping,
+                "partial input line buffered".into(),
+            );
+        }
+        if self.has_stashed_draft() {
+            return (
+                ActivityState::UserTyping,
+                "draft stashed for an injected message".into(),
+            );
+        }
+        if self.is_awaiting_user_input() {
+            let reason = self
+                .awaiting_reason
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_else(|| "question on screen".into());
+            return (ActivityState::NeedsInput, reason);
+        }
+        let output_at = self.last_pty_output_at_ms.load(Ordering::Relaxed);
+        if output_at > 0 && now.saturating_sub(output_at) < PTY_OUTPUT_BUSY_MS {
+            let ago = now.saturating_sub(output_at);
+            return (
+                ActivityState::AgentWorking,
+                format!("PTY output {ago}ms ago"),
+            );
+        }
+        let spinner_at = self.last_spinner_at_ms.load(Ordering::Relaxed);
+        if spinner_at > 0 && now.saturating_sub(spinner_at) < PTY_SPINNER_BUSY_MS {
+            let ago = now.saturating_sub(spinner_at);
+            return (
+                ActivityState::AgentWorking,
+                format!("status indicator {ago}ms ago"),
+            );
+        }
+        (
+            ActivityState::Idle,
+            "no output, no question on screen".into(),
+        )
     }
 
     pub fn publish_activity(&self, agent_name: &str) {
-        crate::activity::publish(agent_name, self.current_activity_state());
+        let (state, reason) = self.current_activity();
+        crate::activity::publish_with_reason(agent_name, state, Some(reason));
     }
 
     fn update_terminal_state(&self, bytes: &[u8]) {

@@ -11,10 +11,14 @@ use crate::*;
 use std::io::Write as _;
 
 mod commands;
+mod explain;
 mod nickname;
+mod wait;
 
 pub use commands::*;
+pub use explain::cmd_explain;
 pub use nickname::*;
+pub use wait::cmd_wait;
 
 const PENDING_GRACE_SECS: u64 = 30;
 const TIMEOUT_SECS: u64 = 300;

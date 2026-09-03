@@ -126,3 +126,69 @@ fn ordinary_output_is_not_a_screen_reset() {
     assert!(!resets_screen(b"\x1b[2K"));
     assert!(!resets_screen(b""));
 }
+
+// --- region scoping -------------------------------------------------------
+
+#[test]
+fn user_typing_a_question_into_the_composer_is_not_the_agent_asking() {
+    // The dominant false positive: the human drafts a message containing a
+    // marker phrase, and injection stays deferred until the stale-tail cap.
+    let screen = "\
+✻ Welcome to Claude Code
+
+> do you want to rebase onto main before I push?
+  ? for shortcuts
+";
+    assert!(!looks_like_question(screen));
+}
+
+#[test]
+fn user_typing_a_question_inside_a_boxed_composer_is_not_a_question() {
+    let screen = "\
+╭──────────────────────────────────────────╮
+│ > are you sure the migration is additive │
+╰──────────────────────────────────────────╯
+  ? for shortcuts
+";
+    assert!(!looks_like_question(screen));
+}
+
+#[test]
+fn composer_draft_does_not_mask_a_real_dialog_above_it() {
+    // Scoping must not hide a dialog just because the composer is on screen.
+    let screen = "\
+Bash(rm -rf build/)
+Do you want to proceed?
+❯ 1. Yes
+  2. No
+> and some half-typed draft
+";
+    assert!(looks_like_question(screen));
+}
+
+#[test]
+fn yes_no_marker_typed_by_the_user_is_ignored() {
+    assert!(!looks_like_question("> should I add a (y/n) prompt here\n"));
+}
+
+#[test]
+fn boxed_dialog_text_is_still_matched() {
+    // A box alone must not exclude a line; only a composer marker does.
+    let screen = "\
+╭─────────────────────────╮
+│ Do you want to proceed? │
+╰─────────────────────────╯
+";
+    assert!(looks_like_question(screen));
+}
+
+#[test]
+fn fancy_composer_marker_is_recognised() {
+    assert!(!looks_like_question("❯ would you like me to retry that\n"));
+}
+
+#[test]
+fn bare_composer_markers_stay_idle() {
+    assert!(!looks_like_question(">\n  ? for shortcuts\n"));
+    assert!(!looks_like_question("❯\n  ? for shortcuts\n"));
+}

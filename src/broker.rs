@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 10;
+const SCHEMA_VERSION: u32 = 11;
 
 mod activity;
 mod agent_registry;
@@ -123,6 +123,9 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         if version < 9 {
             ensure_bus_queue_claim_columns(conn)?;
         }
+        if version < 11 {
+            migrate_agents_explain_columns(conn)?;
+        }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
     ensure_proxy_log_status(conn)?;
@@ -165,6 +168,30 @@ fn migrate_agents_activity_columns(conn: &Connection) -> Result<()> {
             "ALTER TABLE agents ADD COLUMN activity_at INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
+    }
+    Ok(())
+}
+
+/// v11: activity provenance (`bus explain`) and finish tracking (`bus who`).
+fn migrate_agents_explain_columns(conn: &Connection) -> Result<()> {
+    let mut cols = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for name in names.flatten() {
+            cols.insert(name);
+        }
+    }
+    if !cols.contains("activity_reason") {
+        conn.execute("ALTER TABLE agents ADD COLUMN activity_reason TEXT", [])?;
+    }
+    // Null until the agent has finished a turn at least once.
+    if !cols.contains("settled_at") {
+        conn.execute("ALTER TABLE agents ADD COLUMN settled_at INTEGER", [])?;
+    }
+    // Null while a finish is still unseen; set once a human is evidently there.
+    if !cols.contains("seen_at") {
+        conn.execute("ALTER TABLE agents ADD COLUMN seen_at INTEGER", [])?;
     }
     Ok(())
 }
@@ -314,7 +341,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
             registered_at INTEGER NOT NULL,
             last_seen_at INTEGER NOT NULL,
             activity_state TEXT NOT NULL DEFAULT 'unknown',
-            activity_at INTEGER NOT NULL DEFAULT 0
+            activity_at INTEGER NOT NULL DEFAULT 0,
+            activity_reason TEXT,
+            settled_at INTEGER,
+            seen_at INTEGER
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_pane_unique
             ON agents(pane_unique_id)

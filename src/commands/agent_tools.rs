@@ -36,6 +36,8 @@ pub(super) async fn dispatch_agent_command(
         "bus-done" => cmd_bus_done(ctx, args),
         "bus-cancel" => cmd_bus_cancel(ctx, args),
         "bus-dismiss" => cmd_bus_dismiss(ctx, args),
+        "bus-wait" => cmd_bus_wait(ctx, args).await,
+        "bus-explain" => cmd_bus_explain(ctx, args),
         "cron" => dispatch_cron_root(ctx, args).await,
         "cron-create" => cmd_cron_create(ctx, args).await,
         "cron-list" => cmd_cron_list(ctx, args).await,
@@ -63,11 +65,23 @@ async fn dispatch_bus_root(ctx: &mut AppContext, args: &[String]) -> Result<()> 
         "done" => "bus-done",
         "cancel" => "bus-cancel",
         "dismiss" => "bus-dismiss",
+        "wait" => "bus-wait",
+        "explain" => "bus-explain",
         _ => bail!(
-            "Usage: sidekar bus <who|requests|replies|show|send|done|cancel|dismiss> [args...]"
+            "Usage: sidekar bus <who|requests|replies|show|send|done|wait|explain|cancel|dismiss> [args...]"
         ),
     };
     Box::pin(super::dispatch(ctx, subcommand, &args[1..])).await
+}
+
+fn cmd_bus_explain(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let bus_state = recovered_bus_state(ctx);
+    crate::bus::cmd_explain(&bus_state, ctx, args)
+}
+
+async fn cmd_bus_wait(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let bus_state = recovered_bus_state(ctx);
+    crate::bus::cmd_wait(&bus_state, ctx, args).await
 }
 
 fn cmd_bus_who(ctx: &mut AppContext, args: &[String]) -> Result<()> {

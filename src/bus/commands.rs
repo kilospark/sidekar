@@ -348,6 +348,12 @@ struct WhoAgent {
     channel: Option<String>,
     cwd: Option<String>,
     is_you: bool,
+    /// Seconds since this agent finished a turn nobody has looked at since.
+    ///
+    /// The point of `who` is deciding who to hand work to, and an agent that
+    /// finished twenty minutes ago while you were elsewhere is the one you
+    /// most need pointed out. Marked here rather than left to be noticed.
+    finished_unseen_secs: Option<u64>,
 }
 
 #[derive(serde::Serialize)]
@@ -356,6 +362,16 @@ struct WhoOutput {
     show_all: bool,
     my_name: String,
     agents: Vec<WhoAgent>,
+}
+
+/// Compact relative time for inline use in a `who` line.
+fn brief_ago(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s ago"),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
+    }
 }
 
 impl crate::output::CommandOutput for WhoOutput {
@@ -381,7 +397,15 @@ impl crate::output::CommandOutput for WhoOutput {
                 .as_deref()
                 .map(|c| format!(", cwd: {c}"))
                 .unwrap_or_default();
-            format!("- {}{}{} (pane {}{})", a.name, nick, you, pane, cwd)
+            // Never flagged for yourself: you are, definitionally, looking.
+            let unseen = match a.finished_unseen_secs {
+                Some(secs) if !a.is_you => format!(" [finished {}, unseen]", brief_ago(secs)),
+                _ => String::new(),
+            };
+            format!(
+                "- {}{}{} (pane {}{}){}",
+                a.name, nick, you, pane, cwd, unseen
+            )
         };
         if self.show_all {
             let mut by_channel: std::collections::BTreeMap<String, Vec<String>> =
@@ -430,13 +454,24 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
         my_name: my_name.clone(),
         agents: agents
             .into_iter()
-            .map(|a| WhoAgent {
-                is_you: a.id.name == my_name,
-                name: a.id.name,
-                nick: a.id.nick,
-                pane: a.id.pane,
-                channel: a.id.session,
-                cwd: a.cwd,
+            .map(|a| {
+                let now = crate::message::epoch_secs();
+                // Best effort: a missing row is not worth failing `who` over.
+                let finished_unseen_secs = broker::get_agent_activity_detail(&a.id.name)
+                    .ok()
+                    .flatten()
+                    .filter(|d| d.finished_unseen())
+                    .and_then(|d| d.settled_at)
+                    .map(|settled| now.saturating_sub(settled));
+                WhoAgent {
+                    is_you: a.id.name == my_name,
+                    name: a.id.name,
+                    nick: a.id.nick,
+                    pane: a.id.pane,
+                    channel: a.id.session,
+                    cwd: a.cwd,
+                    finished_unseen_secs,
+                }
             })
             .collect(),
     };

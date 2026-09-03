@@ -1,0 +1,13 @@
+# Glyphs that mark the line the *user* types on.
+#
+# A line beginning with one of these (optionally inside a box border) is
+# the composer, so question phrases found there are the human drafting a
+# message, not the agent asking something. A selection cursor sitting on
+# a numbered option is excluded automatically and stays detectable.
+#
+# One glyph per line. Only the first character of each line is read.
+# Plain `>` is included; markdown blockquotes are handled separately by
+# the numbered-option check, which ignores `>` as a selection cursor.
+>
+❯
+›

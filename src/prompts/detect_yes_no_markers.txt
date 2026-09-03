@@ -1,0 +1,9 @@
+# Inline yes/no affordances, matched case-insensitively as substrings.
+#
+# These are the shapes a CLI uses when it wants a single keystroke rather
+# than a selection list. One per line; # comments and blank lines ignored.
+(y/n)
+[y/n]
+(yes/no)
+(y/n/a)
+[y/n/a]

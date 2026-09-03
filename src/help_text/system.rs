@@ -29,10 +29,16 @@ sidekar config [list|get|set|reset] [key] [value]
             "\
 sidekar prompt [list|get|set|edit|reset|diff] [key] [text|--file=path]
 
-  View or edit the prompts Sidekar sends to models. Defaults ship in the
-  binary and are seeded into the `prompts` table on first use. An edited
-  prompt is protected: later releases refresh only the prompts you never
-  touched, and `prompt list` flags yours when the default has moved on.
+  View or edit the text Sidekar ships: the prompts it sends to models, and
+  the `detect.*` marker lists it matches against a wrapped agent's screen.
+  Defaults ship in the binary and are seeded into the `prompts` table on
+  first use. An edited entry is protected: later releases refresh only the
+  entries you never touched, and `prompt list` flags yours when the default
+  has moved on.
+
+  The `detect.*` keys decide when a wrapped agent counts as blocked on a
+  question, which gates bus delivery. Add a marker there when an agent
+  reworks its prompts, instead of waiting for a sidekar release.
 
   Commands:
     prompt list              Show every prompt with size and status
@@ -42,10 +48,13 @@ sidekar prompt [list|get|set|edit|reset|diff] [key] [text|--file=path]
     prompt reset <key>       Restore the shipped default
     prompt diff <key>        Show how the stored text differs from the default
 
-  Keys: pty.starter, repl.system, journal.header, journal.schema,
+  Prompt keys: pty.starter, repl.system, journal.header, journal.schema,
         journal.mode.iterative, journal.mode.fresh,
         journal.summarizer.system, compaction.system,
         compaction.instructions, memory.extract.system
+
+  Detection keys: detect.question.markers, detect.question.yes_no,
+        detect.composer.markers
 
   Examples:
     sidekar prompt list

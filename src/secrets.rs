@@ -557,7 +557,10 @@ pub fn normalize_totp_secret(raw: &str) -> Result<String> {
     if cleaned.is_empty() {
         bail!("Invalid TOTP secret: no base32 characters found");
     }
-    if let Some(bad) = cleaned.chars().find(|c| !matches!(c, 'A'..='Z' | '2'..='7')) {
+    if let Some(bad) = cleaned
+        .chars()
+        .find(|c| !matches!(c, 'A'..='Z' | '2'..='7'))
+    {
         bail!("Invalid TOTP secret: '{bad}' is not a base32 character (allowed: A-Z, 2-7)");
     }
     Ok(cleaned.to_string())

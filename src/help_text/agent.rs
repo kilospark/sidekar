@@ -36,7 +36,7 @@ sidekar proxy <log|show|clear> [options]
         }
         "bus" => {
             "\
-sidekar bus <who|requests|replies|show|send|done|cancel|dismiss> [args...]
+sidekar bus <who|requests|replies|show|send|done|wait|explain|cancel|dismiss> [args...]
 
   Agent bus subcommands:
     who [--all]
@@ -48,11 +48,30 @@ sidekar bus <who|requests|replies|show|send|done|cancel|dismiss> [args...]
      Short closing acks (\"ok\", \"done\", \"thanks\") and --kind=fyi send an
      untracked note that ends with \"[no reply needed]\".)
     done <next> <summary> <request|--file=path> [--reply-to=<msg_id>] [--interrupt]
+    wait <agent> [--until=settled|idle|needs-input|working|user-typing] [--timeout=<ms>]
+    explain <agent>
     cancel <msg_id>... | --all
     dismiss <msg_id>...
 
   Use --file to avoid shell quoting issues — write the message to a temp file
   and pass the path instead.
+
+  `wait` blocks until another agent reaches a state, for ordering work that
+  `send` cannot express (start a reviewer, wait for it to be ready, then
+  prompt it). Defaults to --until=settled, which returns on either idle or
+  needs-input: both mean the agent stopped working. Default timeout 120000ms.
+  State is published by the PTY wrapper, so the target must have been started
+  with `sidekar <agent>`.
+
+  `explain` prints the evidence behind an agent's state: which detection
+  rule fired and on what line, how old the reading is, whether a finished
+  turn is still unseen, and whether bus delivery is currently deferred.
+  Reach for it when a message will not land or `wait` keeps timing out.
+  Detection markers are editable — see `sidekar prompt`, keys `detect.*`.
+
+  `who` flags an agent that finished a turn nobody has looked at since, so
+  work waiting on you is visible without opening each terminal. A finish
+  counts as seen once someone types into that agent's own terminal.
 
   Cross-channel messages (recipient registered on another Sidekar channel than
   you, or delivered via relay) append a short note to the pasted body so the

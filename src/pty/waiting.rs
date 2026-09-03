@@ -18,27 +18,9 @@ const TAIL_CAPACITY: usize = 4096;
 /// is always the last thing drawn, and prose further up must not match.
 const INSPECT_LINES: usize = 12;
 
-/// Phrases that only appear when an agent is blocking on a human answer.
-const QUESTION_MARKERS: &[&str] = &[
-    "do you want to",
-    "do you want me to",
-    "would you like me to",
-    "press enter to continue",
-    "press enter to confirm",
-    "waiting for your input",
-    "waiting for user input",
-    "allow this command",
-    "allow command",
-    "approve this",
-    "apply this change",
-    "continue?",
-    "proceed?",
-    "overwrite?",
-    "are you sure",
-];
+mod rules;
 
-/// Inline yes/no affordances, matched case-insensitively on the tail lines.
-const YES_NO_MARKERS: &[&str] = &["(y/n)", "[y/n]", "(yes/no)", "(y/n/a)", "[y/n/a]"];
+pub(crate) use rules::Rules;
 
 /// Rolling window of ANSI-stripped agent output used for question detection.
 #[derive(Debug, Default)]
@@ -71,8 +53,14 @@ impl WaitingDetector {
     }
 
     /// True when the tail of the screen looks like an unanswered question.
+    #[cfg(test)]
     pub(crate) fn is_question_on_screen(&self) -> bool {
         looks_like_question(&self.tail)
+    }
+
+    /// The matched question and why it matched, for `bus explain`.
+    pub(crate) fn question_on_screen(&self) -> Option<QuestionMatch> {
+        match_question(&self.tail, Rules::active())
     }
 
     /// Forget the current screen — called once the question is answered so a
@@ -90,54 +78,163 @@ pub(crate) fn resets_screen(raw: &[u8]) -> bool {
         .any(|needle| raw.windows(needle.len()).any(|w| w == *needle))
 }
 
-/// Core matcher, split out so it can be tested on plain strings.
-pub(crate) fn looks_like_question(tail: &str) -> bool {
-    let lines: Vec<&str> = tail
-        .lines()
-        .map(|line| line.trim_end())
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    if lines.is_empty() {
+/// Vertical box-drawing glyphs agents draw down the sides of the composer.
+const BOX_VERTICALS: &[char] = &['│', '┃', '║', '|'];
+
+/// The parts of the screen a rule can be matched against.
+///
+/// Matching the whole tail treats the agent's UI and the human's half-typed
+/// draft as the same text, which is how a user typing "do you want to rebase?"
+/// into the composer reads as the *agent* asking a question. Scoping each rule
+/// to a region keeps the two apart.
+struct Regions<'a> {
+    /// Last [`INSPECT_LINES`] non-empty lines, trailing space trimmed.
+    all: Vec<&'a str>,
+    /// [`all`](Self::all) minus the composer, i.e. only what the agent drew.
+    outside_composer: Vec<&'a str>,
+}
+
+impl<'a> Regions<'a> {
+    fn new(tail: &'a str, rules: &Rules) -> Self {
+        let lines: Vec<&str> = tail
+            .lines()
+            .map(|line| line.trim_end())
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let start = lines.len().saturating_sub(INSPECT_LINES);
+        let all = lines[start..].to_vec();
+        let outside_composer = all
+            .iter()
+            .copied()
+            .filter(|line| !is_composer_line(line, rules))
+            .collect();
+        Self {
+            all,
+            outside_composer,
+        }
+    }
+}
+
+/// Strip a box border from both ends of a line, leaving the content inside.
+///
+/// Composers are usually drawn inside a rounded box, so the raw line is
+/// `│ > half-typed text │` rather than `> half-typed text`.
+fn unbox(line: &str) -> &str {
+    let trimmed = line.trim();
+    let trimmed = trimmed.strip_prefix(BOX_VERTICALS).unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix(BOX_VERTICALS).unwrap_or(trimmed);
+    trimmed.trim()
+}
+
+/// True when the line is the agent's input line — where the *human* types.
+///
+/// A selection cursor sitting on a numbered option (`❯ 1. Yes`) uses the same
+/// glyph as a composer prompt, so options are excluded explicitly; otherwise
+/// scoping a rule away from the composer would also hide every permission
+/// dialog, turning a false positive into a much worse false negative.
+fn is_composer_line(line: &str, rules: &Rules) -> bool {
+    let inner = unbox(line);
+    let Some(rest) = inner.strip_prefix(|c: char| rules.composer_markers.contains(&c)) else {
+        return false;
+    };
+    if option_line_cursor(inner).is_some() {
         return false;
     }
+    rest.is_empty() || rest.starts_with(' ')
+}
 
-    let start = lines.len().saturating_sub(INSPECT_LINES);
-    let window = &lines[start..];
-    let lowered: Vec<String> = window.iter().map(|l| l.to_lowercase()).collect();
+/// Why detection concluded the agent is blocked.
+///
+/// Detection is a heuristic over someone else's UI, so it will be wrong
+/// sometimes. Carrying the cause means a wrong answer can be diagnosed from
+/// `bus explain` instead of guessed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuestionMatch {
+    /// Which rule fired: a marker phrase, or the option-list shape.
+    pub rule: String,
+    /// The line it fired on, trimmed for display.
+    pub line: String,
+}
+
+impl QuestionMatch {
+    pub(crate) fn describe(&self) -> String {
+        format!("{} matched on {:?}", self.rule, truncate(&self.line, 72))
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{cut}…")
+}
+
+/// Core matcher, split out so it can be tested on plain strings.
+#[cfg(test)]
+pub(crate) fn looks_like_question(tail: &str) -> bool {
+    looks_like_question_with(tail, Rules::active())
+}
+
+/// Match against an explicit rule set, so tests need no database.
+#[cfg(test)]
+pub(crate) fn looks_like_question_with(tail: &str, rules: &Rules) -> bool {
+    match_question(tail, rules).is_some()
+}
+
+/// The matching rule, if any.
+pub(crate) fn match_question(tail: &str, rules: &Rules) -> Option<QuestionMatch> {
+    let regions = Regions::new(tail, rules);
+    if regions.all.is_empty() {
+        return None;
+    }
 
     // A numbered option list under a selection cursor is the dominant shape:
     //   ❯ 1. Yes
     //     2. Yes, and don't ask again
     //     3. No, and tell Claude what to do differently
-    if has_option_list(window) {
-        return true;
+    if let Some(line) = option_list_line(&regions.outside_composer) {
+        return Some(QuestionMatch {
+            rule: "option list".to_string(),
+            line: line.trim().to_string(),
+        });
     }
 
-    for line in &lowered {
-        if YES_NO_MARKERS.iter().any(|m| line.contains(m)) {
-            return true;
-        }
-        if QUESTION_MARKERS.iter().any(|m| line.contains(m)) {
-            return true;
+    // Phrase markers are matched only on what the agent drew. The composer
+    // holds the human's own words, which routinely contain these phrases.
+    for line in &regions.outside_composer {
+        let lowered = line.to_lowercase();
+        if let Some(marker) = rules
+            .yes_no_markers
+            .iter()
+            .chain(&rules.question_markers)
+            .find(|m| lowered.contains(m.as_str()))
+        {
+            return Some(QuestionMatch {
+                rule: format!("marker {marker:?}"),
+                line: line.trim().to_string(),
+            });
         }
     }
 
-    false
+    None
 }
 
-/// At least two numbered choices, with a selection cursor on one of them.
-fn has_option_list(lines: &[&str]) -> bool {
+/// The cursor line of an option list, when at least two options are present.
+fn option_list_line<'a>(lines: &[&'a str]) -> Option<&'a str> {
     let mut numbered = 0usize;
-    let mut cursor_on_option = false;
+    let mut cursor_line = None;
 
     for line in lines {
         if let Some(has_cursor) = option_line_cursor(line) {
             numbered += 1;
-            cursor_on_option |= has_cursor;
+            if has_cursor && cursor_line.is_none() {
+                cursor_line = Some(*line);
+            }
         }
     }
 
-    numbered >= 2 && cursor_on_option
+    if numbered >= 2 { cursor_line } else { None }
 }
 
 /// `Some(has_cursor)` when the line is `[cursor] <digit>. text`.

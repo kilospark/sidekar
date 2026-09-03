@@ -24,6 +24,14 @@ pub const KEY_COMPACTION_SYSTEM: &str = "compaction.system";
 pub const KEY_COMPACTION_INSTRUCTIONS: &str = "compaction.instructions";
 pub const KEY_MEMORY_EXTRACT_SYSTEM: &str = "memory.extract.system";
 
+// Screen-detection markers. Not prompts sent to a model, but the same
+// problem: shipped text that has to be tunable without a release. Agent
+// TUIs change wording and glyphs between their own releases, and a
+// hardcoded marker list means every one of those is a sidekar release.
+pub const KEY_DETECT_QUESTION_MARKERS: &str = "detect.question.markers";
+pub const KEY_DETECT_YES_NO_MARKERS: &str = "detect.question.yes_no";
+pub const KEY_DETECT_COMPOSER_MARKERS: &str = "detect.composer.markers";
+
 /// Config key holding the hash of every shipped default. When it matches,
 /// `sync_builtin_prompts` is a single indexed lookup and returns early.
 const BUILTINS_HASH_KEY: &str = "prompts:builtins_hash";
@@ -116,6 +124,21 @@ Return valid JSON exactly matching this schema:
 Do not wrap the JSON in markdown fences or add commentary.";
 
 pub static BUILTIN_PROMPTS: &[BuiltinPrompt] = &[
+    BuiltinPrompt {
+        key: KEY_DETECT_QUESTION_MARKERS,
+        description: "Phrases meaning a wrapped agent is blocked on a human answer",
+        default: include_str!("detect_question_markers.txt"),
+    },
+    BuiltinPrompt {
+        key: KEY_DETECT_YES_NO_MARKERS,
+        description: "Inline yes/no affordances that mark a blocking prompt",
+        default: include_str!("detect_yes_no_markers.txt"),
+    },
+    BuiltinPrompt {
+        key: KEY_DETECT_COMPOSER_MARKERS,
+        description: "Glyphs marking the user's input line, excluded from question matching",
+        default: include_str!("detect_composer_markers.txt"),
+    },
     BuiltinPrompt {
         key: KEY_PTY_STARTER,
         description: "Starter prompt injected into PTY-wrapped agent CLIs",
