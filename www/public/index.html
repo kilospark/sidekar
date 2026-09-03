@@ -738,19 +738,42 @@ h1 {
   display: block;
 }
 
-/* Command lines carry the prompt marker in CSS so the text stays copyable. */
-.demo-out .cmd::before {
+/* Line-kind markers live in CSS so the text itself stays copyable. */
+.demo-out .run::before {
   content: "$ ";
   color: var(--page-warm);
 }
 
-.demo-out .cmd {
+.demo-out .run {
   color: var(--page-ink);
   font-weight: 500;
 }
 
-.demo-out .usr::before {
-  content: "";
+/* The agent invoking a tool, inside its own TUI. */
+.demo-out .tool::before {
+  content: "\25CF  ";
+  color: var(--page-warm);
+}
+
+.demo-out .tool {
+  color: var(--page-ink);
+  font-weight: 500;
+}
+
+.demo-out .res::before {
+  content: "   \23BF  ";
+  color: var(--page-line);
+}
+
+.demo-out .res {
+  color: var(--page-muted);
+}
+
+/* What the human typed at the agent's own prompt. */
+.demo-out .usr::before,
+.demo-out .paste::before {
+  content: "> ";
+  color: var(--page-warm);
 }
 
 .demo-out .usr {
@@ -758,8 +781,21 @@ h1 {
   font-weight: 500;
 }
 
-.demo-out .msg {
+/* Injected by sidekar rather than typed by a person: same prompt, because
+   that is exactly how the receiving agent sees it. */
+.demo-out .paste {
   color: var(--page-ink);
+  font-weight: 500;
+}
+
+.demo-out .hint {
+  color: var(--page-line);
+  padding-left: 2ch;
+}
+
+.demo-out .ok::before {
+  content: "\2713  ";
+  color: var(--page-warm);
 }
 
 .demo-out .ok,
@@ -767,14 +803,28 @@ h1 {
   color: var(--page-ink);
 }
 
-.demo-out .dim,
-.demo-out .out {
-  color: var(--page-muted);
+.demo-out .asst {
+  font-weight: 500;
 }
 
 .demo-out i {
   color: var(--page-ink);
   font-style: normal;
+}
+
+.demo-title {
+  color: var(--page-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-key {
+  display: inline-block;
+  font: 11px/1 var(--mono);
+  border: 1px solid var(--page-line);
+  padding: 2px 6px;
+  color: var(--page-ink);
 }
 
 /* Hidden until the replay reaches this line. Static (no-JS) render shows
@@ -899,73 +949,76 @@ h1 {
   <div class="container section-shell">
     <div class="section-header">
       <div>
-        <h2>Agents that work with each other.</h2>
-        <p>Wrap each agent with <code>sidekar</code> and they register on a channel keyed to the working directory. From then on they have names, and can hand work to each other by name instead of routing every step through you.</p>
+        <h2>Wrap the agent. It joins a channel.</h2>
+        <p>Prefix the CLI you already run. Sidekar owns the PTY, registers the session on a channel keyed to the working directory, and gives it a name. A message sent to that name is typed into the agent's own prompt and submitted, so it arrives as a turn in its conversation rather than as something you relayed.</p>
       </div>
     </div>
 
-    <div class="demo-stage" id="demo-stage" aria-label="Three coding agents coordinating over the sidekar bus">
+    <div class="demo-stage" id="demo-stage" aria-label="Three PTY-wrapped coding agents dividing one job over the sidekar bus">
       <button type="button" class="demo-replay" id="demo-replay" hidden>Replay</button>
 
       <div class="demo-pane demo-pane-lead" data-pane="a">
         <div class="demo-bar">
-          <span class="demo-agent">claude</span>
-          <span class="demo-nick">viper</span>
+          <span class="demo-title">viper (claude-storefront-1) &mdash; claude</span>
           <span class="demo-state" data-state="idle">idle</span>
         </div>
-        <pre class="demo-out"><span class="l usr" data-step="1" data-state="working">&gt; add stripe checkout. get ember and pike to help.</span>
-<span class="l cmd" data-step="2">sidekar bus who</span>
-<span class="l out" data-step="3">Channel "~/src/storefront":</span>
-<span class="l out" data-step="4">- claude-storefront-1   <i>"viper"</i>  (you)</span>
-<span class="l out" data-step="5">- cursor-storefront-1   <i>"ember"</i></span>
-<span class="l out" data-step="6">- opencode-storefront-1 <i>"pike"</i></span>
-<span class="l cmd" data-step="7">sidekar bus send ember "build /checkout with stripe elements"</span>
-<span class="l dim" data-step="8">sent to ember (msg 7f2a91)</span>
-<span class="l cmd" data-step="10">sidekar bus send pike "add POST /api/checkout/session"</span>
-<span class="l dim" data-step="11">sent to pike (msg 3c8d04)</span>
-<span class="l cmd" data-step="18" data-state="waiting">sidekar bus wait pike --until=settled</span>
-<span class="l dim" data-step="21">pike (opencode-storefront-1) is idle.</span>
-<span class="l msg" data-step="22">[sidekar] pike: POST /api/checkout/session live</span>
-<span class="l msg" data-step="25">[sidekar] ember: checkout page wired to the new endpoint</span>
-<span class="l cmd" data-step="26" data-state="working">sidekar browser read localhost:3000/checkout</span>
-<span class="l out" data-step="27"># Checkout</span>
-<span class="l out" data-step="28">Order summary &middot; Total $42.00</span>
-<span class="l out" data-step="29">[button] Pay now</span>
-<span class="l asst" data-step="30" data-state="idle">Both agents reported back. Checkout works end to end.</span></pre>
+        <pre class="demo-out"><span class="l run" data-step="1">sidekar claude</span>
+<span class="l usr" data-step="4" data-state="working">add stripe checkout. get ember and pike on it.</span>
+<span class="l tool" data-step="5">sidekar bus who</span>
+<span class="l res" data-step="6">Channel "~/src/storefront":</span>
+<span class="l res" data-step="7">claude-storefront-1   <i>"viper"</i> (you)</span>
+<span class="l res" data-step="8">cursor-storefront-1   <i>"ember"</i></span>
+<span class="l res" data-step="9">opencode-storefront-1 <i>"pike"</i></span>
+<span class="l asst" data-step="10">ember takes the page, pike takes the endpoint.</span>
+<span class="l tool" data-step="11">sidekar bus send ember "build /checkout with stripe elements"</span>
+<span class="l res" data-step="12">sent to ember (msg 7f2a91)</span>
+<span class="l tool" data-step="15">sidekar bus send pike "add POST /api/checkout/session"</span>
+<span class="l res" data-step="16">sent to pike (msg 3c8d04)</span>
+<span class="l tool" data-step="21" data-state="waiting">sidekar bus wait pike --until=settled</span>
+<span class="l res" data-step="27">pike (opencode-storefront-1) is idle.</span>
+<span class="l paste" data-step="28">[response from pike]: POST /api/checkout/session live</span>
+<span class="l paste" data-step="31">[response from ember]: checkout page wired to the new endpoint</span>
+<span class="l tool" data-step="32" data-state="working">sidekar browser read localhost:3000/checkout</span>
+<span class="l res" data-step="33"># Checkout</span>
+<span class="l res" data-step="34">Order summary &middot; Total $42.00</span>
+<span class="l res" data-step="35">[button] Pay now</span>
+<span class="l asst" data-step="36" data-state="idle">Both replied. Checkout works end to end.</span></pre>
       </div>
 
       <div class="demo-col">
         <div class="demo-pane" data-pane="b">
           <div class="demo-bar">
-            <span class="demo-agent">cursor</span>
-            <span class="demo-nick">ember</span>
+            <span class="demo-title">ember (cursor-storefront-1) &mdash; cursor</span>
             <span class="demo-state" data-state="idle">idle</span>
           </div>
-          <pre class="demo-out"><span class="l msg" data-step="9" data-state="working">[sidekar] viper: build /checkout with stripe elements</span>
-<span class="l out" data-step="12">edit src/routes/checkout.tsx</span>
-<span class="l out" data-step="15">edit src/components/PaymentForm.tsx</span>
-<span class="l cmd" data-step="23">sidekar bus done viper "checkout page wired to the new endpoint"</span>
-<span class="l dim" data-step="24" data-state="idle">reported to viper</span></pre>
+          <pre class="demo-out"><span class="l run" data-step="2">sidekar cursor</span>
+<span class="l paste" data-step="13" data-state="working">[request from viper]: build /checkout with stripe elements</span>
+<span class="l hint" data-step="14">[reply with: sidekar bus send viper "&lt;your response&gt;" --reply-to=7f2a91]</span>
+<span class="l ok" data-step="19">edited src/routes/checkout.tsx</span>
+<span class="l ok" data-step="22">edited src/components/PaymentForm.tsx</span>
+<span class="l tool" data-step="29">sidekar bus send viper "checkout page wired to the new endpoint" --reply-to=7f2a91</span>
+<span class="l res" data-step="30" data-state="idle">sent to viper</span></pre>
         </div>
 
         <div class="demo-pane" data-pane="c">
           <div class="demo-bar">
-            <span class="demo-agent">opencode</span>
-            <span class="demo-nick">pike</span>
+            <span class="demo-title">pike (opencode-storefront-1) &mdash; opencode</span>
             <span class="demo-state" data-state="idle">idle</span>
           </div>
-          <pre class="demo-out"><span class="l msg" data-step="13" data-state="working">[sidekar] viper: add POST /api/checkout/session</span>
-<span class="l out" data-step="14">edit api/checkout/session.ts</span>
-<span class="l cmd" data-step="16">npm test -- checkout</span>
-<span class="l ok" data-step="17">&#10003; 12 passing</span>
-<span class="l cmd" data-step="19">sidekar bus done viper "POST /api/checkout/session live"</span>
-<span class="l dim" data-step="20" data-state="idle">reported to viper</span></pre>
+          <pre class="demo-out"><span class="l run" data-step="3">sidekar opencode</span>
+<span class="l paste" data-step="17" data-state="working">[request from viper]: add POST /api/checkout/session</span>
+<span class="l hint" data-step="18">[reply with: sidekar bus send viper "&lt;your response&gt;" --reply-to=3c8d04]</span>
+<span class="l ok" data-step="20">edited api/checkout/session.ts</span>
+<span class="l tool" data-step="23">npm test -- checkout</span>
+<span class="l ok" data-step="24">12 passing</span>
+<span class="l tool" data-step="25">sidekar bus send viper "POST /api/checkout/session live" --reply-to=3c8d04</span>
+<span class="l res" data-step="26" data-state="idle">sent to viper</span></pre>
         </div>
       </div>
     </div>
 
     <div class="demo-note">
-      Nobody copy-pasted between windows. <code>bus send</code> hands work over, <code>bus wait</code> blocks until an agent is actually done, and <code>bus done</code> reports back. Full command reference in the <a href="/docs">docs</a>.
+      Nobody copy-pasted between windows. Lines marked <span class="demo-key paste-key">&gt;</span> arrived in that agent's prompt because another agent addressed it by name &mdash; sidekar typed them in and pressed enter. Full command reference in the <a href="/docs">docs</a>.
     </div>
   </div>
 </section>
@@ -1433,7 +1486,8 @@ function copyInstall() {
       return;
     }
     var el = lines[index];
-    var typed = el.classList.contains('cmd') || el.classList.contains('usr');
+    var typed = el.classList.contains('run') || el.classList.contains('usr')
+      || el.classList.contains('tool') || el.classList.contains('paste');
     el.classList.add('shown');
     applyState(el);
 
