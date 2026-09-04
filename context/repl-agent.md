@@ -2,12 +2,12 @@
 
 ## Overview
 
-`sidekar repl` runs Sidekar as a standalone LLM agent. It owns the input loop, session persistence, streaming renderer, bus registration, and slash-command UX, while the model gets a single execution tool: `bash`.
+`sidekar repl` runs Sidekar as a standalone LLM agent. It owns the input loop, session persistence, streaming renderer, bus registration, and slash-command UX, while the model gets a small fixed tool set built around `Bash` and the `Sidekar` CLI passthrough.
 
 The REPL system prompt is built in `src/repl.rs` by `build_system_prompt()`. It includes:
 
 - a concise coding-and-automation identity
-- `bash` tool guidance
+- tool guidance for `Bash` and `Sidekar`
 - Sidekar CLI capability guidance, including `sidekar skill`
 - explicit rules against secrets exfiltration, destructive actions, and prompt-injection compliance
 - current working directory and date
@@ -65,11 +65,16 @@ Stored credentials live in KV under `oauth:<nickname>`.
 
 ## Tool surface
 
-The REPL currently exposes exactly one model-visible tool:
+Model-visible tools are defined in `src/agent/tools.rs::definitions()`:
 
-- `bash` — execute a shell command and return compacted output
+- `Bash` — execute a shell command and return compacted output
+- `Read`, `Write`, `Edit` — file access; `Edit` supports `occurrence_index` and `replace_all`
+- `Glob`, `Grep` — path and content search
+- `Sidekar` — invoke a `sidekar` subcommand by argv array (kv, memory, browser, bus, totp, help)
+- `ExecSession` (unix only) — PTY-backed long-running shell session with spawn / poll / write / kill actions. See `context/unified-exec.md`.
 
-The model is expected to use `sidekar` through that tool. `sidekar skill` is no longer a separate tool; the prompt tells the model to run it via `bash` when it needs the command catalog.
+The `Sidekar` tool is the capability passthrough. `sidekar skill` is not a separate
+tool; the model reaches the command catalog through `Sidekar` args `["skill"]`.
 
 ## Runtime behavior
 
@@ -77,23 +82,12 @@ The model is expected to use `sidekar` through that tool. `sidekar skill` is no 
 - `-p <prompt>` runs a single-turn session and exits after the response.
 - The REPL registers on the local bus as `sidekar-repl`.
 - If relay is enabled and the machine has a device token, the REPL can attach a tunnel for web-terminal access.
-- A raw-mode mini line editor handles left/right navigation, history up/down, delete, and project-scoped persisted command history.
+- A raw-mode line editor (`src/repl/editor.rs`) handles cursor and word motion, history up/down, multiline buffers, bracketed paste with burst coalescing, and project-scoped persisted command history.
 
 ## Slash commands
 
-Current slash commands are implemented in `src/repl.rs`:
-
-- `/credential` (show/set/list/select credentials) (show/set/list)
-
-- `/model` (show/set/list/select models) (show/set/list)
-
-- `/new` and `/reset`
-
-- `/session` (list and switch)
-- `/compact`
-- `/verbose`
-- `/quit`, `/exit`, `/q`
-- `/help`
+Dispatch lives in `src/repl/slash.rs`. See the table under
+[Slash Commands (interactive mode)](#slash-commands-interactive-mode).
 
 Unknown `/...` input is treated as normal prompt text so absolute paths like `/Users/.../image.png` are not hijacked as slash commands.
 
@@ -147,21 +141,43 @@ Assembled from:
 
 | Command | Action |
 |---------|--------|
-| `/new` | Start fresh session |
+| `/new`, `/reset` | Start fresh session |
 | `/session` | List and switch sessions |
 | `/history` | Transcript ids/previews (`full`, tail `N`, `show idx`) |
 | `/undo [N]` | Drop last N user turns from SQLite (+ journals / TurnStats sync) |
 | `/prune after …` | Drop newer rows after id prefix or `@idx` |
 | `/compact` | Compact older context (rewrites transcript; clears journals + resets TurnStats) |
 | `/model` | Show/set/list models + auth status |
-| `/quit` | Exit REPL |
+| `/credential` | Show/set/list/select stored credentials |
+| `/skill` | Skill catalog access |
+| `/journal` | Session journal inspection |
+| `/inbox` | Bus inbox |
+| `/relay` | Relay tunnel control |
+| `/proxy` | Proxy settings |
+| `/stats`, `/status` | Turn and token accounting |
+| `/verbose` | Toggle verbose output |
+| `/debug` | Debug export |
+| `/quit`, `/exit`, `/q` | Exit REPL |
 | `/help` | Show help |
+
+## Interrupts
+
+`EscCancelWatcher` (`src/repl/editor.rs`) polls stdin and the relay tunnel fd
+during a turn:
+
+- Bare **ESC** cancels the turn. `EscDetector` holds a lone `0x1b` for
+  `ESC_TIMEOUT` so arrow keys and other CSI sequences are not misread as cancel.
+- **Ctrl+C** (`0x03`) during a turn cancels immediately. At the prompt it exits
+  the REPL.
+- `BusInterruptWatcher` lets a bus envelope with `interrupt` set cancel the turn.
+
+All three set one `AtomicBool` that `src/agent/mod.rs` checks between stream
+events, before tool dispatch, and inside `consume_stream`, returning `Cancelled`.
+Partial turns roll back through `cancelled_turn_rollback_len`.
 
 ## Known Limitations
 
-- No Ctrl+C interrupt (kills process, but session is saved)
-- Single-line input only (no multiline paste)
-- SHA-256 for PKCE uses `openssl` subprocess
+- SHA-256 for PKCE uses `openssl` subprocess (`src/providers/oauth.rs::sha256_simple`)
 - No bash command safety checks (LLM can execute anything)
 - OAuth tokens stored unencrypted in KV (encrypted only when logged in to sidekar.dev)
 

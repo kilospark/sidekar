@@ -1878,8 +1878,12 @@ pub enum Provider {
     },
     /// Google Gemini via native `generativelanguage.googleapis.com`
     /// API. Static API key auth (header `x-goog-api-key`); no OAuth
-    /// refresh flow. Supports `cachedContents` for multi-turn token
-    /// savings (wiring in a follow-up commit).
+    /// refresh flow. `cachedContents` is wired for multi-turn token
+    /// savings: `gemini::mod` fingerprints the stable prefix, looks it
+    /// up in `gemini::cache_registry`, creates through `gemini::cache`
+    /// on a miss, and `build_request_body` drops the system prompt and
+    /// tools when a cache name is in play. Enabled by default; see
+    /// `StreamConfig::gemini_caching` and `gemini_cache_ttl_secs`.
     Gemini {
         api_key: String,
         base_url: String,

@@ -193,11 +193,11 @@ One journaling pass, `run_once(&Context)`, ten stages in order:
   │    scan::scan_journal           │   with [blocked])
   └───────────────┬─────────────────┘
                   ▼
-  ┌─────────────────────────────────┐
-  │ 10. Insert + promote            │
-  │     store::insert_journal       │
-  │     promote::run_for_project    │
-  └───────────────┬─────────────────┘
+  ┌─────────────────────────────────────────┐
+  │ 10. Insert + candidate extraction       │
+  │     store::insert_journal               │
+  │     memory::process_journal_candidates  │
+  └───────────────┬─────────────────────────┘
                   ▼
               Persisted
 ```
@@ -424,32 +424,54 @@ group) and `src/help_text/agent.rs` (`sidekar help journal`).
 
 ---
 
-## Memory promoter
+## Memory promotion
 
-When the same normalized constraint or decision appears in ≥ 3
-distinct journals for a project, `promote::run_for_project`
-writes a `memory_events` row with confidence 0.60 and links
-every supporting journal via `memory_journal_support`.
+Promotion runs through `memory::process_journal_candidates`
+(`src/memory/candidates.rs`), called from `task::run_once` right after
+the journal row is inserted. It is incremental: each new journal feeds
+its own entries in, rather than rescanning a window of past journals.
 
-- **Threshold 3.** Two is too permissive (momentary phrasings);
-  four too strict (stable constraints never surface). Hermes
-  settled on three empirically.
-- **Confidence 0.60.** Below the ~0.75 default that
-  direct-authored `/memory write` entries use. A human-typed
-  entry always outranks a passive promotion. Reinforcement via
-  `memory::write_memory_event`'s dedup path bumps confidence on
-  repeat promotions.
-- **Scan window 50 journals.** Newest-first cap. A project with
-  thousands of journals doesn't produce an unbounded bucket.
-- **Scope project-local.** Cross-project generalization is
-  `memory::detect_patterns`'s job; the promoter feeds it.
-- **Idempotent.** Repeat calls reinforce existing memories via
-  the dedup path rather than duplicating rows.
-- **Ultra-short items ignored** (< 3 chars after normalization).
-  Guards against ".", "-", "x" bucketing into a meaningless
-  promotable entry.
+Extraction covers four candidate types, not two:
 
-Degraded journals are excluded — unreliable signal.
+| Source field | Candidate type |
+|---|---|
+| `constraints` | `constraint` |
+| `decisions` | `decision` |
+| `blocked`, `pending_user_asks` | `open-thread` |
+| `relevant_files` | `artifact-pointer` |
+
+- **Threshold 2** for every current type, via
+  `auto_promote_threshold`. A candidate row accumulates
+  `support_count` across journals and auto-promotes on reaching it.
+- **Candidate rows are a review surface.** Entries land in
+  `memory_candidates` with a status (`pending`, `promoted`,
+  `rejected`, `superseded`) and are inspectable through
+  `sidekar memory candidates` before anything reaches
+  `memory_events`. Rejected and superseded rows are skipped on
+  later passes.
+- **Reinforcement and contradiction.**
+  `reinforce_promoted_candidate` bumps an already-promoted memory
+  when a later journal repeats it, and reports contradictions.
+  `apply_resolution_signals` closes open threads a journal resolves.
+- **Provenance preserved.** Both the promote and reinforce paths call
+  `store::link_memory_to_journal`, so `memory_journal_support` still
+  answers "which journals backed this memory?".
+- **Scope project-local.** Cross-project generalization stays
+  `memory::detect_patterns`'s job.
+
+Degraded journals contribute nothing by construction: `parse::degraded`
+returns `StructuredJournal::default()` with only `critical_context`
+populated, so every field `extract_candidates` reads is empty. No
+explicit filter is needed.
+
+### Superseded: `journal::promote`
+
+An earlier `src/repl/journal/promote.rs` did batch promotion over the
+last 50 journals at a fixed threshold of 3. It covered constraints and
+decisions only, with no candidate review surface, no reinforcement, and
+no contradiction handling. The candidates path replaced it on every
+axis. The module sat unreferenced behind `#![allow(dead_code)]` and was
+removed; its behavior is fully covered above.
 
 ---
 
@@ -535,7 +557,6 @@ src/repl/journal/
     idle.rs                         IdleTracker state machine
     task.rs                         run_once + spawn_polling_loop
     inject.rs                       system-prompt injection block
-    promote.rs                      journal → memory_events promoter
 
 src/commands/journal.rs             `sidekar journal` CLI
 src/broker/schema.rs                v2 migration (session_journals, memory_journal_support)
@@ -543,6 +564,7 @@ src/repl/slash.rs                   /journal subcommands
 src/repl/system_prompt.rs           build_system_prompt_with_project
 src/repl.rs                         spawn wiring, idle tracker install
 src/memory.rs                       pub wrapper for write_memory_event
+src/memory/candidates.rs            journal → memory_candidates → memory_events
 src/runtime.rs                      journal() flag
 ```
 
@@ -552,17 +574,16 @@ src/runtime.rs                      journal() flag
 
 | module      | tests | what                                                 |
 |-------------|-------|------------------------------------------------------|
-| store       | 10    | insert/read roundtrip, ordering, boundary math, link idempotence, slice-after variants |
+| store       | 11    | insert/read roundtrip, ordering, boundary math, link idempotence, slice-after variants |
 | prompt      | 7     | fresh mode, iterative mode, block rendering, truncation, empty input, utf-8 safety |
-| parse       | 14    | clean JSON, code fences, missing/unknown fields, camelCase, comma-separated string fallback, degraded fallbacks, nested braces in strings, escaped quotes |
-| redact      | 16    | every pattern category positive + ordinary prose/hashes/UUIDs negative + in-place history mutation |
-| scan        | 20    | every threat category positive + benign prose negative + journal-shape integration |
+| parse       | 15    | clean JSON, code fences, missing/unknown fields, camelCase, comma-separated string fallback, degraded fallbacks, nested braces in strings, escaped quotes |
+| redact      | 20    | every pattern category positive + ordinary prose/hashes/UUIDs negative + in-place history mutation |
+| scan        | 16    | every threat category positive + benign prose negative + journal-shape integration |
 | prefilter   | 13    | signal categories, tool-activity short-circuit, length fallback, chitchat skip |
 | idle        | 9     | arm/disarm/fire semantics, double-arm, record_fired suppression, mutex poisoning recovery |
 | task        | 3     | epoch conversion, token estimator, iso format |
 | inject      | 9     | framing directive verbatim, field rendering, truncation, degraded fallback |
-| promote     | 14    | normalizer, id parsing, DB-backed integration (threshold, case variants, multiple fields, degraded exclusion, short-item filter) |
+| memory/candidates | 5 | extraction, support accumulation, auto-promote threshold, reinforcement, resolution signals |
 | commands/journal | 4 | show rendering, empty fields, degraded display, short session id |
 
-**Total: 119 journal-specific tests. 407 tests in the full
-suite, up from 289 before the journaling work started.**
+**Total: 112 journal-specific tests, measured across `repl::journal::*`, `memory::candidates`, and `commands::journal`. Full suite: 842.**

@@ -26,11 +26,6 @@
 //! by default; **`delete_all_journals_for_session`** is the escape hatch when transcript
 //! rows are deleted (`/undo`, `/prune`, `/compact`, `sidekar repl transcript …`).
 
-// Suppressed until the consumer modules (idle trigger, background
-// task, promoter, inject) land in follow-up commits — those are the
-// callers for `support_count_for_memory`, `row_to_journal`, etc.
-// Re-enable (or delete this attr) once all consumers exist.
-#![allow(dead_code)]
 
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
@@ -356,8 +351,14 @@ pub fn link_memory_to_journal(memory_id: i64, journal_id: i64) -> Result<()> {
 }
 
 /// How many journals across a project support a given memory?
-/// Used by the age-out sweep: memories with zero recent support
+/// Intended for the age-out sweep: memories with zero recent support
 /// decay, memories reinforced by many journals stay.
+///
+/// No production caller yet. The decay/compaction pass is still an open
+/// backlog item ("Maintenance: decay/compaction/stale open-thread passes
+/// beyond current `memory hygiene`" in `context/todo.md`). Covered by
+/// tests in this module so the query does not rot before that lands.
+#[allow(dead_code)]
 pub fn support_count_for_memory(memory_id: i64) -> Result<i64> {
     let conn = broker::open()?;
     Ok(conn.query_row(
