@@ -1,4 +1,5 @@
 use super::*;
+use std::os::fd::AsRawFd;
 
 #[test]
 fn stash_moves_pending_line_and_clears_tracking() {
@@ -60,11 +61,21 @@ fn draft_recall_other_key_forwards_and_drops_stash() {
 }
 
 #[test]
-fn draft_pending_blocks_submit_even_without_recent_keystroke() {
+fn draft_pending_no_longer_blocks_submit_once_typing_stops() {
+    // Was: a buffered draft blocked submission outright, keystroke or not.
+    // That protected the draft by never pasting over it, and the cost was a
+    // pane that went deaf for as long as text sat in its input box, with no
+    // timeout and no way past it — not the interrupt path, not the deadline.
+    // The draft is now protected by being lifted out and handed back around
+    // the paste, so blocking is no longer what keeps it safe.
     let state = UserInputState::new();
     state.set_pending_line(b"half typed");
-    assert!(state.is_idle());
+    assert!(state.is_idle(), "nobody has touched the keyboard");
     assert!(state.has_pending_line());
+    assert!(!pty_submit_wait_blocked_for(&state, false));
+
+    // Still deferred while the typing is actually happening.
+    state.mark_activity();
     assert!(pty_submit_wait_blocked_for(&state, false));
 }
 
@@ -371,9 +382,10 @@ fn a_stashed_draft_does_not_gate_delivery() {
 }
 
 #[test]
-fn a_half_typed_line_still_gates_delivery() {
+fn active_typing_gates_delivery() {
     let state = UserInputState::new();
     state.set_pending_line(b"half typed");
+    state.mark_activity();
     assert!(user_blocks_submit(&state));
 }
 
@@ -651,4 +663,58 @@ fn client_loop_pastes_a_backlog_once_and_acks_every_message() {
         None => unsafe { std::env::remove_var("HOME") },
     }
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_buffered_draft_defers_but_does_not_veto_forever() {
+    let state = UserInputState::new();
+    state.set_pending_line(b"half typed");
+    // Cleared only by a keystroke, so it must never outrank the deadline:
+    // text abandoned in an input box would otherwise deafen the pane.
+    assert!(!user_blocks_submit(&state));
+}
+
+#[test]
+fn active_typing_and_open_questions_still_veto() {
+    let typing = UserInputState::new();
+    typing.mark_activity();
+    assert!(user_blocks_submit(&typing));
+
+    let asked = UserInputState::new();
+    asked.set_awaiting_user_input_because(Some("question on screen".into()));
+    assert!(user_blocks_submit(&asked));
+    assert!(pty_submit_wait_blocked_for(&asked, true));
+}
+
+#[test]
+fn draft_is_lifted_out_and_handed_back_around_an_inject() {
+    let pty = PtyPair::open();
+    let state = UserInputState::new();
+    state.set_pending_line(b"the draft I was writing");
+    assert!(state.has_pending_line());
+
+    // Lift out, exactly as deliver_to_pty does before pasting.
+    let preview = state
+        .prepare_pty_for_inject(pty.master.as_raw_fd())
+        .expect("draft should be stashed");
+    assert!(preview.contains("the draft I was writing"));
+    assert!(!state.has_pending_line(), "line is cleared for the paste");
+
+    // Hand it back afterwards.
+    let draft = state
+        .take_stashed_draft()
+        .expect("draft should be recoverable");
+    assert_eq!(draft, b"the draft I was writing");
+    crate::pty::write_all_fd(pty.master.as_raw_fd(), &draft).expect("restore write");
+    state.set_pending_line(&draft);
+
+    assert!(state.has_pending_line(), "the human gets their line back");
+    assert!(!state.has_stashed_draft(), "and nothing is left stashed");
+
+    let seen = pty.drain(std::time::Duration::from_millis(200));
+    assert!(
+        seen.contains("the draft I was writing"),
+        "the draft must be typed back into the pane, got {seen:?}"
+    );
+    assert!(seen.contains('\u{15}'), "and the line was cleared first");
 }

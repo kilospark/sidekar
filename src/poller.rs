@@ -882,10 +882,36 @@ fn deliver_to_pty(
         None,
     );
 
+    // Put the draft back. The line was lifted out so the paste could not merge
+    // with it; leaving the human to press a key to get their own typing back
+    // makes a delivery they did not ask for into a chore they have to notice.
     if let Some(preview) = stashed_draft {
-        crate::tunnel::tunnel_println(&format!(
-            "\x1b[33m[sidekar]\x1b[0m Draft saved: \"{preview}\" — ↑ to restore"
-        ));
+        std::thread::sleep(Duration::from_millis(200));
+        match input_state.take_stashed_draft() {
+            Some(draft) if !draft.is_empty() => {
+                if let Err(e) = crate::pty::write_all_fd(raw_fd, &draft) {
+                    // The message is already in. Say where the draft went
+                    // rather than dropping it silently.
+                    crate::broker::try_log_error(
+                        "poller",
+                        "failed to restore draft after inject",
+                        Some(&format!("{e}")),
+                    );
+                    crate::tunnel::tunnel_println(&format!(
+                        "\x1b[33m[sidekar]\x1b[0m Draft saved: \"{preview}\" — ↑ to restore"
+                    ));
+                } else {
+                    input_state.set_pending_line(&draft);
+                    crate::broker::try_log_event(
+                        "debug",
+                        "poller",
+                        &format!("restored {}B draft after inject", draft.len()),
+                        None,
+                    );
+                }
+            }
+            _ => {}
+        }
     }
     true
 }
@@ -968,7 +994,7 @@ fn encode_submit_input(message: &str, encoding: PtySubmitEncoding) -> Vec<u8> {
 /// keystroke, so blocking on it can deafen a pane for as long as its human is
 /// away.
 fn user_blocks_submit(input_state: &UserInputState) -> bool {
-    !input_state.is_idle() || input_state.has_pending_line() || input_state.is_awaiting_user_input()
+    !input_state.is_idle() || input_state.is_awaiting_user_input()
 }
 
 fn pty_submit_wait_blocked_for(input_state: &UserInputState, interrupt: bool) -> bool {
