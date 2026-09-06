@@ -1171,3 +1171,188 @@ fn ensure_proxy_log_status_adds_column_on_legacy_table() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn delivered_message_is_not_handed_out_again() -> Result<()> {
+    with_test_db(|| {
+        enqueue_message("sender", "receiver", "hello")?;
+        let queued = list_queued_messages("receiver")?;
+        assert_eq!(queued.len(), 1);
+        let id = queued[0].id;
+
+        assert!(claim_queued_message(id, "receiver")?.is_some());
+        mark_message_delivered(id)?;
+
+        // A release racing the ack must not resurrect a message already pasted.
+        release_queued_message(id)?;
+        assert!(list_queued_messages("receiver")?.is_empty());
+        assert!(!has_pending_messages("receiver"));
+
+        // Nor may a daemon restart hand it back.
+        release_all_claimed_messages()?;
+        assert!(list_queued_messages("receiver")?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn undelivered_claim_survives_the_reaper() -> Result<()> {
+    with_test_db(|| {
+        enqueue_message("sender", "receiver", "still waiting on a busy pane")?;
+        enqueue_message("sender", "receiver", "nobody ever claimed this")?;
+        enqueue_message("sender", "receiver", "already landed")?;
+        let queued = list_queued_messages("receiver")?;
+        assert_eq!(queued.len(), 3);
+        let (held, abandoned, delivered) = (queued[0].id, queued[1].id, queued[2].id);
+
+        assert!(claim_queued_message(held, "receiver")?.is_some());
+        assert!(claim_queued_message(delivered, "receiver")?.is_some());
+        mark_message_delivered(delivered)?;
+
+        // Backdate every row past the reaper's horizon.
+        {
+            let conn = open()?;
+            conn.execute("UPDATE bus_queue SET created_at = 0", [])?;
+        }
+        cleanup_old_messages(3600)?;
+
+        let conn = open()?;
+        let surviving: Vec<i64> = conn
+            .prepare("SELECT id FROM bus_queue ORDER BY id")?
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            surviving,
+            vec![held],
+            "a claimed, undelivered row is owned by a live poller and must not be reaped"
+        );
+        assert!(!surviving.contains(&abandoned));
+        assert!(!surviving.contains(&delivered));
+        Ok(())
+    })
+}
+
+#[test]
+fn envelope_awaiting_delivery_tracks_the_queue() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let envelope = Envelope::new_request(sender, "receiver", "needs an answer");
+        enqueue_bus_message(
+            "receiver",
+            "sender",
+            "needs an answer",
+            true,
+            Some(&envelope),
+        )?;
+
+        assert!(envelope_awaiting_delivery(&envelope.id)?);
+
+        let id = list_queued_messages("receiver")?[0].id;
+        claim_queued_message(id, "receiver")?;
+        assert!(
+            envelope_awaiting_delivery(&envelope.id)?,
+            "claimed is not delivered; nudging here would queue a second message behind the first"
+        );
+
+        mark_message_delivered(id)?;
+        assert!(!envelope_awaiting_delivery(&envelope.id)?);
+        Ok(())
+    })
+}
+
+#[test]
+fn replies_stay_listable_after_their_parent_is_pruned() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "question");
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        let reply = Envelope::new_response(
+            AgentId::new("receiver"),
+            "sender",
+            "answer",
+            envelope.id.clone(),
+        );
+        record_reply(&envelope.id, &reply)?;
+
+        assert_eq!(list_bus_replies_for_sender("sender", None, 10)?.len(), 1);
+
+        // Housekeeping ages the parent out an hour after it was created.
+        delete_outbound_request(&envelope.id)?;
+
+        let replies = list_bus_replies_for_sender("sender", None, 10)?;
+        assert_eq!(
+            replies.len(),
+            1,
+            "the reply is the record; losing the request must not hide it"
+        );
+        assert_eq!(replies[0].message, "answer");
+        Ok(())
+    })
+}
+
+#[test]
+fn cancelling_a_request_withdraws_it_from_the_queue() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "never mind");
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        enqueue_bus_message("receiver", "sender", "never mind", true, Some(&envelope))?;
+        assert_eq!(list_queued_messages("receiver")?.len(), 1);
+
+        cancel_outbound_request(&envelope.id, crate::message::epoch_secs())?;
+        assert!(
+            list_queued_messages("receiver")?.is_empty(),
+            "a cancelled request must not still land in the recipient's pane"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn cancelling_leaves_an_already_delivered_message_alone() -> Result<()> {
+    with_test_db(|| {
+        let sender = AgentId::new("sender");
+        let envelope = Envelope::new_request(sender.clone(), "receiver", "too late");
+        set_outbound_request(
+            &envelope,
+            &sender.display_name(),
+            "broker",
+            "receiver",
+            None,
+            None,
+        )?;
+        enqueue_bus_message("receiver", "sender", "too late", true, Some(&envelope))?;
+        let id = list_queued_messages("receiver")?[0].id;
+        claim_queued_message(id, "receiver")?;
+        mark_message_delivered(id)?;
+
+        cancel_outbound_request(&envelope.id, crate::message::epoch_secs())?;
+
+        let conn = open()?;
+        let still_there: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE id = ?1)",
+            params![id],
+            |r| r.get(0),
+        )?;
+        assert!(
+            still_there,
+            "a message already pasted is past recall; its delivery record must survive cancel"
+        );
+        Ok(())
+    })
+}

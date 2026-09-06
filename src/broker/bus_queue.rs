@@ -33,9 +33,17 @@ pub fn enqueue_bus_message(
         .transpose()
         .context("serialize bus_queue envelope")?;
     conn.execute(
-        "INSERT INTO bus_queue (recipient, sender, body, created_at, submit_input, envelope_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![recipient, sender, body, now, true, envelope_json,],
+        "INSERT INTO bus_queue (recipient, sender, body, created_at, submit_input, envelope_json, envelope_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            recipient,
+            sender,
+            body,
+            now,
+            true,
+            envelope_json,
+            envelope.map(|e| e.id.as_str()),
+        ],
     )?;
     Ok(())
 }
@@ -48,7 +56,10 @@ pub fn enqueue_bus_message(
 pub fn has_pending_messages(recipient: &str) -> bool {
     with_cached_conn(|conn| {
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0)",
+            "SELECT EXISTS(
+                SELECT 1 FROM bus_queue
+                WHERE recipient = ?1 AND claimed_at = 0 AND delivered_at = 0
+            )",
             params![recipient],
             |row| row.get::<_, bool>(0),
         )
@@ -77,7 +88,9 @@ pub fn list_queued_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
     let conn = open()?;
     let mut stmt = conn.prepare(
         "SELECT id, sender, recipient, body, created_at, envelope_json, submit_input
-         FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0 ORDER BY id",
+         FROM bus_queue
+         WHERE recipient = ?1 AND claimed_at = 0 AND delivered_at = 0
+         ORDER BY id",
     )?;
     let messages = stmt
         .query_map(params![recipient], map_queued_row)?
@@ -93,7 +106,8 @@ pub fn claim_queued_message(id: i64, recipient: &str) -> Result<Option<QueuedMes
     let message = {
         let mut stmt = tx.prepare(
             "SELECT id, sender, recipient, body, created_at, envelope_json, submit_input
-             FROM bus_queue WHERE id = ?1 AND recipient = ?2 AND claimed_at = 0",
+             FROM bus_queue
+             WHERE id = ?1 AND recipient = ?2 AND claimed_at = 0 AND delivered_at = 0",
         )?;
         stmt.query_row(params![id, recipient], map_queued_row)
             .optional()?
@@ -112,11 +126,43 @@ pub fn claim_queued_message(id: i64, recipient: &str) -> Result<Option<QueuedMes
 /// Return a claimed message to the pending queue after a failed delivery attempt.
 pub fn release_queued_message(id: i64) -> Result<()> {
     let conn = open()?;
+    // `delivered_at != 0` means a poller already pasted this into its pane. Its
+    // ack may have raced a claim release; resurrecting the row here would inject
+    // the same message a second time.
     conn.execute(
-        "UPDATE bus_queue SET claimed_at = 0 WHERE id = ?1",
+        "UPDATE bus_queue SET claimed_at = 0 WHERE id = ?1 AND delivered_at = 0",
         params![id],
     )?;
     Ok(())
+}
+
+/// Record that `id` was pasted into the recipient's pane.
+///
+/// Idempotent and independent of who currently holds the claim, so a late ack
+/// from a poller whose claim was released still closes the message out.
+pub fn mark_message_delivered(id: i64) -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "UPDATE bus_queue SET delivered_at = ?1 WHERE id = ?2 AND delivered_at = 0",
+        params![crate::message::epoch_secs() as i64, id],
+    )?;
+    Ok(())
+}
+
+/// True while `envelope_id` is still sitting in the queue undelivered.
+///
+/// The nudge loop asks this so it cannot badger a recipient about a message
+/// that has not reached their pane yet.
+pub fn envelope_awaiting_delivery(envelope_id: &str) -> Result<bool> {
+    let conn = open()?;
+    let waiting: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM bus_queue WHERE envelope_id = ?1 AND delivered_at = 0
+        )",
+        params![envelope_id],
+        |r| r.get(0),
+    )?;
+    Ok(waiting)
 }
 
 /// Return all claimed messages to the pending queue.
@@ -126,7 +172,7 @@ pub fn release_queued_message(id: i64) -> Result<()> {
 pub fn release_all_claimed_messages() -> Result<usize> {
     let conn = open()?;
     let released = conn.execute(
-        "UPDATE bus_queue SET claimed_at = 0 WHERE claimed_at != 0",
+        "UPDATE bus_queue SET claimed_at = 0 WHERE claimed_at != 0 AND delivered_at = 0",
         [],
     )?;
     Ok(released)
@@ -147,7 +193,9 @@ pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
     let messages: Vec<QueuedMessage> = {
         let mut stmt = tx.prepare(
             "SELECT id, sender, recipient, body, created_at, envelope_json, submit_input
-             FROM bus_queue WHERE recipient = ?1 AND claimed_at = 0 ORDER BY id",
+             FROM bus_queue
+             WHERE recipient = ?1 AND claimed_at = 0 AND delivered_at = 0
+             ORDER BY id",
         )?;
         stmt.query_map(params![recipient], map_queued_row)?
             .filter_map(|r| r.ok())
@@ -165,11 +213,19 @@ pub fn poll_messages(recipient: &str) -> Result<Vec<QueuedMessage>> {
 }
 
 /// Clean up old messages (safety net for undelivered messages from dead agents).
+///
+/// A claimed row that has not been delivered is owned by a live poller which may
+/// still be waiting for its pane's input gate to open. Deleting it there loses
+/// the message with no record at either end, so age alone is not enough to reap.
+/// Claims held by pollers that died are returned to `claimed_at = 0` by
+/// `release_all_claimed_messages` at daemon start and by `release_agent_claims`
+/// on detach, so nothing becomes permanently unreapable.
 pub fn cleanup_old_messages(max_age_secs: u64) -> Result<usize> {
     let conn = open()?;
     let cutoff = (crate::message::epoch_secs() - max_age_secs) as i64;
     let deleted = conn.execute(
-        "DELETE FROM bus_queue WHERE created_at < ?1",
+        "DELETE FROM bus_queue
+         WHERE created_at < ?1 AND (claimed_at = 0 OR delivered_at != 0)",
         params![cutoff],
     )?;
     Ok(deleted)

@@ -163,8 +163,10 @@ pub fn record_reply(reply_to_msg_id: &str, envelope: &Envelope) -> Result<()> {
         serde_json::to_string(envelope).context("failed to serialize reply envelope")?;
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO bus_replies (
-            reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at, envelope_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            reply_to_msg_id, reply_msg_id, sender_name, sender_label, kind, message, created_at,
+            envelope_json, request_sender_name
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+            (SELECT o.sender_name FROM outbound_requests o WHERE o.msg_id = ?1))",
         params![
             reply_to_msg_id,
             envelope.id,
@@ -445,6 +447,14 @@ pub fn cancel_outbound_request(msg_id: &str, cancelled_at: u64) -> Result<usize>
         "DELETE FROM pending_requests WHERE id = ?1",
         params![msg_id],
     )?;
+    // Cancelling has to reach the queue too. Closing only the outbound row left
+    // the message itself queued, so a cancelled request still landed in the
+    // recipient's pane and there was no way for a sender to unsend. A message
+    // already pasted is past recall, so only undelivered rows are withdrawn.
+    tx.execute(
+        "DELETE FROM bus_queue WHERE envelope_id = ?1 AND delivered_at = 0",
+        params![msg_id],
+    )?;
     tx.commit()?;
     let _ = super::purge_nudges_for_request(msg_id);
     Ok(updated)
@@ -474,6 +484,13 @@ pub fn cancel_all_outbound_for_sender(sender_name: &str, cancelled_at: u64) -> R
         return Ok(ids);
     }
 
+    {
+        let mut withdraw =
+            tx.prepare("DELETE FROM bus_queue WHERE envelope_id = ?1 AND delivered_at = 0")?;
+        for id in &ids {
+            withdraw.execute(params![id])?;
+        }
+    }
     tx.execute(
         "UPDATE outbound_requests
          SET status = ?2,
@@ -526,8 +543,9 @@ pub fn list_bus_replies_for_sender(
         "SELECT r.reply_to_msg_id, r.reply_msg_id, r.sender_name, r.sender_label, r.kind,
                 r.message, r.created_at, r.envelope_json
          FROM bus_replies r
-         INNER JOIN outbound_requests o ON o.msg_id = r.reply_to_msg_id
-         WHERE o.sender_name = ?1 AND (?2 IS NULL OR r.reply_to_msg_id = ?2)
+         LEFT JOIN outbound_requests o ON o.msg_id = r.reply_to_msg_id
+         WHERE COALESCE(r.request_sender_name, o.sender_name) = ?1
+           AND (?2 IS NULL OR r.reply_to_msg_id = ?2)
          ORDER BY r.created_at DESC
          LIMIT ?3",
     )?;

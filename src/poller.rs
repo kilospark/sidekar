@@ -12,7 +12,19 @@ use std::time::Duration;
 static POLLER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const USER_IDLE_BEFORE_INJECT: Duration = Duration::from_millis(5000);
-const INJECT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+/// How long the client waits on the socket before re-testing the input gate.
+/// Also the rate at which a blocked batch picks up newly dispatched messages.
+const BUS_READ_POLL: Duration = Duration::from_millis(200);
+/// A message held back at least this long carries a written/delivered stamp.
+const DELIVERY_STAMP_MIN_SECS: u64 = 60;
+/// Ceiling on one coalesced paste. A larger backlog is split across turns.
+const MAX_BATCH_BYTES: usize = 24 * 1024;
+/// Spacing of the "inject blocked" line while a batch waits for the gate.
+const BLOCK_LOG_INTERVAL_SECS: u64 = 5;
+/// How long a working agent may hold off a batch before the paste goes in
+/// anyway. Conditions that belong to the human at the keyboard are never
+/// overridden; only the agent-is-busy veto expires here.
+const INJECT_FORCE_AFTER_SECS: u64 = 300;
 /// How long a detected question may defer injection before sidekar proceeds anyway.
 const AWAITING_INPUT_MAX: Duration = Duration::from_secs(600);
 
@@ -31,6 +43,14 @@ pub struct UserInputState {
     awaiting_since_ms: std::sync::atomic::AtomicU64,
     /// The detector's account of the current question, for `bus explain`.
     awaiting_reason: Mutex<Option<String>>,
+}
+
+/// One bus message dispatched by the daemon and not yet pasted into the pane.
+struct PendingMessage {
+    id: i64,
+    body: String,
+    created_at: u64,
+    interrupt: bool,
 }
 
 pub struct PtyNotice {
@@ -406,7 +426,7 @@ fn run_daemon_bus_client(
     let Ok(mut stream) = UnixStream::connect(crate::daemon::socket_path()) else {
         return false;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_read_timeout(Some(BUS_READ_POLL));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
     let attach = serde_json::json!({"type": "bus_attach", "agent": agent_name});
@@ -445,80 +465,284 @@ fn run_daemon_bus_client(
         None,
     );
 
-    line.clear();
+    drop(line);
+    let target = PtyTarget {
+        fd: pty_fd,
+        input_state,
+        notice_tx,
+        submit_encoding,
+        child_pid,
+    };
+    bus_client_loop(stream, &target, interrupt_sequence)
+}
+
+/// Read dispatched frames, hold them until the pane accepts input, then paste
+/// the whole backlog at once. Split out from the connection setup so it can be
+/// driven over a socket pair in tests.
+fn bus_client_loop(
+    mut stream: std::os::unix::net::UnixStream,
+    target: &PtyTarget<'_>,
+    interrupt_sequence: Option<&[u8]>,
+) -> bool {
+    use std::io::BufRead;
+
+    let input_state = target.input_state;
+    let Ok(reader_stream) = stream.try_clone() else {
+        return false;
+    };
+    let mut reader = std::io::BufReader::new(reader_stream);
+    // Messages the daemon has handed over that the pane has not accepted yet.
+    // Holding them here rather than blocking inside a single delivery is what
+    // lets a later message join the same paste instead of queueing behind a
+    // turn boundary of its own.
+    let mut pending: Vec<PendingMessage> = Vec::new();
+    let mut inbox: Vec<u8> = Vec::new();
+    let mut blocked_since: Option<std::time::Instant> = None;
+    let mut last_block_log = 0u64;
+
     loop {
         if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
             return true;
         }
-        match reader.read_line(&mut line) {
-            Ok(0) => return false,
-            Ok(_) => {}
+
+        // `fill_buf` rather than `read_line`: the socket read times out every
+        // BUS_READ_POLL so the gate below is re-tested, and `read_line` leaves
+        // an unspecified amount of the partial line in its output buffer when it
+        // returns an error. `fill_buf` consumes nothing on timeout, so a frame
+        // split across polls is reassembled here instead of relied upon there.
+        match reader.fill_buf() {
+            Ok([]) => return false,
+            Ok(chunk) => {
+                let n = chunk.len();
+                inbox.extend_from_slice(chunk);
+                reader.consume(n);
+            }
             Err(e)
                 if matches!(
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
+                ) => {}
             Err(_) => return false,
         }
-        let parsed = serde_json::from_str::<serde_json::Value>(line.trim());
-        line.clear();
-        let Ok(frame) = parsed else {
-            continue;
-        };
-        if frame.get("type").and_then(|v| v.as_str()) != Some("bus_message") {
+        while let Some(eol) = inbox.iter().position(|&b| b == b'\n') {
+            let frame_bytes: Vec<u8> = inbox.drain(..=eol).collect();
+            if let Some(msg) = parse_bus_frame(&frame_bytes[..eol]) {
+                pending.push(msg);
+            }
+        }
+
+        if pending.is_empty() {
+            blocked_since = None;
+            last_block_log = 0;
             continue;
         }
-        let Some(id) = frame.get("id").and_then(|v| v.as_i64()) else {
+
+        let wants_interrupt = pending.iter().any(|m| m.interrupt) && interrupt_sequence.is_some();
+        // A message with no deadline and no delivery record can be lost in
+        // silence, which is worse than arriving late. Once the wait passes the
+        // deadline the agent-is-busy veto stops counting.
+        let waited_so_far = blocked_since.map_or(0, |t: std::time::Instant| t.elapsed().as_secs());
+        let forced = waited_so_far >= INJECT_FORCE_AFTER_SECS && !user_blocks_submit(input_state);
+        if !forced && pty_submit_wait_blocked_for(input_state, wants_interrupt) {
+            let since = *blocked_since.get_or_insert_with(std::time::Instant::now);
+            let waited = since.elapsed().as_secs();
+            if waited >= last_block_log + BLOCK_LOG_INTERVAL_SECS {
+                last_block_log = waited;
+                crate::broker::try_log_event(
+                    "debug",
+                    "poller",
+                    &format!(
+                        "inject blocked: user_idle={} agent_working={} awaiting_input={} pending_line={} waited={waited}s queued={} bytes={}",
+                        input_state.is_idle(),
+                        input_state.is_agent_working(),
+                        input_state.is_awaiting_user_input(),
+                        input_state.has_pending_line(),
+                        pending.len(),
+                        pending.iter().map(|m| m.body.len()).sum::<usize>(),
+                    ),
+                    None,
+                );
+            }
             continue;
-        };
-        let body = frame
-            .get("body")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let interrupt = frame
-            .get("interrupt")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        }
+
+        if forced {
+            crate::broker::try_log_event(
+                "info",
+                "poller",
+                &format!(
+                    "inject forced after {waited_so_far}s: agent still working, delivering {} queued message(s)",
+                    pending.len()
+                ),
+                None,
+            );
+        }
+        blocked_since = None;
+        last_block_log = 0;
+
+        let take = batch_cutoff(&pending);
+        let batch: Vec<PendingMessage> = pending.drain(..take).collect();
+        // Only the messages actually in this paste get to force an interrupt.
+        let batch_interrupts = batch.iter().any(|m| m.interrupt) || forced;
+        let body = coalesce_batch(&batch, crate::message::epoch_secs());
         let ok = deliver_to_pty(
-            pty_fd,
-            input_state,
-            notice_tx,
+            target,
             &body,
             true,
-            submit_encoding,
-            interrupt.then_some(interrupt_sequence).flatten(),
-            child_pid,
+            batch_interrupts.then_some(interrupt_sequence).flatten(),
+            forced,
         );
-        let ack = serde_json::json!({"type": "bus_ack", "id": id, "ok": ok});
-        let Ok(mut ack_line) = serde_json::to_string(&ack) else {
-            return false;
-        };
-        ack_line.push('\n');
-        if stream.write_all(ack_line.as_bytes()).is_err() || stream.flush().is_err() {
-            return false;
+
+        if !ok {
+            // Hand the batch back to the daemon rather than retrying blind: the
+            // gate closed between the check and the write, and another pass may
+            // pick a different cut.
+            for msg in &batch {
+                if !ack_message(&mut stream, msg.id, false) {
+                    return false;
+                }
+            }
+            continue;
+        }
+        for msg in &batch {
+            // Record the paste here, before the ack. An ack that never lands
+            // would otherwise leave the row claimable again, and the next
+            // dispatch would paste this message into the pane a second time.
+            let _ = crate::broker::mark_message_delivered(msg.id);
+        }
+        for msg in &batch {
+            if !ack_message(&mut stream, msg.id, true) {
+                return false;
+            }
         }
     }
 }
 
+/// Decode one newline-delimited daemon frame. Anything that is not a bus
+/// message is ignored rather than treated as an error.
+fn parse_bus_frame(raw: &[u8]) -> Option<PendingMessage> {
+    let text = std::str::from_utf8(raw).ok()?;
+    let frame = serde_json::from_str::<serde_json::Value>(text.trim()).ok()?;
+    if frame.get("type").and_then(|v| v.as_str()) != Some("bus_message") {
+        return None;
+    }
+    Some(PendingMessage {
+        id: frame.get("id").and_then(|v| v.as_i64())?,
+        body: frame
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        created_at: frame
+            .get("created_at")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        interrupt: frame
+            .get("interrupt")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
+}
+
+/// Write one ack frame. Returns false when the socket is gone.
+fn ack_message(stream: &mut std::os::unix::net::UnixStream, id: i64, ok: bool) -> bool {
+    use std::io::Write;
+    let ack = serde_json::json!({"type": "bus_ack", "id": id, "ok": ok});
+    let Ok(mut ack_line) = serde_json::to_string(&ack) else {
+        return false;
+    };
+    ack_line.push('\n');
+    stream.write_all(ack_line.as_bytes()).is_ok() && stream.flush().is_ok()
+}
+
+/// How many queued messages fit in one paste. Always at least one, so an
+/// oversized single message still moves.
+fn batch_cutoff(pending: &[PendingMessage]) -> usize {
+    let mut bytes = 0usize;
+    for (i, msg) in pending.iter().enumerate() {
+        bytes += msg.body.len();
+        if bytes > MAX_BATCH_BYTES {
+            return i.max(1);
+        }
+    }
+    pending.len()
+}
+
+/// Render a batch as one paste.
+///
+/// A message that waited carries the time it was written next to the time it
+/// landed. Without that pair a delayed reply reads as current, which is the
+/// failure that makes late delivery worse than no delivery.
+fn coalesce_batch(batch: &[PendingMessage], now: u64) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(batch.len());
+    for msg in batch {
+        let delay = now.saturating_sub(msg.created_at);
+        if msg.created_at > 0 && delay >= DELIVERY_STAMP_MIN_SECS {
+            parts.push(format!(
+                "[sidekar] delayed {} · written {} · delivered {}\n{}",
+                human_delay(delay),
+                local_clock(msg.created_at),
+                local_clock(now),
+                msg.body
+            ));
+        } else {
+            parts.push(msg.body.clone());
+        }
+    }
+    if parts.len() > 1 {
+        format!(
+            "[sidekar] {} messages arrived while this pane was busy, delivered together:\n\n{}",
+            parts.len(),
+            parts.join("\n\n")
+        )
+    } else {
+        parts.pop().unwrap_or_default()
+    }
+}
+
+fn local_clock(epoch: u64) -> String {
+    let t = epoch as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+fn human_delay(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
+/// The pane a delivery writes into. Fixed for the life of one bus client.
+struct PtyTarget<'a> {
+    fd: &'a OwnedFd,
+    input_state: &'a UserInputState,
+    notice_tx: &'a tokio::sync::mpsc::UnboundedSender<PtyNotice>,
+    submit_encoding: PtySubmitEncoding,
+    child_pid: i32,
+}
+
 /// Deliver one bus message. Returns true when the message can be acked/dequeued.
 fn deliver_to_pty(
-    fd: &OwnedFd,
-    input_state: &UserInputState,
-    notice_tx: &tokio::sync::mpsc::UnboundedSender<PtyNotice>,
+    target: &PtyTarget<'_>,
     message: &str,
     submit_input: bool,
-    submit_encoding: PtySubmitEncoding,
     interrupt_sequence: Option<&[u8]>,
-    child_pid: i32,
+    forced: bool,
 ) -> bool {
     if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
         return false;
     }
 
+    let PtyTarget {
+        fd,
+        input_state,
+        notice_tx,
+        submit_encoding,
+        child_pid,
+    } = *target;
     let raw_fd = fd.as_raw_fd();
 
     // Wait until submitted input will not collide with user input or agent output.
@@ -526,31 +750,17 @@ fn deliver_to_pty(
     // `sidecar_notice_allowed` only controls out-of-band terminal notices. It
     // must not gate real prompt submission: some TUIs, notably Cursor Agent,
     // hide the cursor or own the screen while idle at the prompt.
-    let mut waited = 0u32;
-    let should_interrupt = interrupt_sequence.is_some();
-    while pty_submit_wait_blocked_for(input_state, should_interrupt) {
-        if POLLER_SHUTDOWN.load(Ordering::Relaxed) {
-            return false;
-        }
-        waited += 1;
-        if waited.is_multiple_of(50) {
-            crate::broker::try_log_event(
-                "debug",
-                "poller",
-                &format!(
-                    "inject blocked: idle={} agent_working={} awaiting_input={} pending_line={} waited={}s msg_len={} submit={}",
-                    input_state.is_idle(),
-                    input_state.is_agent_working(),
-                    input_state.is_awaiting_user_input(),
-                    input_state.has_pending_line(),
-                    waited / 10,
-                    message.len(),
-                    submit_input,
-                ),
-                None,
-            );
-        }
-        std::thread::sleep(INJECT_CHECK_INTERVAL);
+    // The caller owns the input gate. It waits there so that messages dispatched
+    // during the wait join this paste instead of each claiming a turn of their
+    // own, so by the time execution reaches here the gate was open on the last
+    // check and only the narrow races below remain.
+    let still_blocked = if forced {
+        user_blocks_submit(input_state)
+    } else {
+        pty_submit_wait_blocked_for(input_state, interrupt_sequence.is_some())
+    };
+    if still_blocked {
+        return false;
     }
 
     // Stash + Ctrl+U when Sidekar tracked a partial line so inject cannot merge with it.
@@ -749,14 +959,20 @@ fn encode_submit_input(message: &str, encoding: PtySubmitEncoding) -> Vec<u8> {
     }
 }
 
+/// Blocking conditions that belong to the human at the keyboard.
+///
+/// These are absolute. A paste that merges with a half-typed line, or that
+/// answers an on-screen question on someone's behalf, is worse than a late
+/// message, so neither the interrupt path nor the delivery deadline overrides
+/// them. A stashed draft is deliberately absent: it is cleared only by a
+/// keystroke, so blocking on it can deafen a pane for as long as its human is
+/// away.
+fn user_blocks_submit(input_state: &UserInputState) -> bool {
+    !input_state.is_idle() || input_state.has_pending_line() || input_state.is_awaiting_user_input()
+}
+
 fn pty_submit_wait_blocked_for(input_state: &UserInputState, interrupt: bool) -> bool {
-    // A question on screen blocks even the interrupt path: ESC would dismiss the
-    // prompt, which decides the answer on the human's behalf.
-    !input_state.is_idle()
-        || input_state.has_pending_line()
-        || input_state.has_stashed_draft()
-        || input_state.is_awaiting_user_input()
-        || (!interrupt && input_state.is_agent_working())
+    user_blocks_submit(input_state) || (!interrupt && input_state.is_agent_working())
 }
 
 fn epoch_millis() -> u64 {
@@ -767,292 +983,4 @@ fn epoch_millis() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stash_moves_pending_line_and_clears_tracking() {
-        let state = UserInputState::new();
-        state.set_pending_line(b"fix the bu");
-        assert!(state.stash_pending_line_for_inject());
-        assert!(!state.has_pending_line());
-        assert!(state.has_stashed_draft());
-        assert!(state.take_line_tracking_reset());
-        assert!(!state.take_line_tracking_reset());
-    }
-
-    #[test]
-    fn stash_noop_when_pending_empty() {
-        let state = UserInputState::new();
-        assert!(!state.stash_pending_line_for_inject());
-        assert!(!state.has_stashed_draft());
-    }
-
-    #[test]
-    fn take_stashed_draft_clears_stash() {
-        let state = UserInputState::new();
-        state.set_pending_line(b"hello");
-        state.stash_pending_line_for_inject();
-        assert_eq!(
-            state.take_stashed_draft().as_deref(),
-            Some(b"hello".as_ref())
-        );
-        assert!(!state.has_stashed_draft());
-    }
-
-    #[test]
-    fn draft_recall_up_arrow_csi() {
-        let state = UserInputState::new();
-        state.set_pending_line(b"hello");
-        state.stash_pending_line_for_inject();
-        let mut pending = Vec::new();
-        assert!(matches!(
-            UserInputState::draft_recall_from_input(b"\x1b", &mut pending, &state),
-            DraftRecallInput::Pending
-        ));
-        assert!(matches!(
-            UserInputState::draft_recall_from_input(b"[A", &mut pending, &state),
-            DraftRecallInput::Restore
-        ));
-    }
-
-    #[test]
-    fn draft_recall_other_key_forwards_and_drops_stash() {
-        let state = UserInputState::new();
-        state.set_pending_line(b"hello");
-        state.stash_pending_line_for_inject();
-        let mut pending = Vec::new();
-        match UserInputState::draft_recall_from_input(b"x", &mut pending, &state) {
-            DraftRecallInput::Forward(bytes) => assert_eq!(bytes, b"x"),
-            other => panic!("expected Forward, got {other:?}"),
-        }
-        assert!(!state.has_stashed_draft());
-    }
-
-    #[test]
-    fn draft_pending_blocks_submit_even_without_recent_keystroke() {
-        let state = UserInputState::new();
-        state.set_pending_line(b"half typed");
-        assert!(state.is_idle());
-        assert!(state.has_pending_line());
-        assert!(pty_submit_wait_blocked_for(&state, false));
-    }
-
-    #[test]
-    fn agent_working_heuristic_tracks_recent_output() {
-        let state = UserInputState::new();
-        assert!(!state.is_agent_working());
-        state.mark_pty_output();
-        assert!(state.is_agent_working());
-    }
-
-    #[test]
-    fn terminal_state_blocks_sidecar_notice_in_alternate_screen() {
-        let state = UserInputState::new();
-        assert!(state.sidecar_notice_allowed());
-        state.mark_pty_output_bytes(b"\x1b[?1049h");
-        assert!(!state.sidecar_notice_allowed());
-        state.mark_pty_output_bytes(b"\x1b[?1049l");
-        assert!(state.sidecar_notice_allowed());
-    }
-
-    #[test]
-    fn terminal_state_blocks_sidecar_notice_while_cursor_hidden() {
-        let state = UserInputState::new();
-        assert!(state.sidecar_notice_allowed());
-        state.mark_pty_output_bytes(b"\x1b[?25l");
-        assert!(!state.sidecar_notice_allowed());
-        state.mark_pty_output_bytes(b"\x1b[?25h");
-        assert!(state.sidecar_notice_allowed());
-    }
-
-    #[test]
-    fn terminal_state_tracks_split_escape_sequences() {
-        let state = UserInputState::new();
-        state.mark_pty_output_bytes(b"\x1b[?");
-        assert!(state.sidecar_notice_allowed());
-        state.mark_pty_output_bytes(b"1049h");
-        assert!(!state.sidecar_notice_allowed());
-    }
-
-    #[test]
-    fn terminal_notice_visibility_does_not_block_prompt_submission() {
-        let state = UserInputState::new();
-        state.update_terminal_state(b"\x1b[?1049h");
-
-        assert!(!state.sidecar_notice_allowed());
-        assert!(!pty_submit_wait_blocked_for(&state, false));
-    }
-
-    #[test]
-    fn interrupt_submit_does_not_wait_for_agent_output_busy() {
-        let state = UserInputState::new();
-        state.mark_pty_output();
-
-        assert!(pty_submit_wait_blocked_for(&state, false));
-        assert!(!pty_submit_wait_blocked_for(&state, true));
-    }
-
-    #[test]
-    fn verified_tui_agents_use_bracketed_paste_submit_encoding() {
-        assert_eq!(
-            submit_encoding_for_agent("claude"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("codex"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("copilot"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("cursor-agent"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("agent"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("cursor"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("grok"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("opencode"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("gemini"),
-            PtySubmitEncoding::BracketedPaste
-        );
-        assert_eq!(
-            submit_encoding_for_agent("pi"),
-            PtySubmitEncoding::BracketedPaste
-        );
-    }
-
-    #[test]
-    fn bracketed_paste_submit_wraps_message_without_enter() {
-        let bytes = encode_submit_input("line one\nline two", PtySubmitEncoding::BracketedPaste);
-        assert_eq!(bytes, b"\x1b[200~line one\nline two\x1b[201~");
-    }
-
-    #[test]
-    fn raw_submit_keeps_message_bytes_unchanged() {
-        let bytes = encode_submit_input("line one\nline two", PtySubmitEncoding::Raw);
-        assert_eq!(bytes, b"line one\nline two");
-    }
-
-    #[test]
-    fn interrupt_sequence_only_for_tui_submit_agents() {
-        assert_eq!(
-            interrupt_sequence_for_agent("codex"),
-            Some(b"\x1b".as_ref())
-        );
-        assert_eq!(
-            interrupt_sequence_for_agent("cursor-agent"),
-            Some(b"\x1b".as_ref())
-        );
-        assert_eq!(interrupt_sequence_for_agent("unknown"), None);
-    }
-
-    #[test]
-    fn format_draft_preview_truncates_long_lines() {
-        let long = "a".repeat(100);
-        let preview = format_draft_preview(long.as_bytes());
-        assert!(preview.ends_with('…'));
-        assert!(preview.chars().count() <= 80);
-    }
-}
-
-#[test]
-fn observed_bracketed_paste_overrides_agent_default() {
-    let state = UserInputState::new();
-    state.mark_pty_output_bytes(b"\x1b[?2004h");
-    assert_eq!(
-        resolve_submit_encoding(&state, PtySubmitEncoding::Raw),
-        PtySubmitEncoding::BracketedPaste
-    );
-}
-
-#[test]
-fn observed_raw_mode_overrides_agent_default() {
-    let state = UserInputState::new();
-    state.mark_pty_output_bytes(b"\x1b[?2004h");
-    state.mark_pty_output_bytes(b"\x1b[?2004l");
-    assert_eq!(
-        resolve_submit_encoding(&state, PtySubmitEncoding::BracketedPaste),
-        PtySubmitEncoding::Raw
-    );
-}
-
-#[test]
-fn unobserved_paste_mode_falls_back_to_agent_default() {
-    let state = UserInputState::new();
-    state.mark_pty_output_bytes(b"plain output");
-    assert_eq!(
-        resolve_submit_encoding(&state, PtySubmitEncoding::BracketedPaste),
-        PtySubmitEncoding::BracketedPaste
-    );
-    assert_eq!(
-        resolve_submit_encoding(&state, PtySubmitEncoding::Raw),
-        PtySubmitEncoding::Raw
-    );
-}
-
-#[test]
-fn question_on_screen_blocks_submit_including_the_interrupt_path() {
-    let state = UserInputState::new();
-    state.set_awaiting_user_input(true);
-    assert!(state.is_awaiting_user_input());
-    assert!(pty_submit_wait_blocked_for(&state, false));
-    assert!(pty_submit_wait_blocked_for(&state, true));
-}
-
-#[test]
-fn answering_the_question_unblocks_submit() {
-    let state = UserInputState::new();
-    state.set_awaiting_user_input(true);
-    state.set_awaiting_user_input(false);
-    assert!(!state.is_awaiting_user_input());
-    assert!(!pty_submit_wait_blocked_for(&state, true));
-}
-
-#[test]
-fn question_reported_again_does_not_extend_the_block_window() {
-    let state = UserInputState::new();
-    state.set_awaiting_user_input(true);
-    let first = state.awaiting_since_ms.load(Ordering::Relaxed);
-    state.set_awaiting_user_input(true);
-    assert_eq!(state.awaiting_since_ms.load(Ordering::Relaxed), first);
-}
-
-#[test]
-fn stale_question_stops_blocking_after_the_cap() {
-    let state = UserInputState::new();
-    state.set_awaiting_user_input(true);
-    let stale = epoch_millis() - AWAITING_INPUT_MAX.as_millis() as u64 - 1;
-    state.awaiting_since_ms.store(stale, Ordering::Relaxed);
-    assert!(!state.is_awaiting_user_input());
-}
-
-#[test]
-fn needs_input_is_published_as_its_own_activity_state() {
-    let state = UserInputState::new();
-    state.set_awaiting_user_input(true);
-    assert_eq!(state.current_activity_state(), ActivityState::NeedsInput);
-}
-
-#[test]
-fn user_typing_outranks_needs_input() {
-    let state = UserInputState::new();
-    state.set_awaiting_user_input(true);
-    state.set_pending_line(b"partial answer");
-    assert_eq!(state.current_activity_state(), ActivityState::UserTyping);
-}
+mod tests;

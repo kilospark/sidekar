@@ -26,7 +26,6 @@
 //! by default; **`delete_all_journals_for_session`** is the escape hatch when transcript
 //! rows are deleted (`/undo`, `/prune`, `/compact`, `sidekar repl transcript …`).
 
-
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};

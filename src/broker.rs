@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
 
 mod activity;
 mod agent_registry;
@@ -126,12 +126,16 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         if version < 11 {
             migrate_agents_explain_columns(conn)?;
         }
+        if version < 12 {
+            ensure_delivery_tracking_columns(conn)?;
+        }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
     ensure_proxy_log_status(conn)?;
     ensure_bus_replies_unique(conn)?;
     ensure_bus_queue_delivery_columns(conn)?;
     ensure_bus_queue_claim_columns(conn)?;
+    ensure_delivery_tracking_columns(conn)?;
     Ok(())
 }
 
@@ -261,6 +265,59 @@ fn ensure_bus_queue_claim_columns(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<std::collections::HashSet<String>> {
+    let mut cols = std::collections::HashSet::new();
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for name in names.flatten() {
+        cols.insert(name);
+    }
+    Ok(cols)
+}
+
+/// Columns that let the bus tell "delivered" apart from "still queued" and
+/// "reaped", and that keep a reply findable after its parent request is pruned.
+fn ensure_delivery_tracking_columns(conn: &Connection) -> Result<()> {
+    let queue_cols = table_columns(conn, "bus_queue")?;
+    if !queue_cols.contains("delivered_at") {
+        conn.execute(
+            "ALTER TABLE bus_queue ADD COLUMN delivered_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !queue_cols.contains("envelope_id") {
+        conn.execute("ALTER TABLE bus_queue ADD COLUMN envelope_id TEXT", [])?;
+    }
+
+    let reply_cols = table_columns(conn, "bus_replies")?;
+    if !reply_cols.contains("request_sender_name") {
+        conn.execute(
+            "ALTER TABLE bus_replies ADD COLUMN request_sender_name TEXT",
+            [],
+        )?;
+        // Backfill from the parents that survive. Rows whose parent was already
+        // pruned stay NULL and remain unreachable by sender; nothing else can
+        // recover that name after the fact.
+        conn.execute(
+            "UPDATE bus_replies
+             SET request_sender_name = (
+                 SELECT o.sender_name FROM outbound_requests o
+                 WHERE o.msg_id = bus_replies.reply_to_msg_id
+             )
+             WHERE request_sender_name IS NULL",
+            [],
+        )?;
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_bus_queue_envelope
+            ON bus_queue(envelope_id) WHERE envelope_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_bus_replies_request_sender
+            ON bus_replies(request_sender_name, created_at);",
+    )?;
     Ok(())
 }
 
@@ -394,7 +451,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             kind TEXT NOT NULL,
             message TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            envelope_json TEXT NOT NULL
+            envelope_json TEXT NOT NULL,
+            request_sender_name TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_bus_replies_reply_to
             ON bus_replies(reply_to_msg_id, created_at);
@@ -445,7 +503,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             submit_input INTEGER NOT NULL DEFAULT 0,
             envelope_json TEXT,
-            claimed_at INTEGER NOT NULL DEFAULT 0
+            claimed_at INTEGER NOT NULL DEFAULT 0,
+            delivered_at INTEGER NOT NULL DEFAULT 0,
+            envelope_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_bus_queue_recipient
             ON bus_queue(recipient, id);
