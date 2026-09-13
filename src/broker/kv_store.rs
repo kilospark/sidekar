@@ -86,25 +86,19 @@ pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
     let now = crate::message::epoch_secs() as i64;
     let uid = current_user_id().unwrap_or_default();
 
-    // Archive existing value before overwrite
-    kv_archive(&conn, &uid, key)?;
-
+    // Encrypt before touching the row. A caller with a key has asked for the
+    // value to be stored encrypted; falling back to plaintext on failure gave
+    // them the success message anyway, so the only way to learn a secret was
+    // sitting in the clear was to read the event log. Refuse instead, and
+    // refuse before the archive step so a failed write leaves nothing moved.
     let value_to_store = if get_encryption_key().is_some() {
-        match encrypt(value) {
-            Ok(enc) => enc,
-            Err(e) => {
-                crate::broker::try_log_event(
-                    "warn",
-                    "kv",
-                    "encryption key available but encrypt failed; storing plaintext",
-                    Some(&format!("{e:#}")),
-                );
-                value.to_string()
-            }
-        }
+        encrypt(value).context("encryption key is loaded but encrypting the value failed")?
     } else {
         value.to_string()
     };
+
+    // Archive existing value before overwrite
+    kv_archive(&conn, &uid, key)?;
 
     let tags_json = match tags {
         Some(t) => tags_to_json(t),

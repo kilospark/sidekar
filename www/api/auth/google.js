@@ -32,6 +32,11 @@ async function handleCallback(req, res) {
     const { code } = req.query;
     const clientId = (process.env.GOOGLE_CLIENT_ID || "").trim();
     const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || "").trim();
+    // Say which variable is missing. Posting an empty secret makes Google
+    // answer "client_secret is missing", which reads like a bug in the request
+    // rather than absent configuration on this deployment.
+    if (!clientId) return res.status(500).json({ error: "GOOGLE_CLIENT_ID not set" });
+    if (!clientSecret) return res.status(500).json({ error: "GOOGLE_CLIENT_SECRET not set" });
 
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",

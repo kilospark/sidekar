@@ -25,6 +25,10 @@ async function handleCallback(req, res) {
   const { code } = req.query;
   const clientId = (process.env.GITHUB_CLIENT_ID || "").trim();
   const clientSecret = (process.env.GITHUB_CLIENT_SECRET || "").trim();
+  // Name the missing variable rather than letting the provider reject an empty
+  // secret with an error that reads like a malformed request.
+  if (!clientId) return res.status(500).json({ error: "GITHUB_CLIENT_ID not set" });
+  if (!clientSecret) return res.status(500).json({ error: "GITHUB_CLIENT_SECRET not set" });
 
   const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
