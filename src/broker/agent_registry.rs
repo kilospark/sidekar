@@ -18,8 +18,14 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
     let agent_type = agent.agent_type.as_deref();
     let pane_unique_id = pane_unique_id.map(str::to_string);
     let tx = conn.unchecked_transaction()?;
+    // Release, never delete. A pane registering under a name that already has
+    // mail waiting is the normal shape of a restart, and deleting here threw
+    // away everything sent while it was down — silently, at both ends. Claims
+    // held by the poller that just died are cleared so the new one is handed
+    // the backlog; staleness is handled where it belongs, by the age reaper and
+    // by the written/delivered stamp the poller puts on anything it held.
     tx.execute(
-        "DELETE FROM bus_queue WHERE recipient = ?1",
+        "UPDATE bus_queue SET claimed_at = 0 WHERE recipient = ?1 AND delivered_at = 0",
         params![agent.name],
     )?;
     tx.execute("DELETE FROM agents WHERE name = ?1", params![agent.name])?;
@@ -64,11 +70,16 @@ pub fn unregister_agent(name: &str) -> Result<()> {
     let conn = open()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM agents WHERE name = ?1", params![name])?;
+    // An agent going away — a restart, a crash, a PID swept up by housekeeping
+    // sixty seconds later — is not a reason to destroy its mail. Undelivered
+    // rows keep their place in the queue and lose only their claim, so whatever
+    // comes back under this name receives them. Nothing returning means the
+    // hourly reaper collects them like any other unclaimed row, which is the
+    // one path that should ever remove an undelivered message.
     tx.execute(
-        "DELETE FROM pending_requests WHERE recipient_name = ?1",
+        "UPDATE bus_queue SET claimed_at = 0 WHERE recipient = ?1 AND delivered_at = 0",
         params![name],
     )?;
-    tx.execute("DELETE FROM bus_queue WHERE recipient = ?1", params![name])?;
     tx.execute(
         "DELETE FROM outbound_requests WHERE sender_name = ?1",
         params![name],

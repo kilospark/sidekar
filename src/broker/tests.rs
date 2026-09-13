@@ -946,18 +946,61 @@ fn poll_messages_deletes_only_returned_rows() -> Result<()> {
 }
 
 #[test]
-fn unregister_and_reregister_clear_stale_recipient_queue() -> Result<()> {
+fn mail_survives_a_pane_restart() -> Result<()> {
+    // Was: unregister and register each wiped the recipient's queue, so a
+    // restart destroyed waiting mail twice over and the sender saw nothing but
+    // "Message sent". Deleting an undelivered message is the one thing a queue
+    // must never do on its own; only the age reaper may, and only once nothing
+    // is holding it.
     with_test_db(|| {
         let receiver = AgentId::new("receiver");
         register_agent(&receiver, Some("pty-1"))?;
-        enqueue_bus_message("receiver", "sender", "old", false, None)?;
+        enqueue_bus_message("receiver", "sender", "sent before the restart", false, None)?;
+        let queued = list_queued_messages("receiver")?;
+        assert_eq!(queued.len(), 1);
+        claim_queued_message(queued[0].id, "receiver")?;
+
+        // The pane goes away with that message claimed by its now-dead poller.
+        unregister_agent("receiver")?;
+        assert_eq!(
+            list_queued_messages("receiver")?.len(),
+            1,
+            "the claim is released, the message is not"
+        );
+
+        // More arrives while nothing is listening.
+        enqueue_bus_message("receiver", "sender", "sent while it was down", false, None)?;
+
+        // The pane comes back and is handed everything.
+        register_agent(&receiver, Some("pty-2"))?;
+        let waiting: Vec<String> = list_queued_messages("receiver")?
+            .into_iter()
+            .map(|m| m.body)
+            .collect();
+        assert_eq!(
+            waiting,
+            vec!["sent before the restart", "sent while it was down"]
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn a_delivered_message_is_not_redelivered_after_a_restart() -> Result<()> {
+    with_test_db(|| {
+        let receiver = AgentId::new("receiver");
+        register_agent(&receiver, Some("pty-1"))?;
+        enqueue_bus_message("receiver", "sender", "already read", false, None)?;
+        let id = list_queued_messages("receiver")?[0].id;
+        claim_queued_message(id, "receiver")?;
+        mark_message_delivered(id)?;
 
         unregister_agent("receiver")?;
-        assert!(list_queued_messages("receiver")?.is_empty());
-
-        enqueue_bus_message("receiver", "sender", "orphaned", false, None)?;
         register_agent(&receiver, Some("pty-2"))?;
-        assert!(list_queued_messages("receiver")?.is_empty());
+        assert!(
+            list_queued_messages("receiver")?.is_empty(),
+            "restarting a pane must not paste its old mail a second time"
+        );
         Ok(())
     })
 }
