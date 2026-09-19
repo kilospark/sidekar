@@ -474,6 +474,8 @@ async function handleCommand(msg) {
         return await cmdType(msg);
       case "key":
         return await cmdKey(msg);
+      case "reload":
+        return await cmdReload();
       case "paste":
         return await cmdPaste(msg);
       case "setvalue":
@@ -1337,6 +1339,19 @@ const KEY_CODES = {
   ArrowLeft: 37,
   ArrowRight: 39,
 };
+
+// Reload the unpacked extension so a freshly installed build takes effect.
+//
+// Chrome reads the manifest again on its own but keeps the old service worker
+// running, so a new command can be missing from an extension that already
+// reports the new version. Without this the only cure is the chrome://extensions
+// reload button or restarting the browser, neither of which an agent can reach.
+async function cmdReload() {
+  // Answer before reloading: chrome.runtime.reload() tears down this worker
+  // immediately and the caller would otherwise see a dropped connection.
+  setTimeout(() => chrome.runtime.reload(), 100);
+  return { reloading: true, version: chrome.runtime.getManifest().version };
+}
 
 async function cmdKey(msg) {
   const tabId = msg.tabId || (await getActiveTabId());

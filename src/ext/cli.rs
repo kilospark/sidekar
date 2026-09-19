@@ -349,6 +349,10 @@ fn build_command(
             apply_focus(&mut cmd, focus);
             Ok(cmd)
         }
+        "reload" => {
+            // No tab needed: this targets the extension itself.
+            Ok(json!({"command": "reload"}))
+        }
         "key" | "press" => {
             if args.is_empty() {
                 bail!(
@@ -532,7 +536,7 @@ fn build_command(
         "monitor-status" => Ok(json!({"command": "tabmonitor", "sub": "status"})),
         "context" => Ok(json!({"command": "context"})),
         _ => bail!(
-            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, key, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, monitor-start, monitor-stop, monitor-status, context, status, stop"
+            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, key, paste, set-value, reload, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, monitor-start, monitor-stop, monitor-status, context, status, stop"
         ),
     }
 }
