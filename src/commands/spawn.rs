@@ -5,6 +5,8 @@
 //! and waits for a registration carrying it. That token is also what makes
 //! `spawn list` and `stop` honest about which panes sidekar owns.
 
+mod terminal;
+
 use crate::AppContext;
 use anyhow::{Result, bail};
 use std::process::{Command, Stdio};
@@ -19,7 +21,8 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         None | Some("-h") | Some("--help") => {
             bail!(
                 "Usage: sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] \
-                 [--model <model>] [--no-yolo] [--timeout <secs>]\n       \
+                 [--model <model>] [--window] [--app <name>] [--log <path>] \
+                 [--no-yolo] [--timeout <secs>]\n       \
                  sidekar spawn list"
             )
         }
@@ -34,6 +37,9 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut model: Option<String> = None;
     let mut yolo = true;
     let mut timeout = REGISTER_TIMEOUT;
+    let mut window = false;
+    let mut app: Option<String> = None;
+    let mut log: Option<String> = None;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -50,6 +56,12 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         match a {
             "--no-yolo" => yolo = false,
             "--yolo" | "--auto-approve" => yolo = true,
+            "--window" => window = true,
+            _ if a.starts_with("--app") => {
+                app = Some(take_value("--app")?);
+                window = true;
+            }
+            _ if a.starts_with("--log") => log = Some(take_value("--log")?),
             _ if a.starts_with("--nick") => nick = Some(take_value("--nick")?),
             _ if a.starts_with("--cwd") => cwd = Some(take_value("--cwd")?),
             _ if a.starts_with("--model") => model = Some(take_value("--model")?),
@@ -88,42 +100,110 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .unwrap_or_else(|| "cli".to_string());
 
     let exe = std::env::current_exe()?;
-    let mut child = Command::new(exe);
-    child.arg(&agent);
+
+    // The argv is the same either way; only who holds the terminal differs.
+    let mut argv: Vec<String> = vec![agent.clone()];
     if yolo {
-        child.arg("--yolo");
+        argv.push("--yolo".into());
     }
     if let Some(ref m) = model {
-        child.arg("--model").arg(m);
+        argv.push("--model".into());
+        argv.push(m.clone());
     }
     if let Some(ref t) = task {
-        child.arg(t);
-    }
-    if let Some(ref d) = cwd {
-        child.current_dir(d);
-    }
-    child
-        .env("SIDEKAR_SPAWNED_BY", &spawner)
-        .env("SIDEKAR_SPAWN_TOKEN", &token)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(ref n) = nick {
-        child.env("SIDEKAR_NICK", n);
+        argv.push(t.clone());
     }
 
-    // Own session and process group: the spawned agent outlives this command and
-    // must not take a Ctrl-C aimed at the caller's terminal.
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        child.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
+    let pid = if window {
+        let chosen = match app.as_deref() {
+            Some(name) => terminal::TerminalApp::parse(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown terminal app '{name}'; try terminal, iterm, ghostty, wezterm, \
+                     kitty or alacritty"
+                )
+            })?,
+            // Match the spawner's own terminal, which is the whole point of
+            // reading TERM_PROGRAM rather than picking a default.
+            None => terminal::detect().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--window could not tell which terminal this session is running under \
+                     (TERM_PROGRAM is unset or not a windowed terminal). Name one with --app."
+                )
+            })?,
+        };
 
-    let handle = child.spawn()?;
-    let pid = handle.id();
+        // A new window is a fresh shell: it inherits nothing from here, so the
+        // token and the working directory have to travel inside the command.
+        // Always cd. A new window starts in the user's home directory, and an
+        // agent's bus name and repo context both come from where it is running,
+        // so without this a windowed spawn lands somewhere the caller did not ask
+        // for while the background path inherits the caller's directory.
+        let start_dir = match cwd {
+            Some(ref d) => d.clone(),
+            None => std::env::current_dir()?.to_string_lossy().to_string(),
+        };
+        let mut line = format!("cd {} && ", terminal::shell_quote(&start_dir));
+        line.push_str(&format!(
+            "SIDEKAR_SPAWNED_BY={} SIDEKAR_SPAWN_TOKEN={} ",
+            terminal::shell_quote(&spawner),
+            terminal::shell_quote(&token)
+        ));
+        if let Some(ref n) = nick {
+            line.push_str(&format!("SIDEKAR_NICK={} ", terminal::shell_quote(n)));
+        }
+        line.push_str(&format!(
+            "exec {}",
+            terminal::shell_quote(&exe.to_string_lossy())
+        ));
+        for a in &argv {
+            line.push(' ');
+            line.push_str(&terminal::shell_quote(a));
+        }
+        if let Some(ref l) = log {
+            line = terminal::with_transcript(&line, l);
+        }
+        terminal::open_window(chosen, &line)?;
+        None
+    } else {
+        let mut child = Command::new(&exe);
+        child.args(&argv);
+        if let Some(ref d) = cwd {
+            child.current_dir(d);
+        }
+        // Without a window there is nowhere for the agent's screen to go, so it
+        // goes to the transcript when one was asked for and is dropped otherwise.
+        let sink = match log {
+            Some(ref path) => {
+                let f = std::fs::File::create(path)?;
+                let dup = f.try_clone()?;
+                child.stdout(Stdio::from(f)).stderr(Stdio::from(dup));
+                true
+            }
+            None => {
+                child.stdout(Stdio::null()).stderr(Stdio::null());
+                false
+            }
+        };
+        let _ = sink;
+        child
+            .env("SIDEKAR_SPAWNED_BY", &spawner)
+            .env("SIDEKAR_SPAWN_TOKEN", &token)
+            .stdin(Stdio::null());
+        if let Some(ref n) = nick {
+            child.env("SIDEKAR_NICK", n);
+        }
+
+        // Own session and process group: the spawned agent outlives this command
+        // and must not take a Ctrl-C aimed at the caller's terminal.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            child.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        Some(child.spawn()?.id())
+    };
 
     let started = Instant::now();
     loop {
@@ -132,9 +212,13 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             return Ok(());
         }
         if started.elapsed() >= timeout {
+            let where_to_look = match pid {
+                Some(p) => format!("pid {p}; stop it with `kill {p}`"),
+                None => "the window that just opened".to_string(),
+            };
             bail!(
-                "{agent} was launched (pid {pid}) but never registered on the bus within {}s. \
-                 Check it with `sidekar bus who`, or stop it with `kill {pid}`.",
+                "{agent} was launched ({where_to_look}) but never registered on the bus \
+                 within {}s. Check it with `sidekar bus who`.",
                 timeout.as_secs()
             );
         }

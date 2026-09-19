@@ -46,6 +46,11 @@ sidekar stop "$REVIEWER"
 picks the unattended-mode flag for that particular CLI — every one of them
 spells it differently — and runs the agent detached so it survives your turn.
 
+Headless by default. Add `--window` to open it in a real terminal window the
+human can watch and type into; it reuses whichever terminal app you are running
+under, and `--app` overrides that. Add `--log <path>` for a transcript either
+way.
+
 Delegate work that is genuinely separable: an independent review, a second
 opinion, a long build, a task in another repo via `--cwd`. A spawned agent is
 yours to finish — read its reply and stop it. One you never read is spent

@@ -50,6 +50,17 @@ sidekar spawn list
   `opencode run`) and pi. Spawn warns and launches them anyway; they will stop
   at their first approval prompt with nobody there to answer.
 
+  --window opens the agent in a real terminal window instead of running it
+  headless, so you can watch it and type into it. It uses the same terminal app
+  you are in, read from TERM_PROGRAM; --app overrides that and accepts terminal,
+  iterm, ghostty, wezterm, kitty or alacritty. A windowed agent starts in your
+  current directory, not the home directory a new window would otherwise open in.
+
+  --log <path> records the session. Headless, that is the agent's raw output;
+  with --window it goes through script(1), so the window still renders normally
+  and the transcript is written alongside. Expect it to fill in bursts rather
+  than line by line, and to be complete once the agent exits.
+
   Examples:
     REVIEWER=$(sidekar spawn codex \"Review the diff on this branch. Reply with findings.\")
     sidekar bus wait \"$REVIEWER\"
