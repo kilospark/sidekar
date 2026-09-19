@@ -472,6 +472,8 @@ async function handleCommand(msg) {
         return await cmdClick(msg);
       case "type":
         return await cmdType(msg);
+      case "key":
+        return await cmdKey(msg);
       case "paste":
         return await cmdPaste(msg);
       case "setvalue":
@@ -1314,6 +1316,94 @@ async function pasteIntoGoogleDocs(tabId, html, plainText, clipboardWrite, raise
     clipboard_error: clipboardWrite.error,
     verified: insertVerified || docsVerified || execVerified,
   };
+}
+
+// Key codes for the named keys. Plenty of handlers still read keyCode, and a
+// chip input or a search box that only listens for Enter will ignore an event
+// that carries key but not keyCode.
+const KEY_CODES = {
+  Enter: 13,
+  Tab: 9,
+  Escape: 27,
+  Backspace: 8,
+  Delete: 46,
+  " ": 32,
+  Home: 36,
+  End: 35,
+  PageUp: 33,
+  PageDown: 34,
+  ArrowUp: 38,
+  ArrowDown: 40,
+  ArrowLeft: 37,
+  ArrowRight: 39,
+};
+
+async function cmdKey(msg) {
+  const tabId = msg.tabId || (await getActiveTabId());
+  const selector = msg.selector || null;
+  const refNum = selector && /^\d+$/.test(selector) ? parseInt(selector) : null;
+  const key = msg.key === "Space" ? " " : msg.key;
+  const mods = {
+    ctrlKey: !!msg.ctrl,
+    shiftKey: !!msg.shift,
+    altKey: !!msg.alt,
+    metaKey: !!msg.meta,
+  };
+
+  return await executeScriptResult(
+    tabId,
+    (selector, refNum, key, mods, codes) => {
+      let el;
+      if (refNum !== null) {
+        el = document.querySelector(`[data-sidekar-ref="${refNum}"]`);
+        if (!el) return { error: `Ref ${refNum} not found. Run ax-tree first.` };
+      } else if (selector) {
+        el = document.querySelector(selector);
+        if (!el) return { error: `Element not found: ${selector}` };
+      } else {
+        // No target named: send it wherever the caret already is, which is what
+        // "type into the box, then press Enter" means.
+        el = document.activeElement || document.body;
+      }
+      if (el.focus) el.focus();
+
+      const keyCode = codes[key] !== undefined ? codes[key] : key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0;
+      const code =
+        key.length === 1
+          ? /[a-zA-Z]/.test(key)
+            ? `Key${key.toUpperCase()}`
+            : `Digit${key}`
+          : key === " "
+            ? "Space"
+            : key;
+      const init = {
+        key,
+        code,
+        keyCode,
+        which: keyCode,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        ...mods,
+      };
+
+      const down = new KeyboardEvent("keydown", init);
+      const notCancelled = el.dispatchEvent(down);
+      // keypress only fires for text-producing keys, and only when keydown was
+      // not cancelled, which is how the real thing behaves.
+      if (notCancelled && (key.length === 1 || key === "Enter")) {
+        el.dispatchEvent(new KeyboardEvent("keypress", init));
+      }
+      el.dispatchEvent(new KeyboardEvent("keyup", init));
+      return {
+        sent: key,
+        keyCode,
+        target: el.tagName ? el.tagName.toLowerCase() : "unknown",
+        defaultPrevented: !notCancelled,
+      };
+    },
+    [selector, refNum, key, mods, KEY_CODES],
+  );
 }
 
 async function cmdPaste(msg) {

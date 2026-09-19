@@ -383,7 +383,15 @@ sidekar browser ext <subcommand> [args...]
   or as a subcommand argument; explicit subcommand tab id wins.
 
   Browser:
-    tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page
+    tabs, read, screenshot, click, type, key, paste, set-value, ax-tree, eval, eval-page
+
+  key <key> [ref|selector] [--ctrl] [--shift] [--alt] [--meta]
+    Send a real key event. Without a target it goes to whatever has focus, which
+    is what \"type into the field, then press Enter\" needs. Use it for inputs that
+    only commit on a keystroke — chip fields, search boxes, modal dialogs — and
+    on pages where eval is refused by CSP or Trusted Types.
+      sidekar browser ext key Enter --tab 123
+      sidekar browser ext key Tab 39 --shift --tab 123
     navigate, new-tab, close, scroll
 
   History & Context: history, context

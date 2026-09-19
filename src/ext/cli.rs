@@ -349,6 +349,39 @@ fn build_command(
             apply_focus(&mut cmd, focus);
             Ok(cmd)
         }
+        "key" | "press" => {
+            if args.is_empty() {
+                bail!(
+                    "Usage: sidekar browser ext key <key> [selector] \
+                     [--ctrl] [--shift] [--alt] [--meta]\n\
+                     Keys: Enter, Tab, Escape, Backspace, Delete, Space, Home, End, \
+                     PageUp, PageDown, ArrowUp/Down/Left/Right, or a single character."
+                );
+            }
+            let flags: Vec<&str> = args.iter().map(String::as_str).collect();
+            let positional: Vec<&&str> = flags.iter().filter(|a| !a.starts_with("--")).collect();
+            let tab_id = require_tab("key", None, default_tab)?;
+            let mut cmd = json!({
+                "command": "key",
+                "key": **positional
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("ext key needs a key to send"))?,
+                "ctrl": flags.contains(&"--ctrl"),
+                "shift": flags.contains(&"--shift"),
+                "alt": flags.contains(&"--alt"),
+                "meta": flags.contains(&"--meta"),
+            });
+            if let Some(sel) = positional.get(1) {
+                cmd.as_object_mut()
+                    .unwrap()
+                    .insert("selector".into(), json!(**sel));
+            }
+            cmd.as_object_mut()
+                .unwrap()
+                .insert("tabId".into(), json!(tab_id));
+            apply_focus(&mut cmd, focus);
+            Ok(cmd)
+        }
         "set-value" => {
             if args.len() < 2 {
                 bail!("Usage: sidekar browser ext set-value <selector> <text>");
@@ -499,7 +532,7 @@ fn build_command(
         "monitor-status" => Ok(json!({"command": "tabmonitor", "sub": "status"})),
         "context" => Ok(json!({"command": "context"})),
         _ => bail!(
-            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, monitor-start, monitor-stop, monitor-status, context, status, stop"
+            "Unknown ext command: {command}\nAvailable: tabs, read, screenshot, click, type, key, paste, set-value, ax-tree, eval, eval-page, navigate, new-tab, close, scroll, history, watch, unwatch, watchers, monitor-start, monitor-stop, monitor-status, context, status, stop"
         ),
     }
 }
