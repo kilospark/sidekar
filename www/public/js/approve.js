@@ -24,11 +24,17 @@
       authLoading.style.display = "none";
       form.style.display = "block";
 
-      // Pre-fill from URL params (e.g., /approve?code=ABCD-1234)
+      // Never take the code from the URL. The CLI copies it to the clipboard
+      // and opens a bare /approve; a link that carries a code was made by
+      // someone else, and one click on a prefilled form would bind their
+      // machine to this account (RFC 8628 §5.4). Warn instead.
       var params = new URLSearchParams(window.location.search);
-      var prefill = params.get("code");
-      if (prefill) {
-        codeInput.value = prefill.toUpperCase();
+      if (params.get("code")) {
+        message.textContent =
+          "This link came with a device code. Codes only come from your own terminal. " +
+          "If you did not run `sidekar device login` yourself, close this page.";
+        message.className = "message error";
+        history.replaceState(null, "", "/approve");
       }
       codeInput.focus();
     })
