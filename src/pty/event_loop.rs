@@ -122,6 +122,11 @@ pub(crate) async fn event_loop(
     };
 
     let mut stdin = tokio::io::stdin();
+    // A detached wrapper — `sidekar spawn`, a service manager, anything without a
+    // terminal — gets EOF on stdin immediately. That means "nobody is typing
+    // here", not "this session is over", so the loop stops reading stdin and
+    // keeps serving the bus instead of exiting before the agent registers.
+    let mut stdin_open = true;
     let mut stdout = tokio::io::stdout();
 
     // Signal registration can fail (FD limits, sandbox). Do not panic — abort would kill the PTY wrapper.
@@ -330,9 +335,19 @@ pub(crate) async fn event_loop(
             }
 
             // stdin → master fd (user typing forwarded to agent)
-            result = stdin.read(&mut buf_in) => {
+            result = async {
+                if stdin_open {
+                    stdin.read(&mut buf_in).await
+                } else {
+                    std::future::pending().await
+                }
+            } => {
                 match result {
-                    Ok(0) | Err(_) => break, // stdin closed
+                    Ok(0) | Err(_) if !stdin_is_tty() => {
+                        stdin_open = false;
+                        continue;
+                    }
+                    Ok(0) | Err(_) => break, // the terminal went away
                     Ok(n) => {
                         let chunk = &buf_in[..n];
 

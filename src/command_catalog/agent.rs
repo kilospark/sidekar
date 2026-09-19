@@ -2,6 +2,24 @@ use super::{CommandGroup, CommandSpec, spec};
 
 pub const COMMANDS: &[CommandSpec] = &[
     spec(
+        "spawn",
+        "<agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] | list",
+        "Launch another agent on the bus and print its name",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
+        "stop",
+        "<agent-name> [--force]",
+        "Stop an agent started by sidekar spawn",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
         "proxy",
         "<log|show|clear> [--last=N]",
         "View captured proxy request/response payloads",

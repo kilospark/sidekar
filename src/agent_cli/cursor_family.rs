@@ -139,6 +139,11 @@ fn enrich_agent_binary(user_args: &[String]) -> Vec<String> {
 pub struct CursorFamily;
 
 impl AgentCliSpec for CursorFamily {
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        // `--yolo` is cursor-agent's own alias for this; use the primary spelling.
+        &["--force"]
+    }
+
     fn ids(&self) -> &'static [&'static str] {
         &["cursor", "agent", "cursor-agent"]
     }

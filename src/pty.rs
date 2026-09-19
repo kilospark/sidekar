@@ -337,12 +337,24 @@ pub async fn run_agent(
     args: &[String],
     relay_override: Option<bool>,
     proxy_override: Option<bool>,
+    yolo: bool,
 ) -> Result<()> {
     // Ensure rustls crypto provider is available before any WSS connection (relay tunnel).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let (path, c_path) = resolve_agent(agent)?;
-    let enriched_args = crate::agent_cli::enrich_startup(agent, args);
+    let args: Vec<String> = if yolo {
+        if !crate::agent_cli::supports_yolo(agent) {
+            eprintln!(
+                "\x1b[33m[sidekar]\x1b[0m {agent} has no unattended mode; \
+                 launching without one. It will still stop to ask for approval."
+            );
+        }
+        crate::agent_cli::apply_yolo(agent, args)
+    } else {
+        args.to_vec()
+    };
+    let enriched_args = crate::agent_cli::enrich_startup(agent, &args);
     let c_args = prepare_args(&c_path, &enriched_args)?;
     let bin_display = path;
     let bin_c = c_path;

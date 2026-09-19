@@ -31,6 +31,15 @@ pub trait AgentCliSpec: Send + Sync {
     fn ids(&self) -> &'static [&'static str];
     fn enrich_startup(&self, invoked_as: &str, args: &[String]) -> Vec<String>;
     fn proxy_env_flags(&self, invoked_as: &str) -> ProxyEnvFlags;
+
+    /// Flags that let this CLI act without stopping to ask a human for approval.
+    ///
+    /// Every agent spells this differently and two of them cannot do it at all,
+    /// which is why callers should never assemble these by hand. Empty means the
+    /// CLI has no unattended mode; say so rather than inventing a flag.
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 fn skip_option_arg(args: &[String], i: usize, value_flags: &[&str]) -> usize {
@@ -91,6 +100,10 @@ fn has_flag(args: &[String], flags: &[&str]) -> bool {
 struct Claude;
 
 impl AgentCliSpec for Claude {
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        &["--dangerously-skip-permissions"]
+    }
+
     fn ids(&self) -> &'static [&'static str] {
         &["claude"]
     }
@@ -156,6 +169,10 @@ impl AgentCliSpec for Claude {
 struct Codex;
 
 impl AgentCliSpec for Codex {
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        &["--dangerously-bypass-approvals-and-sandbox"]
+    }
+
     fn ids(&self) -> &'static [&'static str] {
         &["codex"]
     }
@@ -239,6 +256,10 @@ const COPILOT_VALUE_FLAGS: &[&str] = &[
 ];
 
 impl AgentCliSpec for Copilot {
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        &["--allow-all"]
+    }
+
     fn ids(&self) -> &'static [&'static str] {
         &["copilot"]
     }
@@ -281,6 +302,10 @@ impl AgentCliSpec for Copilot {
 struct Gemini;
 
 impl AgentCliSpec for Gemini {
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        &["--yolo"]
+    }
+
     fn ids(&self) -> &'static [&'static str] {
         &["gemini"]
     }
@@ -553,6 +578,10 @@ const GROK_VALUE_FLAGS: &[&str] = &[
 struct Grok;
 
 impl AgentCliSpec for Grok {
+    fn yolo_flags(&self, _invoked_as: &str) -> &'static [&'static str] {
+        &["--permission-mode", "bypassPermissions"]
+    }
+
     fn ids(&self) -> &'static [&'static str] {
         &["grok"]
     }
@@ -638,6 +667,36 @@ pub(super) fn spec_for(invoked_as: &str) -> Option<&'static dyn AgentCliSpec> {
 /// True when `sidekar <name> …` should PTY-wrap this binary.
 pub fn is_pty_agent(name: &str) -> bool {
     spec_for(name).is_some()
+}
+
+/// The flags that put `agent` into unattended mode, or empty when it has none.
+pub fn yolo_flags(agent: &str) -> &'static [&'static str] {
+    spec_for(agent).map(|s| s.yolo_flags(agent)).unwrap_or(&[])
+}
+
+/// True when `agent` can be told to stop asking for approval.
+pub fn supports_yolo(agent: &str) -> bool {
+    !yolo_flags(agent).is_empty()
+}
+
+/// Prepend `agent`'s unattended-mode flags unless the caller already passed one.
+///
+/// Prepended rather than appended because several of these CLIs treat the first
+/// bare word as the initial prompt, and a flag landing after it would be read as
+/// part of that prompt.
+pub fn apply_yolo(agent: &str, args: &[String]) -> Vec<String> {
+    let flags = yolo_flags(agent);
+    if flags.is_empty() {
+        return args.to_vec();
+    }
+    if args.iter().any(|a| {
+        flags.contains(&a.as_str()) || a.split('=').next().is_some_and(|k| flags.contains(&k))
+    }) {
+        return args.to_vec();
+    }
+    let mut out: Vec<String> = flags.iter().map(|f| (*f).to_string()).collect();
+    out.extend_from_slice(args);
+    out
 }
 
 /// Apply startup injection for `invoked_as` if the registry entry supports it.

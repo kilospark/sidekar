@@ -19,6 +19,7 @@ pub mod kv;
 pub mod monitor;
 mod prompt;
 mod session;
+pub mod spawn;
 mod system;
 pub mod totp;
 
@@ -82,6 +83,8 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         return result;
     }
     match command {
+        "spawn" => spawn::cmd_spawn(ctx, args).await,
+        "stop" => spawn::cmd_stop(ctx, args),
         "launch" => cmd_launch(ctx, args).await,
         "connect" => cmd_connect(ctx).await.map(|_| ()),
         "stealth" => cmd_stealth(ctx, args).await,

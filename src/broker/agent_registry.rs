@@ -38,10 +38,20 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
     let cwd = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string());
+    // `sidekar spawn` sets these in the child's environment before exec, which is
+    // how it recognises the pane it just launched: the bus name is chosen inside
+    // the wrapper and cannot be predicted from outside.
+    let spawned_by = std::env::var("SIDEKAR_SPAWNED_BY")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let spawn_token = std::env::var("SIDEKAR_SPAWN_TOKEN")
+        .ok()
+        .filter(|v| !v.is_empty());
     tx.execute(
         "INSERT INTO agents (
-            name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at, last_seen_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            name, nick, session, pane, pane_unique_id, agent_type, cwd, registered_at,
+            last_seen_at, spawned_by, spawn_token
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10)",
         params![
             agent.name,
             nick,
@@ -51,10 +61,51 @@ pub fn register_agent(agent: &AgentId, pane_unique_id: Option<&str>) -> Result<(
             agent_type,
             cwd,
             now,
+            spawned_by,
+            spawn_token,
         ],
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// The agent registered under `token`, once its wrapper has reached the bus.
+pub fn agent_for_spawn_token(token: &str) -> Result<Option<BrokerAgent>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd,
+                registered_at, last_seen_at
+         FROM agents WHERE spawn_token = ?1 LIMIT 1",
+    )?;
+    stmt.query_row(params![token], row_to_agent)
+        .optional()
+        .map_err(Into::into)
+}
+
+/// Agents that `sidekar spawn` started, newest first.
+pub fn spawned_agents() -> Result<Vec<(BrokerAgent, String)>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT name, nick, session, pane, pane_unique_id, agent_type, cwd,
+                registered_at, last_seen_at, COALESCE(spawned_by, '')
+         FROM agents WHERE spawned_by IS NOT NULL ORDER BY registered_at DESC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((row_to_agent(row)?, row.get::<_, String>(9)?));
+    }
+    Ok(out)
+}
+
+/// Who asked for `name` to exist, when sidekar spawned it.
+pub fn spawner_of(name: &str) -> Result<Option<String>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare("SELECT spawned_by FROM agents WHERE name = ?1")?;
+    stmt.query_row(params![name], |r| r.get::<_, Option<String>>(0))
+        .optional()
+        .map(|v| v.flatten())
+        .map_err(Into::into)
 }
 
 pub fn touch_agent(name: &str) -> Result<()> {

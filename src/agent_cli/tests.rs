@@ -322,3 +322,57 @@ fn is_pty_agent_matches_registry() {
     assert!(!is_pty_agent("goose"));
     assert!(!is_pty_agent("not-an-agent"));
 }
+
+#[test]
+fn yolo_flags_are_agent_specific() {
+    assert_eq!(yolo_flags("claude"), &["--dangerously-skip-permissions"]);
+    assert_eq!(
+        yolo_flags("codex"),
+        &["--dangerously-bypass-approvals-and-sandbox"]
+    );
+    assert_eq!(yolo_flags("cursor-agent"), &["--force"]);
+    assert_eq!(yolo_flags("gemini"), &["--yolo"]);
+    assert_eq!(yolo_flags("copilot"), &["--allow-all"]);
+    assert_eq!(
+        yolo_flags("grok"),
+        &["--permission-mode", "bypassPermissions"]
+    );
+}
+
+#[test]
+fn agents_without_an_unattended_mode_report_none() {
+    // opencode's --auto exists only on `opencode run`, and pi has no permission
+    // gate at all. Claiming a flag here would make spawn fail on first use.
+    assert!(yolo_flags("opencode").is_empty());
+    assert!(yolo_flags("pi").is_empty());
+    assert!(!supports_yolo("opencode"));
+    assert!(!supports_yolo("pi"));
+    assert!(yolo_flags("not-an-agent").is_empty());
+}
+
+#[test]
+fn apply_yolo_prepends_and_does_not_duplicate() {
+    let none: Vec<String> = vec![];
+    assert_eq!(
+        apply_yolo("claude", &none),
+        vec!["--dangerously-skip-permissions"]
+    );
+
+    // Ahead of the prompt: several CLIs read the first bare word as the task.
+    let with_task = vec!["review the diff".to_string()];
+    assert_eq!(
+        apply_yolo("claude", &with_task),
+        vec!["--dangerously-skip-permissions", "review the diff"]
+    );
+
+    // Already asked for: leave it alone.
+    let explicit = vec![
+        "--dangerously-skip-permissions".to_string(),
+        "task".to_string(),
+    ];
+    assert_eq!(apply_yolo("claude", &explicit), explicit);
+
+    // Nothing to add for an agent that has no unattended mode.
+    let args = vec!["task".to_string()];
+    assert_eq!(apply_yolo("opencode", &args), args);
+}

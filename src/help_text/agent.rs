@@ -34,6 +34,46 @@ sidekar proxy <log|show|clear> [options]
     sidekar proxy show 42
     sidekar proxy clear"
         }
+        "spawn" => {
+            "\
+sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] [--timeout <secs>]
+sidekar spawn list
+
+  Launch another agent, wait for it to reach the bus, and print its bus name.
+
+  The agent runs detached with its own session, so it outlives this command and
+  ignores a Ctrl-C meant for your terminal. Unattended mode is on by default —
+  each CLI spells that differently and spawn picks the right flag, so never pass
+  the agent's own permission flags yourself. Use --no-yolo to leave approvals on.
+
+  Two agents have no unattended mode: opencode (its --auto is only on
+  `opencode run`) and pi. Spawn warns and launches them anyway; they will stop
+  at their first approval prompt with nobody there to answer.
+
+  Examples:
+    REVIEWER=$(sidekar spawn codex \"Review the diff on this branch. Reply with findings.\")
+    sidekar bus wait \"$REVIEWER\"
+    sidekar bus replies --limit=5
+    sidekar stop \"$REVIEWER\"
+
+    sidekar spawn claude --cwd ~/src/other-repo \"Run the test suite and report failures\"
+    sidekar spawn list"
+        }
+        "stop" => {
+            "\
+sidekar stop <agent-name> [--force]
+
+  Stop an agent that `sidekar spawn` started, by bus name.
+
+  Sends SIGTERM so the wrapper unregisters and hands back any mail still queued
+  for it, rather than stranding it. An agent sidekar did not spawn is refused,
+  because stopping it would kill a pane someone else is working in; --force
+  overrides that.
+
+  Examples:
+    sidekar spawn list
+    sidekar stop claude-/Users/you/src/app-2"
+        }
         "bus" => {
             "\
 sidekar bus <who|requests|replies|show|send|done|wait|explain|cancel|dismiss> [args...]

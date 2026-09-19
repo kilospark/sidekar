@@ -71,6 +71,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         None
     };
 
+    // Sidekar-owned, stripped from anywhere in argv like --relay/--proxy so it can
+    // sit before or after the agent name.
+    let yolo = args.iter().any(|a| a == "--yolo" || a == "--auto-approve");
+    if yolo {
+        args.retain(|a| a != "--yolo" && a != "--auto-approve");
+    }
+
     let saw_proxy = args.iter().any(|a| a == "--proxy");
     let saw_no_proxy = args.iter().any(|a| a == "--no-proxy");
     if saw_proxy && saw_no_proxy {
@@ -258,10 +265,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
-        return sidekar::pty::run_agent(&command, &args, relay_override, proxy_override).await;
+        return sidekar::pty::run_agent(&command, &args, relay_override, proxy_override, yolo)
+            .await;
     }
-    if relay_override.is_some() || proxy_override.is_some() {
-        bail!("--relay/--no-relay/--proxy/--no-proxy only apply to: sidekar <agent> [args...]");
+    if relay_override.is_some() || proxy_override.is_some() || yolo {
+        bail!(
+            "--relay/--no-relay/--proxy/--no-proxy/--yolo only apply to: sidekar <agent> [args...]"
+        );
     }
     if !sidekar::is_known_command(&command) {
         bail!("Unknown command: {command}");

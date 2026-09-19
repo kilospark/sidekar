@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
 
 mod activity;
 mod agent_registry;
@@ -129,6 +129,9 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         if version < 12 {
             ensure_delivery_tracking_columns(conn)?;
         }
+        if version < 13 {
+            ensure_agent_spawn_columns(conn)?;
+        }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
     }
     ensure_proxy_log_status(conn)?;
@@ -136,6 +139,7 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     ensure_bus_queue_delivery_columns(conn)?;
     ensure_bus_queue_claim_columns(conn)?;
     ensure_delivery_tracking_columns(conn)?;
+    ensure_agent_spawn_columns(conn)?;
     Ok(())
 }
 
@@ -317,6 +321,26 @@ fn ensure_delivery_tracking_columns(conn: &Connection) -> Result<()> {
             ON bus_queue(envelope_id) WHERE envelope_id IS NOT NULL;
          CREATE INDEX IF NOT EXISTS idx_bus_replies_request_sender
             ON bus_replies(request_sender_name, created_at);",
+    )?;
+    Ok(())
+}
+
+/// Records which agent asked for this one to exist.
+///
+/// `sidekar spawn` needs to tell the agents it launched apart from the ones a
+/// human started, so it can list them and refuse to stop a pane nobody asked it
+/// to own.
+fn ensure_agent_spawn_columns(conn: &Connection) -> Result<()> {
+    let cols = table_columns(conn, "agents")?;
+    if !cols.contains("spawned_by") {
+        conn.execute("ALTER TABLE agents ADD COLUMN spawned_by TEXT", [])?;
+    }
+    if !cols.contains("spawn_token") {
+        conn.execute("ALTER TABLE agents ADD COLUMN spawn_token TEXT", [])?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_agents_spawn_token
+            ON agents(spawn_token) WHERE spawn_token IS NOT NULL;",
     )?;
     Ok(())
 }
