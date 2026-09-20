@@ -314,9 +314,14 @@ pub fn migrate_kv_login_transition(old_uid: &str, new_uid: &str) -> Result<()> {
     if old_uid == new_uid || new_uid.is_empty() {
         return Ok(());
     }
-    let conn = open()?;
-    migrate_kv_rows(&conn, old_uid, new_uid)?;
-    reencrypt_plaintext_rows(&conn, new_uid)?;
+    // Wrapped in one transaction so a crash mid-migration can't leave some
+    // rows moved (or re-keyed) and others not: either every row lands under
+    // `new_uid` encrypted with the active key, or none of them do.
+    let mut conn = open()?;
+    let tx = conn.transaction()?;
+    migrate_kv_rows(&tx, old_uid, new_uid)?;
+    reencrypt_plaintext_rows(&tx, new_uid)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -341,6 +346,17 @@ fn archive_value(conn: &Connection, uid: &str, key: &str, value: &str, tags: &st
 }
 
 fn migrate_kv_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()> {
+    // Rows under `old_uid` are ciphertext under whatever key was active when
+    // they were written -- pre-login, that's always the persisted local key
+    // (`kv_set` runs `ensure_local_key` first). `fetch_encryption_key`
+    // installs the account key as active *before* calling this migration,
+    // so without re-keying here those rows would sit under a key nothing
+    // still holds, and `decrypt(...).unwrap_or(raw)` on the read path would
+    // silently return raw ciphertext forever instead of erroring.
+    let old_key = super::encryption::read_persisted_local_key(conn)?;
+    let active_key =
+        get_encryption_key().context("no active encryption key during login migration")?;
+
     let rows: Vec<(String, String, String)> = {
         let mut stmt = conn.prepare("SELECT key, value, tags FROM kv_store WHERE user_id = ?1")?;
         let mut out = Vec::new();
@@ -352,6 +368,7 @@ fn migrate_kv_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()
     };
 
     for (key, value, tags) in rows {
+        let rekeyed = rekey_migrated_value(&value, old_key.as_deref(), &active_key)?;
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM kv_store WHERE user_id = ?1 AND key = ?2)",
             params![new_uid, key],
@@ -361,26 +378,47 @@ fn migrate_kv_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()
             // The account already has this key (e.g. synced from another
             // device); UNIQUE(user_id, key) rules out moving this row in
             // place, so archive it into history instead of dropping it.
-            archive_value(conn, new_uid, &key, &value, &tags)?;
+            archive_value(conn, new_uid, &key, &rekeyed, &tags)?;
             conn.execute(
                 "DELETE FROM kv_store WHERE user_id = ?1 AND key = ?2",
                 params![old_uid, key],
             )?;
         } else {
             conn.execute(
-                "UPDATE kv_store SET user_id = ?1 WHERE user_id = ?2 AND key = ?3",
-                params![new_uid, old_uid, key],
+                "UPDATE kv_store SET user_id = ?1, value = ?2 WHERE user_id = ?3 AND key = ?4",
+                params![new_uid, rekeyed, old_uid, key],
             )?;
         }
     }
 
-    migrate_kv_history(conn, old_uid, new_uid)
+    migrate_kv_history(conn, old_uid, new_uid, old_key.as_deref(), &active_key)
+}
+
+/// Re-key a value being moved off the pre-login uid: ciphertext is
+/// decrypted with the persisted local key it was written under and
+/// re-encrypted with the now-active account key. Legacy plaintext (never
+/// encrypted at all) passes through unchanged for `reencrypt_plaintext_rows`
+/// to pick up afterward.
+fn rekey_migrated_value(value: &str, old_key: Option<&[u8]>, active_key: &[u8]) -> Result<String> {
+    if !is_encrypted(value) {
+        return Ok(value.to_string());
+    }
+    let old_key = old_key.context(
+        "found an encrypted pre-login kv row but no persisted local key to decrypt it with",
+    )?;
+    super::encryption::rekey_value(value, old_key, active_key)
 }
 
 /// Move every history row for `old_uid` onto `new_uid`, renumbering
 /// versions so they land after whatever history the account already has
 /// for that key (version numbers are only ever compared within a uid).
-fn migrate_kv_history(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()> {
+fn migrate_kv_history(
+    conn: &Connection,
+    old_uid: &str,
+    new_uid: &str,
+    old_key: Option<&[u8]>,
+    active_key: &[u8],
+) -> Result<()> {
     let rows: Vec<(i64, String, String, String, i64)> = {
         let mut stmt = conn.prepare(
             "SELECT id, key, value, tags, archived_at FROM kv_history \
@@ -401,6 +439,7 @@ fn migrate_kv_history(conn: &Connection, old_uid: &str, new_uid: &str) -> Result
     };
 
     for (id, key, value, tags, archived_at) in rows {
+        let rekeyed = rekey_migrated_value(&value, old_key, active_key)?;
         let next_version: i64 = conn
             .prepare(
                 "SELECT COALESCE(MAX(version), 0) + 1 FROM kv_history \
@@ -410,7 +449,7 @@ fn migrate_kv_history(conn: &Connection, old_uid: &str, new_uid: &str) -> Result
         conn.execute(
             "INSERT INTO kv_history (user_id, key, version, value, tags, archived_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![new_uid, key, next_version, value, tags, archived_at],
+            params![new_uid, key, next_version, rekeyed, tags, archived_at],
         )?;
         conn.execute("DELETE FROM kv_history WHERE id = ?1", params![id])?;
     }

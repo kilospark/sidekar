@@ -1415,11 +1415,14 @@ fn login_migrates_and_reencrypts_prelogin_rows() -> Result<()> {
     with_test_db(|| {
         reset_encryption_state();
 
-        // Pre-login: kv_set/totp_add establish a local key and encrypt.
+        // Pre-login: kv_set/totp_add establish a local key and encrypt
+        // under it. A second kv_set on the same key archives the first
+        // value into kv_history, so history rows are covered too.
         kv_set("token", "pre-login-value", None)?;
+        kv_set("token", "pre-login-value-v2", None)?;
         totp_add("github", "me@example.com", "PRELOGINSECRET", "SHA1", 6, 30)?;
 
-        // Simulate a row written before this migration existed: raw
+        // Simulate a row written before encryption existed at all: raw
         // plaintext under the pre-login uid, bypassing kv_set/totp_add.
         let now = crate::message::epoch_secs() as i64;
         {
@@ -1436,25 +1439,42 @@ fn login_migrates_and_reencrypts_prelogin_rows() -> Result<()> {
             )?;
         }
 
-        // "Login": current_user_id transitions from '' to the account uid.
-        // (fetch_encryption_key does this over the network; exercise the
-        // migration it triggers directly.)
+        let local_key = get_encryption_key().expect("kv_set/totp_add installed a local key");
+
+        // "Login": fetch_encryption_key installs a DIFFERENT account key
+        // and *then* runs the migration -- this is the exact ordering that
+        // silently stranded pre-login ciphertext under the old key. Using
+        // a fixed, visibly-different key (instead of another random one)
+        // makes the two keys' distinctness obvious in a failure diff.
         let new_uid = "user-42";
-        crate::broker::kv_store::migrate_kv_login_transition("", new_uid)?;
-        crate::broker::totp::migrate_totp_login_transition("", new_uid)?;
+        let account_key = vec![0x42u8; 32];
+        assert_ne!(
+            account_key, local_key,
+            "test must exercise two distinct keys, as a real login does"
+        );
+        set_encryption_key(account_key);
+        crate::broker::encryption::migrate_login_transition("", new_uid)?;
         set_current_user_id(new_uid.to_string());
 
-        // Rows are now visible under the logged-in account...
+        // Post-login reads (now decrypting with the account key) must
+        // recover the original plaintext, not the raw ciphertext that
+        // `decrypt(...).unwrap_or(raw)` falls back to on a key mismatch.
         let kv = kv_list(None)?;
         let by_key = |k: &str| kv.iter().find(|e| e.key == k);
         assert_eq!(
             by_key("token").map(|e| e.value.as_str()),
-            Some("pre-login-value")
+            Some("pre-login-value-v2")
         );
         assert_eq!(
             by_key("legacy-plain").map(|e| e.value.as_str()),
             Some("legacy-plaintext-value")
         );
+
+        // The archived version (kv_history), not just the live row, must
+        // also have been re-keyed to the account key.
+        let history_entries = kv_history("token")?;
+        assert_eq!(history_entries.len(), 1);
+        assert_eq!(history_entries[0].value, "pre-login-value");
 
         let totp = totp_list()?;
         assert!(
@@ -1498,6 +1518,18 @@ fn login_migrates_and_reencrypts_prelogin_rows() -> Result<()> {
             |r| r.get(0),
         )?;
         assert_eq!(history, 1);
+
+        // The stale local key must not survive to strand or shadow future
+        // reads: everything it protected is now under the account key.
+        let local_key_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM encryption_meta WHERE key = 'account_data_key_v1'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            local_key_rows, 0,
+            "post-migration the persisted local key must be purged"
+        );
 
         reset_encryption_state();
         Ok(())

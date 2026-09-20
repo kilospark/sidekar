@@ -121,25 +121,36 @@ pub fn migrate_totp_login_transition(old_uid: &str, new_uid: &str) -> Result<()>
     if old_uid == new_uid || new_uid.is_empty() {
         return Ok(());
     }
-    let conn = open()?;
-    migrate_totp_rows(&conn, old_uid, new_uid)?;
-    reencrypt_plaintext_secrets(&conn, new_uid)?;
+    // Wrapped in one transaction so a crash mid-migration can't leave some
+    // secrets moved (or re-keyed) and others not.
+    let mut conn = open()?;
+    let tx = conn.transaction()?;
+    migrate_totp_rows(&tx, old_uid, new_uid)?;
+    reencrypt_plaintext_secrets(&tx, new_uid)?;
+    tx.commit()?;
     Ok(())
 }
 
 fn migrate_totp_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()> {
-    let rows: Vec<(i64, String, String)> = {
-        let mut stmt =
-            conn.prepare("SELECT id, service, account FROM totp_secrets WHERE user_id = ?1")?;
+    // See the matching comment in kv_store::migrate_kv_rows: rows under
+    // `old_uid` are ciphertext under the persisted local key, which is no
+    // longer the active key by the time this runs.
+    let old_key = super::encryption::read_persisted_local_key(conn)?;
+    let active_key =
+        get_encryption_key().context("no active encryption key during login migration")?;
+
+    let rows: Vec<(i64, String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, service, account, secret FROM totp_secrets WHERE user_id = ?1")?;
         let mut out = Vec::new();
         let mut rs = stmt.query(params![old_uid])?;
         while let Some(row) = rs.next()? {
-            out.push((row.get(0)?, row.get(1)?, row.get(2)?));
+            out.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
         }
         out
     };
 
-    for (id, service, account) in rows {
+    for (id, service, account, secret) in rows {
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM totp_secrets \
              WHERE user_id = ?1 AND service = ?2 AND account = ?3)",
@@ -160,13 +171,30 @@ fn migrate_totp_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<
             );
             conn.execute("DELETE FROM totp_secrets WHERE id = ?1", params![id])?;
         } else {
+            let rekeyed = rekey_migrated_secret(&secret, old_key.as_deref(), &active_key)?;
             conn.execute(
-                "UPDATE totp_secrets SET user_id = ?1 WHERE id = ?2",
-                params![new_uid, id],
+                "UPDATE totp_secrets SET user_id = ?1, secret = ?2 WHERE id = ?3",
+                params![new_uid, rekeyed, id],
             )?;
         }
     }
     Ok(())
+}
+
+/// See `kv_store::rekey_migrated_value` -- same re-key-or-pass-through logic
+/// for TOTP secrets.
+fn rekey_migrated_secret(
+    secret: &str,
+    old_key: Option<&[u8]>,
+    active_key: &[u8],
+) -> Result<String> {
+    if !is_encrypted(secret) {
+        return Ok(secret.to_string());
+    }
+    let old_key = old_key.context(
+        "found an encrypted pre-login totp secret but no persisted local key to decrypt it with",
+    )?;
+    super::encryption::rekey_value(secret, old_key, active_key)
 }
 
 /// Re-encrypt any secret under `uid` that is still plaintext.
