@@ -56,17 +56,25 @@ trap 'rm -rf "$TMPDIR"' EXIT
 curl -fsSL "$URL" -o "$TMPDIR/${ASSET}.tar.gz"
 curl -fsSL "$SIG_URL" -o "$TMPDIR/${ASSET}.tar.gz.minisig"
 
-# Verify signature
-if command -v minisign >/dev/null 2>&1; then
-  if minisign -Vm "$TMPDIR/${ASSET}.tar.gz" -P "$PUBKEY" >/dev/null 2>&1; then
-    echo "Signature verified."
-  else
-    echo "ERROR: Signature verification failed. Aborting."
-    exit 1
-  fi
+# Verify signature. This must never be silently skipped: if we can't verify,
+# we refuse to install rather than run unverified code.
+if ! command -v minisign >/dev/null 2>&1; then
+  echo "ERROR: minisign is required to verify the release signature, but it is not installed." >&2
+  echo "  Install it and re-run this script:" >&2
+  case "$PLATFORM" in
+    darwin) echo "    brew install minisign" >&2 ;;
+    linux)  echo "    apt install minisign   (Debian/Ubuntu; use your distro's package manager otherwise)" >&2 ;;
+  esac
+  echo "    https://jedisct1.github.io/minisign/" >&2
+  echo "Refusing to install ${BINARY} without verifying its signature." >&2
+  exit 1
+fi
+
+if minisign -Vm "$TMPDIR/${ASSET}.tar.gz" -P "$PUBKEY" >/dev/null 2>&1; then
+  echo "Signature verified."
 else
-  echo "Warning: minisign not found, skipping signature verification."
-  echo "  Install minisign to verify: https://jedisct1.github.io/minisign/"
+  echo "ERROR: Signature verification failed. Aborting." >&2
+  exit 1
 fi
 
 tar xzf "$TMPDIR/${ASSET}.tar.gz" -C "$TMPDIR"
