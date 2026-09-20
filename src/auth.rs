@@ -25,10 +25,18 @@ pub fn auth_token() -> Option<String> {
 }
 
 /// Remove the stored device token and clear in-memory encryption state.
-pub fn logout() -> Result<()> {
+/// Also purges the persisted local data key unless `keep_local_key` is set
+/// (e.g. `device logout --keep-local`), so a logged-out database is inert:
+/// ciphertext rows remain on disk but nothing can decrypt them without
+/// logging back in. Passing `keep_local_key = true` keeps today's local
+/// secrets readable on a shared machine at the cost of that guarantee.
+pub fn logout(keep_local_key: bool) -> Result<()> {
     crate::broker::auth_clear()?;
     crate::broker::clear_encryption_key();
     crate::broker::clear_current_user_id();
+    if !keep_local_key {
+        crate::broker::purge_local_key()?;
+    }
     Ok(())
 }
 

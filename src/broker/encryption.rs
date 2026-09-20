@@ -42,6 +42,60 @@ pub fn is_encrypted(value: &str) -> bool {
     value.starts_with("$encrypted$")
 }
 
+/// Key `kv_set`/`totp_add` persist a locally-generated key under in
+/// `encryption_meta` when no account key has been fetched yet.
+const LOCAL_KEY_META_KEY: &str = "account_data_key_v1";
+
+/// Make sure an encryption key is loaded, generating and persisting a
+/// random 256-bit local key on first use if none is loaded yet (in memory)
+/// or stored (in `encryption_meta`). Called from `kv_set`/`totp_add` so a
+/// write before login is encrypted instead of falling back to plaintext.
+pub fn ensure_local_key() -> Result<Vec<u8>> {
+    if let Some(key) = get_encryption_key() {
+        return Ok(key);
+    }
+
+    let conn = open()?;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM encryption_meta WHERE key = ?1",
+            params![LOCAL_KEY_META_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    let key = match stored {
+        Some(encoded) => base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .context("invalid local encryption key stored in encryption_meta")?,
+        None => {
+            let bytes: [u8; 32] = rand::rng().random();
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            conn.execute(
+                "INSERT INTO encryption_meta (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![LOCAL_KEY_META_KEY, encoded],
+            )?;
+            bytes.to_vec()
+        }
+    };
+
+    set_encryption_key(key.clone());
+    Ok(key)
+}
+
+/// Delete the persisted local data key so a logged-out database is inert
+/// without re-linking. Local ciphertext rows remain on disk but unreadable
+/// until the key is re-established (fresh local key, or login again).
+pub fn purge_local_key() -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "DELETE FROM encryption_meta WHERE key = ?1",
+        params![LOCAL_KEY_META_KEY],
+    )?;
+    Ok(())
+}
+
 pub fn encrypt(plaintext: &str) -> Result<String> {
     let key = ENCRYPTION_KEY.lock().unwrap();
     let key = key.as_ref().context("No encryption key set")?;
@@ -120,10 +174,21 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
         .decode(body.key.trim())
         .context("Invalid encryption key format")?;
 
+    let old_uid = current_user_id().unwrap_or_default();
+
     set_encryption_key(decoded.clone());
 
     if let Some(ref uid) = body.user_id {
         set_current_user_id(uid.clone());
+        if old_uid != *uid {
+            // Rows written before login (or under a different account) live
+            // under a different user_id and would otherwise stay invisible
+            // and, if written before any key existed, in plaintext.
+            super::kv_store::migrate_kv_login_transition(&old_uid, uid)
+                .context("failed to migrate kv rows to the logged-in account")?;
+            super::totp::migrate_totp_login_transition(&old_uid, uid)
+                .context("failed to migrate totp secrets to the logged-in account")?;
+        }
     }
 
     Ok(Some(decoded))

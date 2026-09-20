@@ -26,22 +26,11 @@ pub fn totp_add(
     let now = crate::message::epoch_secs() as i64;
     let uid = current_user_id().unwrap_or_default();
 
-    let secret_to_store = if get_encryption_key().is_some() {
-        match encrypt(secret) {
-            Ok(enc) => enc,
-            Err(e) => {
-                crate::broker::try_log_event(
-                    "warn",
-                    "totp",
-                    "encryption key available but encrypt failed; storing plaintext",
-                    Some(&format!("{e:#}")),
-                );
-                secret.to_string()
-            }
-        }
-    } else {
-        secret.to_string()
-    };
+    // `ensure_local_key` means there is always a key by this point, even
+    // before login, so there is no plaintext fallback left to take.
+    ensure_local_key().context("failed to establish a local encryption key")?;
+    let secret_to_store =
+        encrypt(secret).context("encryption key is loaded but encrypting the secret failed")?;
 
     conn.execute(
         "INSERT INTO totp_secrets (user_id, service, account, secret, algorithm, digits, period, created_at) \
@@ -121,5 +110,99 @@ pub fn totp_delete(id: i64) -> Result<()> {
         "DELETE FROM totp_secrets WHERE id = ?1 AND user_id = ?2",
         params![id, uid],
     )?;
+    Ok(())
+}
+
+/// After a login transitions the account id (pre-login `''` -> the logged
+/// in account, or one account -> another), move that uid's secrets onto
+/// the new one and make sure nothing left under the new uid is plaintext.
+/// Called once per transition from `fetch_encryption_key`.
+pub fn migrate_totp_login_transition(old_uid: &str, new_uid: &str) -> Result<()> {
+    if old_uid == new_uid || new_uid.is_empty() {
+        return Ok(());
+    }
+    let conn = open()?;
+    migrate_totp_rows(&conn, old_uid, new_uid)?;
+    reencrypt_plaintext_secrets(&conn, new_uid)?;
+    Ok(())
+}
+
+fn migrate_totp_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()> {
+    let rows: Vec<(i64, String, String)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, service, account FROM totp_secrets WHERE user_id = ?1")?;
+        let mut out = Vec::new();
+        let mut rs = stmt.query(params![old_uid])?;
+        while let Some(row) = rs.next()? {
+            out.push((row.get(0)?, row.get(1)?, row.get(2)?));
+        }
+        out
+    };
+
+    for (id, service, account) in rows {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM totp_secrets \
+             WHERE user_id = ?1 AND service = ?2 AND account = ?3)",
+            params![new_uid, service, account],
+            |r| r.get(0),
+        )?;
+        if exists {
+            // The account already has this service/account pair from
+            // another device. There is no TOTP history table to archive
+            // the orphaned pre-login row into, so log and drop it rather
+            // than fail the whole login on a UNIQUE(user_id, service, account)
+            // conflict.
+            crate::broker::try_log_event(
+                "warn",
+                "totp",
+                "dropped an orphaned pre-login secret that collided with an account secret",
+                Some(&format!("service={service} account={account}")),
+            );
+            conn.execute("DELETE FROM totp_secrets WHERE id = ?1", params![id])?;
+        } else {
+            conn.execute(
+                "UPDATE totp_secrets SET user_id = ?1 WHERE id = ?2",
+                params![new_uid, id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Re-encrypt any secret under `uid` that is still plaintext.
+fn reencrypt_plaintext_secrets(conn: &Connection, uid: &str) -> Result<()> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id, secret FROM totp_secrets WHERE user_id = ?1")?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query(params![uid])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let secret: String = row.get(1)?;
+            if !is_encrypted(&secret) {
+                out.push(id);
+            }
+        }
+        out
+    };
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    ensure_local_key().context("failed to establish a local encryption key")?;
+    for id in ids {
+        let secret: String = conn.query_row(
+            "SELECT secret FROM totp_secrets WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if is_encrypted(&secret) {
+            continue; // migrated to ciphertext by an earlier pass
+        }
+        let encrypted = encrypt(&secret).context("failed to re-encrypt a plaintext totp secret")?;
+        conn.execute(
+            "UPDATE totp_secrets SET secret = ?1 WHERE id = ?2",
+            params![encrypted, id],
+        )?;
+    }
     Ok(())
 }

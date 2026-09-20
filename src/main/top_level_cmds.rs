@@ -42,10 +42,14 @@ pub async fn handle_device(args: &[String]) -> Result<()> {
     match sub {
         "login" => sidekar::auth::device_auth_flow().await,
         "logout" => {
-            sidekar::auth::logout()?;
-            sidekar::output::emit(&sidekar::output::PlainOutput::new(
-                "Signed out. Device token removed.",
-            ))?;
+            let keep_local = args.iter().skip(1).any(|a| a == "--keep-local");
+            sidekar::auth::logout(keep_local)?;
+            let msg = if keep_local {
+                "Signed out. Device token removed. Local encryption key kept (--keep-local)."
+            } else {
+                "Signed out. Device token and local encryption key removed."
+            };
+            sidekar::output::emit(&sidekar::output::PlainOutput::new(msg))?;
             Ok(())
         }
         "list" => {
