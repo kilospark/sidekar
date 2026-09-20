@@ -23,8 +23,21 @@
       ".sidekar-modal-btn-primary:hover{background:var(--bg);}" +
       ".sidekar-modal-btn-danger{border-color:#7f1d1d;color:#fca5a5;background:rgba(127,29,29,.2);}" +
       ".sidekar-modal-btn-danger:hover{border-color:#b91c1c;color:#fecaca;background:rgba(185,28,28,.28);}" +
+      // Light has two states, and only one of them is `html.light`. The default
+      // is a system preference with no class at all, which common.css handles as
+      // `:root:not(.dark)` inside a media query. Matching only the explicit class
+      // left the dark red (#fca5a5 on a dark wash) painted onto a light dialog,
+      // where the confirm button read as pale-on-pale.
+      "@media (prefers-color-scheme: light){" +
+      ":root:not(.dark) .sidekar-modal-btn-danger{border-color:#fecaca;color:#b91c1c;background:rgba(254,202,202,.35);}" +
+      ":root:not(.dark) .sidekar-modal-btn-danger:hover{border-color:#f87171;background:rgba(254,202,202,.55);}" +
+      "}" +
       "html.light .sidekar-modal-btn-danger{border-color:#fecaca;color:#b91c1c;background:rgba(254,202,202,.35);}" +
-      "html.light .sidekar-modal-btn-danger:hover{border-color:#f87171;background:rgba(254,202,202,.55);}";
+      "html.light .sidekar-modal-btn-danger:hover{border-color:#f87171;background:rgba(254,202,202,.55);}" +
+      // And explicit dark must win back over the media query, or a dark choice on
+      // a light system would keep the light-mode red.
+      "html.dark .sidekar-modal-btn-danger{border-color:#7f1d1d;color:#fca5a5;background:rgba(127,29,29,.2);}" +
+      "html.dark .sidekar-modal-btn-danger:hover{border-color:#b91c1c;color:#fecaca;background:rgba(185,28,28,.28);}";
     document.head.appendChild(s);
   }
 
