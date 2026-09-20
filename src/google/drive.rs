@@ -15,7 +15,7 @@ pub struct Entry {
 }
 
 /// List or search. `query` is Drive query syntax; empty lists the root.
-pub async fn list(query: &str, limit: usize) -> Result<Vec<Entry>> {
+pub async fn list(token: &super::auth::TokenRef, query: &str, limit: usize) -> Result<Vec<Entry>> {
     let q = if query.trim().is_empty() {
         "'root' in parents and trashed = false".to_string()
     } else if query.contains('=') || query.contains(" in ") || query.contains("contains") {
@@ -33,7 +33,7 @@ pub async fn list(query: &str, limit: usize) -> Result<Vec<Entry>> {
         urlencoding::encode(&q),
         limit.clamp(1, 1000)
     );
-    let res = super::api_get(&url).await?;
+    let res = super::api_get(token, &url).await?;
     Ok(res
         .get("files")
         .and_then(|f| f.as_array())
@@ -55,8 +55,8 @@ pub async fn list(query: &str, limit: usize) -> Result<Vec<Entry>> {
 ///
 /// Google-native docs cannot be downloaded directly and must be exported, so
 /// a Doc comes back as plain text and a Sheet as CSV.
-pub async fn get_text(id: &str) -> Result<String> {
-    let meta = super::api_get(&format!("{FILES}/{id}?fields=name,mimeType")).await?;
+pub async fn get_text(token: &super::auth::TokenRef, id: &str) -> Result<String> {
+    let meta = super::api_get(token, &format!("{FILES}/{id}?fields=name,mimeType")).await?;
     let mime = str_at(&meta, "mimeType");
     let url = match mime.as_str() {
         "application/vnd.google-apps.document" => {
@@ -70,7 +70,7 @@ pub async fn get_text(id: &str) -> Result<String> {
         }
         _ => format!("{FILES}/{id}?alt=media"),
     };
-    let token = super::auth::access_token().await?;
+    let token = super::auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .get(&url)
         .bearer_auth(token)
@@ -88,7 +88,12 @@ pub async fn get_text(id: &str) -> Result<String> {
 }
 
 /// Upload a local file. Multipart so name and content land in one request.
-pub async fn put(path: &str, name: Option<&str>, folder: Option<&str>) -> Result<String> {
+pub async fn put(
+    token: &super::auth::TokenRef,
+    path: &str,
+    name: Option<&str>,
+    folder: Option<&str>,
+) -> Result<String> {
     let bytes = std::fs::read(path)?;
     let name = name
         .map(String::from)
@@ -116,7 +121,7 @@ pub async fn put(path: &str, name: Option<&str>, folder: Option<&str>) -> Result
     body.extend_from_slice(&bytes);
     body.extend_from_slice(format!("\r\n--{BOUNDARY}--").as_bytes());
 
-    let token = super::auth::access_token().await?;
+    let token = super::auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .post(format!("{UPLOAD}?uploadType=multipart"))
         .bearer_auth(token)
@@ -143,8 +148,8 @@ pub async fn put(path: &str, name: Option<&str>, folder: Option<&str>) -> Result
 ///
 /// Trashing is the default because it is recoverable for 30 days; permanent
 /// deletion of someone's Drive file has no undo, so it has to be asked for.
-pub async fn remove(id: &str, permanent: bool) -> Result<()> {
-    let token = super::auth::access_token().await?;
+pub async fn remove(token: &super::auth::TokenRef, id: &str, permanent: bool) -> Result<()> {
+    let token = super::auth::access_token_for(token).await?;
     let client = reqwest::Client::new();
     let res = if permanent {
         client

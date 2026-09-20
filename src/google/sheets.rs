@@ -10,21 +10,26 @@ use serde_json::{Value, json};
 const BASE: &str = "https://sheets.googleapis.com/v4/spreadsheets";
 
 /// Read a range in A1 notation, e.g. `Sheet1!A1:D20` or just `Sheet1`.
-pub async fn get(id: &str, range: &str) -> Result<Vec<Vec<String>>> {
+pub async fn get(token: &super::auth::TokenRef, id: &str, range: &str) -> Result<Vec<Vec<String>>> {
     let url = format!("{BASE}/{id}/values/{}", urlencoding::encode(range));
-    let res = super::api_get(&url).await?;
+    let res = super::api_get(token, &url).await?;
     Ok(rows_from(&res))
 }
 
 /// Overwrite a range. `values` is row-major.
-pub async fn set(id: &str, range: &str, values: &[Vec<String>]) -> Result<usize> {
+pub async fn set(
+    token: &super::auth::TokenRef,
+    id: &str,
+    range: &str,
+    values: &[Vec<String>],
+) -> Result<usize> {
     // RAW, not USER_ENTERED: a cell starting with = or + would otherwise be
     // evaluated as a formula, which turns pasted data into something else.
     let url = format!(
         "{BASE}/{id}/values/{}?valueInputOption=RAW",
         urlencoding::encode(range)
     );
-    let token = super::auth::access_token().await?;
+    let token = super::auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .put(&url)
         .bearer_auth(token)
@@ -44,12 +49,17 @@ pub async fn set(id: &str, range: &str, values: &[Vec<String>]) -> Result<usize>
 }
 
 /// Append rows after the last row with data.
-pub async fn append(id: &str, range: &str, values: &[Vec<String>]) -> Result<usize> {
+pub async fn append(
+    token: &super::auth::TokenRef,
+    id: &str,
+    range: &str,
+    values: &[Vec<String>],
+) -> Result<usize> {
     let url = format!(
         "{BASE}/{id}/values/{}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS",
         urlencoding::encode(range)
     );
-    let res = super::api_post(&url, &json!({"values": values})).await?;
+    let res = super::api_post(token, &url, &json!({"values": values})).await?;
     Ok(res
         .get("updates")
         .and_then(|u| u.get("updatedCells"))
@@ -58,10 +68,11 @@ pub async fn append(id: &str, range: &str, values: &[Vec<String>]) -> Result<usi
 }
 
 /// Tab names and the spreadsheet title.
-pub async fn info(id: &str) -> Result<(String, Vec<String>)> {
-    let res = super::api_get(&format!(
-        "{BASE}/{id}?fields=properties.title,sheets.properties.title"
-    ))
+pub async fn info(token: &super::auth::TokenRef, id: &str) -> Result<(String, Vec<String>)> {
+    let res = super::api_get(
+        token,
+        &format!("{BASE}/{id}?fields=properties.title,sheets.properties.title"),
+    )
     .await?;
     let title = res
         .get("properties")
@@ -86,8 +97,8 @@ pub async fn info(id: &str) -> Result<(String, Vec<String>)> {
     Ok((title, tabs))
 }
 
-pub async fn create(title: &str) -> Result<String> {
-    let res = super::api_post(BASE, &json!({"properties": {"title": title}})).await?;
+pub async fn create(token: &super::auth::TokenRef, title: &str) -> Result<String> {
+    let res = super::api_post(token, BASE, &json!({"properties": {"title": title}})).await?;
     Ok(res
         .get("spreadsheetId")
         .and_then(|i| i.as_str())

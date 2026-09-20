@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 const BASE: &str = "https://docs.googleapis.com/v1/documents";
 
 /// A document's text, paragraph by paragraph.
-pub async fn get_text(id: &str) -> Result<String> {
-    let doc = super::api_get(&format!("{BASE}/{id}")).await?;
+pub async fn get_text(token: &super::auth::TokenRef, id: &str) -> Result<String> {
+    let doc = super::api_get(token, &format!("{BASE}/{id}")).await?;
     Ok(text_of(&doc))
 }
 
-pub async fn title(id: &str) -> Result<String> {
-    let doc = super::api_get(&format!("{BASE}/{id}?fields=title")).await?;
+pub async fn title(token: &super::auth::TokenRef, id: &str) -> Result<String> {
+    let doc = super::api_get(token, &format!("{BASE}/{id}?fields=title")).await?;
     Ok(doc
         .get("title")
         .and_then(|t| t.as_str())
@@ -23,8 +23,8 @@ pub async fn title(id: &str) -> Result<String> {
         .to_string())
 }
 
-pub async fn create(title: &str) -> Result<String> {
-    let res = super::api_post(BASE, &json!({"title": title})).await?;
+pub async fn create(token: &super::auth::TokenRef, title: &str) -> Result<String> {
+    let res = super::api_post(token, BASE, &json!({"title": title})).await?;
     Ok(res
         .get("documentId")
         .and_then(|i| i.as_str())
@@ -33,10 +33,11 @@ pub async fn create(title: &str) -> Result<String> {
 }
 
 /// Add text to the end of a document.
-pub async fn append(id: &str, text: &str) -> Result<()> {
+pub async fn append(token: &super::auth::TokenRef, id: &str, text: &str) -> Result<()> {
     // endOfSegmentLocation rather than a computed index: the body's end index
     // moves with every edit, and asking Docs for "the end" avoids racing it.
     super::api_post(
+        token,
         &format!("{BASE}/{id}:batchUpdate"),
         &json!({"requests": [{
             "insertText": {
@@ -50,8 +51,14 @@ pub async fn append(id: &str, text: &str) -> Result<()> {
 }
 
 /// Replace every occurrence of `find` with `replace`.
-pub async fn replace(id: &str, find: &str, replace: &str) -> Result<usize> {
+pub async fn replace(
+    token: &super::auth::TokenRef,
+    id: &str,
+    find: &str,
+    replace: &str,
+) -> Result<usize> {
     let res = super::api_post(
+        token,
         &format!("{BASE}/{id}:batchUpdate"),
         &json!({"requests": [{
             "replaceAllText": {

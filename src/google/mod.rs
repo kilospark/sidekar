@@ -15,8 +15,8 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 
 /// GET a Google API endpoint with the caller's token.
-pub(crate) async fn api_get(url: &str) -> Result<Value> {
-    let token = auth::access_token().await?;
+pub(crate) async fn api_get(token: &auth::TokenRef, url: &str) -> Result<Value> {
+    let token = auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .get(url)
         .bearer_auth(token)
@@ -26,8 +26,8 @@ pub(crate) async fn api_get(url: &str) -> Result<Value> {
 }
 
 /// POST JSON to a Google API endpoint with the caller's token.
-pub(crate) async fn api_post(url: &str, body: &Value) -> Result<Value> {
-    let token = auth::access_token().await?;
+pub(crate) async fn api_post(token: &auth::TokenRef, url: &str, body: &Value) -> Result<Value> {
+    let token = auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .post(url)
         .bearer_auth(token)

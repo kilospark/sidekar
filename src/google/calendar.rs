@@ -14,7 +14,12 @@ pub struct Event {
 }
 
 /// Upcoming events, soonest first.
-pub async fn list(calendar: &str, days: u32, limit: usize) -> Result<Vec<Event>> {
+pub async fn list(
+    token: &super::auth::TokenRef,
+    calendar: &str,
+    days: u32,
+    limit: usize,
+) -> Result<Vec<Event>> {
     let now = chrono_now();
     let until = rfc3339_in_days(days);
     let url = format!(
@@ -25,7 +30,7 @@ pub async fn list(calendar: &str, days: u32, limit: usize) -> Result<Vec<Event>>
         urlencoding::encode(&until),
         limit.clamp(1, 250)
     );
-    let res = super::api_get(&url).await?;
+    let res = super::api_get(token, &url).await?;
     Ok(res
         .get("items")
         .and_then(|i| i.as_array())
@@ -34,6 +39,7 @@ pub async fn list(calendar: &str, days: u32, limit: usize) -> Result<Vec<Event>>
 }
 
 pub async fn create(
+    token: &super::auth::TokenRef,
     calendar: &str,
     summary: &str,
     start: &str,
@@ -54,6 +60,7 @@ pub async fn create(
         );
     }
     let res = super::api_post(
+        token,
         &format!("{BASE}/calendars/{}/events", urlencoding::encode(calendar)),
         &body,
     )

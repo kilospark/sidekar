@@ -58,9 +58,23 @@ tokens, and one you never stop is a process nobody owns.
 
 ## Google Workspace
 
-Gmail, Drive and Calendar go through their real APIs, not the browser. Sign in
-once with `sidekar google login`; the token is kept in encrypted KV and refreshed
-automatically.
+Gmail, Drive, Calendar, Sheets and Docs go through their real APIs, not the
+browser. You name the KV keys; sidekar imposes no naming scheme, so credentials
+already in kv work as they are.
+
+```bash
+sidekar google login --token GOOGLE_KS_TOKEN \
+                     --client-id GOOGLE_KILOSPARK_OAUTH_CLIENT_ID \
+                     --client-secret GOOGLE_KILOSPARK_OAUTH_CLIENT_SECRET
+sidekar google list                  # stored tokens, * marks the default
+sidekar gmail search "…" --token GOOGLE_NB_TOKEN
+```
+
+Several accounts at once is just several keys. A token records which client
+minted it, because an Internal Workspace client refuses addresses outside its
+organisation — so an account is reachable through one client and refused by
+another. `--token` picks one; with several stored and no default, commands
+refuse rather than guess.
 
 ```bash
 sidekar gmail search "from:gusto is:unread" --limit 5

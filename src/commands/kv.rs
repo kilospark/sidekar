@@ -64,20 +64,26 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if args.is_empty() {
         bail!("Usage: sidekar kv get <key>");
     }
-    let key = &args[0];
+    // `--raw` is accepted and does nothing: plain output is now the only output.
+    let key = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| anyhow::anyhow!("Usage: sidekar kv get <key>"))?;
 
     let entry =
         crate::secrets::get_kv(key)?.ok_or_else(|| anyhow::anyhow!("Key '{}' not found", key))?;
 
-    let text = if !entry.tags.is_empty() {
-        format!("{} [{}]", entry.value, entry.tags.join(","))
-    } else {
-        entry.value.clone()
-    };
+    // The value and nothing else. Appending " [tag1,tag2]" made every scripted
+    // read of a tagged secret silently wrong — and only of a *tagged* one, so it
+    // worked while testing and broke in production. Tags go to stderr, where a
+    // person still sees them and `$(sidekar kv get …)` does not.
+    if !entry.tags.is_empty() {
+        eprintln!("[{}]", entry.tags.join(","));
+    }
     out!(
         ctx,
         "{}",
-        crate::output::to_string(&crate::output::PlainOutput::new(text))?
+        crate::output::to_string(&crate::output::PlainOutput::new(entry.value.clone()))?
     );
     Ok(())
 }

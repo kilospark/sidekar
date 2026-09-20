@@ -15,13 +15,17 @@ pub struct Summary {
 }
 
 /// Search with Gmail's own query syntax: `from:x`, `is:unread`, `newer_than:2d`.
-pub async fn search(query: &str, limit: usize) -> Result<Vec<Summary>> {
+pub async fn search(
+    token: &super::auth::TokenRef,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Summary>> {
     let url = format!(
         "{BASE}/messages?q={}&maxResults={}",
         urlencoding::encode(query),
         limit.clamp(1, 100)
     );
-    let list = super::api_get(&url).await?;
+    let list = super::api_get(token, &url).await?;
     let ids: Vec<String> = list
         .get("messages")
         .and_then(|m| m.as_array())
@@ -40,7 +44,7 @@ pub async fn search(query: &str, limit: usize) -> Result<Vec<Summary>> {
             "{BASE}/messages/{id}?format=metadata\
              &metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
         );
-        let m = super::api_get(&url).await?;
+        let m = super::api_get(token, &url).await?;
         out.push(Summary {
             id: id.clone(),
             from: header(&m, "From"),
@@ -57,8 +61,8 @@ pub async fn search(query: &str, limit: usize) -> Result<Vec<Summary>> {
 }
 
 /// One message as readable text.
-pub async fn read(id: &str) -> Result<String> {
-    let m = super::api_get(&format!("{BASE}/messages/{id}?format=full")).await?;
+pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
+    let m = super::api_get(token, &format!("{BASE}/messages/{id}?format=full")).await?;
     let mut out = format!(
         "From: {}\nTo: {}\nDate: {}\nSubject: {}\n\n",
         header(&m, "From"),
@@ -70,7 +74,12 @@ pub async fn read(id: &str) -> Result<String> {
     Ok(out)
 }
 
-pub async fn send(to: &str, subject: &str, body: &str) -> Result<String> {
+pub async fn send(
+    token: &super::auth::TokenRef,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> Result<String> {
     // Headers end at the first blank line, so a CR or LF in a header value lets
     // the rest of that value become new headers. Sidekar reads mail, so a subject
     // assembled from a received message is untrusted input, and an injected
@@ -86,15 +95,20 @@ pub async fn send(to: &str, subject: &str, body: &str) -> Result<String> {
     );
     // Gmail wants URL-safe base64 here, not the standard alphabet.
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes());
-    let res = super::api_post(&format!("{BASE}/messages/send"), &json!({"raw": encoded})).await?;
+    let res = super::api_post(
+        token,
+        &format!("{BASE}/messages/send"),
+        &json!({"raw": encoded}),
+    )
+    .await?;
     res.get("id")
         .and_then(|i| i.as_str())
         .map(String::from)
         .ok_or_else(|| anyhow::anyhow!("Gmail accepted the send but returned no message id"))
 }
 
-pub async fn labels() -> Result<Vec<String>> {
-    let res = super::api_get(&format!("{BASE}/labels")).await?;
+pub async fn labels(token: &super::auth::TokenRef) -> Result<Vec<String>> {
+    let res = super::api_get(token, &format!("{BASE}/labels")).await?;
     Ok(res
         .get("labels")
         .and_then(|l| l.as_array())
@@ -107,11 +121,17 @@ pub async fn labels() -> Result<Vec<String>> {
 }
 
 /// Add and remove labels. `UNREAD` is a label, so this is also mark-as-read.
-pub async fn modify(id: &str, add: &[String], remove: &[String]) -> Result<()> {
+pub async fn modify(
+    token: &super::auth::TokenRef,
+    id: &str,
+    add: &[String],
+    remove: &[String],
+) -> Result<()> {
     if add.is_empty() && remove.is_empty() {
         bail!("nothing to change: pass --add or --remove");
     }
     super::api_post(
+        token,
         &format!("{BASE}/messages/{id}/modify"),
         &json!({"addLabelIds": add, "removeLabelIds": remove}),
     )

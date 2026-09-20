@@ -6,42 +6,132 @@ use crate::out;
 use anyhow::{Result, bail};
 
 pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str) {
         Some("login") => {
-            let account = google::auth::login().await?;
-            if account.is_empty() {
-                out!(ctx, "Signed in to Google.");
+            let token_key = flag(rest, "--token").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "login needs --token <KV_KEY>, the key the refresh token will be stored under"
+                )
+            })?;
+            let client_id_key = flag(rest, "--client-id")
+                .ok_or_else(|| anyhow::anyhow!("login needs --client-id <KV_KEY>"))?;
+            let client_secret_key = flag(rest, "--client-secret")
+                .ok_or_else(|| anyhow::anyhow!("login needs --client-secret <KV_KEY>"))?;
+            let open_browser = !rest
+                .iter()
+                .any(|a| a == "--no-browser" || a == "--print-url");
+            let who = google::auth::login(
+                &token_key,
+                &client_id_key,
+                &client_secret_key,
+                flag(rest, "--account").as_deref(),
+                open_browser,
+            )
+            .await?;
+            if who.is_empty() {
+                out!(ctx, "Stored a token under {token_key}.");
             } else {
-                out!(ctx, "Signed in to Google as {account}.");
+                out!(ctx, "Stored a token for {who} under {token_key}.");
             }
             Ok(())
         }
-        Some("status") => {
-            if !google::auth::is_logged_in() {
-                out!(ctx, "Not signed in. Run `sidekar google login`.");
+        Some("list") | Some("accounts") => {
+            let tokens = google::auth::tokens()?;
+            if tokens.is_empty() {
+                out!(ctx, "No Google tokens stored.");
                 return Ok(());
             }
-            let who = google::auth::logged_in_account()?.unwrap_or_else(|| "(unknown)".into());
-            out!(ctx, "Signed in as {who}");
+            let default = google::auth::default_token_key()?;
+            for t in tokens {
+                let marker = if Some(&t.key) == default.as_ref() {
+                    "*"
+                } else {
+                    " "
+                };
+                // Which client minted it matters: one account can be reachable
+                // through one client and refused by another.
+                out!(
+                    ctx,
+                    "{marker} {}\t{}\tclient={}",
+                    t.key,
+                    if t.account.is_empty() {
+                        "(unknown account)"
+                    } else {
+                        &t.account
+                    },
+                    t.client_id_key
+                );
+            }
+            Ok(())
+        }
+        Some("use") => {
+            let key = positional(rest)
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar google use <KV_KEY>"))?;
+            let known = google::auth::tokens()?;
+            if !known.iter().any(|t| t.key == key) {
+                bail!("no Google token stored under {key}; `sidekar google list` shows them");
+            }
+            google::auth::set_default_token_key(&key)?;
+            out!(ctx, "Default token is now {key}.");
+            Ok(())
+        }
+        Some("status") => {
+            let tokens = google::auth::tokens()?;
+            if tokens.is_empty() {
+                out!(
+                    ctx,
+                    "No Google tokens stored. Run `sidekar google login --help`."
+                );
+                return Ok(());
+            }
+            let active = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
+            out!(
+                ctx,
+                "Active: {} ({})",
+                active.key,
+                if active.account.is_empty() {
+                    "unknown account"
+                } else {
+                    &active.account
+                }
+            );
+            out!(ctx, "Client: {}", active.client_id_key);
+            out!(ctx, "Stored: {}", tokens.len());
             out!(ctx, "Scopes: {}", google::auth::SCOPES.join(" "));
             Ok(())
         }
         Some("logout") => {
-            google::auth::forget()?;
+            let t = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
+            google::auth::forget(&t.key)?;
             out!(
                 ctx,
-                "Forgot the stored token. The grant still exists at \
-                 myaccount.google.com/permissions until you revoke it there."
+                "Removed {}. The grant still exists at myaccount.google.com/permissions \
+                 until you revoke it there.",
+                t.key
             );
             Ok(())
         }
-        _ => bail!("Usage: sidekar google <login|status|logout>"),
+        _ => bail!(
+            "Usage: sidekar google <login|list|use|status|logout> …\n  \
+             login --token <KV_KEY> --client-id <KV_KEY> --client-secret <KV_KEY>\n        \
+                   [--account <email>] [--no-browser]\n  \
+             list                     stored tokens; * marks the default\n  \
+             use <KV_KEY>             make it the default\n  \
+             status [--token <KV_KEY>]\n  \
+             logout [--token <KV_KEY>]\n\n\
+             You name the keys; sidekar imposes no convention. Every gmail/drive/calendar/\n\
+             sheets/docs command takes --token <KV_KEY> to pick an account."
+        ),
     }
 }
 
 pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
+    let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     match sub {
         "search" => {
             let limit = flag_usize(rest, "--limit").unwrap_or(10);
@@ -49,7 +139,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             if query.is_empty() {
                 bail!("Usage: sidekar gmail search <query> [--limit N]  (Gmail query syntax)");
             }
-            let found = google::gmail::search(&query, limit).await?;
+            let found = google::gmail::search(&token, &query, limit).await?;
             if found.is_empty() {
                 out!(ctx, "No messages match {query}.");
             }
@@ -66,7 +156,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar gmail read <message-id>"))?;
-            out!(ctx, "{}", google::gmail::read(&id).await?);
+            out!(ctx, "{}", google::gmail::read(&token, &id).await?);
             Ok(())
         }
         "send" => {
@@ -76,12 +166,12 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             if body.is_empty() {
                 bail!("gmail send needs --body (use --body \"$(cat file)\" for long text)");
             }
-            let id = google::gmail::send(&to, &subject, &body).await?;
+            let id = google::gmail::send(&token, &to, &subject, &body).await?;
             out!(ctx, "Sent to {to} (id {id}).");
             Ok(())
         }
         "labels" => {
-            for l in google::gmail::labels().await? {
+            for l in google::gmail::labels(&token).await? {
                 out!(ctx, "{l}");
             }
             Ok(())
@@ -92,7 +182,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             })?;
             let add: Vec<String> = flag(rest, "--add").into_iter().collect();
             let remove: Vec<String> = flag(rest, "--remove").into_iter().collect();
-            google::gmail::modify(&id, &add, &remove).await?;
+            google::gmail::modify(&token, &id, &add, &remove).await?;
             out!(ctx, "Updated {id}.");
             Ok(())
         }
@@ -110,12 +200,13 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
+    let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     let pos = positional(rest);
     match sub {
         "ls" | "search" => {
             let limit = flag_usize(rest, "--limit").unwrap_or(25);
             let query = positional(rest).join(" ");
-            let entries = google::drive::list(&query, limit).await?;
+            let entries = google::drive::list(&token, &query, limit).await?;
             if entries.is_empty() {
                 out!(ctx, "Nothing found.");
             }
@@ -136,7 +227,7 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             let id = positional(rest).first().cloned().ok_or_else(|| {
                 anyhow::anyhow!("Usage: sidekar drive get <file-id> [--out path]")
             })?;
-            let text = google::drive::get_text(&id).await?;
+            let text = google::drive::get_text(&token, &id).await?;
             match flag(rest, "--out") {
                 Some(path) => {
                     std::fs::write(&path, text.as_bytes())?;
@@ -151,6 +242,7 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 anyhow::anyhow!("Usage: sidekar drive put <path> [--name n] [--folder id]")
             })?;
             let id = google::drive::put(
+                &token,
                 &path,
                 flag(rest, "--name").as_deref(),
                 flag(rest, "--folder").as_deref(),
@@ -164,7 +256,7 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 anyhow::anyhow!("Usage: sidekar drive rm <file-id> [--permanent]")
             })?;
             let permanent = rest.iter().any(|a| a == "--permanent");
-            google::drive::remove(&id, permanent).await?;
+            google::drive::remove(&token, &id, permanent).await?;
             if permanent {
                 out!(ctx, "Permanently deleted {id}.");
             } else {
@@ -185,12 +277,13 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
+    let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     let cal = flag(rest, "--calendar").unwrap_or_else(|| "primary".into());
     match sub {
         "list" | "" => {
             let days = flag_usize(rest, "--days").unwrap_or(7) as u32;
             let limit = flag_usize(rest, "--limit").unwrap_or(25);
-            let events = google::calendar::list(&cal, days, limit).await?;
+            let events = google::calendar::list(&token, &cal, days, limit).await?;
             if events.is_empty() {
                 out!(ctx, "Nothing scheduled in the next {days} days.");
             }
@@ -217,7 +310,8 @@ pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             let attendees: Vec<String> = flag(rest, "--attendees")
                 .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            let id = google::calendar::create(&cal, &summary, &start, &end, &attendees).await?;
+            let id =
+                google::calendar::create(&token, &cal, &summary, &start, &end, &attendees).await?;
             out!(ctx, "Created {id}.");
             Ok(())
         }
@@ -233,6 +327,7 @@ pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 pub async fn cmd_sheets(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
+    let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     let pos = positional(rest);
     match sub {
         "info" => {
@@ -240,7 +335,7 @@ pub async fn cmd_sheets(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar sheets info <id>"))?;
-            let (title, tabs) = google::sheets::info(&id).await?;
+            let (title, tabs) = google::sheets::info(&token, &id).await?;
             out!(ctx, "{title}");
             for t in tabs {
                 out!(ctx, "  {t}");
@@ -253,7 +348,7 @@ pub async fn cmd_sheets(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar sheets get <id> <range>"))?;
             let range = pos.get(1).cloned().unwrap_or_else(|| "A1:Z1000".into());
-            let rows = google::sheets::squared(google::sheets::get(&id, &range).await?);
+            let rows = google::sheets::squared(google::sheets::get(&token, &id, &range).await?);
             if rows.is_empty() {
                 out!(ctx, "{range} is empty.");
             }
@@ -272,16 +367,16 @@ pub async fn cmd_sheets(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             })?;
             let values = parse_grid(&raw);
             let n = if sub == "set" {
-                google::sheets::set(&id, &range, &values).await?
+                google::sheets::set(&token, &id, &range, &values).await?
             } else {
-                google::sheets::append(&id, &range, &values).await?
+                google::sheets::append(&token, &id, &range, &values).await?
             };
             out!(ctx, "{n} cells updated.");
             Ok(())
         }
         "create" => {
             let title = pos.first().cloned().unwrap_or_else(|| "Untitled".into());
-            out!(ctx, "{}", google::sheets::create(&title).await?);
+            out!(ctx, "{}", google::sheets::create(&token, &title).await?);
             Ok(())
         }
         _ => bail!(
@@ -298,6 +393,7 @@ pub async fn cmd_sheets(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
+    let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     let pos = positional(rest);
     match sub {
         "get" | "read" => {
@@ -305,7 +401,7 @@ pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar docs get <id>"))?;
-            let text = google::docs::get_text(&id).await?;
+            let text = google::docs::get_text(&token, &id).await?;
             match flag(rest, "--out") {
                 Some(path) => {
                     std::fs::write(&path, text.as_bytes())?;
@@ -320,12 +416,12 @@ pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar docs title <id>"))?;
-            out!(ctx, "{}", google::docs::title(&id).await?);
+            out!(ctx, "{}", google::docs::title(&token, &id).await?);
             Ok(())
         }
         "create" => {
             let title = pos.first().cloned().unwrap_or_else(|| "Untitled".into());
-            out!(ctx, "{}", google::docs::create(&title).await?);
+            out!(ctx, "{}", google::docs::create(&token, &title).await?);
             Ok(())
         }
         "append" => {
@@ -335,7 +431,7 @@ pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar docs append <id> --text \"…\""))?;
             let text =
                 flag(rest, "--text").ok_or_else(|| anyhow::anyhow!("docs append needs --text"))?;
-            google::docs::append(&id, &text).await?;
+            google::docs::append(&token, &id, &text).await?;
             out!(ctx, "Appended {} characters.", text.len());
             Ok(())
         }
@@ -346,7 +442,7 @@ pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             let find =
                 flag(rest, "--find").ok_or_else(|| anyhow::anyhow!("docs replace needs --find"))?;
             let with = flag(rest, "--with").unwrap_or_default();
-            let n = google::docs::replace(&id, &find, &with).await?;
+            let n = google::docs::replace(&token, &id, &find, &with).await?;
             out!(ctx, "{n} occurrences replaced.");
             Ok(())
         }
