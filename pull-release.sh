@@ -69,6 +69,13 @@ done
 
 echo ""
 echo "=== Downloading release binaries ==="
+# Stage only the release being deployed. Each version is ~28MB across four
+# targets, and Vercel bundles public/binaries into the api/download function,
+# which is capped at 250MB uncompressed. Keeping every past release silently
+# grew that function until a deploy failed with the GitHub release already
+# published — the worst moment to find out. Older versions still download:
+# api/download falls back to the GitHub release when a file is not staged.
+rm -rf "$DIR/www/public/binaries"
 mkdir -p "$DEST"
 gh release download "$TAG" --repo "$REPO" --pattern "*.tar.gz" --pattern "*.minisig" --dir "$DEST/" --clobber
 ls -lh "$DEST/"
