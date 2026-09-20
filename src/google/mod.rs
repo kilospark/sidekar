@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod docs;
 pub mod drive;
 pub mod gmail;
+pub mod provision;
 pub mod sheets;
 
 use anyhow::{Result, bail};

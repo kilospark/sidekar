@@ -103,6 +103,53 @@ pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Scopes: {}", google::auth::SCOPES.join(" "));
             Ok(())
         }
+        Some("provision") => {
+            let project = flag(rest, "--project")
+                .ok_or_else(|| anyhow::anyhow!("provision needs --project <GCP_PROJECT_ID>"))?;
+            let account = flag(rest, "--account")
+                .ok_or_else(|| anyhow::anyhow!("provision needs --account <email>"))?;
+            let token_key = flag(rest, "--token")
+                .ok_or_else(|| anyhow::anyhow!("provision needs --token <KV_KEY>"))?;
+            let id_key =
+                flag(rest, "--client-id").unwrap_or_else(|| format!("{token_key}_CLIENT_ID"));
+            let secret_key = flag(rest, "--client-secret")
+                .unwrap_or_else(|| format!("{token_key}_CLIENT_SECRET"));
+            let app_name = flag(rest, "--app-name").unwrap_or_else(|| "Sidekar".to_string());
+
+            use crate::google::provision as pv;
+            let mut log: Vec<String> = Vec::new();
+            let tab = pv::open_tab(&pv::consent_url(&project))?;
+
+            let result = (|| -> Result<(String, String)> {
+                let mut say = |line: &str| log.push(line.to_string());
+                say("consent screen");
+                pv::check_consent_screen(&tab, &project, &mut say)?;
+                say("apis");
+                pv::ensure_apis(&tab, &project, &mut say)?;
+                say("oauth client");
+                pv::create_client(&tab, &project, &app_name)
+            })();
+            // Always close the tab this run opened, success or not.
+            pv::close_tab(&tab);
+
+            for line in &log {
+                out!(ctx, "{line}");
+            }
+            let (client_id, client_secret) = result?;
+
+            let tags = ["google".to_string(), "oauth".to_string()];
+            crate::broker::kv_set(&id_key, &client_id, Some(&tags))?;
+            crate::broker::kv_set(&secret_key, &client_secret, Some(&tags))?;
+            out!(ctx, "  stored {id_key} and {secret_key}");
+            out!(
+                ctx,
+                "\nNow authorize as {account}:\n  sidekar google login --token {token_key} \
+                 --client-id {id_key} --client-secret {secret_key} --account {account}\n\
+                 If Google refuses the account, add it under Test users at {}",
+                pv::audience_url(&project)
+            );
+            Ok(())
+        }
         Some("setup") => {
             let project = flag(rest, "--project").unwrap_or_else(|| "<PROJECT_ID>".into());
             let token_key = flag(rest, "--token").unwrap_or_else(|| "GOOGLE_MY_TOKEN".into());
@@ -182,7 +229,9 @@ pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              use <KV_KEY>             make it the default\n  \
              status [--token <KV_KEY>]\n  \
              doctor [--token <KV_KEY>]   check keys, refresh, and all five APIs\n  \
-             setup --project <ID> --account <email>   print the exact console steps\n  \
+             provision --project <ID> --account <email> --token <KV_KEY>\n        \
+                   drive the console: check consent, enable APIs, create the client\n  \
+             setup --project <ID> --account <email>   print the steps instead\n  \
              logout [--token <KV_KEY>]\n\n\
              You name the keys; sidekar imposes no convention. Every gmail/drive/calendar/\n\
              sheets/docs command takes --token <KV_KEY> to pick an account."

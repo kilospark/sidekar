@@ -70,9 +70,23 @@ sidekar google list                  # stored tokens, * marks the default
 sidekar gmail search "…" --token GOOGLE_NB_TOKEN
 ```
 
-Standing one up for a new account: `sidekar google setup --project <ID> --account <email>`
-prints the exact console steps with every URL filled in. `sidekar google doctor`
-checks the keys, the refresh, and all five APIs in one call.
+Standing one up for a new account, without a human:
+
+```bash
+sidekar google provision --project <GCP_PROJECT_ID> \
+                         --account <email> --token GOOGLE_NB_TOKEN
+sidekar google login --token GOOGLE_NB_TOKEN \
+                     --client-id GOOGLE_NB_TOKEN_CLIENT_ID \
+                     --client-secret GOOGLE_NB_TOKEN_CLIENT_SECRET --account <email>
+sidekar google doctor --token GOOGLE_NB_TOKEN
+```
+
+`provision` drives the Google console through sidekar's own browser: it checks
+the consent screen is External, enables the five APIs, creates a Desktop OAuth
+client, and stores the id and secret. Google exposes no API for any of that, so
+the browser is the only route. A step that fails stops the run and names the
+console page to finish by hand. `setup` prints the same steps without doing
+them. `doctor` checks keys, refresh and all five APIs in one call.
 
 Several accounts at once is just several keys. A token records which client
 minted it, because an Internal Workspace client refuses addresses outside its
