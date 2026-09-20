@@ -42,9 +42,87 @@ pub fn is_encrypted(value: &str) -> bool {
     value.starts_with("$encrypted$")
 }
 
+/// Key `kv_set`/`totp_add` persist a locally-generated key under in
+/// `encryption_meta` when no account key has been fetched yet.
+const LOCAL_KEY_META_KEY: &str = "account_data_key_v1";
+
+/// Make sure an encryption key is loaded, generating and persisting a
+/// random 256-bit local key on first use if none is loaded yet (in memory)
+/// or stored (in `encryption_meta`). Called from `kv_set`/`totp_add` so a
+/// write before login is encrypted instead of falling back to plaintext.
+pub fn ensure_local_key() -> Result<Vec<u8>> {
+    if let Some(key) = get_encryption_key() {
+        return Ok(key);
+    }
+
+    let conn = open()?;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM encryption_meta WHERE key = ?1",
+            params![LOCAL_KEY_META_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    let key = match stored {
+        Some(encoded) => base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .context("invalid local encryption key stored in encryption_meta")?,
+        None => {
+            let bytes: [u8; 32] = rand::rng().random();
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            conn.execute(
+                "INSERT INTO encryption_meta (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![LOCAL_KEY_META_KEY, encoded],
+            )?;
+            bytes.to_vec()
+        }
+    };
+
+    set_encryption_key(key.clone());
+    Ok(key)
+}
+
+/// Delete the persisted local data key so a logged-out database is inert
+/// without re-linking. Local ciphertext rows remain on disk but unreadable
+/// until the key is re-established (fresh local key, or login again).
+pub fn purge_local_key() -> Result<()> {
+    let conn = open()?;
+    conn.execute(
+        "DELETE FROM encryption_meta WHERE key = ?1",
+        params![LOCAL_KEY_META_KEY],
+    )?;
+    Ok(())
+}
+
+/// Read the persisted local key from `encryption_meta` without installing
+/// it as the active key or generating one if absent. Login migration uses
+/// this to decrypt rows that were written under it before `fetch_encryption_key`
+/// replaces the active key with the account key.
+pub(crate) fn read_persisted_local_key(conn: &Connection) -> Result<Option<Vec<u8>>> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM encryption_meta WHERE key = ?1",
+            params![LOCAL_KEY_META_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    stored
+        .map(|encoded| {
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .context("invalid local encryption key stored in encryption_meta")
+        })
+        .transpose()
+}
+
 pub fn encrypt(plaintext: &str) -> Result<String> {
-    let key = ENCRYPTION_KEY.lock().unwrap();
-    let key = key.as_ref().context("No encryption key set")?;
+    let key = get_encryption_key().context("No encryption key set")?;
+    encrypt_with_key(plaintext, &key)
+}
+
+fn encrypt_with_key(plaintext: &str, key: &[u8]) -> Result<String> {
     let cipher = Aes256Gcm::new_from_slice(key)?;
 
     let nonce_bytes: [u8; 12] = rand::rng().random();
@@ -64,8 +142,11 @@ pub fn encrypt(plaintext: &str) -> Result<String> {
 }
 
 pub fn decrypt(encrypted: &str) -> Result<String> {
-    let key = ENCRYPTION_KEY.lock().unwrap();
-    let key = key.as_ref().context("No encryption key set")?;
+    let key = get_encryption_key().context("No encryption key set")?;
+    decrypt_with_key(encrypted, &key)
+}
+
+fn decrypt_with_key(encrypted: &str, key: &[u8]) -> Result<String> {
     let cipher = Aes256Gcm::new_from_slice(key)?;
 
     let data = encrypted
@@ -88,6 +169,46 @@ pub fn decrypt(encrypted: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
     String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e))
+}
+
+/// Re-encrypt a ciphertext value from `old_key` to `new_key`. A no-op for
+/// anything that isn't `$encrypted$...` -- login migration also routes
+/// legacy-plaintext rows through the same call site, and those are handled
+/// by a later re-encrypt-under-the-active-key pass instead.
+pub(crate) fn rekey_value(value: &str, old_key: &[u8], new_key: &[u8]) -> Result<String> {
+    if !is_encrypted(value) {
+        return Ok(value.to_string());
+    }
+    let plaintext = decrypt_with_key(value, old_key)
+        .context("failed to decrypt a row under the persisted local key during login migration")?;
+    encrypt_with_key(&plaintext, new_key)
+        .context("failed to re-encrypt a row under the account key during login migration")
+}
+
+/// Migrate both stores for a login uid transition, then purge the stale
+/// persisted local key. Everything it protected has just been re-encrypted
+/// under the account key, so nothing depends on it anymore -- leaving it in
+/// `encryption_meta` would only risk shadowing or stranding rows if it were
+/// ever consulted again (e.g. by `ensure_local_key` after a future logout).
+/// Only purges once both migrations succeed, so a failure here never
+/// destroys the one key that could still decrypt a not-yet-migrated row.
+pub(crate) fn migrate_login_transition(old_uid: &str, new_uid: &str) -> Result<()> {
+    if old_uid == new_uid || new_uid.is_empty() {
+        return Ok(());
+    }
+    super::kv_store::migrate_kv_login_transition(old_uid, new_uid)
+        .context("failed to migrate kv rows to the logged-in account")?;
+    super::totp::migrate_totp_login_transition(old_uid, new_uid)
+        .context("failed to migrate totp secrets to the logged-in account")?;
+    if let Err(e) = purge_local_key() {
+        crate::broker::try_log_event(
+            "warn",
+            "encryption",
+            "failed to purge the stale local key after login migration",
+            Some(&format!("{e:#}")),
+        );
+    }
+    Ok(())
 }
 
 /// Get encryption key from server (if logged in) and store in memory
@@ -120,10 +241,19 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
         .decode(body.key.trim())
         .context("Invalid encryption key format")?;
 
+    let old_uid = current_user_id().unwrap_or_default();
+
     set_encryption_key(decoded.clone());
 
     if let Some(ref uid) = body.user_id {
         set_current_user_id(uid.clone());
+        if old_uid != *uid {
+            // Rows written before login (or under a different account) live
+            // under a different user_id and would otherwise stay invisible,
+            // still encrypted under the local key we just replaced above, or
+            // (if written before any key existed) in plaintext.
+            migrate_login_transition(&old_uid, uid)?;
+        }
     }
 
     Ok(Some(decoded))

@@ -1366,6 +1366,237 @@ fn cancelling_a_request_withdraws_it_from_the_queue() -> Result<()> {
     })
 }
 
+/// Reset the process-wide encryption statics so one test's key/uid can't
+/// leak into the next. Callers still go through `with_test_db` for the
+/// HOME-swap + serialization; this only resets the separate in-memory
+/// state `broker::encryption` keeps.
+fn reset_encryption_state() {
+    clear_encryption_key();
+    clear_current_user_id();
+}
+
+#[test]
+fn kv_set_before_login_writes_ciphertext_on_disk() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        kv_set("api-key", "super-secret-value", None)?;
+
+        // Read the raw row, bypassing the decrypting `kv_get`/`kv_list` path,
+        // to prove what actually landed on disk.
+        let conn = open_raw()?;
+        let raw: String = conn.query_row(
+            "SELECT value FROM kv_store WHERE user_id = '' AND key = 'api-key'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert!(
+            is_encrypted(&raw),
+            "pre-login write must be encrypted, got: {raw}"
+        );
+        assert_ne!(raw, "super-secret-value");
+
+        // A local key was generated and persisted so future processes
+        // (or a later login transition) can still decrypt this row.
+        let stored_key: String = conn.query_row(
+            "SELECT value FROM encryption_meta WHERE key = 'account_data_key_v1'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert!(!stored_key.is_empty());
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn login_migrates_and_reencrypts_prelogin_rows() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        // Pre-login: kv_set/totp_add establish a local key and encrypt
+        // under it. A second kv_set on the same key archives the first
+        // value into kv_history, so history rows are covered too.
+        kv_set("token", "pre-login-value", None)?;
+        kv_set("token", "pre-login-value-v2", None)?;
+        totp_add("github", "me@example.com", "PRELOGINSECRET", "SHA1", 6, 30)?;
+
+        // Simulate a row written before encryption existed at all: raw
+        // plaintext under the pre-login uid, bypassing kv_set/totp_add.
+        let now = crate::message::epoch_secs() as i64;
+        {
+            let conn = open_raw()?;
+            conn.execute(
+                "INSERT INTO kv_store (user_id, key, value, tags, created_at, updated_at) \
+                 VALUES ('', 'legacy-plain', 'legacy-plaintext-value', '[]', ?1, ?1)",
+                params![now],
+            )?;
+            conn.execute(
+                "INSERT INTO totp_secrets (user_id, service, account, secret, algorithm, digits, period, created_at) \
+                 VALUES ('', 'legacy', 'me@example.com', 'LEGACYPLAINSECRET', 'SHA1', 6, 30, ?1)",
+                params![now],
+            )?;
+        }
+
+        let local_key = get_encryption_key().expect("kv_set/totp_add installed a local key");
+
+        // "Login": fetch_encryption_key installs a DIFFERENT account key
+        // and *then* runs the migration -- this is the exact ordering that
+        // silently stranded pre-login ciphertext under the old key. Using
+        // a fixed, visibly-different key (instead of another random one)
+        // makes the two keys' distinctness obvious in a failure diff.
+        let new_uid = "user-42";
+        let account_key = vec![0x42u8; 32];
+        assert_ne!(
+            account_key, local_key,
+            "test must exercise two distinct keys, as a real login does"
+        );
+        set_encryption_key(account_key);
+        crate::broker::encryption::migrate_login_transition("", new_uid)?;
+        set_current_user_id(new_uid.to_string());
+
+        // Post-login reads (now decrypting with the account key) must
+        // recover the original plaintext, not the raw ciphertext that
+        // `decrypt(...).unwrap_or(raw)` falls back to on a key mismatch.
+        let kv = kv_list(None)?;
+        let by_key = |k: &str| kv.iter().find(|e| e.key == k);
+        assert_eq!(
+            by_key("token").map(|e| e.value.as_str()),
+            Some("pre-login-value-v2")
+        );
+        assert_eq!(
+            by_key("legacy-plain").map(|e| e.value.as_str()),
+            Some("legacy-plaintext-value")
+        );
+
+        // The archived version (kv_history), not just the live row, must
+        // also have been re-keyed to the account key.
+        let history_entries = kv_history("token")?;
+        assert_eq!(history_entries.len(), 1);
+        assert_eq!(history_entries[0].value, "pre-login-value");
+
+        let totp = totp_list()?;
+        assert!(
+            totp.iter()
+                .any(|t| t.service == "github" && t.secret == "PRELOGINSECRET")
+        );
+        assert!(
+            totp.iter()
+                .any(|t| t.service == "legacy" && t.secret == "LEGACYPLAINSECRET")
+        );
+
+        // ...and everything on disk under the new uid is ciphertext, even
+        // the row that was inserted as raw plaintext.
+        let conn = open_raw()?;
+        let raw_kv: String = conn.query_row(
+            "SELECT value FROM kv_store WHERE user_id = ?1 AND key = 'legacy-plain'",
+            params![new_uid],
+            |r| r.get(0),
+        )?;
+        assert!(is_encrypted(&raw_kv));
+
+        let raw_totp: String = conn.query_row(
+            "SELECT secret FROM totp_secrets WHERE user_id = ?1 AND service = 'legacy'",
+            params![new_uid],
+            |r| r.get(0),
+        )?;
+        assert!(is_encrypted(&raw_totp));
+
+        // Nothing was left behind under the pre-login uid.
+        let orphaned: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM kv_store WHERE user_id = ''",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(orphaned, 0);
+
+        // The plaintext row was archived, not silently overwritten.
+        let history: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM kv_history WHERE user_id = ?1 AND key = 'legacy-plain'",
+            params![new_uid],
+            |r| r.get(0),
+        )?;
+        assert_eq!(history, 1);
+
+        // The stale local key must not survive to strand or shadow future
+        // reads: everything it protected is now under the account key.
+        let local_key_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM encryption_meta WHERE key = 'account_data_key_v1'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            local_key_rows, 0,
+            "post-migration the persisted local key must be purged"
+        );
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn logout_purges_local_key_and_leaves_db_inert() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        kv_set("secret", "shhh", None)?;
+        assert!(get_encryption_key().is_some());
+
+        crate::auth::logout(false)?;
+
+        assert!(get_encryption_key().is_none());
+        assert!(current_user_id().is_none());
+
+        let conn = open_raw()?;
+        let meta: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM encryption_meta WHERE key = 'account_data_key_v1'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(meta, 0, "logout must purge the persisted local key");
+
+        // Without a key, the store can no longer decrypt what it already
+        // wrote -- reads fall back to the raw ciphertext instead of the
+        // original value.
+        let entry = kv_get("secret")?.expect("row still exists on disk");
+        assert_ne!(entry.value, "shhh");
+        assert!(is_encrypted(&entry.value));
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn logout_keep_local_key_preserves_it() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        kv_set("secret", "shhh", None)?;
+
+        crate::auth::logout(true)?;
+
+        assert!(get_encryption_key().is_none(), "in-memory key still clears");
+        let conn = open_raw()?;
+        let meta: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM encryption_meta WHERE key = 'account_data_key_v1'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(meta, 1, "--keep-local must not purge the persisted key");
+
+        // Re-establishing the same key from disk decrypts existing rows again.
+        ensure_local_key()?;
+        let entry = kv_get("secret")?.expect("row still exists on disk");
+        assert_eq!(entry.value, "shhh");
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
 #[test]
 fn cancelling_leaves_an_already_delivered_message_alone() -> Result<()> {
     with_test_db(|| {
