@@ -90,3 +90,30 @@ fn scopes_cover_all_five_apis_without_asking_for_deletion() {
     // no undo. gmail.modify deliberately stops short of it.
     assert!(!joined.contains("https://mail.google.com"));
 }
+
+#[test]
+fn an_expired_testing_token_explains_itself() {
+    let t = token_ref_from("GOOGLE_NB_TOKEN", &tags("ID_KEY", "SECRET_KEY", "a@b.com")).unwrap();
+    let msg = explain_refresh_failure(&t, &serde_json::json!("invalid_grant"));
+    // The seven-day Testing expiry is the usual cause and arrives with no
+    // explanation from Google, so the reader must not be left hunting a bug.
+    assert!(msg.contains("seven-day"), "{msg}");
+    assert!(msg.contains("Testing"), "{msg}");
+    assert!(msg.contains("not a bug"), "{msg}");
+    // And the exact command, with this token's own key names filled in.
+    assert!(msg.contains("--token GOOGLE_NB_TOKEN"), "{msg}");
+    assert!(msg.contains("--client-id ID_KEY"), "{msg}");
+    assert!(msg.contains("--client-secret SECRET_KEY"), "{msg}");
+}
+
+#[test]
+fn other_refresh_errors_still_say_what_google_said() {
+    let t = token_ref_from("T", &tags("ID", "SEC", "a@b.com")).unwrap();
+    let msg = explain_refresh_failure(&t, &serde_json::json!("unauthorized_client"));
+    assert!(msg.contains("unauthorized_client"), "{msg}");
+    assert!(
+        !msg.contains("seven-day"),
+        "only invalid_grant means expiry"
+    );
+    assert!(msg.contains("--token T"), "{msg}");
+}

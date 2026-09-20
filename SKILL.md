@@ -70,6 +70,10 @@ sidekar google list                  # stored tokens, * marks the default
 sidekar gmail search "…" --token GOOGLE_NB_TOKEN
 ```
 
+Standing one up for a new account: `sidekar google setup --project <ID> --account <email>`
+prints the exact console steps with every URL filled in. `sidekar google doctor`
+checks the keys, the refresh, and all five APIs in one call.
+
 Several accounts at once is just several keys. A token records which client
 minted it, because an Internal Workspace client refuses addresses outside its
 organisation — so an account is reachable through one client and refused by

@@ -103,6 +103,66 @@ pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Scopes: {}", google::auth::SCOPES.join(" "));
             Ok(())
         }
+        Some("setup") => {
+            let project = flag(rest, "--project").unwrap_or_else(|| "<PROJECT_ID>".into());
+            let token_key = flag(rest, "--token").unwrap_or_else(|| "GOOGLE_MY_TOKEN".into());
+            let id_key = flag(rest, "--client-id").unwrap_or_else(|| "GOOGLE_MY_CLIENT_ID".into());
+            let secret_key =
+                flag(rest, "--client-secret").unwrap_or_else(|| "GOOGLE_MY_CLIENT_SECRET".into());
+            let account = flag(rest, "--account").unwrap_or_else(|| "<your-email>".into());
+            out!(
+                ctx,
+                "{}",
+                setup_walkthrough(&project, &account, &token_key, &id_key, &secret_key)
+            );
+            Ok(())
+        }
+        Some("doctor") | Some("check") => {
+            let stored = google::auth::tokens()?;
+            out!(ctx, "Stored tokens: {}", stored.len());
+            if stored.is_empty() {
+                out!(ctx, "  none — run `sidekar google login --help`");
+                return Ok(());
+            }
+            let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
+            out!(
+                ctx,
+                "Checking {} ({})",
+                token.key,
+                if token.account.is_empty() {
+                    "unknown account"
+                } else {
+                    &token.account
+                }
+            );
+            for key in [&token.client_id_key, &token.client_secret_key] {
+                let present = crate::broker::kv_get(key)?.is_some();
+                out!(
+                    ctx,
+                    "  {} {}",
+                    if present { "ok  " } else { "MISSING" },
+                    key
+                );
+            }
+            match google::auth::access_token_for(&token).await {
+                Ok(_) => out!(ctx, "  ok   token refreshes"),
+                Err(e) => {
+                    out!(ctx, "  FAIL token does not refresh\n{e}");
+                    return Ok(());
+                }
+            }
+            for (name, result) in google::probe(&token).await {
+                match result {
+                    Ok(()) => out!(ctx, "  ok   {name}"),
+                    Err(e) => out!(
+                        ctx,
+                        "  FAIL {name}: {}",
+                        e.to_string().lines().next().unwrap_or("unreachable")
+                    ),
+                }
+            }
+            Ok(())
+        }
         Some("logout") => {
             let t = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
             google::auth::forget(&t.key)?;
@@ -121,6 +181,8 @@ pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              list                     stored tokens; * marks the default\n  \
              use <KV_KEY>             make it the default\n  \
              status [--token <KV_KEY>]\n  \
+             doctor [--token <KV_KEY>]   check keys, refresh, and all five APIs\n  \
+             setup --project <ID> --account <email>   print the exact console steps\n  \
              logout [--token <KV_KEY>]\n\n\
              You name the keys; sidekar imposes no convention. Every gmail/drive/calendar/\n\
              sheets/docs command takes --token <KV_KEY> to pick an account."
@@ -455,6 +517,55 @@ pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              replace <id> --find x --with y"
         ),
     }
+}
+
+/// The console steps for standing up an individual OAuth client.
+///
+/// Printed rather than automated. The console's markup changes under us — two
+/// of the flows I drove by hand today had already moved — and a walkthrough that
+/// silently clicks the wrong thing is worse than one that tells you what to
+/// click. Every URL is filled in for the project, so there is no hunting.
+pub(crate) fn setup_walkthrough(
+    project: &str,
+    account: &str,
+    token_key: &str,
+    id_key: &str,
+    secret_key: &str,
+) -> String {
+    format!(
+        "Standing up your own Google OAuth client for {account}\n\
+         Project: {project}\n\n\
+         1. Consent screen — External, then add yourself as a test user.\n   \
+            https://console.cloud.google.com/auth/overview?project={project}\n   \
+            External + Testing needs no Google verification and accepts up to 100\n   \
+            named test users with every scope, including Gmail and full Drive.\n   \
+            The cost is that refresh tokens expire after 7 days; publishing the\n   \
+            app removes that, but publishing with Gmail or full Drive requires\n   \
+            verification and a CASA security assessment.\n\n   \
+            Add {account} under Audience > Test users, or it will be refused.\n\n\
+         2. Enable the five APIs. Fastest, if gcloud is signed in:\n   \
+            gcloud services enable gmail.googleapis.com drive.googleapis.com \\\n     \
+              calendar-json.googleapis.com sheets.googleapis.com docs.googleapis.com \\\n     \
+              --project {project}\n   \
+            Otherwise enable each at:\n   \
+            https://console.cloud.google.com/apis/library?project={project}\n\n\
+         3. Create the client — Application type: Desktop app.\n   \
+            https://console.cloud.google.com/auth/clients/create?project={project}\n   \
+            Desktop app accepts a loopback redirect, so nothing has to be\n   \
+            registered and `google login` can pick its own port.\n\n   \
+            COPY THE SECRET BEFORE CLOSING THE DIALOG. Google shows it once and\n   \
+            will not show it again; a lost secret means creating another one.\n\n\
+         4. Store both, under whatever key names you like:\n   \
+            sidekar kv set {id_key} '<client id>' --tag=google,oauth\n   \
+            sidekar kv set {secret_key} '<client secret>' --tag=google,oauth\n\n\
+         5. Authorize:\n   \
+            sidekar google login --token {token_key} \\\n     \
+              --client-id {id_key} --client-secret {secret_key} --account {account}\n\n\
+         6. Confirm:\n   \
+            sidekar google doctor --token {token_key}\n\n\
+         Re-run step 5 when the 7-day expiry bites; sidekar will tell you when\n\
+         that is what happened."
+    )
 }
 
 /// `a,b|c,d` into rows of cells. Pipes separate rows, commas separate cells.

@@ -363,16 +363,42 @@ pub async fn access_token_for(token: &TokenRef) -> Result<String> {
         .await?;
     let json: serde_json::Value = res.json().await?;
     if let Some(err) = json.get("error") {
-        bail!(
-            "could not refresh {} ({err}); run `sidekar google login --token {}` to reconnect",
-            token.key,
-            token.key
-        );
+        bail!("{}", explain_refresh_failure(token, err));
     }
     json.get("access_token")
         .and_then(|v| v.as_str())
         .map(String::from)
         .ok_or_else(|| anyhow::anyhow!("Google returned no access token"))
+}
+
+/// Turn Google's terse refresh errors into something actionable.
+///
+/// `invalid_grant` is almost always the seven-day expiry that Google applies to
+/// External apps still in Testing, and it arrives with no explanation at all.
+/// Left raw it reads as a broken token and sends the reader looking for a bug
+/// that is not there.
+pub(crate) fn explain_refresh_failure(token: &TokenRef, err: &serde_json::Value) -> String {
+    let code = err.as_str().unwrap_or_default();
+    let relogin = format!(
+        "sidekar google login --token {} --client-id {} --client-secret {}",
+        token.key, token.client_id_key, token.client_secret_key
+    );
+    if code == "invalid_grant" {
+        return format!(
+            "the Google token in {} is no longer valid.\n\n\
+             The usual cause is the seven-day limit Google puts on refresh tokens for External \
+             apps whose publishing status is still Testing. It is not a bug and nothing is \
+             misconfigured; the grant simply expires on a timer. Publishing the app removes the \
+             limit. Other causes are the account revoking access, or a password change when \
+             Gmail scopes are involved.\n\n\
+             Re-authorize with:\n  {relogin}",
+            token.key
+        );
+    }
+    format!(
+        "could not refresh {} ({code}). Re-authorize with:\n  {relogin}",
+        token.key
+    )
 }
 
 async fn fetch_email(access: &str) -> Result<String> {

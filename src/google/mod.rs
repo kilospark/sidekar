@@ -14,6 +14,54 @@ pub mod sheets;
 use anyhow::{Result, bail};
 use serde_json::Value;
 
+/// Which of the five APIs a token can actually reach.
+///
+/// Each is a real, cheap call rather than a config lookup: an API can be enabled
+/// on the project and still fail because the scope was never granted, and the
+/// two failures look identical from the outside until you try.
+pub async fn probe(token: &auth::TokenRef) -> Vec<(&'static str, Result<()>)> {
+    let checks: [(&str, &str); 5] = [
+        (
+            "gmail",
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+        ),
+        (
+            "drive",
+            "https://www.googleapis.com/drive/v3/about?fields=user",
+        ),
+        (
+            "calendar",
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
+        ),
+        (
+            "sheets",
+            "https://sheets.googleapis.com/v4/spreadsheets/0000000000000000000000000000",
+        ),
+        (
+            "docs",
+            "https://docs.googleapis.com/v1/documents/0000000000000000000000000000",
+        ),
+    ];
+    let mut out = Vec::new();
+    for (name, url) in checks {
+        let r = api_get(token, url).await.map(|_| ());
+        // Sheets and Docs are probed with an id that cannot exist. A 404 proves
+        // the API is on and the scope granted, which is what we are asking; only
+        // 401 and 403 mean it is not reachable.
+        let r = match r {
+            Err(e) if matches!(name, "sheets" | "docs") && is_not_found(&e) => Ok(()),
+            other => other,
+        };
+        out.push((name, r));
+    }
+    out
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    let s = e.to_string();
+    s.contains("404") || s.to_lowercase().contains("not found")
+}
+
 /// GET a Google API endpoint with the caller's token.
 pub(crate) async fn api_get(token: &auth::TokenRef, url: &str) -> Result<Value> {
     let token = auth::access_token_for(token).await?;
