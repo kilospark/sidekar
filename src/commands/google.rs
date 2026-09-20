@@ -338,13 +338,26 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             let id = positional(rest).first().cloned().ok_or_else(|| {
                 anyhow::anyhow!("Usage: sidekar drive get <file-id> [--out path]")
             })?;
-            let text = google::drive::get_text(&token, &id).await?;
+            let file = google::drive::download(&token, &id).await?;
             match flag(rest, "--out") {
                 Some(path) => {
-                    std::fs::write(&path, text.as_bytes())?;
-                    out!(ctx, "Wrote {} bytes to {path}.", text.len());
+                    // Bytes straight to disk. A PDF or .docx routed through a
+                    // String arrives inflated and unopenable.
+                    std::fs::write(&path, &file.bytes)?;
+                    out!(ctx, "Wrote {} bytes to {path}", file.bytes.len());
                 }
-                None => out!(ctx, "{text}"),
+                None => {
+                    if google::drive::looks_like_text(&file.bytes) {
+                        out!(ctx, "{}", String::from_utf8_lossy(&file.bytes));
+                    } else {
+                        bail!(
+                            "{} is binary ({} bytes). Use --out <path> to save it; printing it \
+                             would corrupt both the file and your terminal.",
+                            file.name,
+                            file.bytes.len()
+                        );
+                    }
+                }
             }
             Ok(())
         }

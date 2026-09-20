@@ -51,40 +51,97 @@ pub async fn list(token: &super::auth::TokenRef, query: &str, limit: usize) -> R
         .unwrap_or_default())
 }
 
-/// Download a file's content as text.
+/// What came back from Drive for one file.
+pub struct Download {
+    pub bytes: Vec<u8>,
+    pub name: String,
+    /// Drive's own byte count, absent for Google-native files, which have none.
+    pub reported_size: Option<u64>,
+    /// True when the file was exported rather than downloaded, so it really is
+    /// text: a Doc as plain text, a Sheet as CSV.
+    pub exported: bool,
+}
+
+/// Download a file as bytes.
 ///
-/// Google-native docs cannot be downloaded directly and must be exported, so
-/// a Doc comes back as plain text and a Sheet as CSV.
-pub async fn get_text(token: &super::auth::TokenRef, id: &str) -> Result<String> {
-    let meta = super::api_get(token, &format!("{FILES}/{id}?fields=name,mimeType")).await?;
+/// Bytes, never a String. Decoding a PDF or a .docx as UTF-8 replaces every
+/// invalid sequence with U+FFFD, which is three bytes where one stood — so the
+/// file arrives larger than it left, by an amount that tracks how binary it is,
+/// and is unopenable. Google-native files have no bytes to download and are
+/// exported instead, which genuinely is text.
+pub async fn download(token: &super::auth::TokenRef, id: &str) -> Result<Download> {
+    let meta = super::api_get(token, &format!("{FILES}/{id}?fields=name,mimeType,size")).await?;
     let mime = str_at(&meta, "mimeType");
-    let url = match mime.as_str() {
-        "application/vnd.google-apps.document" => {
-            format!("{FILES}/{id}/export?mimeType=text/plain")
-        }
-        "application/vnd.google-apps.spreadsheet" => {
-            format!("{FILES}/{id}/export?mimeType=text/csv")
-        }
-        "application/vnd.google-apps.presentation" => {
-            format!("{FILES}/{id}/export?mimeType=text/plain")
-        }
-        _ => format!("{FILES}/{id}?alt=media"),
+    let name = str_at(&meta, "name");
+    let reported_size = meta
+        .get("size")
+        .and_then(|s| s.as_str())
+        .and_then(|s| s.parse().ok());
+
+    let (url, exported) = match export_mime_for(&mime) {
+        Some(export_as) => (
+            format!(
+                "{FILES}/{id}/export?mimeType={}",
+                urlencoding::encode(export_as)
+            ),
+            true,
+        ),
+        None => (format!("{FILES}/{id}?alt=media"), false),
     };
-    let token = super::auth::access_token_for(token).await?;
+
+    let access = super::auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .get(&url)
-        .bearer_auth(token)
+        .bearer_auth(access)
         .send()
         .await?;
     let status = res.status();
-    let text = res.text().await.unwrap_or_default();
+    let bytes = res.bytes().await?.to_vec();
     if !status.is_success() {
         anyhow::bail!(
             "{status} downloading {id}: {}",
-            text.chars().take(300).collect::<String>()
+            String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(300)
+                .collect::<String>()
         );
     }
-    Ok(text)
+    // Drive tells us how big the file is; a mismatch means we mangled it in
+    // transit, which is precisely the failure this rewrite exists to end.
+    if let Some(expected) = reported_size
+        && !exported
+        && bytes.len() as u64 != expected
+    {
+        anyhow::bail!(
+            "{name} came down as {} bytes but Drive reports {expected}. Refusing to write a \
+             file that does not match its source.",
+            bytes.len()
+        );
+    }
+    Ok(Download {
+        bytes,
+        name,
+        reported_size,
+        exported,
+    })
+}
+
+/// The export format for a Google-native file, or `None` for a real file.
+pub(crate) fn export_mime_for(mime: &str) -> Option<&'static str> {
+    match mime {
+        "application/vnd.google-apps.document" => Some("text/plain"),
+        "application/vnd.google-apps.spreadsheet" => Some("text/csv"),
+        "application/vnd.google-apps.presentation" => Some("text/plain"),
+        _ => None,
+    }
+}
+
+/// True when these bytes can be printed to a terminal without wrecking it.
+pub(crate) fn looks_like_text(bytes: &[u8]) -> bool {
+    if bytes.contains(&0) {
+        return false;
+    }
+    std::str::from_utf8(bytes).is_ok()
 }
 
 /// Upload a local file. Multipart so name and content land in one request.
@@ -121,10 +178,10 @@ pub async fn put(
     body.extend_from_slice(&bytes);
     body.extend_from_slice(format!("\r\n--{BOUNDARY}--").as_bytes());
 
-    let token = super::auth::access_token_for(token).await?;
+    let access = super::auth::access_token_for(token).await?;
     let res = reqwest::Client::new()
         .post(format!("{UPLOAD}?uploadType=multipart"))
-        .bearer_auth(token)
+        .bearer_auth(access)
         .header(
             "Content-Type",
             format!("multipart/related; boundary={BOUNDARY}"),
