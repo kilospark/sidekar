@@ -2,6 +2,42 @@ use super::{CommandGroup, CommandSpec, spec};
 
 pub const COMMANDS: &[CommandSpec] = &[
     spec(
+        "google",
+        "<login|status|logout>",
+        "Google Workspace account for Gmail/Drive/Calendar",
+        CommandGroup::Account,
+        false,
+        false,
+        false,
+    ),
+    spec(
+        "gmail",
+        "<search|read|send|labels|modify> [args...]",
+        "Gmail over the API",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
+        "drive",
+        "<ls|get|put> [args...]",
+        "Google Drive over the API",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
+        "calendar",
+        "<list|create> [args...]",
+        "Google Calendar over the API",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
         "spawn",
         "<agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] | list",
         "Launch another agent on the bus and print its name",

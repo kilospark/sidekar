@@ -13,6 +13,7 @@ mod debug;
 mod desktop;
 mod desktop_ext;
 mod doc;
+pub mod google;
 mod interaction;
 mod journal;
 pub mod kv;
@@ -83,6 +84,10 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         return result;
     }
     match command {
+        "google" => google::cmd_google(ctx, args).await,
+        "gmail" => google::cmd_gmail(ctx, args).await,
+        "drive" => google::cmd_drive(ctx, args).await,
+        "calendar" => google::cmd_calendar(ctx, args).await,
         "spawn" => spawn::cmd_spawn(ctx, args).await,
         "stop" => spawn::cmd_stop(ctx, args),
         "launch" => cmd_launch(ctx, args).await,

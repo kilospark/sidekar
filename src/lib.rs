@@ -74,6 +74,7 @@ pub mod desktop;
 pub mod doc_intel;
 pub mod events;
 pub mod ext;
+pub mod google;
 pub mod help;
 pub mod help_text;
 pub mod input_mode;

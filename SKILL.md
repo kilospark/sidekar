@@ -56,6 +56,23 @@ opinion, a long build, a task in another repo via `--cwd`. A spawned agent is
 yours to finish — read its reply and stop it. One you never read is spent
 tokens, and one you never stop is a process nobody owns.
 
+## Google Workspace
+
+Gmail, Drive and Calendar go through their real APIs, not the browser. Sign in
+once with `sidekar google login`; the token is kept in encrypted KV and refreshed
+automatically.
+
+```bash
+sidekar gmail search "from:gusto is:unread" --limit 5
+sidekar gmail read <id>
+sidekar gmail send --to a@b.com --subject "Q3" --body "text"
+sidekar drive ls "invoice" && sidekar drive get <file-id> --out local.txt
+sidekar calendar list --days 7
+```
+
+Prefer these over `sidekar browser` for anything Google. The browser path works
+but breaks whenever a page changes shape or a session needs re-auth.
+
 ## Operating Rules
 
 1. Use CLI help for exact syntax — never invent flags or subcommands.
@@ -66,12 +83,17 @@ tokens, and one you never stop is a process nobody owns.
 4. To delegate, `sidekar spawn <agent> "<task>"` and address the name it prints. Never
    assemble another CLI's permission flags yourself — spawn knows each one.
 5. Stop what you spawn: `sidekar spawn list`, then `sidekar stop <name>` when done.
-6. Use `sidekar kv` for any secret or credential — never store in plain files.
-7. Use `sidekar totp get` during login flows that require 2FA codes.
-8. Write durable learnings to `sidekar memory write` so future sessions benefit.
-9. Pipe noisy command output through `sidekar compact filter` or use `sidekar compact run`.
-10. After state-changing browser actions, read the returned brief before deciding next step.
-11. Prefer `read`, `ax-tree -i`, or `text` before taking screenshots.
-12. Prefer refs from `ax-tree -i` or `observe` over CSS selectors; coordinates only as last resort.
-13. If login, CAPTCHA, or 2FA blocks browser progress, run `sidekar activate` and tell the user.
-14. Never touch browser tabs you did not create. Close tabs you opened when done.
+6. For Gmail, Drive or Calendar use `sidekar gmail|drive|calendar`, never browser automation.
+7. Use `sidekar kv` for any secret or credential — never store in plain files.
+8. Use `sidekar totp get` during login flows that require 2FA codes.
+9. Write durable learnings to `sidekar memory write` so future sessions benefit.
+10. Pipe noisy command output through `sidekar compact filter` or use `sidekar compact run`.
+11. After state-changing browser actions, read the returned brief before deciding next step.
+12. Prefer `read`, `ax-tree -i`, or `text` before taking screenshots.
+13. Prefer refs from `ax-tree -i` or `observe` over CSS selectors; coordinates only as last resort.
+14. If login, CAPTCHA, or 2FA blocks browser progress, bring the window forward and hand
+    it over. `sidekar browser activate` works only for a sidekar-launched Chrome; when you
+    are on the extension transport against the user's own browser, use
+    `sidekar desktop activate --app <name>`, taking the name from `sidekar desktop apps`
+    (a managed Chrome reports as "Chromium", not "Google Chrome"). Then stop and tell the user.
+15. Never touch browser tabs you did not create. Close tabs you opened when done.
