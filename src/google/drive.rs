@@ -16,7 +16,14 @@ pub struct Entry {
 
 /// List or search. `query` is Drive query syntax; empty lists the root.
 pub async fn list(token: &super::auth::TokenRef, query: &str, limit: usize) -> Result<Vec<Entry>> {
-    let q = if query.trim().is_empty() {
+    let q = if let Some(p) = query.strip_prefix("parent:") {
+        // Listing a folder by id, rather than making the caller write Drive
+        // query grammar for the most common thing they want.
+        format!(
+            "'{}' in parents and trashed = false",
+            p.replace('\'', "\\'")
+        )
+    } else if query.trim().is_empty() {
         "'root' in parents and trashed = false".to_string()
     } else if query.contains('=') || query.contains(" in ") || query.contains("contains") {
         query.to_string()
@@ -199,6 +206,79 @@ pub async fn put(
     }
     let v: Value = serde_json::from_str(&text)?;
     Ok(str_at(&v, "id"))
+}
+
+/// Create a folder and return its id.
+///
+/// A folder in Drive is a file whose mime type says so, which is why this is
+/// the same endpoint as an upload with no body.
+pub async fn mkdir(
+    token: &super::auth::TokenRef,
+    name: &str,
+    parent: Option<&str>,
+) -> Result<String> {
+    let mut body = json!({
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    });
+    if let Some(p) = parent {
+        body["parents"] = json!([p]);
+    }
+    let res = super::api_post(token, FILES, &body).await?;
+    Ok(str_at(&res, "id"))
+}
+
+/// Reparent a file.
+///
+/// Drive models this as add-and-remove rather than a move, and does it in one
+/// `files.update` with no data transfer — the bytes never leave Drive. A file
+/// can legitimately sit in several folders, so the old parent has to be named
+/// explicitly rather than assumed; passing none adds a location instead of
+/// moving it.
+pub async fn move_to(
+    token: &super::auth::TokenRef,
+    id: &str,
+    to: &str,
+    from: Option<&str>,
+) -> Result<()> {
+    let current = if from.is_some() {
+        None
+    } else {
+        // Look up where it lives now, so the common case is a real move rather
+        // than quietly leaving the file in two places.
+        let meta = super::api_get(token, &format!("{FILES}/{id}?fields=parents")).await?;
+        meta.get("parents")
+            .and_then(|p| p.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|s| !s.is_empty())
+    };
+    let remove = from.map(String::from).or(current);
+
+    let mut url = format!("{FILES}/{id}?addParents={}", urlencoding::encode(to));
+    if let Some(ref r) = remove {
+        url.push_str(&format!("&removeParents={}", urlencoding::encode(r)));
+    }
+    let access = super::auth::access_token_for(token).await?;
+    let res = reqwest::Client::new()
+        .patch(&url)
+        .bearer_auth(access)
+        .json(&json!({}))
+        .send()
+        .await?;
+    let status = res.status();
+    if !status.is_success() {
+        let text = res.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{status} moving {id}: {}",
+            text.chars().take(300).collect::<String>()
+        );
+    }
+    Ok(())
 }
 
 /// Move a file to the trash, or erase it outright.

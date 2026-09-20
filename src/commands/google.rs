@@ -316,7 +316,12 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     match sub {
         "ls" | "search" => {
             let limit = flag_usize(rest, "--limit").unwrap_or(25);
-            let query = positional(rest).join(" ");
+            // --parent wins over a text query: listing a folder is the common
+            // case and should not require Drive query grammar.
+            let query = match flag(rest, "--parent") {
+                Some(p) => format!("parent:{p}"),
+                None => positional(rest).join(" "),
+            };
             let entries = google::drive::list(&token, &query, limit).await?;
             if entries.is_empty() {
                 out!(ctx, "Nothing found.");
@@ -375,6 +380,26 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Uploaded as {id}.");
             Ok(())
         }
+        "mkdir" => {
+            let name = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!("Usage: sidekar drive mkdir <name> [--parent <id>]")
+            })?;
+            let id = google::drive::mkdir(&token, &name, flag(rest, "--parent").as_deref()).await?;
+            out!(ctx, "{id}");
+            Ok(())
+        }
+        "mv" | "move" => {
+            let id = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Usage: sidekar drive mv <file-id> --to <folder-id> [--from <folder-id>]"
+                )
+            })?;
+            let to = flag(rest, "--to")
+                .ok_or_else(|| anyhow::anyhow!("drive mv needs --to <folder-id> (or 'root')"))?;
+            google::drive::move_to(&token, &id, &to, flag(rest, "--from").as_deref()).await?;
+            out!(ctx, "Moved {id} to {to}.");
+            Ok(())
+        }
         "rm" | "delete" => {
             let id = pos.first().cloned().ok_or_else(|| {
                 anyhow::anyhow!("Usage: sidekar drive rm <file-id> [--permanent]")
@@ -389,10 +414,12 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "Usage: sidekar drive <ls|get|put|rm> …\n  \
-             ls [query] [--limit N]        bare words match names; Drive query syntax also works\n  \
+            "Usage: sidekar drive <ls|get|put|mkdir|mv|rm> …\n  \
+             ls [query] [--parent <id>] [--limit N]   bare words match names; --parent lists a folder\n  \
+             mkdir <name> [--parent <id>]  prints the new folder id\n  \
+             mv <file-id> --to <folder-id> [--from <folder-id>]   one call, no data transfer\n  \
              get <file-id> [--out path]    Docs export as text, Sheets as CSV\n  \
-             put <path> [--name n] [--folder id]\n  \
+             put <path> [--name n] [--folder id]   omit --folder for My Drive root\n  \
              rm <file-id> [--permanent]    trashes by default; --permanent has no undo"
         ),
     }
