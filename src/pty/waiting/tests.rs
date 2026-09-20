@@ -192,3 +192,75 @@ fn bare_composer_markers_stay_idle() {
     assert!(!looks_like_question(">\n  ? for shortcuts\n"));
     assert!(!looks_like_question("❯\n  ? for shortcuts\n"));
 }
+
+// --- generic fallback: unrecognized prompts from any wrapped CLI ----------
+
+#[test]
+fn trailing_question_mark_with_no_marker_phrase_is_a_question() {
+    // Wording no marker list anticipated (a folder-trust dialog, say), but a
+    // question is still the last thing drawn.
+    let screen = "\
+Claude Code may read files in this folder.
+Do you trust the files in this folder?
+";
+    assert!(looks_like_question(screen));
+}
+
+#[test]
+fn trailing_question_mark_buried_in_scrollback_is_ignored() {
+    // Only the *last* drawn line counts — a question earlier on screen that
+    // the agent already moved past must not re-trigger detection.
+    let screen = "\
+Do you trust the files in this folder?
+I read the config and applied the migration.
+";
+    assert!(!looks_like_question(screen));
+}
+
+#[test]
+fn generic_bracketed_choices_beyond_the_fixed_marker_list() {
+    // "(accept/skip)" is not in detect_yes_no_markers.txt, but has the same
+    // shape as the markers that are.
+    assert!(looks_like_question("Continue anyway? (accept/skip)"));
+    assert!(looks_like_question("Pick one [Y/n/q]"));
+}
+
+#[test]
+fn parenthesized_shell_command_is_not_a_bracketed_choice() {
+    assert!(!ends_with_bracketed_choices("Bash(rm -rf build/)"));
+    assert!(!ends_with_bracketed_choices(
+        "Running build(target/release)"
+    ));
+}
+
+#[test]
+fn generic_press_any_key_beyond_the_fixed_press_enter_marker() {
+    // detect_question_markers.txt only lists "press enter to ..."; wizards
+    // that accept any key or a specific letter must match too.
+    assert!(looks_like_question("Press any key to continue"));
+    assert!(looks_like_question("Press 'q' to quit"));
+}
+
+#[test]
+fn generic_fallbacks_still_respect_composer_scoping() {
+    let screen = "\
+✻ Welcome to Claude Code
+
+> continue anyway? (accept/skip)
+  ? for shortcuts
+";
+    assert!(!looks_like_question(screen));
+}
+
+#[test]
+fn unnumbered_wizard_menu_is_caught_by_the_option_list_rule() {
+    // Numbered menus already match; a wizard that numbers its choices
+    // (Claude Code's theme/login pickers do) needs no new rule.
+    let screen = "\
+Select your theme:
+❯ 1. Dark mode
+  2. Light mode
+  3. Light mode (colorblind-friendly)
+";
+    assert!(looks_like_question(screen));
+}

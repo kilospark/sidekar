@@ -217,7 +217,85 @@ pub(crate) fn match_question(tail: &str, rules: &Rules) -> Option<QuestionMatch>
         }
     }
 
+    // Below this point nothing depends on wording a marker list had to be
+    // written for. First-run wizards, license accepts and trust dialogs from
+    // *any* wrapped CLI draw one of a small number of generic prompt shapes;
+    // catching the shape means a new agent's onboarding never needs its own
+    // release before `bus wait` can see it.
+    for line in &regions.outside_composer {
+        let content = unbox(line);
+        if content.is_empty() {
+            continue;
+        }
+        let lowered = content.to_lowercase();
+        // "Press any key to continue", "Press 'q' to quit", "Press ESC to skip" —
+        // generalizes the fixed "press enter to ..." markers to any key name.
+        if lowered.contains("press ") && lowered.contains(" to ") {
+            return Some(QuestionMatch {
+                rule: "press-to imperative".to_string(),
+                line: line.trim().to_string(),
+            });
+        }
+        if ends_with_bracketed_choices(content) {
+            return Some(QuestionMatch {
+                rule: "bracketed choices".to_string(),
+                line: line.trim().to_string(),
+            });
+        }
+    }
+
+    // Last resort: a question the agent is blocked on is always the last
+    // thing drawn, so a trailing `?` on the most recent line reads as a live
+    // question even in wording no marker anticipated. Scoped to the last
+    // line only (not the whole window) to avoid flagging a rhetorical
+    // question buried in old scrollback.
+    if let Some(line) = regions.outside_composer.last() {
+        let content = unbox(line);
+        if content.ends_with('?') && content.chars().count() <= 200 {
+            return Some(QuestionMatch {
+                rule: "trailing question mark".to_string(),
+                line: line.trim().to_string(),
+            });
+        }
+    }
+
     None
+}
+
+/// True when `line` ends with a short bracketed set of alternatives, e.g.
+/// `(y/n)`, `[Y/n/a]`, `(accept/skip)` — the shape a CLI uses for a
+/// single-keystroke prompt, independent of which words it picked. Generalizes
+/// the fixed yes/no marker list to wording it was never written for.
+fn ends_with_bracketed_choices(line: &str) -> bool {
+    let trimmed = line.trim_end_matches(['?', ':', '.', ' ']);
+    let (open, close) = if trimmed.ends_with(')') {
+        ('(', ')')
+    } else if trimmed.ends_with(']') {
+        ('[', ']')
+    } else {
+        return false;
+    };
+    let Some(start) = trimmed.rfind(open) else {
+        return false;
+    };
+    // A bracket glued onto an alphanumeric word (`build(target/release)`) is a
+    // shell-command/path shape, not a prompt's choice list — real prompts set
+    // the bracket off with whitespace or punctuation (`Continue? (y/n)`).
+    if let Some(prev) = trimmed[..start].chars().last() {
+        if prev.is_alphanumeric() {
+            return false;
+        }
+    }
+    let inner = &trimmed[start + 1..trimmed.len() - close.len_utf8()];
+    if inner.is_empty() || inner.len() > 40 {
+        return false;
+    }
+    let parts: Vec<&str> = inner.split('/').collect();
+    (2..=4).contains(&parts.len())
+        && parts.iter().all(|p| {
+            let p = p.trim();
+            !p.is_empty() && p.len() <= 12 && p.chars().all(|c| c.is_alphanumeric())
+        })
 }
 
 /// The cursor line of an option list, when at least two options are present.
