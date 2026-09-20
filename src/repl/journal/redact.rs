@@ -109,11 +109,43 @@ pub(super) fn redact(input: &str) -> String {
 }
 
 /// Redact in-place on every Text/Thinking/ToolResult ContentBlock
-/// of a history slice. Non-text blocks (ToolCall args, Image,
-/// EncryptedReasoning) pass through untouched — we deliberately
-/// don't try to redact inside JSON arg values because the structure
-/// varies by tool and a broken arg is worse than a leaked key
-/// (and the tool itself already saw the real args).
+/// of a history slice, and on the string leaves of ToolCall args.
+///
+/// Tool arguments used to pass through untouched, on the reasoning that a
+/// broken arg is worse than a leaked key and the tool had already seen the real
+/// value. The first half of that holds; the second does not apply here. This
+/// history is formatted into a prompt and sent to a model, so "the tool already
+/// saw it" is not the question — whether a third party sees it is.
+///
+/// Redacting only string leaves keeps the objection satisfied: the JSON shape,
+/// its keys, its numbers and its booleans are all untouched, and a string is
+/// replaced by a string. Nothing can be structurally broken by a substitution
+/// that cannot change a value's type.
+///
+/// Image and EncryptedReasoning blocks still pass through.
+pub(super) fn redact_json_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            if PATTERN_SET.is_match(s) {
+                *s = redact(s);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_json_strings(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // Keys are left alone: a key is a field name, not a secret, and
+            // rewriting one would change the shape the tool expects.
+            for (_, v) in map.iter_mut() {
+                redact_json_strings(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn redact_history_in_place(history: &mut [crate::providers::ChatMessage]) {
     use crate::providers::ContentBlock;
     for msg in history.iter_mut() {
@@ -145,9 +177,12 @@ pub(super) fn redact_history_in_place(history: &mut [crate::providers::ChatMessa
                     // Avoid huge pixel payloads in persisted journals.
                     content_images.clear();
                 }
-                ContentBlock::ToolCall { .. }
-                | ContentBlock::Image { .. }
-                | ContentBlock::EncryptedReasoning { .. } => {
+                ContentBlock::ToolCall { arguments, .. } => {
+                    // String leaves only. The shape, keys, numbers and booleans
+                    // are untouched, so nothing can be structurally broken.
+                    redact_json_strings(arguments);
+                }
+                ContentBlock::Image { .. } | ContentBlock::EncryptedReasoning { .. } => {
                     // Deliberately untouched. See module doc.
                 }
             }
@@ -358,10 +393,11 @@ mod tests {
     }
 
     #[test]
-    fn redact_history_leaves_tool_call_args_alone() {
-        // See module doc — we don't rewrite tool-call JSON to avoid
-        // corrupting structured args. This test locks that decision
-        // in so a future refactor doesn't "helpfully" add it.
+    fn redact_history_scrubs_secrets_inside_tool_call_args() {
+        // Was: tool args passed through untouched, so a token typed straight
+        // into a Bash command survived into a prompt sent to a model. The old
+        // reasoning — the tool already saw the real args — answers the wrong
+        // question; what matters here is whether a third party sees it.
         use crate::providers::{ChatMessage, ContentBlock, Role};
         let mut history = vec![ChatMessage {
             role: Role::Assistant,
@@ -376,14 +412,44 @@ mod tests {
         }];
         redact_history_in_place(&mut history);
         if let ContentBlock::ToolCall { arguments, .. } = &history[0].content[0] {
-            let cmd = arguments["command"].as_str().unwrap();
-            // Untouched: the secret survives in the tool call args.
-            // This is intentional; see the module doc on the scope
-            // limitation.
-            assert!(cmd.contains("ghp_abc"));
+            let cmd = arguments["command"].as_str().expect("still a string");
+            assert!(!cmd.contains("ghp_abc"), "the secret must not survive");
+            assert!(cmd.contains(REDACTED));
+            assert!(
+                cmd.starts_with("echo "),
+                "the rest of the command is intact"
+            );
         } else {
             panic!("expected tool call");
         }
+    }
+
+    #[test]
+    fn redacting_args_cannot_break_their_structure() {
+        // The original objection was that a broken arg is worse than a leaked
+        // key. Only string leaves are touched, so keys, numbers, booleans,
+        // nulls and nesting all survive and every value keeps its type.
+        let mut v = serde_json::json!({
+            "ghp_key_name_is_not_a_secret": "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ",
+            "count": 42,
+            "enabled": true,
+            "missing": null,
+            "nested": {"deep": ["ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ", 7]}
+        });
+        redact_json_strings(&mut v);
+        assert_eq!(v["count"], 42);
+        assert_eq!(v["enabled"], true);
+        assert!(v["missing"].is_null());
+        // The key itself is a field name, not a secret, and must not be rewritten.
+        assert!(v.get("ghp_key_name_is_not_a_secret").is_some());
+        assert!(
+            v["ghp_key_name_is_not_a_secret"]
+                .as_str()
+                .unwrap()
+                .contains(REDACTED)
+        );
+        assert!(v["nested"]["deep"][0].as_str().unwrap().contains(REDACTED));
+        assert_eq!(v["nested"]["deep"][1], 7);
     }
 
     #[test]
