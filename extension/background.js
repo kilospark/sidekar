@@ -1900,6 +1900,30 @@ async function cmdAxtree(msg) {
             node.getAttribute("title") ||
             node.innerText?.substring(0, 80)?.trim() ||
             "";
+          // Geometry and occlusion, not just semantics. A page routinely
+          // shows several controls with the same role and no name — two bare
+          // comboboxes, three unlabelled inputs — and a caller that can only
+          // see "combobox" has to guess which one. Position disambiguates
+          // them, and knowing what is covered says whether a dialog is over
+          // the page at all.
+          const r = node.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const onScreen =
+            r.width > 0 &&
+            r.height > 0 &&
+            cx >= 0 &&
+            cy >= 0 &&
+            cx <= innerWidth &&
+            cy <= innerHeight;
+          // elementFromPoint returns the topmost node at that spot, so a
+          // control an overlay covers reports as occluded rather than as
+          // something worth clicking.
+          let covered = false;
+          if (onScreen) {
+            const top = document.elementFromPoint(cx, cy);
+            covered = !!top && top !== node && !node.contains(top) && !top.contains(node);
+          }
           elements.push({
             ref,
             tag,
@@ -1907,13 +1931,26 @@ async function cmdAxtree(msg) {
             name,
             type: node.getAttribute("type") || "",
             value: node.value || "",
+            rect: {
+              x: Math.round(r.left),
+              y: Math.round(r.top),
+              w: Math.round(r.width),
+              h: Math.round(r.height),
+            },
+            onScreen,
+            covered,
           });
         }
         for (const child of node.children) walk(child);
       }
 
       walk(document.body);
-      return { url: location.href, title: document.title, elements };
+      return {
+        url: location.href,
+        title: document.title,
+        viewport: { w: innerWidth, h: innerHeight },
+        elements,
+      };
   });
   if (out && out.elements) {
     refMaps.set(tabId, out.elements.length);

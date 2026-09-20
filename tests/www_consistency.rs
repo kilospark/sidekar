@@ -62,7 +62,9 @@ fn nav_labels(page: &str) -> Vec<String> {
     while let Some(open) = rest.find("<a ") {
         rest = &rest[open..];
         let Some(gt) = rest.find('>') else { break };
-        let Some(close) = rest.find("</a>") else { break };
+        let Some(close) = rest.find("</a>") else {
+            break;
+        };
         if close > gt {
             let text = rest[gt + 1..close].trim();
             // Skip the logo, whose anchor wraps images rather than a label.
@@ -129,7 +131,9 @@ fn legal_pages_are_reachable_from_every_footer() {
     // the header stay short without the pages becoming unreachable.
     for page in PUBLIC_PAGES {
         let html = read(page);
-        let start = html.find("<footer").unwrap_or_else(|| panic!("{page} has no footer"));
+        let start = html
+            .find("<footer")
+            .unwrap_or_else(|| panic!("{page} has no footer"));
         let footer = &html[start..];
         assert!(footer.contains("/privacy"), "{page} footer omits Privacy");
         assert!(footer.contains("/terms"), "{page} footer omits Terms");
@@ -178,5 +182,8 @@ fn theme_aware_files_cover_the_default_and_the_explicit_choice() {
             );
         }
     }
-    assert!(checked > 0, "found no theme-aware js/css to check; has the layout moved?");
+    assert!(
+        checked > 0,
+        "found no theme-aware js/css to check; has the layout moved?"
+    );
 }

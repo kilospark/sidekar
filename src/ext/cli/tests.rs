@@ -1,4 +1,4 @@
-use super::build_command;
+use super::{build_command, geometry_note};
 
 #[test]
 fn ext_read_requires_explicit_tab() {
@@ -110,4 +110,35 @@ fn ext_press_is_accepted_as_an_alias() {
     let cmd = build_command("press", &args, Some(2), false).unwrap();
     assert_eq!(cmd["command"], "key");
     assert_eq!(cmd["key"], "Escape");
+}
+
+#[test]
+fn geometry_note_disambiguates_same_role_elements() {
+    // The case that cost real time: two comboboxes, both unnamed. Semantics
+    // alone cannot tell them apart; position can.
+    let header = serde_json::json!({"rect": {"x": 580, "y": 12, "w": 900, "h": 36}, "onScreen": true, "covered": false});
+    let form = serde_json::json!({"rect": {"x": 400, "y": 220, "w": 690, "h": 48}, "onScreen": true, "covered": false});
+    assert_eq!(geometry_note(&header), "  @580,12 900x36");
+    assert_eq!(geometry_note(&form), "  @400,220 690x48");
+    assert_ne!(geometry_note(&header), geometry_note(&form));
+}
+
+#[test]
+fn an_element_under_an_overlay_says_so() {
+    // Clicking a covered element is a misfire whatever its role claims.
+    let el = serde_json::json!({"rect": {"x": 10, "y": 20, "w": 100, "h": 30}, "onScreen": true, "covered": true});
+    assert!(geometry_note(&el).contains("covered"));
+}
+
+#[test]
+fn an_element_scrolled_out_of_view_says_so() {
+    let el = serde_json::json!({"rect": {"x": 10, "y": 4000, "w": 100, "h": 30}, "onScreen": false, "covered": false});
+    assert!(geometry_note(&el).contains("off-screen"));
+}
+
+#[test]
+fn an_element_without_geometry_renders_as_before() {
+    // Older extensions send no rect; the line must stay clean rather than
+    // printing zeros that read as a real position at the origin.
+    assert_eq!(geometry_note(&serde_json::json!({"role": "button"})), "");
 }

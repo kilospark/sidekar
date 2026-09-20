@@ -216,6 +216,28 @@ fn extract_extension() -> Result<()> {
     super::extract_embedded_extension()
 }
 
+/// Position and visibility for one element, appended to its ax-tree line.
+///
+/// Semantics alone do not identify a control: a page will happily show two
+/// comboboxes with no accessible name, and picking between them by document
+/// order is a guess. Coordinates tell them apart, and `covered` says whether
+/// something is painted over the element — clicking that is a misfire whatever
+/// the role says.
+fn geometry_note(el: &Value) -> String {
+    let Some(rect) = el.get("rect") else {
+        return String::new();
+    };
+    let n = |k: &str| rect.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut note = format!("  @{},{} {}x{}", n("x"), n("y"), n("w"), n("h"));
+    if el.get("onScreen").and_then(|v| v.as_bool()) == Some(false) {
+        note.push_str(" off-screen");
+    }
+    if el.get("covered").and_then(|v| v.as_bool()) == Some(true) {
+        note.push_str(" covered");
+    }
+    note
+}
+
 fn apply_focus(cmd: &mut Value, focus: bool) {
     if focus {
         if let Some(obj) = cmd.as_object_mut() {
@@ -801,9 +823,21 @@ fn print_result(command: &str, result: &Value) {
                     let r = el.get("ref").and_then(|v| v.as_u64()).unwrap_or(0);
                     let role = el.get("role").and_then(|v| v.as_str()).unwrap_or("");
                     let name = el.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    buf.push_str(&format!("[{r}] {role}: {name}\n"));
+                    buf.push_str(&format!("[{r}] {role}: {name}{}\n", geometry_note(el)));
                 }
-                buf.push_str(&format!("\n{} interactive element(s)\n", elements.len()));
+                let offscreen = elements
+                    .iter()
+                    .filter(|e| e.get("onScreen").and_then(|v| v.as_bool()) == Some(false))
+                    .count();
+                let covered = elements
+                    .iter()
+                    .filter(|e| e.get("covered").and_then(|v| v.as_bool()) == Some(true))
+                    .count();
+                buf.push_str(&format!("\n{} interactive element(s)", elements.len()));
+                if offscreen > 0 || covered > 0 {
+                    buf.push_str(&format!(" — {offscreen} off-screen, {covered} covered"));
+                }
+                buf.push('\n');
             }
             let text = buf.trim_end_matches('\n').to_string();
             let _ = crate::output::emit(&crate::output::PlainOutput::new(text));
