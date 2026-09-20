@@ -52,6 +52,13 @@ pub fn render_help(version: &str) -> String {
             ("totp", "TOTP secrets"),
             ("cron", "Scheduled jobs"),
             ("loop", "Run prompt on interval"),
+            ("spawn", "Launch another agent on the bus"),
+            ("stop", "Stop an agent started by spawn"),
+            ("gmail", "Gmail: search, read, send, label"),
+            ("drive", "Google Drive: list, get, put, rm"),
+            ("calendar", "Google Calendar: list, create"),
+            ("sheets", "Google Sheets: read and write ranges"),
+            ("docs", "Google Docs: read, append, replace"),
         ],
         CYAN,
         YELLOW,
@@ -65,6 +72,7 @@ pub fn render_help(version: &str) -> String {
         &[
             ("device", "Device auth and registration"),
             ("relay", "Active relay sessions"),
+            ("google", "Google Workspace sign-in for the commands above"),
         ],
         CYAN,
         YELLOW,
@@ -194,3 +202,6 @@ fn write_section(
     }
     let _ = writeln!(out);
 }
+
+#[cfg(test)]
+mod tests;
