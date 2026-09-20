@@ -37,3 +37,22 @@ fn flag_usize_ignores_a_non_number() {
     assert_eq!(flag_usize(&v(&["--limit", "12"]), "--limit"), Some(12));
     assert_eq!(flag_usize(&v(&["--limit", "lots"]), "--limit"), None);
 }
+
+#[test]
+fn parse_grid_splits_rows_on_pipes_and_cells_on_commas() {
+    assert_eq!(parse_grid("a,b|c,d"), vec![vec!["a", "b"], vec!["c", "d"]]);
+}
+
+#[test]
+fn parse_grid_trims_whitespace_around_cells() {
+    assert_eq!(
+        parse_grid("a , b | c ,d"),
+        vec![vec!["a", "b"], vec!["c", "d"]]
+    );
+}
+
+#[test]
+fn parse_grid_handles_a_single_cell_and_empty_cells() {
+    assert_eq!(parse_grid("solo"), vec![vec!["solo"]]);
+    assert_eq!(parse_grid("a,,c"), vec![vec!["a", "", "c"]]);
+}

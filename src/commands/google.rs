@@ -110,6 +110,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
+    let pos = positional(rest);
     match sub {
         "ls" | "search" => {
             let limit = flag_usize(rest, "--limit").unwrap_or(25);
@@ -158,11 +159,25 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Uploaded as {id}.");
             Ok(())
         }
+        "rm" | "delete" => {
+            let id = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!("Usage: sidekar drive rm <file-id> [--permanent]")
+            })?;
+            let permanent = rest.iter().any(|a| a == "--permanent");
+            google::drive::remove(&id, permanent).await?;
+            if permanent {
+                out!(ctx, "Permanently deleted {id}.");
+            } else {
+                out!(ctx, "Moved {id} to trash (recoverable for 30 days).");
+            }
+            Ok(())
+        }
         _ => bail!(
-            "Usage: sidekar drive <ls|get|put> …\n  \
+            "Usage: sidekar drive <ls|get|put|rm> …\n  \
              ls [query] [--limit N]        bare words match names; Drive query syntax also works\n  \
              get <file-id> [--out path]    Docs export as text, Sheets as CSV\n  \
-             put <path> [--name n] [--folder id]"
+             put <path> [--name n] [--folder id]\n  \
+             rm <file-id> [--permanent]    trashes by default; --permanent has no undo"
         ),
     }
 }
@@ -213,6 +228,144 @@ pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              times are RFC3339 (2026-09-20T14:00:00-04:00) or a bare date for all-day"
         ),
     }
+}
+
+pub async fn cmd_sheets(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let rest = args.get(1..).unwrap_or(&[]);
+    let pos = positional(rest);
+    match sub {
+        "info" => {
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar sheets info <id>"))?;
+            let (title, tabs) = google::sheets::info(&id).await?;
+            out!(ctx, "{title}");
+            for t in tabs {
+                out!(ctx, "  {t}");
+            }
+            Ok(())
+        }
+        "get" => {
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar sheets get <id> <range>"))?;
+            let range = pos.get(1).cloned().unwrap_or_else(|| "A1:Z1000".into());
+            let rows = google::sheets::squared(google::sheets::get(&id, &range).await?);
+            if rows.is_empty() {
+                out!(ctx, "{range} is empty.");
+            }
+            for r in rows {
+                out!(ctx, "{}", r.join("\t"));
+            }
+            Ok(())
+        }
+        "set" | "append" => {
+            let id = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!("Usage: sidekar sheets {sub} <id> <range> --values \"a,b|c,d\"")
+            })?;
+            let range = pos.get(1).cloned().unwrap_or_else(|| "A1".into());
+            let raw = flag(rest, "--values").ok_or_else(|| {
+                anyhow::anyhow!("needs --values \"a,b|c,d\"  (| separates rows, , separates cells)")
+            })?;
+            let values = parse_grid(&raw);
+            let n = if sub == "set" {
+                google::sheets::set(&id, &range, &values).await?
+            } else {
+                google::sheets::append(&id, &range, &values).await?
+            };
+            out!(ctx, "{n} cells updated.");
+            Ok(())
+        }
+        "create" => {
+            let title = pos.first().cloned().unwrap_or_else(|| "Untitled".into());
+            out!(ctx, "{}", google::sheets::create(&title).await?);
+            Ok(())
+        }
+        _ => bail!(
+            "Usage: sidekar sheets <info|get|set|append|create> …\n  \
+             info <id>\n  \
+             get <id> [range]                     range is A1 notation, default A1:Z1000\n  \
+             set <id> <range> --values \"a,b|c,d\"   | separates rows, , separates cells\n  \
+             append <id> <range> --values \"…\"\n  \
+             create <title>"
+        ),
+    }
+}
+
+pub async fn cmd_docs(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let rest = args.get(1..).unwrap_or(&[]);
+    let pos = positional(rest);
+    match sub {
+        "get" | "read" => {
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar docs get <id>"))?;
+            let text = google::docs::get_text(&id).await?;
+            match flag(rest, "--out") {
+                Some(path) => {
+                    std::fs::write(&path, text.as_bytes())?;
+                    out!(ctx, "Wrote {} bytes to {path}.", text.len());
+                }
+                None => out!(ctx, "{text}"),
+            }
+            Ok(())
+        }
+        "title" => {
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar docs title <id>"))?;
+            out!(ctx, "{}", google::docs::title(&id).await?);
+            Ok(())
+        }
+        "create" => {
+            let title = pos.first().cloned().unwrap_or_else(|| "Untitled".into());
+            out!(ctx, "{}", google::docs::create(&title).await?);
+            Ok(())
+        }
+        "append" => {
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar docs append <id> --text \"…\""))?;
+            let text =
+                flag(rest, "--text").ok_or_else(|| anyhow::anyhow!("docs append needs --text"))?;
+            google::docs::append(&id, &text).await?;
+            out!(ctx, "Appended {} characters.", text.len());
+            Ok(())
+        }
+        "replace" => {
+            let id = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!("Usage: sidekar docs replace <id> --find x --with y")
+            })?;
+            let find =
+                flag(rest, "--find").ok_or_else(|| anyhow::anyhow!("docs replace needs --find"))?;
+            let with = flag(rest, "--with").unwrap_or_default();
+            let n = google::docs::replace(&id, &find, &with).await?;
+            out!(ctx, "{n} occurrences replaced.");
+            Ok(())
+        }
+        _ => bail!(
+            "Usage: sidekar docs <get|title|create|append|replace> …\n  \
+             get <id> [--out path]\n  \
+             title <id>\n  \
+             create <title>\n  \
+             append <id> --text \"…\"\n  \
+             replace <id> --find x --with y"
+        ),
+    }
+}
+
+/// `a,b|c,d` into rows of cells. Pipes separate rows, commas separate cells.
+pub(crate) fn parse_grid(raw: &str) -> Vec<Vec<String>> {
+    raw.split('|')
+        .map(|row| row.split(',').map(|c| c.trim().to_string()).collect())
+        .collect()
 }
 
 /// `--name value` or `--name=value`.

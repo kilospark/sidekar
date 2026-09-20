@@ -139,6 +139,38 @@ pub async fn put(path: &str, name: Option<&str>, folder: Option<&str>) -> Result
     Ok(str_at(&v, "id"))
 }
 
+/// Move a file to the trash, or erase it outright.
+///
+/// Trashing is the default because it is recoverable for 30 days; permanent
+/// deletion of someone's Drive file has no undo, so it has to be asked for.
+pub async fn remove(id: &str, permanent: bool) -> Result<()> {
+    let token = super::auth::access_token().await?;
+    let client = reqwest::Client::new();
+    let res = if permanent {
+        client
+            .delete(format!("{FILES}/{id}"))
+            .bearer_auth(token)
+            .send()
+            .await?
+    } else {
+        client
+            .patch(format!("{FILES}/{id}"))
+            .bearer_auth(token)
+            .json(&json!({"trashed": true}))
+            .send()
+            .await?
+    };
+    let status = res.status();
+    if !status.is_success() {
+        let text = res.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{status} removing {id}: {}",
+            text.chars().take(300).collect::<String>()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn str_at(v: &Value, key: &str) -> String {
     v.get(key)
         .and_then(|x| x.as_str())

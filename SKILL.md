@@ -67,7 +67,11 @@ sidekar gmail search "from:gusto is:unread" --limit 5
 sidekar gmail read <id>
 sidekar gmail send --to a@b.com --subject "Q3" --body "text"
 sidekar drive ls "invoice" && sidekar drive get <file-id> --out local.txt
+sidekar drive rm <file-id>            # trashes; --permanent has no undo
 sidekar calendar list --days 7
+sidekar sheets get <id> "Sheet1!A1:D20"
+sidekar sheets set <id> A1 --values "name,qty|widget,3"
+sidekar docs get <id> && sidekar docs append <id> --text "…"
 ```
 
 Prefer these over `sidekar browser` for anything Google. The browser path works

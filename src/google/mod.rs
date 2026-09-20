@@ -6,8 +6,10 @@
 
 pub mod auth;
 pub mod calendar;
+pub mod docs;
 pub mod drive;
 pub mod gmail;
+pub mod sheets;
 
 use anyhow::{Result, bail};
 use serde_json::Value;

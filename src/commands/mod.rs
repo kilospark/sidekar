@@ -88,6 +88,8 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "gmail" => google::cmd_gmail(ctx, args).await,
         "drive" => google::cmd_drive(ctx, args).await,
         "calendar" => google::cmd_calendar(ctx, args).await,
+        "sheets" => google::cmd_sheets(ctx, args).await,
+        "docs" => google::cmd_docs(ctx, args).await,
         "spawn" => spawn::cmd_spawn(ctx, args).await,
         "stop" => spawn::cmd_stop(ctx, args),
         "launch" => cmd_launch(ctx, args).await,
