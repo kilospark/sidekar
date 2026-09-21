@@ -548,6 +548,30 @@ So the wrapper does not journal. It hands off:
 silent on all three fds because the human already has their prompt
 back.
 
+### None of it worked, and nothing said so
+
+v4.5.21 shipped the handoff with 976 tests passing and it could not run at
+all. Three silent failures were stacked on top of each other, and every one
+of them was invisible by construction.
+
+The deepest was dispatch. `main` fetches the account encryption key before
+running a command, but skips it for the ones meant to be fast and offline:
+`device`, `config`, `prompt`, `memory`, `tasks`, `compact`, `pack`, `unpack`.
+KV rows are scoped by a `user_id` that only that fetch installs — so on a
+logged-in machine `sidekar memory import --credential=sf-karthik` answered
+"unknown credential 'sf-karthik'" for a credential plainly stored in
+`oauth:sf-karthik`. The handoff could never have worked, configured or not.
+
+That is fixed at the root rather than per command. `broker::ensure_account_key`
+is idempotent — a mutex read once loaded, and never anything on a machine that
+is not logged in — and `secrets::resolve_credential_for_provider` calls it
+where the store is actually read. The skip list keeps its point for commands
+that never touch KV, without becoming a list of exceptions to itself.
+
+Worth stating plainly, because it is the reason this section exists: no test
+caught this. The failure lived in process dispatch and account state, not in
+logic. Running the command once did.
+
 ### It needs a credential, and had no way to name one
 
 Extraction is an LLM call, and `memory import` takes its credential
@@ -622,6 +646,24 @@ and the write phase records every file the run *examined* rather
 than only the files that yielded candidates — a transcript with
 nothing worth remembering is the common case, and logging only the
 productive ones would leave the barren majority re-read forever.
+
+### Knowing whether any of this is on
+
+`sidekar journal status` exists because the honest answer used to be
+unobtainable. It reports the switch, the credential (or what to run to set
+one), whether REPL sessions and wrapped agents are each actually journaled,
+and per-source import counts with last-run times.
+
+Two more things keep a fresh machine from silently doing nothing:
+
+- **One stored credential is used without being asked for.** A lone credential
+  is not a choice, and demanding the user state it is just a way to make a new
+  install inert. Several stored is a real billing decision, and sidekar still
+  refuses to guess at those — but it now says so.
+- **One line, once per machine**, on the terminal when a wrapped agent exits
+  and journaling could not run. Then never again; the durable answer is the
+  status command. Printing nothing is what made the original version
+  indistinguishable from a machine that simply had nothing to learn.
 
 ### Which agents hand off
 

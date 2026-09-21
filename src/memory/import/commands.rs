@@ -156,16 +156,25 @@ async fn resolve_provider(opts: &ImportOptions) -> Result<(Arc<Provider>, String
     let cred = opts
         .credential
         .clone()
-        .or_else(|| std::env::var("SIDEKAR_CREDENTIAL").ok())
-        .or_else(|| {
-            let v = crate::config::config_get("credential");
-            if v.is_empty() { None } else { Some(v) }
-        })
+        .or_else(crate::config::background_credential)
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no credential configured. Pass --credential=<name>, set \
-                 SIDEKAR_CREDENTIAL, or run --no-llm to skip LLM extraction."
-            )
+            let stored = crate::providers::oauth::list_credentials();
+            if stored.is_empty() {
+                anyhow::anyhow!(
+                    "no credential configured, and none stored. Add one with \
+                     `sidekar repl credential add <provider> [nickname]`, or run \
+                     --no-llm to skip LLM extraction."
+                )
+            } else {
+                let names: Vec<&str> = stored.iter().map(|(n, _)| n.as_str()).collect();
+                anyhow::anyhow!(
+                    "several credentials are stored and none is set as the default, so \
+                     there is no way to tell which should pay for this. Run \
+                     `sidekar config set credential <name>` (stored: {}), pass \
+                     --credential=<name>, or run --no-llm.",
+                    names.join(", ")
+                )
+            }
         })?;
 
     let provider = crate::repl::slash::build_provider(&cred).await?;

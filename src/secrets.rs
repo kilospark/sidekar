@@ -317,6 +317,12 @@ pub async fn resolve_credential_for_provider(
 ) -> Result<ResolvedProviderCredential> {
     let parsed = SecretNameRef::parse(reference);
     if parsed.owner.is_local() {
+        // Local credentials live in user-scoped KV, which is unreadable until
+        // the account key is loaded. Commands `main` skips that fetch for —
+        // `memory import` above all, which the PTY journal handoff runs
+        // detached — would otherwise fail here on "unknown credential" for a
+        // credential that is plainly stored.
+        let _ = crate::broker::ensure_account_key().await;
         return resolve_local_credential_for_provider(&parsed.name).await;
     }
     let resp = remote_secret_request(

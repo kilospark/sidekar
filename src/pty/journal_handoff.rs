@@ -25,7 +25,8 @@ use std::process::{Command, Stdio};
 /// The wrapper also runs `grok` and `pi`, which write no transcript the importer
 /// knows how to parse, so they exit with nothing to hand off. Keep this in step
 /// with `memory::import::sources::SOURCE_IDS`.
-const IMPORTABLE: &[&str] = &["claude", "codex", "cursor", "gemini", "opencode", "copilot"];
+pub(crate) const IMPORTABLE: &[&str] =
+    &["claude", "codex", "cursor", "gemini", "opencode", "copilot"];
 
 /// The `--source` name for a wrapped agent, if its transcripts are readable.
 ///
@@ -55,17 +56,49 @@ pub(crate) fn enabled() -> bool {
     crate::runtime::journal()
 }
 
-/// True when the import has an LLM credential to work with.
+/// The credential the import would extract with, if it can be decided.
 ///
-/// `memory import` needs one to extract anything, and takes it from
-/// `--credential`, `SIDEKAR_CREDENTIAL` or `config set credential`. With none
-/// of those it exits on "no credential configured" — into a closed stderr, so
-/// the only evidence is a process that ran and did nothing. Checking first
-/// means the handoff stays a no-op on an unconfigured machine instead of
-/// spawning a doomed process on every exit.
-fn has_credential() -> bool {
-    std::env::var("SIDEKAR_CREDENTIAL").is_ok_and(|v| !v.trim().is_empty())
-        || !crate::config::config_get("credential").trim().is_empty()
+/// Checked before spawning rather than left to fail inside the child: the child
+/// runs detached with stderr closed, so "no credential configured" there is
+/// invisible. Knowing here means the wrapper can say so once instead.
+pub(crate) fn credential() -> Option<String> {
+    crate::config::background_credential()
+}
+
+/// Key under which the "journaling is off" notice records that it has fired.
+///
+/// Not a `CONFIG_KEYS` entry, so it stays out of `sidekar config list`: it is
+/// bookkeeping, not a setting anybody should edit.
+const NOTICE_SHOWN_KEY: &str = "_journal_handoff_notice_shown";
+
+/// Say once, on the terminal, that wrapped-agent journaling is not running.
+///
+/// The alternative — what shipped first — is a machine that quietly never
+/// learns anything and gives its owner no way to find out. Printing every time
+/// would be nagging, so this fires once per machine and then stays quiet; the
+/// durable answer is `sidekar journal status`.
+fn note_journaling_is_off_once(agent: &str) {
+    if source_for(agent).is_none() {
+        return;
+    }
+    if crate::config::config_get(NOTICE_SHOWN_KEY) == "1" {
+        return;
+    }
+    let stored = crate::providers::oauth::list_credentials();
+    eprintln!(
+        "\nsidekar: session journaling is off — {}.\n         \
+         Turn it on with `sidekar config set credential <name>`, or see \
+         `sidekar journal status`.\n         (said once; not again on this machine)",
+        if stored.is_empty() {
+            "no LLM credential is stored".to_string()
+        } else {
+            format!(
+                "{} credentials are stored and none is set as the default",
+                stored.len()
+            )
+        }
+    );
+    let _ = crate::config::config_set(NOTICE_SHOWN_KEY, "1");
 }
 
 /// Hand this session's transcript to `memory import` after the agent exits.
@@ -80,7 +113,8 @@ pub(crate) fn spawn_after_exit(agent: &str, cwd: &str) {
     let Some(source) = source_for(agent) else {
         return;
     };
-    if !has_credential() {
+    if credential().is_none() {
+        note_journaling_is_off_once(agent);
         return;
     }
     let Ok(exe) = std::env::current_exe() else {

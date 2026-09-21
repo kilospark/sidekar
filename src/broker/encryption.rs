@@ -212,6 +212,28 @@ pub(crate) fn migrate_login_transition(old_uid: &str, new_uid: &str) -> Result<(
 }
 
 /// Get encryption key from server (if logged in) and store in memory
+/// Make sure the account key is loaded, fetching it once if it is not.
+///
+/// `main` fetches this before dispatch for most commands but deliberately skips
+/// the ones meant to stay fast and offline — `config`, `memory`, `tasks` and
+/// friends. Two of those turned out to need user-scoped KV anyway: `memory
+/// import` reads the credential it extracts with, and `config set credential`
+/// checks the name is real. Both failed with "unknown credential" on a
+/// logged-in machine, because KV rows are scoped by a `user_id` that only this
+/// fetch installs.
+///
+/// Rather than grow the skip list into a list of exceptions to itself, the
+/// credential path asks for the key where it needs it. Idempotent: once the key
+/// is loaded this is a mutex read, and it never fires for a machine that is not
+/// logged in.
+pub async fn ensure_account_key() -> Result<()> {
+    if current_user_id().is_some() || crate::auth::auth_token().is_none() {
+        return Ok(());
+    }
+    fetch_encryption_key().await?;
+    Ok(())
+}
+
 pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("Not logged in"))?;
     let base =

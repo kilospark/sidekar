@@ -30,6 +30,7 @@ pub fn cmd_journal(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         }
         "list" => cmd_list(ctx, &args[1..]),
         "show" => cmd_show(ctx, &args[1..]),
+        "status" => cmd_status(ctx),
         other => {
             bail!(
                 "unknown journal subcommand: {other}. \
@@ -42,9 +43,17 @@ pub fn cmd_journal(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 fn print_help(ctx: &mut AppContext) {
     out!(
         ctx,
-        "\x1b[1mUsage:\x1b[0m sidekar journal <list|show> [args]"
+        "\x1b[1mUsage:\x1b[0m sidekar journal <status|list|show> [args]"
     );
     out!(ctx, "");
+    out!(
+        ctx,
+        "  status                   Is journaling actually running here, and what it"
+    );
+    out!(
+        ctx,
+        "                           has imported (start here if nothing is appearing)"
+    );
     out!(
         ctx,
         "  list [N] [--project P]   Recent journals for current project"
@@ -320,5 +329,116 @@ mod tests {
         };
         let out = render_show(&r);
         assert!(out.contains("session=abc"));
+    }
+}
+
+/// `sidekar journal status` — whether journaling is actually running here.
+///
+/// This exists because the honest answer used to be unobtainable. Wrapped-agent
+/// journaling depends on a switch, a credential and a readable credential store,
+/// and every one of those failed silently: a fresh machine ran agents for months
+/// and learned nothing, with no command that would say so. Anything here that is
+/// not working says what to run.
+fn cmd_status(ctx: &mut AppContext) -> Result<()> {
+    let on = crate::runtime::journal();
+    let credential = crate::config::background_credential();
+    let stored = crate::providers::oauth::list_credentials();
+
+    out!(ctx, "\x1b[1mSession journaling\x1b[0m\n");
+    out!(
+        ctx,
+        "  journaling       {}",
+        if on {
+            "on"
+        } else {
+            "OFF  — `sidekar config set journal true`"
+        }
+    );
+
+    match &credential {
+        Some(name) => out!(ctx, "  credential       {name}"),
+        None if stored.is_empty() => out!(
+            ctx,
+            "  credential       NONE STORED  — `sidekar repl credential add <provider> [nickname]`"
+        ),
+        None => {
+            let names: Vec<&str> = stored.iter().map(|(n, _)| n.as_str()).collect();
+            out!(
+                ctx,
+                "  credential       NOT SET  — `sidekar config set credential <name>`\n\
+                 \x20                  stored: {}",
+                names.join(", ")
+            );
+        }
+    }
+
+    let wrapper_live = on && credential.is_some();
+    out!(
+        ctx,
+        "\n  REPL sessions    {}",
+        if on {
+            "journaled while idle"
+        } else {
+            "not journaled"
+        }
+    );
+    out!(
+        ctx,
+        "  Wrapped agents   {}",
+        if wrapper_live {
+            format!(
+                "journaled on exit ({})",
+                crate::pty::journal_handoff::IMPORTABLE.join(", ")
+            )
+        } else {
+            "NOT journaled".to_string()
+        }
+    );
+
+    out!(ctx, "\n\x1b[1mImported so far\x1b[0m");
+    let rows = import_log_summary().unwrap_or_default();
+    if rows.is_empty() {
+        out!(
+            ctx,
+            "  nothing yet. `sidekar memory import --dry-run` shows what would be read."
+        );
+    } else {
+        for (source, files, last) in rows {
+            out!(ctx, "  {source:<26} {files:>4} files   last {last}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Per-source file counts and last import time, straight from the import log.
+fn import_log_summary() -> Result<Vec<(String, i64, String)>> {
+    let conn = crate::broker::open_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT source_kind, COUNT(*), MAX(imported_at) FROM memory_import_log \
+         GROUP BY source_kind ORDER BY source_kind",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    Ok(rows
+        .flatten()
+        .map(|(source, files, at)| (source, files, ago(at)))
+        .collect())
+}
+
+/// "3h ago" for an epoch-seconds timestamp.
+fn ago(epoch_secs: i64) -> String {
+    let now = crate::message::epoch_secs() as i64;
+    let secs = (now - epoch_secs).max(0) as u64;
+    match secs {
+        s if s < 60 => format!("{s}s ago"),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
     }
 }

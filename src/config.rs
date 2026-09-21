@@ -119,6 +119,45 @@ pub static CONFIG_KEYS: &[ConfigKey] = &[
     },
 ];
 
+/// The credential background work should use when nobody is there to pass one.
+///
+/// Order: `SIDEKAR_CREDENTIAL`, then `config set credential`, then — when
+/// exactly one credential is stored — that one.
+///
+/// The last rule is what keeps a fresh install from silently doing nothing. A
+/// lone credential is not a choice, so requiring the user to state it just
+/// means the machine never learns and never says why. With several stored
+/// there is a real billing decision behind the answer, and sidekar does not
+/// guess at those.
+pub fn background_credential() -> Option<String> {
+    let stored: Vec<String> = crate::providers::oauth::list_credentials()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    choose_credential(
+        std::env::var("SIDEKAR_CREDENTIAL").ok().as_deref(),
+        &config_get("credential"),
+        &stored,
+    )
+}
+
+/// The decision behind `background_credential`, separated from where its
+/// inputs come from so the precedence can be tested without a broker database.
+fn choose_credential(env: Option<&str>, configured: &str, stored: &[String]) -> Option<String> {
+    if let Some(v) = env
+        && !v.trim().is_empty()
+    {
+        return Some(v.trim().to_string());
+    }
+    if !configured.trim().is_empty() {
+        return Some(configured.trim().to_string());
+    }
+    match stored {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
 pub fn find_key(key: &str) -> Option<&'static ConfigKey> {
     CONFIG_KEYS.iter().find(|k| k.key == key)
 }
@@ -297,3 +336,6 @@ pub fn save_config(config: &SidekarConfig) -> Result<()> {
 pub fn relay_mode() -> RelayMode {
     RelayMode::parse(&config_get("relay")).unwrap_or(RelayMode::Auto)
 }
+
+#[cfg(test)]
+mod tests;

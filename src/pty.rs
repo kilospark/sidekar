@@ -16,7 +16,7 @@ mod chrome;
 mod escape_filter;
 mod event_loop;
 mod identity;
-mod journal_handoff;
+pub(crate) mod journal_handoff;
 mod osc_state;
 mod query_responder;
 mod replay;

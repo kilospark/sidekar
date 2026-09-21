@@ -226,26 +226,39 @@ sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|r
         }
         "journal" => {
             "\
-sidekar journal <list|show> [args]
+sidekar journal <status|list|show> [args]
 
-  Inspect REPL session journals. Journals are automatic, structured,
-  per-session summaries written in the background by an active REPL
-  (see /journal in the slash commands). They are a recall aid, not a
-  replacement for durable `memory` entries.
+  Inspect session journaling. Journals are automatic, structured,
+  per-session summaries; they are a recall aid, not a replacement for
+  durable `memory` entries.
 
   Subcommands:
+    status                     Is journaling actually running on this
+                               machine, what credential it uses, and what
+                               it has imported. Start here when nothing
+                               seems to be getting remembered.
     list [N] [--project=P]     Recent journals (default N=10, max 200).
                                --project overrides the cwd scope.
     show <id>                  Full 12-section view of one journal.
 
-  Write path:
-    Journals are written from INSIDE a REPL session (no CLI write
-    command). The background polling task triggers every
-    SIDEKAR_JOURNAL_IDLE_SECS seconds of idleness (default 90).
-    Toggle with /journal on|off, --journal / --no-journal on
-    `sidekar repl`, or `sidekar config set journal true|false`.
+  Two write paths:
+    REPL sessions journal themselves. The background polling task
+    triggers every SIDEKAR_JOURNAL_IDLE_SECS seconds of idleness
+    (default 90) and writes a 12-section journal.
+
+    PTY-wrapped agents (`sidekar claude`, `codex`, `cursor-agent`,
+    `gemini`, `opencode`, `copilot`) cannot be watched that way, so on
+    exit sidekar runs `memory import` over that harness transcript
+    instead. Those land in `memory`, not in `journal list`.
+
+  Both need an LLM credential and both honour the same switch:
+    /journal on|off, --journal / --no-journal on `sidekar repl`, or
+    `sidekar config set journal true|false`. The credential comes from
+    `sidekar config set credential <name>` — or is taken automatically
+    when exactly one is stored.
 
   Examples:
+    sidekar journal status
     sidekar journal list
     sidekar journal list 30
     sidekar journal list --project=sidekar
