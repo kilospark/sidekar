@@ -38,6 +38,15 @@ use std::path::PathBuf;
 
 pub use self::commands::cmd_memory_import;
 
+/// True when `id` names a source `--source=` accepts.
+///
+/// Exposed so callers that build an import command — the PTY wrapper's journal
+/// handoff — can be tested against the real list rather than a copy of it that
+/// silently rots.
+pub(crate) fn is_known_source(id: &str) -> bool {
+    self::sources::is_valid_source(id)
+}
+
 /// What kind of memory did we extract and where did it come from?
 /// Fed straight into `write_memory_event`'s `source_kind` column
 /// so the provenance of every imported event is queryable later.
@@ -62,6 +71,21 @@ pub(super) struct SourceReport {
     pub files_skipped_unchanged: usize,
     pub candidates: Vec<Candidate>,
     pub errors: Vec<String>,
+    /// Every file this run actually read, with the hash it had, so the write
+    /// phase can log all of them.
+    ///
+    /// Logging only the files that yielded candidates would mean a transcript
+    /// with nothing worth remembering — most of them — was re-read and re-sent
+    /// to the LLM on every single run.
+    pub examined: Vec<ExaminedFile>,
+}
+
+/// A file the import read, keyed the way the import log keys it.
+#[derive(Debug, Clone)]
+pub(super) struct ExaminedFile {
+    pub source_kind: String,
+    pub path: PathBuf,
+    pub content_hash: String,
 }
 
 impl SourceReport {

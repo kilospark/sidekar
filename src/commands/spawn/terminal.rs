@@ -19,6 +19,8 @@ pub enum TerminalApp {
 }
 
 impl TerminalApp {
+    /// The name the OS knows this app by — the AppleScript target for the two
+    /// that need one, the bundle name `open -na` takes for the rest.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AppleTerminal => "Terminal",
@@ -99,22 +101,24 @@ fn osascript(script: &str) -> Result<()> {
 pub fn open_window(app: TerminalApp, command: &str) -> Result<()> {
     match app {
         TerminalApp::AppleTerminal => osascript(&format!(
-            "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+            "tell application \"{}\"\nactivate\ndo script {}\nend tell",
+            app.as_str(),
             applescript_quote(command)
         )),
         TerminalApp::ITerm => osascript(&format!(
-            "tell application \"iTerm\"\nactivate\nset w to (create window with default profile)\n\
+            "tell application \"{}\"\nactivate\nset w to (create window with default profile)\n\
              tell current session of w to write text {}\nend tell",
+            app.as_str(),
             applescript_quote(command)
         )),
         // The rest take a command straight off the argv, so no AppleScript layer.
-        TerminalApp::Ghostty => open_app_with_args("Ghostty", &["-e", "/bin/sh", "-c", command]),
+        TerminalApp::Ghostty => open_app_with_args(app.as_str(), &["-e", "/bin/sh", "-c", command]),
         TerminalApp::WezTerm => {
-            open_app_with_args("WezTerm", &["start", "--", "/bin/sh", "-c", command])
+            open_app_with_args(app.as_str(), &["start", "--", "/bin/sh", "-c", command])
         }
-        TerminalApp::Kitty => open_app_with_args("kitty", &["/bin/sh", "-c", command]),
+        TerminalApp::Kitty => open_app_with_args(app.as_str(), &["/bin/sh", "-c", command]),
         TerminalApp::Alacritty => {
-            open_app_with_args("Alacritty", &["-e", "/bin/sh", "-c", command])
+            open_app_with_args(app.as_str(), &["-e", "/bin/sh", "-c", command])
         }
     }
 }

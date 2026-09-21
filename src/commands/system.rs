@@ -11,7 +11,23 @@ pub(super) async fn dispatch_system_command(
         "event" => cmd_event(ctx, args),
         "install" => cmd_setup(ctx, args).await,
         "uninstall" => cmd_uninstall(ctx).await,
-        "config" => cmd_config(ctx, args),
+        "config" => {
+            // `main` skips the account-key fetch for `config`, which keeps the
+            // command fast and usable offline. `set credential` is the one case
+            // that has to read the user-scoped credential store — to check the
+            // name is real — so fetch the key for that alone.
+            if matches!(
+                (
+                    args.first().map(String::as_str),
+                    args.get(1).map(String::as_str)
+                ),
+                (Some("set"), Some("credential"))
+            ) && crate::auth::auth_token().is_some()
+            {
+                let _ = crate::broker::fetch_encryption_key().await;
+            }
+            cmd_config(ctx, args)
+        }
         "update" => cmd_update(ctx).await,
         "proxy" => cmd_proxy(ctx, args),
         _ => return None,
@@ -294,6 +310,25 @@ fn cmd_config(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             }
             if key == "relay" && crate::config::RelayMode::parse(raw_value).is_none() {
                 bail!("relay must be one of: auto, on, off");
+            }
+            // A typo'd credential is invisible where this setting is used: the
+            // journal handoff runs detached with stderr closed, so the only
+            // symptom is a machine that quietly never learns. Catch it here,
+            // where somebody is looking.
+            if key == "credential" && !raw_value.is_empty() {
+                let known = crate::providers::oauth::list_credentials();
+                // An empty list is ambiguous rather than conclusive: the store
+                // is user-scoped and unreadable until the account key has been
+                // fetched, which `config` deliberately skips. So reject a name
+                // only when there is a list to reject it against, and never
+                // block on not being able to look.
+                if !known.is_empty() && !known.iter().any(|(name, _)| name == raw_value) {
+                    let names: Vec<&str> = known.iter().map(|(n, _)| n.as_str()).collect();
+                    bail!(
+                        "Unknown credential '{raw_value}'. Stored: {}",
+                        names.join(", ")
+                    );
+                }
             }
             crate::config::config_set(key, raw_value)?;
             let msg = format!("Set {key} = {raw_value}");

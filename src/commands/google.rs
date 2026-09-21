@@ -2,7 +2,6 @@
 
 use crate::AppContext;
 use crate::google;
-use crate::out;
 use anyhow::{Result, bail};
 
 pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {

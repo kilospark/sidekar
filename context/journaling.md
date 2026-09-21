@@ -1,16 +1,22 @@
-# REPL Session Journaling
+# Session Journaling
 
 Automatic, structured, per-session summaries written in the
-background during idle moments of a REPL session. Journals are a
-recall aid: they let a new session pick up where an old one left
-off without replaying the full transcript, and they feed the
-memory promoter that graduates repeated constraints/decisions
-into first-class `memory_events` entries.
+background during idle moments of a REPL session, plus a
+transcript-import handoff that gives PTY-wrapped agents the durable
+half of the same thing (see *Wrapped agents: journaling by
+import*).
 
-All modules live under `src/repl/journal/`. The CLI surface lives
-at `src/commands/journal.rs`. Implementation is 10 commits on top
-of `main`; status, commit hashes, and the full breakdown are in
-the final commit message of branch `journaling`.
+Journals are a recall aid: they let a new session pick up where an
+old one left off without replaying the full transcript, and they
+feed the memory promoter that graduates repeated
+constraints/decisions into first-class `memory_events` entries.
+
+The REPL side lives under `src/repl/journal/`, with the CLI surface
+at `src/commands/journal.rs`. The wrapper side is
+`src/pty/journal_handoff.rs` plus the import-log short-circuit in
+`src/memory/import/`. Implementation of the REPL side is 10 commits
+on top of `main`; status, commit hashes, and the full breakdown are
+in the final commit message of branch `journaling`.
 
 ---
 
@@ -516,6 +522,137 @@ task.
 
 ---
 
+## Wrapped agents: journaling by import
+
+Everything above describes `sidekar repl`, where sidekar owns the
+conversation and can watch it go idle. That is the minority case.
+Most sidekar sessions are `sidekar claude`, `sidekar codex`,
+`sidekar cursor-agent` — an agent inside a PTY the wrapper owns,
+whose turns sidekar never sees as turns. The idle tracker has
+nothing to hook and the 90-second loop has nothing to summarise, so
+until now the whole learning path ran only where it mattered least,
+and the wrapper — the thing people actually use — learned nothing.
+
+The transcripts were never the obstacle. `sidekar memory import`
+already reads Claude Code, Codex, Cursor, Gemini, opencode and
+Copilot off disk and extracts the same kind of candidate the
+journal promoter produces. Nothing had ever called it: the
+`memory_import_log` table sat at zero rows on a machine that had
+been running wrapped agents for months. The command existed, was
+tested, and was never reached.
+
+So the wrapper does not journal. It hands off:
+`src/pty/journal_handoff.rs` spawns `sidekar memory import
+--source=<harness> --yes` when the agent exits, detached with
+`setsid` so the agent's dying process group does not take it, and
+silent on all three fds because the human already has their prompt
+back.
+
+### It needs a credential, and had no way to name one
+
+Extraction is an LLM call, and `memory import` takes its credential
+from `--credential`, `SIDEKAR_CREDENTIAL`, or `config_get
+("credential")`. The last two were dead ends: nothing else in the
+tool sets that env var, and `credential` was not a registered
+config key, so `sidekar config set credential ks` was rejected as
+unknown. The only working route was passing `--credential` by hand
+— which the handoff, running detached with stderr closed, cannot
+do and cannot report failing to do.
+
+`sidekar repl` does not paper over this either: it wants `-c` at
+startup and its journal task borrows the session's provider. There
+is no "default credential" anywhere in sidekar. So on a machine
+with nine stored credentials and no `SIDEKAR_CREDENTIAL` — the
+machine this was built on — every handoff would have exited on "no
+credential configured" and left no trace.
+
+Chasing that turned up why the store looked empty from the REPL
+side at all. `main` fetches the account encryption key before
+dispatch, but `repl` returns before it does — so every `sidekar
+repl` subcommand read user-scoped KV under an empty `user_id`.
+`sidekar repl credentials` reported none on a logged-in machine
+holding nine, and `repl -c <name>` could not find the credential it
+was handed. The fetch now happens before the repl dispatch, as it
+already did for every other command. Unrelated to journaling, found
+because journaling needed the same store.
+
+So `credential` and `model` are now config keys, which is what
+`resolve_provider` was already reaching for. `config set
+credential` validates the name against the credential store,
+because a typo here is invisible everywhere it is used. And
+`spawn_after_exit` checks for a credential before spawning:
+unconfigured means no-op, not a doomed process per exit.
+
+    sidekar repl credentials          # the names
+    sidekar config set credential ks  # enable the handoff
+
+Three things make this safe to fire on *every* exit rather than
+occasionally:
+
+- **The same switch.** `enabled()` is `runtime::journal()`, not a
+  second config key. Someone who ran `sidekar config set journal
+  off` meant it for the whole tool, and finding the wrapper still
+  summarising their sessions would be a nasty surprise.
+- **`--yes`.** stdin is `/dev/null`, so without it the import
+  reaches `confirm_interactive` and abandons the run — silently,
+  since stderr is null too.
+- **The short-circuit.** See below. Without it this is the
+  expensive mistake.
+- **A configured credential.** No credential, no spawn.
+
+### The import log had to start being read
+
+`memory/import/mod.rs` had documented since v1 that "the import log
+stores per-file SHA-256 hashes so a second invocation
+short-circuits unchanged files", and `SourceReport` carried a
+`files_skipped_unchanged` field that the report table printed. The
+field was never incremented and nothing ever `SELECT`ed from
+`memory_import_log`. The short-circuit was designed, documented,
+displayed — and absent.
+
+That was survivable while `memory import` was a command nobody ran.
+It is not survivable as an exit hook: every wrapped agent exit
+would re-send the same five transcripts to the LLM, and
+`write_memory_event` would dedupe every resulting candidate away.
+All of the cost, none of the result, once per exit forever.
+
+`should_read()` in `import/commands.rs` now gates both extraction
+funnels (`run_text_llm`, `run_transcript_llm`) on the logged hash,
+and the write phase records every file the run *examined* rather
+than only the files that yielded candidates — a transcript with
+nothing worth remembering is the common case, and logging only the
+productive ones would leave the barren majority re-read forever.
+
+### Which agents hand off
+
+`IMPORTABLE` is the intersection of what the wrapper runs and what
+the importer parses: claude, codex, cursor, gemini, opencode,
+copilot. `grok` and `pi` are wrappable but write nothing the
+importer understands, so they hand off nothing rather than paying
+for an LLM call that finds no input. The cursor family registers
+under three names (`cursor`, `agent`, `cursor-agent`) and writes
+one store, so all three normalise to `cursor`.
+
+`source_for()` filters its answer through
+`memory::import::is_known_source()` rather than trusting the local
+list. If a source is ever renamed in the importer, the handoff
+stops spawning a command that would exit on "Unknown source" into a
+`/dev/null` stderr — which is the shape of failure this whole path
+is most exposed to, and the reason for the drift test in
+`src/pty/journal_handoff/tests.rs`.
+
+### What the two paths do not share
+
+The REPL path summarises *during* a session and injects into the
+next one. The wrapper path extracts *after* a session into
+`memory_events`. A wrapped agent therefore gets no 12-section
+journal and no resume injection — it is not sidekar's conversation
+to inject into. What it gets is the durable half: constraints and
+decisions reaching memory, which `sidekar memory` surfaces to
+whatever runs next, REPL or wrapper.
+
+---
+
 ## What journaling is NOT
 
 To keep the subsystem boundary sharp:
@@ -566,6 +703,11 @@ src/repl.rs                         spawn wiring, idle tracker install
 src/memory.rs                       pub wrapper for write_memory_event
 src/memory/candidates.rs            journal → memory_candidates → memory_events
 src/runtime.rs                      journal() flag
+
+src/pty/journal_handoff.rs          wrapped-agent handoff to memory import
+src/pty.rs                          spawn_after_exit on the exit path
+src/memory/import/commands.rs       should_read short-circuit, examined-file log
+src/memory/import/mod.rs            ExaminedFile, is_known_source
 ```
 
 ---

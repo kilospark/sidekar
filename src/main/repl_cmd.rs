@@ -8,6 +8,17 @@ pub async fn handle(
     relay_override: Option<bool>,
     proxy_override: Option<bool>,
 ) -> Result<()> {
+    // Every subcommand below reads the credential store, which lives in
+    // user-scoped KV and is only visible once the account key has been fetched.
+    // `main` does that for other commands — but only *after* dispatching `repl`,
+    // so without this `repl credentials` reports none on a logged-in machine and
+    // `repl -c <name>` cannot find the credential it is given.
+    if sidekar::auth::auth_token().is_some()
+        && let Err(e) = sidekar::broker::fetch_encryption_key().await
+    {
+        eprintln!("Warning: could not fetch encryption key: {e}");
+    }
+
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
         "login" => {

@@ -95,6 +95,28 @@ pub static CONFIG_KEYS: &[ConfigKey] = &[
         default: "true",
         description: "Background session journaling (true/false)",
     },
+    ConfigKey {
+        // Which stored credential the background paths use when nobody is
+        // there to pass `-c`. `sidekar repl` asks at startup; `memory import`
+        // cannot, and the PTY wrapper's journal handoff runs it detached with
+        // stderr closed — so without this the handoff fails on "no credential
+        // configured" and the machine silently never learns anything.
+        //
+        // A name from `sidekar repl credentials`.
+        key: "credential",
+        kind: ConfigKind::String,
+        default: "",
+        description: "Stored credential for background LLM work (see `sidekar repl credentials`)",
+    },
+    ConfigKey {
+        // Paired with `credential`: the model those background paths ask for.
+        // Empty means each provider's cheap default, which is what background
+        // extraction wants.
+        key: "model",
+        kind: ConfigKind::String,
+        default: "",
+        description: "Model for background LLM work (blank: the provider's cheap default)",
+    },
 ];
 
 pub fn find_key(key: &str) -> Option<&'static ConfigKey> {

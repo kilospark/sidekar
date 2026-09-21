@@ -7,7 +7,9 @@ use super::extract_structured;
 use super::parse_sqlite;
 use super::parse_transcripts::{self, SessionTranscript};
 use super::sources::{self, DetectedFile};
-use super::{ImportOptions, ScopeFilter, SourceReport, WriteStats, format_report_table};
+use super::{
+    ExaminedFile, ImportOptions, ScopeFilter, SourceReport, WriteStats, format_report_table,
+};
 use crate::providers::Provider;
 use crate::*;
 use rusqlite::params;
@@ -85,6 +87,12 @@ pub async fn cmd_memory_import(ctx: &mut AppContext, args: &[String]) -> Result<
 
     let total_candidates: usize = reports.iter().map(|r| r.candidates.len()).sum();
     if total_candidates == 0 {
+        // Log the files anyway. A session with nothing worth remembering is the
+        // common case, not the exception, and returning without logging would
+        // mean re-reading — and re-paying for — exactly those files on every
+        // later run. This early return is the path a scheduled import takes
+        // most often, so it is the one that most needs the log.
+        record_examined(&reports, &new_batch_id(), &WriteStats::default());
         out!(ctx, "Nothing to import.");
         return Ok(());
     }
@@ -120,12 +128,8 @@ pub async fn cmd_memory_import(ctx: &mut AppContext, args: &[String]) -> Result<
                     .push(format!("{}: {:#}", c.source_file.display(), e)),
             }
         }
-        for c in &r.candidates {
-            if let Ok(hash) = file_hash(&c.source_file) {
-                let _ = record_import(&c.source_kind, &c.source_file, &hash, &batch_id, &stats);
-            }
-        }
     }
+    record_examined(&reports, &batch_id, &stats);
 
     out!(
         ctx,
@@ -624,6 +628,9 @@ async fn run_text_llm(
             return;
         }
     };
+    if !should_read(report, source_kind, path) {
+        return;
+    }
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -707,6 +714,9 @@ async fn run_transcript_from(
             return;
         }
     };
+    if !should_read(report, source_kind, source_path) {
+        return;
+    }
     if transcript.turns.is_empty() {
         return;
     }
@@ -810,6 +820,75 @@ fn file_hash(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// The content hash this file had when it was last imported, if it ever was.
+fn last_import_hash(source_kind: &str, path: &Path) -> Option<String> {
+    let conn = crate::broker::open_db().ok()?;
+    conn.query_row(
+        "SELECT content_hash FROM memory_import_log WHERE source_kind = ?1 AND file_path = ?2",
+        params![source_kind, path.to_string_lossy()],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// Decide whether to read this file, and remember its hash if we do.
+///
+/// This is the short-circuit the import log exists for. Without it every run
+/// re-sends the same transcripts to the LLM, which costs real money and returns
+/// candidates that `write_memory_event` then dedupes away — all of the expense
+/// for none of the result. It matters most for the callers that run often: the
+/// PTY wrapper hands off on every agent exit, and most exits have nothing new
+/// under them.
+///
+/// Returns false when the file is byte-identical to what was imported before.
+/// A file we cannot hash is treated as new, since failing open only costs one
+/// extra read.
+///
+/// The key is the file, not the session. Opencode keeps every session in one
+/// SQLite store, so a new session there changes the store's hash and the run
+/// re-reads all of them — bounded by `--max-sessions` and deduped on write, but
+/// worth knowing before keying anything else off this.
+fn should_read(report: &mut SourceReport, source_kind: &str, path: &Path) -> bool {
+    should_read_with(report, source_kind, path, last_import_hash)
+}
+
+/// `should_read` with the previous-hash lookup injected, so the decision can be
+/// tested without a broker database.
+fn should_read_with(
+    report: &mut SourceReport,
+    source_kind: &str,
+    path: &Path,
+    previous: impl FnOnce(&str, &Path) -> Option<String>,
+) -> bool {
+    let Ok(hash) = file_hash(path) else {
+        return true;
+    };
+    if previous(source_kind, path).as_deref() == Some(hash.as_str()) {
+        report.files_skipped_unchanged += 1;
+        return false;
+    }
+    report.examined.push(ExaminedFile {
+        source_kind: source_kind.to_string(),
+        path: path.to_path_buf(),
+        content_hash: hash,
+    });
+    true
+}
+
+/// Write every file a run read into the import log.
+///
+/// Deliberately not "every file that produced a candidate": the log's job is to
+/// answer "have I already read this?", and a file that yielded nothing is still
+/// a file that was read. Keyed the same way `record_import` upserts, so a later
+/// run of the same file updates its row rather than adding one.
+fn record_examined(reports: &[SourceReport], batch_id: &str, stats: &WriteStats) {
+    for r in reports {
+        for e in &r.examined {
+            let _ = record_import(&e.source_kind, &e.path, &e.content_hash, batch_id, stats);
+        }
+    }
+}
+
 fn record_import(
     source_kind: &str,
     path: &Path,
@@ -864,100 +943,4 @@ fn resolve_project_for_path(path: &Path, opts: &ImportOptions, scope: &str) -> S
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_duration_supports_common_suffixes() {
-        assert_eq!(parse_duration("30s").unwrap(), 30);
-        assert_eq!(parse_duration("5m").unwrap(), 300);
-        assert_eq!(parse_duration("2h").unwrap(), 7200);
-        assert_eq!(parse_duration("14d").unwrap(), 14 * 86400);
-        assert_eq!(parse_duration("2w").unwrap(), 2 * 604800);
-        assert_eq!(parse_duration("90").unwrap(), 90);
-        assert!(parse_duration("").is_err());
-        assert!(parse_duration("abc").is_err());
-    }
-
-    #[test]
-    fn parse_args_defaults_are_sane() {
-        let opts = parse_args(&[]).unwrap();
-        assert_eq!(opts.scope_filter, ScopeFilter::All);
-        assert_eq!(opts.max_sessions, 5);
-        assert!(!opts.dry_run);
-        assert!(!opts.no_llm);
-        assert!(!opts.assume_yes);
-    }
-
-    #[test]
-    fn parse_args_source_validation() {
-        let err = parse_args(&["--source=bogus".to_string()]).unwrap_err();
-        assert!(err.contains("Unknown source"));
-    }
-
-    #[test]
-    fn parse_args_scope_validation() {
-        assert!(parse_args(&["--scope=weird".to_string()]).is_err());
-        assert_eq!(
-            parse_args(&["--scope=project".to_string()])
-                .unwrap()
-                .scope_filter,
-            ScopeFilter::Project
-        );
-    }
-
-    #[test]
-    fn parse_args_handles_multiple_sources() {
-        let opts = parse_args(&["--source=manifests,claude".to_string()]).unwrap();
-        assert_eq!(opts.sources, vec!["manifests", "claude"]);
-    }
-
-    #[test]
-    fn default_model_picks_cheap_for_known_providers() {
-        assert!(default_model_for_provider("anthropic").contains("haiku"));
-        assert!(default_model_for_provider("codex").contains("mini"));
-        assert!(default_model_for_provider("gemini").contains("flash"));
-    }
-
-    #[test]
-    fn resolve_project_for_path_global_shortcircuits() {
-        let opts = ImportOptions {
-            sources: vec![],
-            project_override: Some("override".into()),
-            scope_filter: ScopeFilter::All,
-            since_secs: None,
-            max_sessions: 5,
-            no_llm: true,
-            credential: None,
-            model: None,
-            dry_run: true,
-            assume_yes: false,
-            verbose: false,
-        };
-        assert_eq!(
-            resolve_project_for_path(Path::new("/tmp/x"), &opts, crate::scope::GLOBAL_SCOPE),
-            "global"
-        );
-    }
-
-    #[test]
-    fn resolve_project_for_path_honors_override() {
-        let opts = ImportOptions {
-            sources: vec![],
-            project_override: Some("override".into()),
-            scope_filter: ScopeFilter::All,
-            since_secs: None,
-            max_sessions: 5,
-            no_llm: true,
-            credential: None,
-            model: None,
-            dry_run: true,
-            assume_yes: false,
-            verbose: false,
-        };
-        assert_eq!(
-            resolve_project_for_path(Path::new("/tmp/x"), &opts, crate::scope::PROJECT_SCOPE),
-            "override"
-        );
-    }
-}
+mod tests;

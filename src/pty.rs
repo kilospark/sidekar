@@ -5,7 +5,6 @@
 //! signal forwarding, resize handling, and broker registration.
 
 use crate::broker;
-
 use crate::message::AgentId;
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
@@ -17,6 +16,7 @@ mod chrome;
 mod escape_filter;
 mod event_loop;
 mod identity;
+mod journal_handoff;
 mod osc_state;
 mod query_responder;
 mod replay;
@@ -639,6 +639,11 @@ pub async fn run_agent(
 
     let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
     let _ = broker::unregister_agent(&identity.name);
+
+    // Hand this session's transcript to `memory import`, the way the REPL runs a
+    // final journal pass on its way out. Detached, because the agent has gone and
+    // the human has their prompt back: an extraction must not hold either.
+    journal_handoff::spawn_after_exit(agent, &cwd);
 
     if crate::runtime::verbose() {
         crate::broker::try_log_event(
