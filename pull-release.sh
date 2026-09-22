@@ -83,7 +83,36 @@ ls -lh "$DEST/"
 echo ""
 echo "=== Deploying to Vercel ==="
 cd "$DIR/www"
+
+# Node ships its own CA bundle and ignores the macOS keychain, so it rejects
+# roots the rest of the system already trusts. On 2026-09-22 that was ISRG
+# "Root YR" (issued May 2026, cross-signed by ISRG Root X1): curl and gh were
+# fine, `npx vercel` failed with "unable to get local issuer certificate", and
+# the release stopped with the tag already pushed and the binaries published.
+#
+# Rather than pin that one root, rebuild a bundle from whatever vercel.com is
+# actually serving plus the system store. Self-healing: the next root rotation
+# needs no edit here. Nothing is trusted that the system does not already
+# trust, because the chain is verified against the system store first.
+CA_BUNDLE=""
+if ! node -e 'require("https").get("https://vercel.com/.well-known/openid-configuration",r=>process.exit(0)).on("error",()=>process.exit(1))' 2>/dev/null; then
+  echo "  Node rejects vercel.com's chain; rebuilding a CA bundle it accepts."
+  CHAIN="$(mktemp)"; CA_BUNDLE="$(mktemp)"
+  openssl s_client -connect vercel.com:443 -servername vercel.com -showcerts </dev/null 2>/dev/null     | sed -n '/BEGIN CERT/,/END CERT/p' > "$CHAIN"
+  if openssl verify -CAfile /etc/ssl/cert.pem "$CHAIN" >/dev/null 2>&1; then
+    cat "$CHAIN" /etc/ssl/cert.pem > "$CA_BUNDLE"
+    export NODE_EXTRA_CA_CERTS="$CA_BUNDLE"
+    echo "  Chain verifies against the system store; trusting it for this deploy."
+  else
+    echo "  Chain does NOT verify against the system store — not trusting it." >&2
+    echo "  Deploy by hand after checking what is terminating TLS." >&2
+    exit 1
+  fi
+  rm -f "$CHAIN"
+fi
+
 npx vercel --prod
+[ -n "$CA_BUNDLE" ] && rm -f "$CA_BUNDLE"
 
 echo ""
 echo "=== Done ==="
