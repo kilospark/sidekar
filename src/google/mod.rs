@@ -86,6 +86,35 @@ pub(crate) async fn api_post(token: &auth::TokenRef, url: &str, body: &Value) ->
     read_json(res, url).await
 }
 
+/// PUT JSON to a Google API endpoint with the caller's token.
+///
+/// Gmail updates a draft by replacing it, not by patching it.
+pub(crate) async fn api_put(token: &auth::TokenRef, url: &str, body: &Value) -> Result<Value> {
+    let token = auth::access_token_for(token).await?;
+    let res = reqwest::Client::new()
+        .put(url)
+        .bearer_auth(token)
+        .json(body)
+        .send()
+        .await?;
+    read_json(res, url).await
+}
+
+/// DELETE a Google API endpoint with the caller's token.
+///
+/// A successful delete answers `204 No Content`, so there is no JSON to read;
+/// `read_json` already treats an empty body as `Value::Null`.
+pub(crate) async fn api_delete(token: &auth::TokenRef, url: &str) -> Result<()> {
+    let token = auth::access_token_for(token).await?;
+    let res = reqwest::Client::new()
+        .delete(url)
+        .bearer_auth(token)
+        .send()
+        .await?;
+    read_json(res, url).await?;
+    Ok(())
+}
+
 /// Surface Google's own error text rather than a bare status code.
 ///
 /// Its messages name the missing scope or the disabled API, which is the

@@ -74,12 +74,13 @@ pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
     Ok(out)
 }
 
-pub async fn send(
-    token: &super::auth::TokenRef,
-    to: &str,
-    subject: &str,
-    body: &str,
-) -> Result<String> {
+/// Assemble one RFC 5322 message, base64url-encoded the way Gmail wants it.
+///
+/// Shared by `send` and the draft calls rather than duplicated: a draft is mail
+/// that gets sent later, so it needs the same header-injection refusal below.
+/// Splitting them would mean the check protects the direct path and quietly
+/// misses the one where a human sees a reviewed-looking draft and hits send.
+fn encode_message(to: &str, subject: &str, body: &str) -> Result<String> {
     // Headers end at the first blank line, so a CR or LF in a header value lets
     // the rest of that value become new headers. Sidekar reads mail, so a subject
     // assembled from a received message is untrusted input, and an injected
@@ -94,7 +95,16 @@ pub async fn send(
         encode_subject(subject)
     );
     // Gmail wants URL-safe base64 here, not the standard alphabet.
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes());
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes()))
+}
+
+pub async fn send(
+    token: &super::auth::TokenRef,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> Result<String> {
+    let encoded = encode_message(to, subject, body)?;
     let res = super::api_post(
         token,
         &format!("{BASE}/messages/send"),
@@ -105,6 +115,129 @@ pub async fn send(
         .and_then(|i| i.as_str())
         .map(String::from)
         .ok_or_else(|| anyhow::anyhow!("Gmail accepted the send but returned no message id"))
+}
+
+// ---------------------------------------------------------------------------
+// Drafts
+// ---------------------------------------------------------------------------
+//
+// A draft is the reviewable half of `send`: an agent composes, a human reads it
+// in their own Gmail, and sending stays a human act. That makes it the right
+// default for mail an agent did not have explicit instruction to send, and the
+// reason these exist alongside `send` rather than instead of it.
+//
+// All of this is covered by the `gmail.modify` scope sidekar already requests,
+// so no stored token needs re-consenting.
+
+pub struct DraftSummary {
+    pub id: String,
+    pub to: String,
+    pub subject: String,
+}
+
+/// Compose a draft. Returns its draft id, which is not the message id.
+pub async fn draft_create(
+    token: &super::auth::TokenRef,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> Result<String> {
+    let encoded = encode_message(to, subject, body)?;
+    let res = super::api_post(
+        token,
+        &format!("{BASE}/drafts"),
+        &json!({"message": {"raw": encoded}}),
+    )
+    .await?;
+    draft_id(&res)
+}
+
+/// Replace a draft's contents. Gmail has no partial update here, so every
+/// field is rewritten and omitting one would silently blank it — which is why
+/// the CLI requires all three rather than merging.
+pub async fn draft_update(
+    token: &super::auth::TokenRef,
+    id: &str,
+    to: &str,
+    subject: &str,
+    body: &str,
+) -> Result<String> {
+    let encoded = encode_message(to, subject, body)?;
+    let res = super::api_put(
+        token,
+        &format!("{BASE}/drafts/{id}"),
+        &json!({"message": {"raw": encoded}}),
+    )
+    .await?;
+    draft_id(&res)
+}
+
+/// Drafts with their To and Subject.
+///
+/// `drafts.list` returns bare ids, so each one costs a metadata fetch to say
+/// anything a human can pick from. Bounded by `limit` for that reason.
+pub async fn draft_list(token: &super::auth::TokenRef, limit: usize) -> Result<Vec<DraftSummary>> {
+    let url = format!("{BASE}/drafts?maxResults={}", limit.clamp(1, 100));
+    let list = super::api_get(token, &url).await?;
+    let ids: Vec<String> = list
+        .get("drafts")
+        .and_then(|d| d.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|d| d.get("id").and_then(|i| i.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for id in ids {
+        let url = format!(
+            "{BASE}/drafts/{id}?format=metadata\
+             &metadataHeaders=To&metadataHeaders=Subject"
+        );
+        let d = super::api_get(token, &url).await?;
+        let m = d.get("message").unwrap_or(&Value::Null);
+        out.push(DraftSummary {
+            id,
+            to: header(m, "To"),
+            subject: header(m, "Subject"),
+        });
+    }
+    Ok(out)
+}
+
+/// One draft as readable text.
+pub async fn draft_show(token: &super::auth::TokenRef, id: &str) -> Result<String> {
+    let d = super::api_get(token, &format!("{BASE}/drafts/{id}?format=full")).await?;
+    let m = d.get("message").unwrap_or(&Value::Null);
+    let mut out = format!(
+        "Draft: {id}\nTo: {}\nSubject: {}\n\n",
+        header(m, "To"),
+        header(m, "Subject")
+    );
+    out.push_str(&body_text(m.get("payload").unwrap_or(&Value::Null)));
+    Ok(out)
+}
+
+/// Send an existing draft. Returns the sent message id.
+pub async fn draft_send(token: &super::auth::TokenRef, id: &str) -> Result<String> {
+    let res = super::api_post(token, &format!("{BASE}/drafts/send"), &json!({"id": id})).await?;
+    res.get("id")
+        .and_then(|i| i.as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("Gmail sent the draft but returned no message id"))
+}
+
+/// Discard a draft. Unlike `drive rm` this has no trash to recover from.
+pub async fn draft_delete(token: &super::auth::TokenRef, id: &str) -> Result<()> {
+    super::api_delete(token, &format!("{BASE}/drafts/{id}")).await
+}
+
+fn draft_id(res: &Value) -> Result<String> {
+    res.get("id")
+        .and_then(|i| i.as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("Gmail accepted the draft but returned no draft id"))
 }
 
 pub async fn labels(token: &super::auth::TokenRef) -> Result<Vec<String>> {

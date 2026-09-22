@@ -280,6 +280,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Sent to {to} (id {id}).");
             Ok(())
         }
+        "draft" => cmd_gmail_draft(ctx, &token, rest).await,
         "labels" => {
             for l in google::gmail::labels(&token).await? {
                 out!(ctx, "{l}");
@@ -297,12 +298,106 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "Usage: sidekar gmail <search|read|send|labels|modify> …\n  \
+            "Usage: sidekar gmail <search|read|send|draft|labels|modify> …\n  \
              search <query> [--limit N]      Gmail query syntax: from:, is:unread, newer_than:2d\n  \
              read <id>\n  \
              send --to <addr> --subject <s> --body <text>\n  \
+             draft <create|list|show|update|send|rm> …   compose without sending\n  \
              labels\n  \
              modify <id> [--add LABEL] [--remove LABEL]   (UNREAD is a label)"
+        ),
+    }
+}
+
+/// `sidekar gmail draft …` — compose mail a human sends.
+///
+/// Split out from `cmd_gmail` because it is a verb with its own verbs; folding
+/// six more arms into that match would bury the four that send mail directly.
+async fn cmd_gmail_draft(
+    ctx: &mut AppContext,
+    token: &google::auth::TokenRef,
+    args: &[String],
+) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let rest = args.get(1..).unwrap_or(&[]);
+    let id_arg = |usage: &str| -> Result<String> {
+        positional(rest)
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{usage}"))
+    };
+
+    match sub {
+        "create" => {
+            let to = flag(rest, "--to")
+                .ok_or_else(|| anyhow::anyhow!("gmail draft create needs --to"))?;
+            let subject = flag(rest, "--subject").unwrap_or_default();
+            let body = flag(rest, "--body").unwrap_or_default();
+            if body.is_empty() {
+                bail!("gmail draft create needs --body (use --body \"$(cat file)\" for long text)");
+            }
+            let id = google::gmail::draft_create(token, &to, &subject, &body).await?;
+            out!(ctx, "Drafted to {to} (draft {id}). Nothing has been sent.");
+            Ok(())
+        }
+        "list" | "" => {
+            let limit = flag_usize(rest, "--limit").unwrap_or(10);
+            let drafts = google::gmail::draft_list(token, limit).await?;
+            if drafts.is_empty() {
+                out!(ctx, "No drafts.");
+            }
+            for d in drafts {
+                out!(ctx, "{}\t{}\t{}", d.id, d.to, d.subject);
+            }
+            Ok(())
+        }
+        "show" | "read" => {
+            let id = id_arg("Usage: sidekar gmail draft show <draft-id>")?;
+            out!(ctx, "{}", google::gmail::draft_show(token, &id).await?);
+            Ok(())
+        }
+        "update" => {
+            let id = id_arg(
+                "Usage: sidekar gmail draft update <draft-id> --to <addr> --subject <s> --body <text>",
+            )?;
+            // Gmail replaces the whole draft, so a partial update would blank
+            // whatever was left out. Demanding all three is the honest spelling
+            // of what the API does.
+            let (to, subject, body) = match (
+                flag(rest, "--to"),
+                flag(rest, "--subject"),
+                flag(rest, "--body"),
+            ) {
+                (Some(t), Some(s), Some(b)) => (t, s, b),
+                _ => bail!(
+                    "gmail draft update rewrites the whole draft, so it needs --to, --subject \
+                     and --body together. `sidekar gmail draft show {id}` prints the current text."
+                ),
+            };
+            let new_id = google::gmail::draft_update(token, &id, &to, &subject, &body).await?;
+            out!(ctx, "Updated draft {new_id}. Nothing has been sent.");
+            Ok(())
+        }
+        "send" => {
+            let id = id_arg("Usage: sidekar gmail draft send <draft-id>")?;
+            let msg = google::gmail::draft_send(token, &id).await?;
+            out!(ctx, "Sent draft {id} (message {msg}).");
+            Ok(())
+        }
+        "rm" | "delete" => {
+            let id = id_arg("Usage: sidekar gmail draft rm <draft-id>")?;
+            google::gmail::draft_delete(token, &id).await?;
+            out!(ctx, "Deleted draft {id}.");
+            Ok(())
+        }
+        other => bail!(
+            "Unknown draft subcommand '{other}'.\n  \
+             create --to <addr> --subject <s> --body <text>\n  \
+             list [--limit N]\n  \
+             show <draft-id>\n  \
+             update <draft-id> --to <addr> --subject <s> --body <text>\n  \
+             send <draft-id>\n  \
+             rm <draft-id>"
         ),
     }
 }

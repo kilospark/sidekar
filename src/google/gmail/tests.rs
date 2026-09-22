@@ -85,3 +85,48 @@ fn a_non_ascii_subject_is_encoded_rather_than_sent_raw() {
         .unwrap();
     assert_eq!(String::from_utf8(decoded).unwrap(), "Budget café");
 }
+
+// ---- the shared message builder -------------------------------------------
+
+#[test]
+fn a_draft_is_refused_on_the_same_injection_a_send_is() {
+    // The reason `send` and the draft calls share encode_message. A draft is
+    // mail that gets sent later, usually by a human who is reading the visible
+    // To: line and trusting it — so an injected Bcc: here is worse than in a
+    // direct send, not better.
+    assert!(encode_message("a@b.com\r\nBcc: attacker@evil.com", "hi", "body").is_err());
+    assert!(encode_message("a@b.com", "hi\r\nBcc: attacker@evil.com", "body").is_err());
+    assert!(encode_message("a@b.com", "hi", "body").is_ok());
+}
+
+#[test]
+fn an_encoded_message_is_base64url_and_round_trips() {
+    // Gmail rejects the standard alphabet here, and the failure reads as a
+    // generic 400, so this is worth pinning.
+    let encoded = encode_message("a@b.com", "Q3", "hello").unwrap();
+    assert!(
+        !encoded.contains('+') && !encoded.contains('/') && !encoded.contains('='),
+        "expected base64url without padding, got {encoded}"
+    );
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&encoded)
+        .unwrap();
+    let raw = String::from_utf8(decoded).unwrap();
+    assert!(raw.starts_with("To: a@b.com\r\nSubject: Q3\r\n"));
+    assert!(raw.ends_with("\r\n\r\nhello"));
+}
+
+#[test]
+fn a_draft_body_is_separated_from_its_headers_by_one_blank_line() {
+    // If this collapses, the body is parsed as more headers and the mail
+    // arrives empty.
+    let raw = String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encode_message("a@b.com", "s", "line one\nline two").unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let (headers, body) = raw.split_once("\r\n\r\n").expect("no header/body boundary");
+    assert!(headers.contains("Content-Type: text/plain; charset=UTF-8"));
+    assert_eq!(body, "line one\nline two");
+}

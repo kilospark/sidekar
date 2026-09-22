@@ -12,7 +12,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "gmail",
-        "<search|read|send|labels|modify> [args...]",
+        "<search|read|send|draft|labels|modify> [args...]",
         "Gmail over the API",
         CommandGroup::Agent,
         false,
