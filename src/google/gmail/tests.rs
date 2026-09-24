@@ -221,3 +221,124 @@ fn raw_of(m: &Compose) -> String {
     )
     .unwrap()
 }
+
+// ---- attachments ----------------------------------------------------------
+
+#[test]
+fn attachments_are_found_in_nested_multiparts() {
+    // Real mail nests: multipart/mixed wrapping multipart/alternative wrapping
+    // the text, with the files as siblings further down.
+    let payload = serde_json::json!({
+        "mimeType": "multipart/mixed",
+        "parts": [
+            {"mimeType": "multipart/alternative", "parts": [
+                {"mimeType": "text/plain", "filename": "", "body": {"data": ""}},
+                {"mimeType": "text/html", "filename": "", "body": {"data": ""}}
+            ]},
+            {"mimeType": "application/pdf", "filename": "invoice.pdf",
+             "body": {"attachmentId": "att1", "size": 1234}},
+            {"mimeType": "image/png", "filename": "logo.png",
+             "body": {"attachmentId": "att2", "size": 99}}
+        ]
+    });
+    let found = attachments(&payload);
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].filename, "invoice.pdf");
+    assert_eq!(found[0].size, 1234);
+    assert_eq!(found[1].mime, "image/png");
+}
+
+#[test]
+fn body_parts_are_not_mistaken_for_attachments() {
+    // A text part has an empty filename and no attachmentId. Treating those as
+    // attachments would offer the reader a file that is just the email body.
+    let payload = serde_json::json!({
+        "mimeType": "text/plain", "filename": "", "body": {"data": "aGk"}
+    });
+    assert!(attachments(&payload).is_empty());
+}
+
+#[test]
+fn a_filename_cannot_escape_the_directory_it_is_written_to() {
+    // Attachment names come off received mail, so they are attacker-chosen.
+    assert_eq!(safe_filename("../../etc/passwd"), "passwd");
+    assert_eq!(safe_filename("/etc/passwd"), "passwd");
+    assert_eq!(safe_filename("report.pdf"), "report.pdf");
+}
+
+#[test]
+fn an_outgoing_filename_cannot_break_its_own_header() {
+    // The name goes into Content-Disposition inside quotes; a quote or a CRLF
+    // would end the header early, the same way an injected Cc does.
+    let dir = std::env::temp_dir().join(format!("sidekar-attach-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("has\"quote.txt");
+    if std::fs::write(&bad, b"x").is_ok() {
+        assert!(attachment_from_path(&bad).is_err());
+        let _ = std::fs::remove_file(&bad);
+    }
+    let good = dir.join("fine.txt");
+    std::fs::write(&good, b"x").unwrap();
+    assert!(attachment_from_path(&good).is_ok());
+    let _ = std::fs::remove_file(&good);
+}
+
+#[test]
+fn a_message_with_attachments_is_multipart_and_keeps_its_bytes() {
+    let mut m = compose("a@b.com", "s", "see attached");
+    m.attachments = vec![OutgoingAttachment {
+        filename: "data.bin".into(),
+        mime: "application/octet-stream".into(),
+        bytes: vec![0x00, 0xff, 0xfe, 0x80, b'A'],
+    }];
+    let raw = raw_of(&m);
+    assert!(raw.contains("Content-Type: multipart/mixed; boundary="));
+    assert!(raw.contains("Content-Disposition: attachment; filename=\"data.bin\""));
+    assert!(raw.contains("Content-Transfer-Encoding: base64"));
+    assert!(raw.contains("see attached"));
+    // The bytes survive as standard-alphabet base64, not the URL-safe one used
+    // for the envelope — a client decoding the MIME part would get garbage.
+    let expected = base64::engine::general_purpose::STANDARD.encode([0x00, 0xff, 0xfe, 0x80, b'A']);
+    assert!(raw.contains(&expected), "expected {expected} in the part");
+}
+
+#[test]
+fn base64_parts_are_wrapped_for_transport() {
+    // Unwrapped base64 produces one enormous header-less line; some relays fold
+    // or truncate it, and the attachment arrives corrupt.
+    let wrapped = base64_mime(&vec![b'x'; 1000]);
+    assert!(wrapped.contains("\r\n"));
+    assert!(
+        wrapped.split("\r\n").all(|l| l.len() <= 76),
+        "a line exceeded 76 columns"
+    );
+}
+
+#[test]
+fn an_oversized_message_is_refused_before_it_is_sent() {
+    // Gmail answers a bare 413 that never mentions attachments, so this is
+    // caught locally where the error can name the cause.
+    let mut m = compose("a@b.com", "s", "body");
+    m.attachments = vec![OutgoingAttachment {
+        filename: "big.bin".into(),
+        mime: "application/octet-stream".into(),
+        bytes: vec![0u8; MAX_RAW_BYTES],
+    }];
+    let err = encode_message(&m).unwrap_err().to_string();
+    assert!(err.contains("over Gmail's"), "unhelpful error: {err}");
+    assert!(
+        err.contains("drive put"),
+        "should point at the way around it"
+    );
+}
+
+#[test]
+fn mime_types_come_from_the_extension() {
+    assert_eq!(mime_for("a.pdf"), "application/pdf");
+    assert_eq!(mime_for("A.PDF"), "application/pdf");
+    assert_eq!(mime_for("photo.jpeg"), "image/jpeg");
+    // Unknown and extensionless both fall back to the type that makes clients
+    // offer to save rather than try to render.
+    assert_eq!(mime_for("thing.qqq"), "application/octet-stream");
+    assert_eq!(mime_for("Makefile"), "application/octet-stream");
+}

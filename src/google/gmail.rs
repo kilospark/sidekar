@@ -73,8 +73,132 @@ pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
         header(&m, "Date"),
         header(&m, "Subject")
     ));
-    out.push_str(&body_text(m.get("payload").unwrap_or(&Value::Null)));
+    let payload = m.get("payload").unwrap_or(&Value::Null);
+    let files = attachments(payload);
+    if !files.is_empty() {
+        // Named here because otherwise they are invisible: an agent reading a
+        // message would have no idea there were files on it to fetch.
+        out.push_str("Attachments:\n");
+        for a in &files {
+            out.push_str(&format!(
+                "  {} ({} bytes, {})\n",
+                a.filename, a.size, a.mime
+            ));
+        }
+        out.push('\n');
+    }
+    out.push_str(&body_text(payload));
     Ok(out)
+}
+
+/// One file hanging off a message.
+pub struct Attachment {
+    pub id: String,
+    pub filename: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+/// Every attachment on a message, walking nested multiparts.
+///
+/// A part is an attachment when it has a filename; Gmail also gives inline
+/// images filenames, so this deliberately catches those too — an agent asked to
+/// "save the logo from that email" means the inline one.
+pub(crate) fn attachments(payload: &Value) -> Vec<Attachment> {
+    let mut out = Vec::new();
+    collect_attachments(payload, &mut out);
+    out
+}
+
+fn collect_attachments(part: &Value, out: &mut Vec<Attachment>) {
+    let filename = part
+        .get("filename")
+        .and_then(|f| f.as_str())
+        .unwrap_or_default();
+    let body = part.get("body");
+    let id = body
+        .and_then(|b| b.get("attachmentId"))
+        .and_then(|a| a.as_str());
+    if !filename.is_empty()
+        && let Some(id) = id
+    {
+        out.push(Attachment {
+            id: id.to_string(),
+            filename: filename.to_string(),
+            mime: part
+                .get("mimeType")
+                .and_then(|m| m.as_str())
+                .unwrap_or("application/octet-stream")
+                .to_string(),
+            size: body
+                .and_then(|b| b.get("size"))
+                .and_then(|s| s.as_u64())
+                .unwrap_or(0),
+        });
+    }
+    if let Some(parts) = part.get("parts").and_then(|p| p.as_array()) {
+        for child in parts {
+            collect_attachments(child, out);
+        }
+    }
+}
+
+/// Strip any directory part from an attachment filename.
+///
+/// The name comes off a received message, so it is attacker-chosen: one
+/// containing `../` or a leading `/` would write outside the directory the user
+/// named. Everything up to the last separator goes.
+pub fn safe_filename(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
+    if base.is_empty() || base == "." || base == ".." {
+        "attachment".to_string()
+    } else {
+        base.to_string()
+    }
+}
+
+/// Fetch one attachment's bytes.
+///
+/// Bytes, never a String. Decoding through `String::from_utf8_lossy` replaces
+/// every invalid sequence with U+FFFD — three bytes where one stood — so a PDF
+/// or an image arrives larger than it left and will not open. Drive hit exactly
+/// this; the size assertion below is the same guard.
+pub async fn attachment_download(
+    token: &super::auth::TokenRef,
+    message_id: &str,
+    attachment_id: &str,
+) -> Result<Vec<u8>> {
+    let url = format!("{BASE}/messages/{message_id}/attachments/{attachment_id}");
+    let res = super::api_get(token, &url).await?;
+    let data = res
+        .get("data")
+        .and_then(|d| d.as_str())
+        .ok_or_else(|| anyhow::anyhow!("attachment {attachment_id} came back with no data"))?;
+    // Gmail hands attachment data back base64url, padded or not depending on
+    // the part, so accept both rather than guessing.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(data)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(data))
+        .map_err(|e| anyhow::anyhow!("attachment {attachment_id} is not valid base64: {e}"))?;
+    if let Some(expected) = res.get("size").and_then(|s| s.as_u64())
+        && bytes.len() as u64 != expected
+    {
+        bail!(
+            "attachment came down as {} bytes but Gmail reports {expected}. Refusing to write a \
+             file that does not match.",
+            bytes.len()
+        );
+    }
+    Ok(bytes)
+}
+
+/// Attachments on a message, fetched by id.
+pub async fn message_attachments(
+    token: &super::auth::TokenRef,
+    id: &str,
+) -> Result<Vec<Attachment>> {
+    let m = super::api_get(token, &format!("{BASE}/messages/{id}?format=full")).await?;
+    Ok(attachments(m.get("payload").unwrap_or(&Value::Null)))
 }
 
 /// What to put in one outgoing message.
@@ -90,6 +214,79 @@ pub struct Compose {
     pub subject: String,
     pub body: String,
     pub reply: Option<ReplyContext>,
+    /// Files to attach, already read off disk.
+    pub attachments: Vec<OutgoingAttachment>,
+}
+
+/// A file on its way out.
+pub struct OutgoingAttachment {
+    pub filename: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// What Gmail accepts in one `raw` message on the plain (non-upload) endpoint.
+///
+/// Gmail's own ceiling is 25MB of attachments, but that only applies to the
+/// `/upload/` endpoints; `messages.send` with a JSON `raw` field caps at 5MB,
+/// and exceeding it returns a bare 413 that says nothing about attachments.
+/// Checking here buys an error that names the cause and the way around it.
+pub const MAX_RAW_BYTES: usize = 5 * 1024 * 1024;
+
+/// Read a file for attaching, guessing its type from the extension.
+pub fn attachment_from_path(path: &std::path::Path) -> Result<OutgoingAttachment> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("could not read --attach {}: {e}", path.display()))?;
+    let filename = path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .ok_or_else(|| anyhow::anyhow!("--attach {} has no filename", path.display()))?;
+    // A quoted filename with a break in it would end the header early, the same
+    // way an injected Cc does.
+    reject_header_breaks("--attach", &filename)?;
+    if filename.contains('"') {
+        bail!("--attach {filename} contains a quote, which would break its Content-Disposition");
+    }
+    Ok(OutgoingAttachment {
+        mime: mime_for(&filename).to_string(),
+        filename,
+        bytes,
+    })
+}
+
+/// Content type from a file extension.
+///
+/// A short list rather than a dependency: getting this wrong costs a preview,
+/// not correctness, since every client falls back on the filename. The default
+/// is the one that makes clients offer to save rather than try to render.
+pub(crate) fn mime_for(filename: &str) -> &'static str {
+    let ext = filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
 }
 
 /// What a reply needs from the message it answers.
@@ -194,11 +391,72 @@ pub(crate) fn encode_message(msg: &Compose) -> Result<String> {
             headers.push_str(&format!("References: {}\r\n", r.references));
         }
     }
-    headers.push_str("Content-Type: text/plain; charset=UTF-8\r\n");
+    let raw = if msg.attachments.is_empty() {
+        headers.push_str("Content-Type: text/plain; charset=UTF-8\r\n");
+        format!("{headers}\r\n{}", msg.body)
+    } else {
+        // multipart/mixed: the text first, then one part per file. The boundary
+        // must not occur in any part, which is why it carries a random tail
+        // rather than being a fixed string.
+        let boundary = mime_boundary();
+        headers.push_str(&format!(
+            "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\r\n"
+        ));
+        let mut out = format!(
+            "{headers}\r\n--{boundary}\r\n\
+             Content-Type: text/plain; charset=UTF-8\r\n\r\n{}\r\n",
+            msg.body
+        );
+        for a in &msg.attachments {
+            out.push_str(&format!(
+                "--{boundary}\r\n\
+                 Content-Type: {}; name=\"{}\"\r\n\
+                 Content-Disposition: attachment; filename=\"{}\"\r\n\
+                 Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+                a.mime,
+                a.filename,
+                a.filename,
+                base64_mime(&a.bytes)
+            ));
+        }
+        out.push_str(&format!("--{boundary}--\r\n"));
+        out
+    };
 
-    let raw = format!("{headers}\r\n{}", msg.body);
+    if raw.len() > MAX_RAW_BYTES {
+        bail!(
+            "this message is {:.1}MB once encoded, over Gmail's {:.0}MB limit for a single \
+             send. Put the large files in Drive and link them instead: \
+             `sidekar drive put <file>` then paste the link in the body.",
+            raw.len() as f64 / (1024.0 * 1024.0),
+            MAX_RAW_BYTES as f64 / (1024.0 * 1024.0)
+        );
+    }
     // Gmail wants URL-safe base64 here, not the standard alphabet.
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes()))
+}
+
+/// A boundary no part can accidentally contain.
+fn mime_boundary() -> String {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("=_sidekar_{n:x}_{:x}", std::process::id())
+}
+
+/// Standard-alphabet base64, wrapped at 76 columns.
+///
+/// MIME requires the padded standard alphabet and lines short enough to survive
+/// transport; the URL-safe one used for the envelope would arrive as garbage.
+fn base64_mime(bytes: &[u8]) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    encoded
+        .as_bytes()
+        .chunks(76)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join("\r\n")
 }
 
 /// The JSON body for a create/send call, carrying `threadId` when replying.

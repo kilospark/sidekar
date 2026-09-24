@@ -279,6 +279,92 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Sent to {to} (id {id}).");
             Ok(())
         }
+        "attachments" => {
+            reject_unknown_flags(rest, &[])?;
+            let id = positional(rest)
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar gmail attachments <message-id>"))?;
+            let found = google::gmail::message_attachments(&token, &id).await?;
+            if found.is_empty() {
+                out!(ctx, "No attachments on {id}.");
+            }
+            for a in found {
+                out!(
+                    ctx,
+                    "{}\t{}\t{}\t{}",
+                    a.filename,
+                    human_size(a.size),
+                    a.mime,
+                    a.id
+                );
+            }
+            Ok(())
+        }
+        "attachment" => {
+            reject_unknown_flags(rest, &["--out", "--all"])?;
+            let pos = positional(rest);
+            let msg_id = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Usage: sidekar gmail attachment <message-id> <filename> [--out <path>]\n  \
+                     or: sidekar gmail attachment <message-id> --all [--out <dir>]"
+                )
+            })?;
+            let found = google::gmail::message_attachments(&token, &msg_id).await?;
+            if found.is_empty() {
+                bail!(
+                    "{msg_id} has no attachments; `sidekar gmail attachments {msg_id}` lists them"
+                );
+            }
+
+            if rest.iter().any(|a| a == "--all") {
+                let dir = flag(rest, "--out").unwrap_or_else(|| ".".to_string());
+                std::fs::create_dir_all(&dir).with_context(|| format!("could not create {dir}"))?;
+                for a in &found {
+                    let bytes = google::gmail::attachment_download(&token, &msg_id, &a.id).await?;
+                    // Take only the file name: a filename is attacker-supplied,
+                    // and one containing ../ would write outside the directory
+                    // the user named.
+                    let safe = google::gmail::safe_filename(&a.filename);
+                    let path = std::path::Path::new(&dir).join(&safe);
+                    std::fs::write(&path, &bytes)
+                        .with_context(|| format!("could not write {}", path.display()))?;
+                    out!(ctx, "{} ({} bytes)", path.display(), bytes.len());
+                }
+                return Ok(());
+            }
+
+            let wanted = pos.get(1).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "which attachment? Name one, or pass --all. Available: {}",
+                    found
+                        .iter()
+                        .map(|a| a.filename.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            let a = found
+                .iter()
+                .find(|a| a.filename == wanted || a.id == wanted)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no attachment named {wanted}. Available: {}",
+                        found
+                            .iter()
+                            .map(|a| a.filename.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            let bytes = google::gmail::attachment_download(&token, &msg_id, &a.id).await?;
+            let out_path =
+                flag(rest, "--out").unwrap_or_else(|| google::gmail::safe_filename(&a.filename));
+            std::fs::write(&out_path, &bytes)
+                .with_context(|| format!("could not write {out_path}"))?;
+            out!(ctx, "Wrote {out_path} ({} bytes).", bytes.len());
+            Ok(())
+        }
         "draft" => cmd_gmail_draft(ctx, &token, rest).await,
         "labels" => {
             for l in google::gmail::labels(&token).await? {
@@ -304,6 +390,9 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              send --to <addr> [--cc a] [--bcc b] --subject <s> --body <text>|--body-file <p>\n  \
              send --reply <message-id> --to <addr> --body <text>   threads the reply\n  \
              draft <create|list|show|update|send|rm> …   compose without sending\n  \
+             attachments <message-id>                    list files on a message\n  \
+             attachment <message-id> <filename> [--out <path>] | --all [--out <dir>]\n  \
+             (--attach <path> on send/draft, repeatable, 5MB total)\n  \
              labels\n  \
              modify <id> [--add LABEL] [--remove LABEL]   (UNREAD is a label)"
         ),
@@ -785,6 +874,7 @@ const COMPOSE_FLAGS: &[&str] = &[
     "--body",
     "--body-file",
     "--reply",
+    "--attach",
 ];
 
 /// Build a `Compose` from the shared compose flags.
@@ -816,6 +906,12 @@ async fn compose_from(
         (None, Some(r)) => google::gmail::reply_subject(&r.subject),
         (None, None) => String::new(),
     };
+    let mut attachments = Vec::new();
+    for path in flags_all(args, "--attach") {
+        attachments.push(google::gmail::attachment_from_path(std::path::Path::new(
+            &path,
+        ))?);
+    }
     Ok(google::gmail::Compose {
         to,
         cc: flag(args, "--cc"),
@@ -823,6 +919,7 @@ async fn compose_from(
         subject,
         body: compose_body(args, what)?,
         reply,
+        attachments,
     })
 }
 
@@ -868,6 +965,36 @@ fn compose_body(args: &[String], what: &str) -> Result<String> {
             .with_context(|| format!("could not read --body-file {path}")),
         (None, None) => bail!("{what} needs --body <text> or --body-file <path>"),
     }
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b}B"),
+        b if b < 1024 * 1024 => format!("{:.0}K", b as f64 / 1024.0),
+        b => format!("{:.1}M", b as f64 / (1024.0 * 1024.0)),
+    }
+}
+
+/// Every occurrence of a repeatable flag, in order.
+///
+/// `flag()` returns the first and drops the rest, which for `--attach` would
+/// silently send one file of the three somebody asked for.
+fn flags_all(args: &[String], name: &str) -> Vec<String> {
+    let prefix = format!("{name}=");
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(v) = args[i].strip_prefix(&prefix) {
+            out.push(v.to_string());
+        } else if args[i] == name {
+            if let Some(v) = args.get(i + 1) {
+                out.push(v.clone());
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 fn flag_usize(args: &[String], name: &str) -> Option<usize> {
