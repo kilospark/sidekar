@@ -99,7 +99,14 @@ if ! node -e 'require("https").get("https://vercel.com/.well-known/openid-config
   echo "  Node rejects vercel.com's chain; rebuilding a CA bundle it accepts."
   CHAIN="$(mktemp)"; CA_BUNDLE="$(mktemp)"
   openssl s_client -connect vercel.com:443 -servername vercel.com -showcerts </dev/null 2>/dev/null     | sed -n '/BEGIN CERT/,/END CERT/p' > "$CHAIN"
-  if openssl verify -CAfile /etc/ssl/cert.pem "$CHAIN" >/dev/null 2>&1; then
+  # Verify the LEAF, handing the rest of the chain over as untrusted
+  # intermediates. `openssl verify -CAfile ca.pem chain.pem` checks only the
+  # first cert in the file and ignores the others, so it reports "unable to get
+  # local issuer certificate" for a chain that is perfectly good — which is
+  # exactly how this guard refused a legitimate release the first time it ran.
+  LEAF="$(mktemp)"
+  awk '/BEGIN CERT/{n++} n==1' "$CHAIN" | sed -n '/BEGIN CERT/,/END CERT/p' > "$LEAF"
+  if openssl verify -CAfile /etc/ssl/cert.pem -untrusted "$CHAIN" "$LEAF" >/dev/null 2>&1; then
     cat "$CHAIN" /etc/ssl/cert.pem > "$CA_BUNDLE"
     export NODE_EXTRA_CA_CERTS="$CA_BUNDLE"
     echo "  Chain verifies against the system store; trusting it for this deploy."
@@ -108,7 +115,7 @@ if ! node -e 'require("https").get("https://vercel.com/.well-known/openid-config
     echo "  Deploy by hand after checking what is terminating TLS." >&2
     exit 1
   fi
-  rm -f "$CHAIN"
+  rm -f "$CHAIN" "$LEAF"
 fi
 
 npx vercel --prod
