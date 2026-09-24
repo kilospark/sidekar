@@ -2,7 +2,7 @@
 
 use crate::AppContext;
 use crate::google;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let rest = args.get(1..).unwrap_or(&[]);
@@ -244,6 +244,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     match sub {
         "search" => {
+            reject_unknown_flags(rest, &["--limit"])?;
             let limit = flag_usize(rest, "--limit").unwrap_or(10);
             let query = positional(rest).join(" ");
             if query.is_empty() {
@@ -262,6 +263,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         "read" => {
+            reject_unknown_flags(rest, &[])?;
             let id = positional(rest)
                 .first()
                 .cloned()
@@ -270,13 +272,10 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         "send" => {
-            let to = flag(rest, "--to").ok_or_else(|| anyhow::anyhow!("gmail send needs --to"))?;
-            let subject = flag(rest, "--subject").unwrap_or_default();
-            let body = flag(rest, "--body").unwrap_or_default();
-            if body.is_empty() {
-                bail!("gmail send needs --body (use --body \"$(cat file)\" for long text)");
-            }
-            let id = google::gmail::send(&token, &to, &subject, &body).await?;
+            reject_unknown_flags(rest, COMPOSE_FLAGS)?;
+            let msg = compose_from(&token, rest, "gmail send").await?;
+            let to = msg.to.clone();
+            let id = google::gmail::send(&token, &msg).await?;
             out!(ctx, "Sent to {to} (id {id}).");
             Ok(())
         }
@@ -291,6 +290,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             let id = positional(rest).first().cloned().ok_or_else(|| {
                 anyhow::anyhow!("Usage: sidekar gmail modify <id> [--add L] [--remove L]")
             })?;
+            reject_unknown_flags(rest, &["--add", "--remove"])?;
             let add: Vec<String> = flag(rest, "--add").into_iter().collect();
             let remove: Vec<String> = flag(rest, "--remove").into_iter().collect();
             google::gmail::modify(&token, &id, &add, &remove).await?;
@@ -301,7 +301,8 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             "Usage: sidekar gmail <search|read|send|draft|labels|modify> …\n  \
              search <query> [--limit N]      Gmail query syntax: from:, is:unread, newer_than:2d\n  \
              read <id>\n  \
-             send --to <addr> --subject <s> --body <text>\n  \
+             send --to <addr> [--cc a] [--bcc b] --subject <s> --body <text>|--body-file <p>\n  \
+             send --reply <message-id> --to <addr> --body <text>   threads the reply\n  \
              draft <create|list|show|update|send|rm> …   compose without sending\n  \
              labels\n  \
              modify <id> [--add LABEL] [--remove LABEL]   (UNREAD is a label)"
@@ -329,18 +330,20 @@ async fn cmd_gmail_draft(
 
     match sub {
         "create" => {
-            let to = flag(rest, "--to")
-                .ok_or_else(|| anyhow::anyhow!("gmail draft create needs --to"))?;
-            let subject = flag(rest, "--subject").unwrap_or_default();
-            let body = flag(rest, "--body").unwrap_or_default();
-            if body.is_empty() {
-                bail!("gmail draft create needs --body (use --body \"$(cat file)\" for long text)");
-            }
-            let id = google::gmail::draft_create(token, &to, &subject, &body).await?;
-            out!(ctx, "Drafted to {to} (draft {id}). Nothing has been sent.");
+            reject_unknown_flags(rest, COMPOSE_FLAGS)?;
+            let msg = compose_from(token, rest, "gmail draft create").await?;
+            let to = msg.to.clone();
+            let threaded = msg.reply.is_some();
+            let id = google::gmail::draft_create(token, &msg).await?;
+            out!(
+                ctx,
+                "Drafted to {to} (draft {id}){}. Nothing has been sent.",
+                if threaded { ", in thread" } else { "" }
+            );
             Ok(())
         }
         "list" | "" => {
+            reject_unknown_flags(rest, &["--limit"])?;
             let limit = flag_usize(rest, "--limit").unwrap_or(10);
             let drafts = google::gmail::draft_list(token, limit).await?;
             if drafts.is_empty() {
@@ -352,6 +355,7 @@ async fn cmd_gmail_draft(
             Ok(())
         }
         "show" | "read" => {
+            reject_unknown_flags(rest, &[])?;
             let id = id_arg("Usage: sidekar gmail draft show <draft-id>")?;
             out!(ctx, "{}", google::gmail::draft_show(token, &id).await?);
             Ok(())
@@ -360,31 +364,30 @@ async fn cmd_gmail_draft(
             let id = id_arg(
                 "Usage: sidekar gmail draft update <draft-id> --to <addr> --subject <s> --body <text>",
             )?;
+            reject_unknown_flags(rest, COMPOSE_FLAGS)?;
             // Gmail replaces the whole draft, so a partial update would blank
-            // whatever was left out. Demanding all three is the honest spelling
-            // of what the API does.
-            let (to, subject, body) = match (
-                flag(rest, "--to"),
-                flag(rest, "--subject"),
-                flag(rest, "--body"),
-            ) {
-                (Some(t), Some(s), Some(b)) => (t, s, b),
-                _ => bail!(
-                    "gmail draft update rewrites the whole draft, so it needs --to, --subject \
-                     and --body together. `sidekar gmail draft show {id}` prints the current text."
-                ),
-            };
-            let new_id = google::gmail::draft_update(token, &id, &to, &subject, &body).await?;
+            // whatever was left out. Demanding the headline fields is the honest
+            // spelling of what the API does.
+            if flag(rest, "--to").is_none() || flag(rest, "--subject").is_none() {
+                bail!(
+                    "gmail draft update rewrites the whole draft, so it needs --to and --subject \
+                     alongside the body. `sidekar gmail draft show {id}` prints the current text."
+                );
+            }
+            let msg = compose_from(token, rest, "gmail draft update").await?;
+            let new_id = google::gmail::draft_update(token, &id, &msg).await?;
             out!(ctx, "Updated draft {new_id}. Nothing has been sent.");
             Ok(())
         }
         "send" => {
+            reject_unknown_flags(rest, &[])?;
             let id = id_arg("Usage: sidekar gmail draft send <draft-id>")?;
             let msg = google::gmail::draft_send(token, &id).await?;
             out!(ctx, "Sent draft {id} (message {msg}).");
             Ok(())
         }
         "rm" | "delete" => {
+            reject_unknown_flags(rest, &[])?;
             let id = id_arg("Usage: sidekar gmail draft rm <draft-id>")?;
             google::gmail::draft_delete(token, &id).await?;
             out!(ctx, "Deleted draft {id}.");
@@ -392,7 +395,8 @@ async fn cmd_gmail_draft(
         }
         other => bail!(
             "Unknown draft subcommand '{other}'.\n  \
-             create --to <addr> --subject <s> --body <text>\n  \
+             create --to <addr> [--cc a] [--bcc b] [--reply <message-id>] \
+             --subject <s> --body <text>|--body-file <path>\n  \
              list [--limit N]\n  \
              show <draft-id>\n  \
              update <draft-id> --to <addr> --subject <s> --body <text>\n  \
@@ -770,6 +774,100 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Flags every compose path accepts.
+const COMPOSE_FLAGS: &[&str] = &[
+    "--to",
+    "--cc",
+    "--bcc",
+    "--subject",
+    "--body",
+    "--body-file",
+    "--reply",
+];
+
+/// Build a `Compose` from the shared compose flags.
+///
+/// `--reply <message-id>` costs one metadata fetch, which is why it is only
+/// paid for when asked: it needs the parent's threadId, Message-ID and
+/// References to thread anywhere other than Gmail's own UI.
+async fn compose_from(
+    token: &google::auth::TokenRef,
+    args: &[String],
+    what: &str,
+) -> Result<google::gmail::Compose> {
+    let reply = match flag(args, "--reply") {
+        Some(id) => Some(google::gmail::reply_context(token, &id).await?),
+        None => None,
+    };
+    // A reply inherits its parent's subject and recipient unless told otherwise,
+    // because "reply to this" almost never means "and retype the subject".
+    let to = match (flag(args, "--to"), &reply) {
+        (Some(t), _) => t,
+        (None, Some(_)) => bail!(
+            "{what} --reply still needs --to: sidekar will not guess who a reply goes to \
+             from the parent's From/Reply-To, because guessing wrong mails the wrong person."
+        ),
+        (None, None) => bail!("{what} needs --to"),
+    };
+    let subject = match (flag(args, "--subject"), &reply) {
+        (Some(s), _) => s,
+        (None, Some(r)) => google::gmail::reply_subject(&r.subject),
+        (None, None) => String::new(),
+    };
+    Ok(google::gmail::Compose {
+        to,
+        cc: flag(args, "--cc"),
+        bcc: flag(args, "--bcc"),
+        subject,
+        body: compose_body(args, what)?,
+        reply,
+    })
+}
+
+/// Fail on any `--flag` the subcommand does not understand.
+///
+/// `flag()` only ever looks for the names a caller asks about, so anything else
+/// was silently dropped: `gmail draft create --cc b@x.com --thread <id>` was
+/// accepted, ignored, and produced an unthreaded draft with no Cc. The caller
+/// had no way to tell that from success, which is worse than an error and
+/// worse than the missing feature — it reports mail as sent the way it was
+/// asked for when it was not.
+///
+/// `--token` is accepted everywhere; it is resolved before any subcommand runs.
+fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
+    for a in args {
+        let Some(name) = a.split('=').next().filter(|n| n.starts_with("--")) else {
+            continue;
+        };
+        if name == "--token" || known.contains(&name) {
+            continue;
+        }
+        let mut msg = format!("unknown flag {name}.");
+        if known.is_empty() {
+            msg.push_str(" This subcommand takes no flags.");
+        } else {
+            msg.push_str(&format!(" This subcommand takes: {}", known.join(", ")));
+        }
+        bail!("{msg}");
+    }
+    Ok(())
+}
+
+/// Read a body from `--body` or `--body-file`.
+///
+/// `--body-file` exists because a shell makes multi-line text awkward to pass
+/// inline, and the workaround — `--body "$(cat f)"` — silently drops trailing
+/// newlines and mangles anything with quotes in it.
+fn compose_body(args: &[String], what: &str) -> Result<String> {
+    match (flag(args, "--body"), flag(args, "--body-file")) {
+        (Some(_), Some(_)) => bail!("pass either --body or --body-file, not both"),
+        (Some(b), None) => Ok(b),
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .with_context(|| format!("could not read --body-file {path}")),
+        (None, None) => bail!("{what} needs --body <text> or --body-file <path>"),
+    }
 }
 
 fn flag_usize(args: &[String], name: &str) -> Option<usize> {

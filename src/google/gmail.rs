@@ -63,15 +63,89 @@ pub async fn search(
 /// One message as readable text.
 pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
     let m = super::api_get(token, &format!("{BASE}/messages/{id}?format=full")).await?;
-    let mut out = format!(
-        "From: {}\nTo: {}\nDate: {}\nSubject: {}\n\n",
-        header(&m, "From"),
-        header(&m, "To"),
+    let mut out = format!("From: {}\nTo: {}\n", header(&m, "From"), header(&m, "To"));
+    let cc = header(&m, "Cc");
+    if !cc.is_empty() {
+        out.push_str(&format!("Cc: {cc}\n"));
+    }
+    out.push_str(&format!(
+        "Date: {}\nSubject: {}\n\n",
         header(&m, "Date"),
         header(&m, "Subject")
-    );
+    ));
     out.push_str(&body_text(m.get("payload").unwrap_or(&Value::Null)));
     Ok(out)
+}
+
+/// What to put in one outgoing message.
+///
+/// A struct rather than five positional arguments because `send`, `draft
+/// create` and `draft update` all take exactly this, and a caller that swapped
+/// `cc` for `bcc` by position would leak the recipient list to everyone.
+#[derive(Default)]
+pub struct Compose {
+    pub to: String,
+    pub cc: Option<String>,
+    pub bcc: Option<String>,
+    pub subject: String,
+    pub body: String,
+    pub reply: Option<ReplyContext>,
+}
+
+/// What a reply needs from the message it answers.
+///
+/// Threading is not a Gmail flag — it is `threadId` on the API call plus the
+/// `In-Reply-To` and `References` headers, and every mail client wants all
+/// three. Setting only `threadId` threads it in Gmail's own UI and nowhere
+/// else, which is the kind of half-working that gets noticed late.
+pub struct ReplyContext {
+    pub thread_id: String,
+    /// The parent's `Message-ID`, for `In-Reply-To`.
+    pub message_id: String,
+    /// The parent's `References` chain with its own id appended.
+    pub references: String,
+    /// The parent's subject, so a reply can inherit it when none is given.
+    pub subject: String,
+}
+
+/// Look up everything a reply to `id` needs.
+pub async fn reply_context(token: &super::auth::TokenRef, id: &str) -> Result<ReplyContext> {
+    let url = format!(
+        "{BASE}/messages/{id}?format=metadata\
+         &metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=Subject"
+    );
+    let m = super::api_get(token, &url).await?;
+    let thread_id = m
+        .get("threadId")
+        .and_then(|t| t.as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("message {id} has no threadId; cannot reply into it"))?;
+    let message_id = header(&m, "Message-ID");
+    let parent_refs = header(&m, "References");
+    // References is the whole ancestry, oldest first, with the parent last.
+    let references = match (parent_refs.is_empty(), message_id.is_empty()) {
+        (_, true) => parent_refs,
+        (true, false) => message_id.clone(),
+        (false, false) => format!("{parent_refs} {message_id}"),
+    };
+    Ok(ReplyContext {
+        thread_id,
+        message_id,
+        references,
+        subject: header(&m, "Subject"),
+    })
+}
+
+/// The subject a reply should carry when the caller gave none.
+pub(crate) fn reply_subject(parent: &str) -> String {
+    if parent.is_empty() {
+        return String::new();
+    }
+    // Don't stack "Re: Re: Re:" — one prefix is the convention everywhere.
+    if parent.len() >= 3 && parent[..3].eq_ignore_ascii_case("re:") {
+        return parent.to_string();
+    }
+    format!("Re: {parent}")
 }
 
 /// Assemble one RFC 5322 message, base64url-encoded the way Gmail wants it.
@@ -80,35 +154,67 @@ pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
 /// that gets sent later, so it needs the same header-injection refusal below.
 /// Splitting them would mean the check protects the direct path and quietly
 /// misses the one where a human sees a reviewed-looking draft and hits send.
-fn encode_message(to: &str, subject: &str, body: &str) -> Result<String> {
+pub(crate) fn encode_message(msg: &Compose) -> Result<String> {
     // Headers end at the first blank line, so a CR or LF in a header value lets
     // the rest of that value become new headers. Sidekar reads mail, so a subject
     // assembled from a received message is untrusted input, and an injected
     // `Bcc:` would silently copy the mail somewhere the sender never named.
     // Reject rather than strip: quietly altering a header the caller asked for
     // is worse than refusing to send it.
-    reject_header_breaks("--to", to)?;
-    reject_header_breaks("--subject", subject)?;
+    //
+    // Every header value goes through this, including the ones lifted off a
+    // parent message by `--reply`: that parent is mail somebody else sent, so
+    // its Message-ID and References are exactly as untrusted as its subject.
+    reject_header_breaks("--to", &msg.to)?;
+    reject_header_breaks("--subject", &msg.subject)?;
+    if let Some(cc) = &msg.cc {
+        reject_header_breaks("--cc", cc)?;
+    }
+    if let Some(bcc) = &msg.bcc {
+        reject_header_breaks("--bcc", bcc)?;
+    }
+    if let Some(r) = &msg.reply {
+        reject_header_breaks("In-Reply-To", &r.message_id)?;
+        reject_header_breaks("References", &r.references)?;
+    }
 
-    let raw = format!(
-        "To: {to}\r\nSubject: {}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{body}",
-        encode_subject(subject)
-    );
+    let mut headers = format!("To: {}\r\n", msg.to);
+    if let Some(cc) = msg.cc.as_deref().filter(|c| !c.is_empty()) {
+        headers.push_str(&format!("Cc: {cc}\r\n"));
+    }
+    if let Some(bcc) = msg.bcc.as_deref().filter(|b| !b.is_empty()) {
+        headers.push_str(&format!("Bcc: {bcc}\r\n"));
+    }
+    headers.push_str(&format!("Subject: {}\r\n", encode_subject(&msg.subject)));
+    if let Some(r) = &msg.reply {
+        if !r.message_id.is_empty() {
+            headers.push_str(&format!("In-Reply-To: {}\r\n", r.message_id));
+        }
+        if !r.references.is_empty() {
+            headers.push_str(&format!("References: {}\r\n", r.references));
+        }
+    }
+    headers.push_str("Content-Type: text/plain; charset=UTF-8\r\n");
+
+    let raw = format!("{headers}\r\n{}", msg.body);
     // Gmail wants URL-safe base64 here, not the standard alphabet.
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes()))
 }
 
-pub async fn send(
-    token: &super::auth::TokenRef,
-    to: &str,
-    subject: &str,
-    body: &str,
-) -> Result<String> {
-    let encoded = encode_message(to, subject, body)?;
+/// The JSON body for a create/send call, carrying `threadId` when replying.
+fn message_payload(msg: &Compose, encoded: &str) -> Value {
+    match &msg.reply {
+        Some(r) => json!({"raw": encoded, "threadId": r.thread_id}),
+        None => json!({"raw": encoded}),
+    }
+}
+
+pub async fn send(token: &super::auth::TokenRef, msg: &Compose) -> Result<String> {
+    let encoded = encode_message(msg)?;
     let res = super::api_post(
         token,
         &format!("{BASE}/messages/send"),
-        &json!({"raw": encoded}),
+        &message_payload(msg, &encoded),
     )
     .await?;
     res.get("id")
@@ -136,17 +242,12 @@ pub struct DraftSummary {
 }
 
 /// Compose a draft. Returns its draft id, which is not the message id.
-pub async fn draft_create(
-    token: &super::auth::TokenRef,
-    to: &str,
-    subject: &str,
-    body: &str,
-) -> Result<String> {
-    let encoded = encode_message(to, subject, body)?;
+pub async fn draft_create(token: &super::auth::TokenRef, msg: &Compose) -> Result<String> {
+    let encoded = encode_message(msg)?;
     let res = super::api_post(
         token,
         &format!("{BASE}/drafts"),
-        &json!({"message": {"raw": encoded}}),
+        &json!({"message": message_payload(msg, &encoded)}),
     )
     .await?;
     draft_id(&res)
@@ -158,15 +259,13 @@ pub async fn draft_create(
 pub async fn draft_update(
     token: &super::auth::TokenRef,
     id: &str,
-    to: &str,
-    subject: &str,
-    body: &str,
+    msg: &Compose,
 ) -> Result<String> {
-    let encoded = encode_message(to, subject, body)?;
+    let encoded = encode_message(msg)?;
     let res = super::api_put(
         token,
         &format!("{BASE}/drafts/{id}"),
-        &json!({"message": {"raw": encoded}}),
+        &json!({"message": message_payload(msg, &encoded)}),
     )
     .await?;
     draft_id(&res)
@@ -210,11 +309,21 @@ pub async fn draft_list(token: &super::auth::TokenRef, limit: usize) -> Result<V
 pub async fn draft_show(token: &super::auth::TokenRef, id: &str) -> Result<String> {
     let d = super::api_get(token, &format!("{BASE}/drafts/{id}?format=full")).await?;
     let m = d.get("message").unwrap_or(&Value::Null);
-    let mut out = format!(
-        "Draft: {id}\nTo: {}\nSubject: {}\n\n",
-        header(m, "To"),
-        header(m, "Subject")
-    );
+    let mut out = format!("Draft: {id}\nTo: {}\n", header(m, "To"));
+    // Cc and Bcc only when set. Printing them matters more here than anywhere
+    // else: a draft is reviewed before it goes out, and a recipient list the
+    // reviewer cannot see is one they cannot check.
+    for name in ["Cc", "Bcc"] {
+        let v = header(m, name);
+        if !v.is_empty() {
+            out.push_str(&format!("{name}: {v}\n"));
+        }
+    }
+    let in_reply_to = header(m, "In-Reply-To");
+    if !in_reply_to.is_empty() {
+        out.push_str(&format!("In-Reply-To: {in_reply_to}\n"));
+    }
+    out.push_str(&format!("Subject: {}\n\n", header(m, "Subject")));
     out.push_str(&body_text(m.get("payload").unwrap_or(&Value::Null)));
     Ok(out)
 }
