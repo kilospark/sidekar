@@ -3,6 +3,7 @@
 
 use crate::activity::{ActivityState, PTY_OUTPUT_BUSY_MS, PTY_SPINNER_BUSY_MS};
 use crate::input_mode::TerminalInputMode;
+use crate::pty::screen_activity::{ScreenActivity, UNSETTLED_BUSY_MS};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -35,7 +36,14 @@ pub struct UserInputState {
     stashed_draft: Mutex<Option<Vec<u8>>>,
     /// Set when the event loop should clear its local line buffer (after stash).
     line_tracking_reset: std::sync::atomic::AtomicBool,
-    last_pty_output_at_ms: std::sync::atomic::AtomicU64,
+    /// Model of what the agent has drawn, judged between frames.
+    screen: Mutex<ScreenActivity>,
+    /// When the visible text last changed (0 = never).
+    ///
+    /// Replaces "when did the agent last write a byte", which an idle Claude
+    /// Code answers with "just now", forever: it repaints its whole screen
+    /// about five times a second to animate its status line.
+    last_screen_change_at_ms: std::sync::atomic::AtomicU64,
     last_spinner_at_ms: std::sync::atomic::AtomicU64,
     /// Terminal modes the agent announced on its own output stream.
     input_mode: TerminalInputMode,
@@ -79,7 +87,12 @@ impl UserInputState {
             pending_line: Mutex::new(Vec::new()),
             stashed_draft: Mutex::new(None),
             line_tracking_reset: std::sync::atomic::AtomicBool::new(false),
-            last_pty_output_at_ms: std::sync::atomic::AtomicU64::new(0),
+            // Resized from the PTY at every settle; this is only the start.
+            screen: Mutex::new(ScreenActivity::new(
+                crate::pty::DEFAULT_PTY_SIZE.0,
+                crate::pty::DEFAULT_PTY_SIZE.1,
+            )),
+            last_screen_change_at_ms: std::sync::atomic::AtomicU64::new(0),
             last_spinner_at_ms: std::sync::atomic::AtomicU64::new(0),
             input_mode: TerminalInputMode::new(),
             awaiting_since_ms: std::sync::atomic::AtomicU64::new(0),
@@ -92,14 +105,65 @@ impl UserInputState {
             .store(epoch_millis(), Ordering::Relaxed);
     }
 
-    pub fn mark_pty_output(&self) {
-        self.last_pty_output_at_ms
+    /// Record the agent as working as of now.
+    ///
+    /// Called when a settle finds the visible text changed, and by the poller
+    /// right after it pastes a message in: the agent is about to act on it, but
+    /// the echo has not settled yet, so without this there would be a ~50ms
+    /// window in which a second message could be pasted into an agent that has
+    /// just started on the first.
+    pub fn mark_screen_changed(&self) {
+        self.last_screen_change_at_ms
             .store(epoch_millis(), Ordering::Relaxed);
     }
 
+    /// Take in agent output. Nothing is decided here: bytes arrive mid-frame,
+    /// and a half-drawn screen always looks changed. See [`Self::settle_screen`].
     pub fn mark_pty_output_bytes(&self, bytes: &[u8]) {
-        self.mark_pty_output();
+        self.screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .feed(bytes, epoch_millis());
         self.update_terminal_state(bytes);
+    }
+
+    /// Output has gone quiet, so the screen is between frames: judge it.
+    ///
+    /// `size` is the PTY's real size, read at the moment of judging so the
+    /// model cannot drift from the three places that resize the PTY.
+    pub fn settle_screen(&self, size: Option<(u16, u16)>) {
+        let changed = {
+            let mut screen = self.screen.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((cols, rows)) = size {
+                screen.resize(cols, rows);
+            }
+            screen.settle()
+        };
+        if changed {
+            self.mark_screen_changed();
+        }
+    }
+
+    /// Why the agent's own output says it is working, if it does.
+    ///
+    /// Either the text on screen changed recently, or output is arriving too
+    /// continuously to settle at all — which an idle, repainting agent never
+    /// does, and an agent streaming a long answer does for seconds at a time.
+    fn screen_working(&self, now: u64) -> Option<String> {
+        let changed_at = self.last_screen_change_at_ms.load(Ordering::Relaxed);
+        if changed_at > 0 && now.saturating_sub(changed_at) < PTY_OUTPUT_BUSY_MS {
+            return Some(format!(
+                "screen changed {}ms ago",
+                now.saturating_sub(changed_at)
+            ));
+        }
+        let unsettled = self
+            .screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unsettled_for_ms(now);
+        (unsettled > UNSETTLED_BUSY_MS)
+            .then(|| format!("output streaming without a pause for {unsettled}ms"))
     }
 
     pub fn sidecar_notice_allowed(&self) -> bool {
@@ -169,8 +233,7 @@ impl UserInputState {
 
     pub fn is_agent_working(&self) -> bool {
         let now = epoch_millis();
-        let output_at = self.last_pty_output_at_ms.load(Ordering::Relaxed);
-        if output_at > 0 && now.saturating_sub(output_at) < PTY_OUTPUT_BUSY_MS {
+        if self.screen_working(now).is_some() {
             return true;
         }
         let spinner_at = self.last_spinner_at_ms.load(Ordering::Relaxed);
@@ -211,13 +274,8 @@ impl UserInputState {
                 .unwrap_or_else(|| "question on screen".into());
             return (ActivityState::NeedsInput, reason);
         }
-        let output_at = self.last_pty_output_at_ms.load(Ordering::Relaxed);
-        if output_at > 0 && now.saturating_sub(output_at) < PTY_OUTPUT_BUSY_MS {
-            let ago = now.saturating_sub(output_at);
-            return (
-                ActivityState::AgentWorking,
-                format!("PTY output {ago}ms ago"),
-            );
+        if let Some(reason) = self.screen_working(now) {
+            return (ActivityState::AgentWorking, reason);
         }
         let spinner_at = self.last_spinner_at_ms.load(Ordering::Relaxed);
         if spinner_at > 0 && now.saturating_sub(spinner_at) < PTY_SPINNER_BUSY_MS {
@@ -229,7 +287,7 @@ impl UserInputState {
         }
         (
             ActivityState::Idle,
-            "no output, no question on screen".into(),
+            "screen unchanged, no question on screen".into(),
         )
     }
 
@@ -593,6 +651,11 @@ fn bus_client_loop(
             forced,
         );
 
+        if ok {
+            // The agent is about to act on what was just pasted. Say so now
+            // rather than waiting ~50ms for the echo to settle.
+            input_state.mark_screen_changed();
+        }
         if !ok {
             // Hand the batch back to the daemon rather than retrying blind: the
             // gate closed between the check and the write, and another pass may

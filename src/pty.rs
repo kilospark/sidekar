@@ -18,6 +18,7 @@ pub(crate) mod journal_handoff;
 mod osc_state;
 mod query_responder;
 mod replay;
+pub(crate) mod screen_activity;
 mod session;
 mod size_owner;
 mod waiting;
@@ -147,11 +148,26 @@ fn fork_pty(
 /// Size the child PTY gets when there is no local terminal to copy from.
 /// `forkpty` with a null winsize leaves the PTY at 0x0, which most TUIs render
 /// as a blank screen.
-pub(super) const DEFAULT_PTY_SIZE: (u16, u16) = (120, 32);
+pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (120, 32);
 
 pub(super) fn current_terminal_size() -> Option<(u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 {
+        return None;
+    }
+    if ws.ws_col == 0 || ws.ws_row == 0 {
+        return None;
+    }
+    Some((ws.ws_col, ws.ws_row))
+}
+
+/// The child PTY's current window size, read from the master side.
+///
+/// Distinct from [`current_terminal_size`], which reads the *local* terminal: a
+/// detached agent has none, and a relay viewer can resize the PTY away from it.
+pub(super) fn pty_size(master_fd: i32) -> Option<(u16, u16)> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(master_fd, libc::TIOCGWINSZ, &mut ws) } != 0 {
         return None;
     }
     if ws.ws_col == 0 || ws.ws_row == 0 {

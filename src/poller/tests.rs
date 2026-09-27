@@ -83,7 +83,7 @@ fn draft_pending_no_longer_blocks_submit_once_typing_stops() {
 fn agent_working_heuristic_tracks_recent_output() {
     let state = UserInputState::new();
     assert!(!state.is_agent_working());
-    state.mark_pty_output();
+    state.mark_screen_changed();
     assert!(state.is_agent_working());
 }
 
@@ -128,7 +128,7 @@ fn terminal_notice_visibility_does_not_block_prompt_submission() {
 #[test]
 fn interrupt_submit_does_not_wait_for_agent_output_busy() {
     let state = UserInputState::new();
-    state.mark_pty_output();
+    state.mark_screen_changed();
 
     assert!(pty_submit_wait_blocked_for(&state, false));
     assert!(!pty_submit_wait_blocked_for(&state, true));
@@ -400,7 +400,7 @@ fn an_unanswered_question_gates_even_the_interrupt_path() {
 #[test]
 fn a_working_agent_gates_only_the_plain_path() {
     let state = UserInputState::new();
-    state.mark_pty_output();
+    state.mark_screen_changed();
     assert!(state.is_agent_working());
     assert!(
         !user_blocks_submit(&state),
@@ -717,4 +717,109 @@ fn draft_is_lifted_out_and_handed_back_around_an_inject() {
         "the draft must be typed back into the pane, got {seen:?}"
     );
     assert!(seen.contains('\u{15}'), "and the line was cleared first");
+}
+
+// ---- judging the screen, not the byte stream -------------------------------
+
+/// A whole idle frame as Claude Code draws it: clear, home, redraw, with the
+/// status line recoloured — the only difference between one idle frame and
+/// the next.
+fn idle_frame(shimmer: u8) -> Vec<u8> {
+    let colour = if shimmer % 2 == 0 {
+        "\x1b[91m"
+    } else {
+        "\x1b[37m"
+    };
+    format!("\x1b[2J\x1b[HClaude Code\r\n{colour}* done\x1b[39m\r\n> ").into_bytes()
+}
+
+#[test]
+fn idle_repaints_do_not_rearm_the_working_clock() {
+    // The bug: an idle Claude repaints ~5x/sec and used to read as busy
+    // forever, so every bus message waited for the 300s force-inject.
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(&idle_frame(0));
+    state.settle_screen(None);
+    let first = state.last_screen_change_at_ms.load(Ordering::Relaxed);
+    assert!(first > 0, "the first screen drawn is activity");
+
+    for f in 1..20 {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        state.mark_pty_output_bytes(&idle_frame(f));
+        state.settle_screen(None);
+    }
+    assert_eq!(
+        state.last_screen_change_at_ms.load(Ordering::Relaxed),
+        first,
+        "an idle repaint was counted as the agent doing something"
+    );
+}
+
+#[test]
+fn new_text_rearms_the_working_clock() {
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(&idle_frame(0));
+    state.settle_screen(None);
+    let first = state.last_screen_change_at_ms.load(Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    state.mark_pty_output_bytes(b"\x1b[2J\x1b[HClaude Code\r\nWriting the patch now\r\n");
+    state.settle_screen(None);
+    assert!(
+        state.last_screen_change_at_ms.load(Ordering::Relaxed) > first,
+        "new text on screen did not register as work"
+    );
+    assert!(state.is_agent_working());
+}
+
+#[test]
+fn output_that_never_pauses_still_counts_as_working() {
+    // The safety net, and the dangerous path. An agent streaming a long answer
+    // can write faster than the settle window for seconds, so it never settles
+    // and never registers a change. Without this rule it would read idle while
+    // flat out — and idle is exactly when the poller pastes into it.
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(b"streaming a long answer ");
+    // No settle: the output never paused long enough for one.
+    std::thread::sleep(std::time::Duration::from_millis(UNSETTLED_BUSY_MS + 150));
+    assert!(
+        state.is_agent_working(),
+        "continuous unsettled output read as idle; the poller would paste into a busy agent"
+    );
+    let (activity, reason) = state.current_activity();
+    assert_eq!(activity, ActivityState::AgentWorking);
+    assert!(reason.contains("without a pause"), "reason was {reason:?}");
+}
+
+#[test]
+fn a_moment_of_unsettled_output_alone_is_not_work() {
+    // The other side of that rule: it must not fire inside one frame, or the
+    // shimmer would trip it and the bug would come straight back.
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(&idle_frame(0));
+    assert!(
+        !state.is_agent_working(),
+        "a single unsettled frame, with no text change yet, read as working"
+    );
+}
+
+#[test]
+fn settling_with_a_real_size_completes_the_settle() {
+    // The resize itself is checked in screen_activity's own tests, where the
+    // parser is visible; this checks that passing a size through does not
+    // leave the output pending, which would trip the streaming rule.
+    let state = UserInputState::new();
+    state.mark_pty_output_bytes(&idle_frame(0));
+    state.settle_screen(Some((80, 24)));
+    assert_eq!(state.screen.lock().unwrap().unsettled_for_ms(u64::MAX), 0);
+}
+
+#[test]
+fn a_pasted_message_marks_the_agent_working_immediately() {
+    // After the poller pastes, the agent is about to act, but the echo has not
+    // settled yet. Marking it working closes the ~50ms window in which a second
+    // message could be pasted into an agent that just started on the first.
+    let state = UserInputState::new();
+    assert!(!state.is_agent_working());
+    state.mark_screen_changed();
+    assert!(pty_submit_wait_blocked_for(&state, false));
 }

@@ -121,3 +121,73 @@ fn plain_output_with_no_osc_yields_nothing() {
 fn invalid_utf8_payload_is_ignored_without_panicking() {
     assert_eq!(feed_once(b"\x1b]0;\xff\xfe\x07"), None);
 }
+
+// ---- a title that stops animating --------------------------------------------
+
+#[test]
+fn a_spinner_title_settling_into_plain_text_ends_the_turn() {
+    // Exactly what Claude Code does: `◐`/`◑` while a turn runs, then `✳` once
+    // it finishes. `✳` is neither a spinner frame nor a check mark, so on its
+    // own it says nothing — but as the frame after a spinner it says the
+    // spinner stopped. Missing that pinned the spinner clock for its full three
+    // minutes after every turn, and bus messages waited out the rest.
+    let mut d = OscStateDetector::new();
+    assert_eq!(
+        d.feed("\x1b]0;\u{25D0} Claude Code\x07".as_bytes()),
+        Some(OscSignal::Working)
+    );
+    assert_eq!(
+        d.feed("\x1b]0;\u{25D1} Claude Code\x07".as_bytes()),
+        Some(OscSignal::Working)
+    );
+    assert_eq!(
+        d.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes()),
+        Some(OscSignal::Idle),
+        "the spinner stopping must clear the clock it armed"
+    );
+}
+
+#[test]
+fn a_plain_title_only_ends_a_turn_once() {
+    // After the transition the title is simply plain again; repeating it must
+    // not keep reporting Idle, and a later plain retitle means nothing.
+    let mut d = OscStateDetector::new();
+    d.feed("\x1b]0;\u{25D0} Claude Code\x07".as_bytes());
+    assert_eq!(
+        d.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes()),
+        Some(OscSignal::Idle)
+    );
+    assert_eq!(d.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes()), None);
+    assert_eq!(d.feed(b"\x1b]0;~/src/sidekar\x07"), None);
+}
+
+#[test]
+fn a_plain_title_with_no_spinner_before_it_still_says_nothing() {
+    // The existing guarantee, stated for the stateful detector: an ordinary
+    // retitle that was not preceded by an animation is not a turn ending.
+    let mut d = OscStateDetector::new();
+    assert_eq!(d.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes()), None);
+    assert_eq!(d.feed(b"\x1b]2;viper (claude-sidekar-1)\x07"), None);
+}
+
+#[test]
+fn an_empty_title_does_not_end_a_turn() {
+    // Empty carries no information: some CLIs blank the title between frames.
+    let mut d = OscStateDetector::new();
+    d.feed("\x1b]0;\u{25D0} Claude Code\x07".as_bytes());
+    assert_eq!(d.feed(b"\x1b]0;\x07"), None);
+    // ...and the animation is still considered running afterwards.
+    assert_eq!(
+        d.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes()),
+        Some(OscSignal::Idle)
+    );
+}
+
+#[test]
+fn progress_reports_do_not_disturb_title_tracking() {
+    // OSC 9;4 and the title are separate channels; a progress report arriving
+    // between spinner frames must not make the next plain title read as idle.
+    let mut d = OscStateDetector::new();
+    assert_eq!(d.feed(b"\x1b]9;4;1;50\x07"), Some(OscSignal::Working));
+    assert_eq!(d.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes()), None);
+}

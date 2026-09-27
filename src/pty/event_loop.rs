@@ -191,6 +191,15 @@ pub(crate) async fn event_loop(
     // Last preamble published to the relay, so unchanged modes cost nothing.
     let mut published_preamble: Vec<u8> = Vec::new();
 
+    // Fires once output has been quiet for SETTLE_MS — the moment the screen is
+    // between frames and can be judged. Re-armed after every read, so an agent
+    // writing continuously never settles; `poller::UserInputState` covers that
+    // case separately. Starts far in the future and disarmed.
+    let settle = tokio::time::sleep(std::time::Duration::from_secs(86_400));
+    tokio::pin!(settle);
+    let mut settle_armed = false;
+    let settle_after = std::time::Duration::from_millis(super::screen_activity::SETTLE_MS);
+
     crate::activity::publish(agent_name, crate::activity::ActivityState::Idle);
 
     loop {
@@ -401,6 +410,14 @@ pub(crate) async fn event_loop(
             }
 
             // master fd → stdout AND tunnel (agent output)
+            // Ahead of the read on purpose: when a settle and a new frame are
+            // ready together, judge the finished frame before feeding the next.
+            () = &mut settle, if settle_armed => {
+                settle_armed = false;
+                input_state.settle_screen(super::pty_size(master_fd));
+                input_state.publish_activity(agent_name);
+            }
+
             result = master_async.readable() => {
                 match result {
                     Ok(mut guard) => {
@@ -419,6 +436,10 @@ pub(crate) async fn event_loop(
                             Ok(Ok(n)) => {
                                 let raw = &buf_out[..n];
                                 input_state.mark_pty_output_bytes(raw);
+                                settle
+                                    .as_mut()
+                                    .reset(tokio::time::Instant::now() + settle_after);
+                                settle_armed = true;
 
                                 // Detached session: no terminal exists to answer the
                                 // agent's capability probes, so sidekar answers them.

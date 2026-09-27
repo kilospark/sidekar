@@ -1,6 +1,6 @@
 [package]
 name = "sidekar"
-version = "4.5.28"
+version = "4.5.29"
 edition = "2024"
 build = "build.rs"
 license = "MIT"
@@ -74,6 +74,10 @@ http = "1"
 url = "2"
 bytes = "1"
 jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+# 0.15, not 0.16: 0.16 needs unicode-width ^0.2.1, and ratatui (via
+# toon-format) pins unicode-width to exactly 0.2.0. 0.15 uses the 0.1 line,
+# which the tree already carries, so it resolves with no conflict.
+vt100 = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", features = ["async"] }

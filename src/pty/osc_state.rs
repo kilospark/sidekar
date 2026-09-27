@@ -66,6 +66,16 @@ pub(crate) struct OscStateDetector {
     in_osc: bool,
     /// Trailing lone `ESC` from the previous chunk.
     pending_esc: bool,
+    /// The last title set carried an animation glyph.
+    ///
+    /// Remembered so a title that *stops* animating can say so. Claude Code
+    /// shows `◐ Claude Code` while a turn runs and `✳ Claude Code` once it is
+    /// done; `✳` is neither a spinner frame nor a check mark, so read on its own
+    /// it says nothing. Read as the frame after a spinner, it says the spinner
+    /// stopped. Without that, the clock the spinner armed ran its full three
+    /// minutes after every turn, and every bus message to the agent waited out
+    /// the remainder.
+    title_animating: bool,
 }
 
 impl OscStateDetector {
@@ -86,7 +96,9 @@ impl OscStateDetector {
                 match osc_terminator(raw, i) {
                     Some((end, skip)) => {
                         self.partial.extend_from_slice(&raw[i..end]);
-                        if let Some(sig) = classify_payload(&self.partial) {
+                        if let Some(sig) =
+                            classify_payload(&self.partial, &mut self.title_animating)
+                        {
                             signal = Some(sig);
                         }
                         self.reset();
@@ -154,25 +166,36 @@ fn osc_terminator(raw: &[u8], from: usize) -> Option<(usize, usize)> {
 }
 
 /// Classify an OSC payload (everything between `ESC ]` and the terminator).
-fn classify_payload(payload: &[u8]) -> Option<OscSignal> {
+fn classify_payload(payload: &[u8], title_animating: &mut bool) -> Option<OscSignal> {
     let text = std::str::from_utf8(payload).ok()?;
     let (ps, rest) = text.split_once(';')?;
 
     match ps {
         // Window title: icon name, window title, or both.
-        "0" | "1" | "2" => classify_title(rest),
+        "0" | "1" | "2" => classify_title(rest, title_animating),
         // ConEmu-style progress: `9;4;<state>;<percent>`.
         "9" => classify_progress(rest),
         _ => None,
     }
 }
 
-/// A leading animation glyph in the title means a turn is running.
-fn classify_title(title: &str) -> Option<OscSignal> {
+/// A leading animation glyph in the title means a turn is running, and a title
+/// that stops carrying one means the turn stopped.
+///
+/// The transition is the signal rather than a list of "done" glyphs: every CLI
+/// picks its own resting glyph and changes it between releases, while "the
+/// spinner went away" survives both. An empty title carries no information and
+/// leaves the state alone.
+fn classify_title(title: &str, animating: &mut bool) -> Option<OscSignal> {
     let first = title.trim_start().chars().next()?;
     if is_progress_glyph(first) {
+        *animating = true;
         Some(OscSignal::Working)
     } else if is_settled_glyph(first) {
+        *animating = false;
+        Some(OscSignal::Idle)
+    } else if std::mem::replace(animating, false) {
+        // Was spinning, now plain: the animation ended.
         Some(OscSignal::Idle)
     } else {
         // Ordinary title text says nothing either way; leave the clock alone.
