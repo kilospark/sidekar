@@ -140,15 +140,32 @@ pub fn migrate_totp_login_transition(old_uid: &str, new_uid: &str) -> Result<()>
     }
     // Wrapped in one transaction so a crash mid-migration can't leave some
     // secrets moved (or re-keyed) and others not.
+    let mut warnings = Vec::new();
     let mut conn = open()?;
     let tx = conn.transaction()?;
-    migrate_totp_rows(&tx, old_uid, new_uid)?;
+    migrate_totp_rows(&tx, old_uid, new_uid, &mut warnings)?;
     reencrypt_plaintext_secrets(&tx, new_uid)?;
     tx.commit()?;
+
+    // Logged after the transaction commits, not from inside it: see the
+    // matching comment in kv_store::migrate_kv_login_transition.
+    for (service, account, reason) in warnings {
+        crate::broker::try_log_event(
+            "warn",
+            "totp",
+            &reason,
+            Some(&format!("service={service} account={account}")),
+        );
+    }
     Ok(())
 }
 
-fn migrate_totp_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()> {
+fn migrate_totp_rows(
+    conn: &Connection,
+    old_uid: &str,
+    new_uid: &str,
+    warnings: &mut Vec<(String, String, String)>,
+) -> Result<()> {
     // See the matching comment in kv_store::migrate_kv_rows: rows under
     // `old_uid` are ciphertext under the persisted local key, which is no
     // longer the active key by the time this runs.
@@ -180,15 +197,31 @@ fn migrate_totp_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<
             // the orphaned pre-login row into, so log and drop it rather
             // than fail the whole login on a UNIQUE(user_id, service, account)
             // conflict.
-            crate::broker::try_log_event(
-                "warn",
-                "totp",
-                "dropped an orphaned pre-login secret that collided with an account secret",
-                Some(&format!("service={service} account={account}")),
-            );
+            warnings.push((
+                service.clone(),
+                account.clone(),
+                "dropped an orphaned pre-login secret that collided with an account secret"
+                    .to_string(),
+            ));
             conn.execute("DELETE FROM totp_secrets WHERE id = ?1", params![id])?;
         } else {
-            let rekeyed = rekey_migrated_secret(&secret, old_key.as_deref(), &active_key)?;
+            // A stranded secret (the key that protected it is gone, or the
+            // ciphertext otherwise can't be decrypted) must not fail the
+            // whole login: leave it in place under `old_uid` and move on
+            // (see the matching comment in kv_store::migrate_kv_rows).
+            let rekeyed = match rekey_migrated_secret(&secret, old_key.as_deref(), &active_key) {
+                Ok(v) => v,
+                Err(e) => {
+                    warnings.push((
+                        service.clone(),
+                        account.clone(),
+                        format!(
+                            "could not decrypt a pre-login totp secret during login migration; leaving it stranded: {e:#}"
+                        ),
+                    ));
+                    continue;
+                }
+            };
             conn.execute(
                 "UPDATE totp_secrets SET user_id = ?1, secret = ?2 WHERE id = ?3",
                 params![new_uid, rekeyed, id],

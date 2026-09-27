@@ -8,7 +8,21 @@ use rand::Rng;
 use std::sync::Mutex;
 
 static ENCRYPTION_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
-static CURRENT_USER_ID: Mutex<Option<String>> = Mutex::new(None);
+
+/// In-memory cache of the current uid for this process. Wrapped in an outer
+/// `Option` so "never looked at disk yet" (`None`) is distinguishable from
+/// "looked, and there is no logged-in user" (`Some(None)`) -- otherwise every
+/// call after the first empty read would re-hit the database instead of
+/// caching the negative result.
+static CURRENT_USER_ID: Mutex<Option<Option<String>>> = Mutex::new(None);
+
+/// Key under which the last-seen uid is persisted in `encryption_meta`, so a
+/// fresh CLI process can tell "already logged in as this account" (skip
+/// migration) apart from "never logged in" (`old_uid = ""`). Without this,
+/// every invocation's process-local static started empty and looked like a
+/// fresh login transition even when nothing had changed since the last run
+/// (see `fetch_encryption_key`, issue #11).
+const CURRENT_USER_ID_META_KEY: &str = "current_user_id_v1";
 
 pub fn set_encryption_key(key: Vec<u8>) {
     let mut guard = ENCRYPTION_KEY.lock().unwrap();
@@ -25,17 +39,76 @@ pub fn get_encryption_key() -> Option<Vec<u8>> {
 }
 
 pub fn set_current_user_id(user_id: String) {
-    let mut guard = CURRENT_USER_ID.lock().unwrap();
-    *guard = Some(user_id);
+    persist_current_user_id(Some(&user_id));
+    *CURRENT_USER_ID.lock().unwrap() = Some(Some(user_id));
 }
 
 pub fn clear_current_user_id() {
-    let mut guard = CURRENT_USER_ID.lock().unwrap();
-    *guard = None;
+    persist_current_user_id(None);
+    *CURRENT_USER_ID.lock().unwrap() = Some(None);
 }
 
+/// Resolve the current uid, hydrating the in-memory cache from
+/// `encryption_meta` on first use in this process if it hasn't been set yet.
 pub fn current_user_id() -> Option<String> {
-    CURRENT_USER_ID.lock().unwrap().clone()
+    let mut guard = CURRENT_USER_ID.lock().unwrap();
+    if let Some(ref cached) = *guard {
+        return cached.clone();
+    }
+    let persisted = read_persisted_current_user_id();
+    *guard = Some(persisted.clone());
+    persisted
+}
+
+/// Best-effort: a failure to persist must not block login/logout, it just
+/// means the next process re-derives `old_uid = ""` and re-runs migration
+/// once more, same as before this fix existed.
+fn persist_current_user_id(uid: Option<&str>) {
+    if let Err(e) = persist_current_user_id_inner(uid) {
+        crate::broker::try_log_event(
+            "warn",
+            "encryption",
+            "failed to persist current user id",
+            Some(&format!("{e:#}")),
+        );
+    }
+}
+
+fn persist_current_user_id_inner(uid: Option<&str>) -> Result<()> {
+    let conn = open()?;
+    match uid {
+        Some(uid) => conn.execute(
+            "INSERT INTO encryption_meta (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![CURRENT_USER_ID_META_KEY, uid],
+        ),
+        None => conn.execute(
+            "DELETE FROM encryption_meta WHERE key = ?1",
+            params![CURRENT_USER_ID_META_KEY],
+        ),
+    }?;
+    Ok(())
+}
+
+/// Forget the in-memory uid cache without touching what is persisted on
+/// disk, simulating a fresh CLI process starting up against a database that
+/// already recorded a prior login. Test-only: production code never needs
+/// to un-hydrate itself mid-process.
+#[cfg(test)]
+pub(crate) fn reset_current_user_id_cache_for_test() {
+    *CURRENT_USER_ID.lock().unwrap() = None;
+}
+
+fn read_persisted_current_user_id() -> Option<String> {
+    let conn = open().ok()?;
+    conn.query_row(
+        "SELECT value FROM encryption_meta WHERE key = ?1",
+        params![CURRENT_USER_ID_META_KEY],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
 pub fn is_encrypted(value: &str) -> bool {
@@ -293,14 +366,17 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     set_encryption_key(decoded.clone());
 
     if let Some(ref uid) = body.user_id {
-        set_current_user_id(uid.clone());
         if old_uid != *uid {
             // Rows written before login (or under a different account) live
             // under a different user_id and would otherwise stay invisible,
             // still encrypted under the local key we just replaced above, or
-            // (if written before any key existed) in plaintext.
+            // (if written before any key existed) in plaintext. Migrate
+            // *before* persisting the new uid: if migration fails, the next
+            // process must still see `old_uid` and retry the transition
+            // instead of treating it as already done.
             migrate_login_transition(&old_uid, uid)?;
         }
+        set_current_user_id(uid.clone());
     }
 
     Ok(Some(decoded))
