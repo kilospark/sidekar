@@ -387,8 +387,10 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             "Usage: sidekar gmail <search|read|send|draft|labels|modify> …\n  \
              search <query> [--limit N]      Gmail query syntax: from:, is:unread, newer_than:2d\n  \
              read <id>\n  \
-             send --to <addr> [--cc a] [--bcc b] --subject <s> --body <text>|--body-file <p>\n  \
-             send --reply <message-id> --to <addr> --body <text>   threads the reply\n  \
+             send --to <addr> [--cc a] [--bcc b] --subject <s> BODY\n  \
+             send --reply <message-id> --to <addr> BODY   threads the reply\n  \
+             BODY is --body <text>|--body-file <p> and/or --html <html>|--html-file <p>;\n  \
+             given both, they go as alternatives (plain first); HTML alone gets a plain fallback\n  \
              draft <create|list|show|update|send|rm> …   compose without sending\n  \
              attachments <message-id>                    list files on a message\n  \
              attachment <message-id> <filename> [--out <path>] | --all [--out <dir>]\n  \
@@ -451,7 +453,9 @@ async fn cmd_gmail_draft(
         }
         "update" => {
             let id = id_arg(
-                "Usage: sidekar gmail draft update <draft-id> --to <addr> --subject <s> --body <text>",
+                "Usage: sidekar gmail draft update <draft-id> --to <addr> --subject <s> BODY [--attach F]\n  \
+                 BODY is --body/--body-file and/or --html/--html-file. The draft is replaced whole: \
+                 re-pass the HTML and attachments to keep them.",
             )?;
             reject_unknown_flags(rest, COMPOSE_FLAGS)?;
             // Gmail replaces the whole draft, so a partial update would blank
@@ -500,10 +504,11 @@ async fn cmd_gmail_draft(
         other => bail!(
             "Unknown draft subcommand '{other}'.\n  \
              create --to <addr> [--cc a] [--bcc b] [--reply <message-id>] \
-             --subject <s> --body <text>|--body-file <path>\n  \
+             --subject <s> BODY [--attach F]\n  \
              list [--limit N]\n  \
              show <draft-id>\n  \
-             update <draft-id> --to <addr> --subject <s> --body <text>\n  \
+             update <draft-id> --to <addr> --subject <s> BODY [--attach F]   replaces the draft whole\n  \
+             BODY is --body <text>|--body-file <path> and/or --html <html>|--html-file <path>\n  \
              send <draft-id>\n  \
              rm <draft-id>"
         ),

@@ -104,6 +104,7 @@ sidekar gmail read <id>
 sidekar gmail send --to a@b.com --subject "Q3" --body "text"
 sidekar gmail draft create --to a@b.com --cc c@b.com --subject "Q3" --body "text"
 sidekar gmail draft create --reply <message-id> --to a@b.com --body-file reply.txt
+sidekar gmail draft create --to a@b.com --subject "Q3" --body-file q3.txt --html-file q3.html
 sidekar gmail draft list && sidekar gmail draft show <draft-id>
 sidekar gmail draft send <draft-id>   # or the human sends it from Gmail
 sidekar gmail send --to a@b.com --subject S --body B --attach report.pdf
@@ -126,6 +127,12 @@ client rather than only in Gmail's own UI. It also inherits the parent's subject
 as `Re: …` unless you pass `--subject`. It does not guess the recipient —
 `--to` is still required, because guessing wrong mails the wrong person.
 `--body-file <path>` takes a body from a file, for anything multi-line.
+
+`--html <html>` / `--html-file <path>` add an HTML body. Given text and HTML, they
+go as alternatives, plain first, so clients that render HTML show it and the rest
+fall back. Given HTML alone, a plain version is derived from it — HTML-only mail
+is a spam signal. `draft update` replaces a draft whole: re-pass the HTML and any
+`--attach` you want kept. It lists what it dropped if you forget.
 
 `--attach <path>` is repeatable and caps at 5MB for the whole message — that is
 Gmail's limit for a single send, not sidekar's. For anything bigger, `sidekar
