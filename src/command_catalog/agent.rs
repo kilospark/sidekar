@@ -65,6 +65,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
+        "session",
+        "<start|send|wait|approve|cancel|events|status|list|stop|resume> [args]",
+        "Run an agent in the background and drive it with structured turns",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
         "spawn",
         "<agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] | list",
         "Launch another agent on the bus and print its name",

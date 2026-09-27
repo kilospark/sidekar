@@ -124,6 +124,7 @@ pub mod ext;
 pub mod google;
 pub mod help;
 pub mod help_text;
+pub mod hosted;
 pub mod input_mode;
 pub mod md;
 pub mod memory;

@@ -61,6 +61,48 @@ sidekar agents [--watch [secs]]
     sidekar agents --watch 5
     sidekar agents --format json"
         }
+        "session" => {
+            "\
+sidekar session start <engine> [--cwd <dir>] [--model <m>] [--approvals ask|allow|deny] [--name <n>]
+sidekar session send <name> <text|--file=path> [--wait] [--timeout <d>] [--queue|--interrupt]
+sidekar session wait <name> [--turn <id>] [--timeout <d>]
+sidekar session approve <name> <request_id> allow|deny [--message <why>]
+sidekar session cancel|status|stop|resume <name>
+sidekar session events <name> [--since <seq>] [--follow]
+sidekar session list
+
+  Run an agent in the background and drive it with structured turns: a message
+  in, a result out. No terminal, no screen, no keystrokes. The engine speaks its
+  own protocol (Claude: stream-json), and sidekar serves normalized events on a
+  socket at ~/.sidekar/s/<name>/sock. Engines: claude.
+
+  send --wait prints the turn's result. Exit status:
+    0 finished   1 timed out (the turn keeps running; `wait` resumes)
+    2 session ended   3 needs approval   4 a turn is already running
+    5 the turn failed (model error, interrupted), reason on stderr
+
+  --approvals decides what happens when the agent wants to run a tool that
+  changes something (read-only tools never ask):
+    ask    (default) send --wait / wait exit 3 and print the request as JSON;
+           answer with `approve`, then `wait` again. Unanswered after 10m: denied.
+    allow  every tool call is approved.   deny  every one is refused.
+
+  A send while a turn runs is refused (exit 4) unless --queue (run after it)
+  or --interrupt (stop it, run this). `cancel` stops the running turn.
+
+  Every session is on the bus under its name: `sidekar bus send <name> \"...\"`
+  runs a turn, and the result comes back as the reply (`bus await` works).
+
+  If the host dies, `send` exits 2 and `resume` continues the same conversation.
+  `events` prints the session's event log as JSON lines; every event keeps the
+  engine's original message in `raw`.
+
+  Examples:
+    S=$(sidekar session start claude --cwd ~/src/app)
+    sidekar session send \"$S\" \"Review the diff on this branch\" --wait --timeout 20m
+    sidekar session send \"$S\" \"Is the null check on line 40 a real bug?\" --wait
+    sidekar session stop \"$S\""
+        }
         "spawn" => {
             "\
 sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo]

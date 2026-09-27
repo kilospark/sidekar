@@ -120,7 +120,6 @@ const REMOVED_COMMANDS: &[(&str, &str)] = &[
     ("service_workers", "service-workers"),
     ("run", "browser run"),
     ("ext", "browser ext"),
-    ("session", "relay"),
 ];
 
 pub fn command_specs() -> &'static [CommandSpec] {

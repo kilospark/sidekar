@@ -145,6 +145,9 @@ pub(super) async fn housekeeping_loop(http_port: u16, ext_state: crate::ext::Sha
                 // mail an hour old, and doing that first would lose it in silence
                 // instead of telling its senders.
                 settle_orphaned_mail();
+                // A session host that crashed leaves its socket and a
+                // "running" meta behind; mark it ended.
+                let _ = crate::hosted::reap_all();
                 cleanup_stale_messages();
                 crate::ext::sweep_stale_watches(&ext_state, STALE_WATCH_AGE_SECS).await;
                 crate::ext::sweep_stale_tab_monitors(&ext_state, STALE_WATCH_AGE_SECS).await;

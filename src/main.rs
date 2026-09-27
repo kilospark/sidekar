@@ -260,6 +260,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if command == "daemon" {
         return top_level_cmds::handle_daemon(&args).await;
     }
+    if command == "session" {
+        return sidekar::hosted::cli::handle(&args).await;
+    }
 
     if let Some(replacement) = sidekar::removed_command_replacement(&raw_command) {
         bail!("Command '{raw_command}' was removed. Use: sidekar {replacement}");

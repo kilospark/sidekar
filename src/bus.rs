@@ -95,10 +95,12 @@ pub fn inherit_pty_registration() -> Option<AgentId> {
             Some(ppid) if ppid != pid && ppid > 1 => ppid,
             _ => break,
         };
-        // Check if this ancestor registered a PTY session
-        let pty_id = format!("pty-{pid}");
-        if let Ok(Some(agent)) = broker::agent_for_pane_unique(&pty_id) {
-            return Some(agent.id);
+        // Check if this ancestor registered a PTY session, or hosts a
+        // session: an engine's own `sidekar bus` calls speak as the session.
+        for pane in [format!("pty-{pid}"), format!("session-{pid}")] {
+            if let Ok(Some(agent)) = broker::agent_for_pane_unique(&pane) {
+                return Some(agent.id);
+            }
         }
     }
     None

@@ -58,11 +58,13 @@ pub(crate) fn first_free(prefix: &str, taken: &HashSet<String>) -> String {
 /// the registry is a file on disk, and one malformed row must not be able to
 /// turn `sidekar stop` into a kill-everything.
 pub(crate) fn pid_of_pane(pane: &str) -> Option<i32> {
-    ["pty-", "repl-", "cli-"].iter().find_map(|prefix| {
-        pane.strip_prefix(prefix)
-            .and_then(|rest| rest.parse::<i32>().ok())
-            .filter(|pid| *pid > 0)
-    })
+    ["pty-", "repl-", "cli-", "session-"]
+        .iter()
+        .find_map(|prefix| {
+            pane.strip_prefix(prefix)
+                .and_then(|rest| rest.parse::<i32>().ok())
+                .filter(|pid| *pid > 0)
+        })
 }
 
 /// True while `pid` names a live process.
