@@ -10,6 +10,7 @@ fn meta(name: &str, pid: i32, status: Status) -> Meta {
         cwd: "/tmp".into(),
         model: None,
         approvals: ApprovalPolicy::Ask,
+        refresh_env: false,
         status,
         pid,
         engine_pid: 0,

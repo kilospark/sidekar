@@ -5,7 +5,11 @@ use super::*;
 use serde_json::json;
 
 fn state(policy: ApprovalPolicy) -> State {
-    State::new(Box::new(crate::hosted::claude::Claude::default()), policy)
+    State::new(
+        Box::new(crate::hosted::claude::Claude::default()),
+        policy,
+        false,
+    )
 }
 
 fn result(text: &str) -> Value {
@@ -274,4 +278,63 @@ fn a_late_client_still_gets_events_memory_has_let_go_of() {
     );
     assert_eq!(s.backlog(s.seq() - 3).len(), 3);
     let _ = std::fs::remove_file(&log);
+}
+
+fn state_with_refresh(policy: ApprovalPolicy) -> State {
+    State::new(
+        Box::new(crate::hosted::claude::Claude::default()),
+        policy,
+        true,
+    )
+}
+
+fn proxy_env(value: &str) -> HashMap<String, String> {
+    [("https_proxy".to_string(), value.to_string())]
+        .into_iter()
+        .collect()
+}
+
+#[test]
+fn env_refresh_signals_respawn_when_caller_env_differs() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_env = proxy_env("http://old:3128");
+    let fresh = proxy_env("http://new:3128");
+    // Through handle(), as a Send request carries it.
+    let (reply, _) = s.handle(Request::Send {
+        text: "hi".into(),
+        busy: Busy::Reject,
+        follow: false,
+        env: Some(fresh.clone()),
+    });
+    assert!(reply.ok);
+    assert_eq!(s.take_pending_env(), Some(fresh));
+    assert!(s.take_pending_env().is_none(), "pending env is taken once");
+}
+
+#[test]
+fn env_refresh_ignores_unchanged_env() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    let env = proxy_env("http://same:3128");
+    s.engine_env = env.clone();
+    s.note_caller_env(Some(env));
+    assert!(s.take_pending_env().is_none());
+}
+
+#[test]
+fn env_refresh_disabled_ignores_caller_env() {
+    let mut s = state(ApprovalPolicy::Ask);
+    s.note_caller_env(Some(proxy_env("http://new:3128")));
+    assert!(s.take_pending_env().is_none());
+}
+
+#[test]
+fn engine_command_resumes_the_conversation() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_session_id = Some("sess-123".into());
+    let (program, args) = s.engine_command(Some("sonnet".into()));
+    assert_eq!(program, "claude");
+    let resume_at = args.iter().position(|a| a == "--resume").unwrap();
+    assert_eq!(args[resume_at + 1], "sess-123");
+    let model_at = args.iter().position(|a| a == "--model").unwrap();
+    assert_eq!(args[model_at + 1], "sonnet");
 }

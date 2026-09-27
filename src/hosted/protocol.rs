@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// What a session reports. Every event carries the engine's original message
 /// in `raw` when there was one, so a client can reach anything the common
@@ -106,6 +107,12 @@ pub enum Request {
         /// Stream events from this send onward on the same connection.
         #[serde(default)]
         follow: bool,
+        /// Environment for the engine from the caller, e.g. rotated proxy
+        /// credentials. When the session refreshes its env, the host
+        /// restarts the engine with this before the turn if it differs
+        /// from what the engine was started with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
     },
     /// Stream every event after `since`, then live ones.
     Subscribe {

@@ -70,6 +70,11 @@ pub struct Meta {
     #[serde(default)]
     pub model: Option<String>,
     pub approvals: ApprovalPolicy,
+    /// Refresh the engine's environment from each send's caller (e.g. for
+    /// rotated proxy credentials). Opt-in: only matters where the host's
+    /// startup environment goes stale.
+    #[serde(default)]
+    pub refresh_env: bool,
     pub status: Status,
     /// The host process. Zero until the host has started.
     #[serde(default)]

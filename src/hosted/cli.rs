@@ -4,6 +4,7 @@ use super::protocol::{Busy, Event, EventBody, Reply, Request};
 use super::{ApprovalPolicy, Meta, Status};
 use crate::utils::ExitWith;
 use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -129,7 +130,11 @@ impl Args {
 }
 
 async fn start(args: &[String]) -> Result<()> {
-    let a = Args::parse(args, &["cwd", "model", "approvals", "name"], &[])?;
+    let a = Args::parse(
+        args,
+        &["cwd", "model", "approvals", "name"],
+        &["refresh-env"],
+    )?;
     let engine = a
         .positional
         .first()
@@ -170,6 +175,7 @@ async fn start(args: &[String]) -> Result<()> {
         cwd,
         model: a.value("model").map(String::from),
         approvals,
+        refresh_env: a.has("refresh-env"),
         status: Status::Starting,
         pid: 0,
         engine_pid: 0,
@@ -334,6 +340,25 @@ fn refused(reply: Reply) -> anyhow::Error {
     }
 }
 
+/// The proxy environment this process runs with, for handing to a session
+/// whose engine needs fresh network credentials on each turn.
+fn caller_proxy_env() -> HashMap<String, String> {
+    const VARS: &[&str] = &[
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+    ];
+    VARS.iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+}
+
 async fn send(args: &[String]) -> Result<()> {
     let a = Args::parse(args, &["timeout", "file"], &["wait", "queue", "interrupt"])?;
     let name = a.name()?.to_string();
@@ -352,7 +377,14 @@ async fn send(args: &[String]) -> Result<()> {
     };
     let wait = a.has("wait");
     let timeout = a.timeout()?;
-    let policy = super::read_meta(&name)?.approvals;
+    let meta = super::read_meta(&name)?;
+    let policy = meta.approvals;
+    // When the session refreshes its env, hand the host this process's
+    // proxy environment so the engine's network keeps working.
+    let env = meta
+        .refresh_env
+        .then(caller_proxy_env)
+        .filter(|m| !m.is_empty());
 
     let mut client = Client::connect(&name).await?;
     let reply = client
@@ -360,6 +392,7 @@ async fn send(args: &[String]) -> Result<()> {
             text,
             busy,
             follow: wait,
+            env,
         })
         .await?;
     if !reply.ok {
