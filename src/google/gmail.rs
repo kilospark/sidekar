@@ -212,7 +212,11 @@ pub struct Compose {
     pub cc: Option<String>,
     pub bcc: Option<String>,
     pub subject: String,
+    /// The plain-text body. May be empty when `html` is given; a fallback is
+    /// then derived from the HTML.
     pub body: String,
+    /// An HTML body, sent alongside the text as an alternative.
+    pub html: Option<String>,
     pub reply: Option<ReplyContext>,
     /// Files to attach, already read off disk.
     pub attachments: Vec<OutgoingAttachment>,
@@ -391,21 +395,31 @@ pub(crate) fn encode_message(msg: &Compose) -> Result<String> {
             headers.push_str(&format!("References: {}\r\n", r.references));
         }
     }
+    // What the reader sees: plain text alone, or plain text and HTML offered as
+    // alternatives of one another. Plain text alone is sent exactly as before.
+    let content = match &msg.html {
+        None => Part {
+            headers: "Content-Type: text/plain; charset=UTF-8\r\n".to_string(),
+            body: msg.body.clone(),
+        },
+        Some(html) => alternative(&plain_for(msg), html),
+    };
+
     let raw = if msg.attachments.is_empty() {
-        headers.push_str("Content-Type: text/plain; charset=UTF-8\r\n");
-        format!("{headers}\r\n{}", msg.body)
+        if msg.html.is_some() {
+            headers.push_str("MIME-Version: 1.0\r\n");
+        }
+        format!("{headers}{}\r\n{}", content.headers, content.body)
     } else {
-        // multipart/mixed: the text first, then one part per file. The boundary
-        // must not occur in any part, which is why it carries a random tail
-        // rather than being a fixed string.
-        let boundary = mime_boundary();
+        // multipart/mixed: the content first — itself an alternative when there
+        // is HTML — then one part per file.
+        let boundary = mime_boundary("mix");
         headers.push_str(&format!(
             "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\r\n"
         ));
         let mut out = format!(
-            "{headers}\r\n--{boundary}\r\n\
-             Content-Type: text/plain; charset=UTF-8\r\n\r\n{}\r\n",
-            msg.body
+            "{headers}\r\n--{boundary}\r\n{}\r\n{}\r\n",
+            content.headers, content.body
         );
         for a in &msg.attachments {
             out.push_str(&format!(
@@ -437,12 +451,131 @@ pub(crate) fn encode_message(msg: &Compose) -> Result<String> {
 }
 
 /// A boundary no part can accidentally contain.
-fn mime_boundary() -> String {
+/// A boundary no part can accidentally contain, distinct from every other.
+///
+/// `role` is part of it because the clock alone does not keep two apart. Measured
+/// on macOS: the clock resolves only to the microsecond, and 97.6% of adjacent
+/// calls return the identical value. A multipart/mixed wrapping a
+/// multipart/alternative needs two boundaries, and two identical ones let the
+/// inner closing line close the outer part — the message would arrive with its
+/// attachments silently gone. Today the two calls happen to sit on either side
+/// of the base64 work, so the clock usually differs; the role makes them
+/// distinct by construction instead of by an accident of ordering.
+fn mime_boundary(role: &str) -> String {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("=_sidekar_{n:x}_{:x}", std::process::id())
+    format!("=_sidekar_{role}_{n:x}_{:x}", std::process::id())
+}
+
+/// One MIME entity: its own headers, then its body.
+struct Part {
+    headers: String,
+    body: String,
+}
+
+/// Plain text and HTML as alternatives, plain first.
+///
+/// Order matters: RFC 2046 says the last alternative is the preferred one, so
+/// clients that can render HTML show it and the rest fall back to the text.
+/// Both are base64, not sent raw: HTML is routinely one enormous line, and a
+/// line over 998 characters is not legal in a mail message.
+fn alternative(plain: &str, html: &str) -> Part {
+    let boundary = mime_boundary("alt");
+    Part {
+        headers: format!("Content-Type: multipart/alternative; boundary=\"{boundary}\"\r\n"),
+        body: format!(
+            "--{boundary}\r\n\
+             Content-Type: text/plain; charset=UTF-8\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+             --{boundary}\r\n\
+             Content-Type: text/html; charset=UTF-8\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+             --{boundary}--",
+            base64_mime(plain.as_bytes()),
+            base64_mime(html.as_bytes()),
+        ),
+    }
+}
+
+/// The plain-text alternative: what the caller gave, or one read off the HTML.
+///
+/// HTML with no text part is a spam signal and unreadable in a text client, so
+/// an HTML-only message still carries a plain version.
+fn plain_for(msg: &Compose) -> String {
+    if !msg.body.trim().is_empty() {
+        return msg.body.clone();
+    }
+    msg.html.as_deref().map(html_to_text).unwrap_or_default()
+}
+
+/// Readable plain text from HTML — good enough for a fallback and for reading
+/// HTML-only mail, not a renderer.
+///
+/// Script and style contents are dropped rather than shown; block-level tags
+/// become line breaks so paragraphs survive; list items get a bullet; entities
+/// are decoded; whitespace is collapsed the way a browser would.
+pub(crate) fn html_to_text(html: &str) -> String {
+    use std::sync::LazyLock;
+    static HIDDEN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?is)<(script|style|head)\b[^>]*>.*?</\s*(script|style|head)\s*>")
+            .unwrap()
+    });
+    // A paragraph ends with a blank line; a line break, a div or a table row with
+    // just a newline. `li` is absent on purpose: its opening tag already starts
+    // a new bulleted line, and ending it too would space every item apart.
+    static PARA: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)</\s*(p|h[1-6]|blockquote|table|ul|ol)\s*>").unwrap()
+    });
+    static BREAK: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)<\s*(br|hr)\b[^>]*>|</\s*(div|tr)\s*>").unwrap());
+    static ITEM: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)<\s*li\b[^>]*>").unwrap());
+    static TAG: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?s)<[^>]*>").unwrap());
+    static SPACES: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"[ \t\x0B\f\r]+").unwrap());
+    static BLANKS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\n\s*\n\s*\n+").unwrap());
+
+    // Newlines in the source are layout, not content, exactly as in a browser.
+    let flat = html.replace(['\r', '\n'], " ");
+    let t = HIDDEN.replace_all(&flat, "");
+    let t = ITEM.replace_all(&t, "\n- ");
+    let t = PARA.replace_all(&t, "\n\n");
+    let t = BREAK.replace_all(&t, "\n");
+    let t = TAG.replace_all(&t, "");
+    let t = decode_entities(&t);
+    let t = SPACES.replace_all(&t, " ");
+    let lines: Vec<&str> = t.split('\n').map(str::trim).collect();
+    let t = lines.join("\n");
+    BLANKS.replace_all(&t, "\n\n").trim().to_string()
+}
+
+/// Named and numeric character references. `&amp;` goes last so `&amp;lt;`
+/// becomes `&lt;` rather than `<`.
+fn decode_entities(s: &str) -> String {
+    use std::sync::LazyLock;
+    static NUMERIC: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"&#(x[0-9a-fA-F]+|[0-9]+);").unwrap());
+    let s = NUMERIC.replace_all(s, |c: &regex::Captures| {
+        let v = &c[1];
+        let code = match v.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok(),
+            None => v.parse::<u32>().ok(),
+        };
+        code.and_then(char::from_u32)
+            .map(String::from)
+            .unwrap_or_default()
+    });
+    s.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// Standard-alphabet base64, wrapped at 76 columns.
@@ -582,8 +715,74 @@ pub async fn draft_show(token: &super::auth::TokenRef, id: &str) -> Result<Strin
         out.push_str(&format!("In-Reply-To: {in_reply_to}\n"));
     }
     out.push_str(&format!("Subject: {}\n\n", header(m, "Subject")));
-    out.push_str(&body_text(m.get("payload").unwrap_or(&Value::Null)));
+    let payload = m.get("payload").unwrap_or(&Value::Null);
+    // Listed for the same reason Cc is: a draft is approved before it goes out,
+    // and an attachment the reviewer cannot see is one they cannot check.
+    let files = attachments(payload);
+    if !files.is_empty() {
+        out.push_str("Attachments:\n");
+        for a in &files {
+            out.push_str(&format!(
+                "  {} ({} bytes, {})\n",
+                a.filename, a.size, a.mime
+            ));
+        }
+        out.push('\n');
+    }
+    out.push_str(&body_text(payload));
+    // What is shown is the plain alternative. A reviewer approving the draft
+    // should know there is an HTML version the recipient will likely see instead.
+    if has_html_part(payload) {
+        out.push_str("\n\n[This draft also has an HTML version, which most mail clients will show instead of the text above.]");
+    }
     Ok(out)
+}
+
+/// What a draft currently carries beyond its headers and text.
+pub struct DraftExtras {
+    pub has_html: bool,
+    pub attachments: Vec<String>,
+}
+
+/// Read a draft's HTML and attachments, so an update can report what it drops.
+pub async fn draft_extras(token: &super::auth::TokenRef, id: &str) -> Result<DraftExtras> {
+    let d = super::api_get(token, &format!("{BASE}/drafts/{id}?format=full")).await?;
+    let payload = d
+        .get("message")
+        .and_then(|m| m.get("payload"))
+        .unwrap_or(&Value::Null);
+    Ok(DraftExtras {
+        has_html: has_html_part(payload),
+        attachments: attachments(payload)
+            .into_iter()
+            .map(|a| a.filename)
+            .collect(),
+    })
+}
+
+/// What an update would lose: HTML and attachments the draft has now and the
+/// replacement does not carry.
+///
+/// Gmail replaces a draft whole, so anything not passed again is gone. That is
+/// the API's behaviour and not worth faking a merge over — but it must not be
+/// silent. The first live run showed an update that reported success while
+/// quietly deleting both the HTML version and the attachment.
+pub fn dropped_by_update(before: &DraftExtras, after: &Compose) -> Vec<String> {
+    let mut dropped = Vec::new();
+    if before.has_html && after.html.is_none() {
+        dropped.push("the HTML version (pass --html-file to keep it)".to_string());
+    }
+    let kept: std::collections::HashSet<&str> = after
+        .attachments
+        .iter()
+        .map(|a| a.filename.as_str())
+        .collect();
+    for name in &before.attachments {
+        if !kept.contains(name.as_str()) {
+            dropped.push(format!("attachment {name} (pass --attach to keep it)"));
+        }
+    }
+    dropped
 }
 
 /// Send an existing draft. Returns the sent message id.
@@ -698,7 +897,24 @@ pub(crate) fn body_text(payload: &Value) -> String {
         }
         return String::new();
     }
-    decode_part(payload).unwrap_or_default()
+    let decoded = decode_part(payload).unwrap_or_default();
+    // HTML-only mail lands here with no plain part to prefer. Its source is
+    // readable to a browser, not to an agent reading the message, so read it
+    // the way a text client would.
+    if payload.get("mimeType").and_then(|m| m.as_str()) == Some("text/html") {
+        html_to_text(&decoded)
+    } else {
+        decoded
+    }
+}
+
+/// True when any part of the message is HTML.
+pub(crate) fn has_html_part(part: &Value) -> bool {
+    part.get("mimeType").and_then(|m| m.as_str()) == Some("text/html")
+        || part
+            .get("parts")
+            .and_then(|p| p.as_array())
+            .is_some_and(|ps| ps.iter().any(has_html_part))
 }
 
 fn decode_part(part: &Value) -> Option<String> {

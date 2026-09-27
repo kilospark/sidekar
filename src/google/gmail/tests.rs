@@ -342,3 +342,246 @@ fn mime_types_come_from_the_extension() {
     assert_eq!(mime_for("thing.qqq"), "application/octet-stream");
     assert_eq!(mime_for("Makefile"), "application/octet-stream");
 }
+
+// ---- HTML bodies ------------------------------------------------------------
+
+/// Decode every base64 section in a raw message: the parts HTML mail carries.
+fn decoded_parts(raw: &str) -> Vec<String> {
+    raw.split("Content-Transfer-Encoding: base64\r\n\r\n")
+        .skip(1)
+        .map(|rest| {
+            let b64: String = rest
+                .split("\r\n--")
+                .next()
+                .unwrap()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn text_alone_is_sent_exactly_as_before() {
+    // The proven path must not move: single-part text/plain, no MIME wrapper.
+    let raw = raw_of(&compose("a@b.com", "s", "hello"));
+    assert!(raw.contains("\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nhello"));
+    assert!(!raw.contains("multipart"), "{raw}");
+    assert!(!raw.contains("MIME-Version"), "{raw}");
+}
+
+#[test]
+fn text_and_html_go_as_alternatives_plain_first() {
+    let mut m = compose("a@b.com", "s", "the plain version");
+    m.html = Some("<p>the <b>rich</b> version</p>".into());
+    let raw = raw_of(&m);
+    assert!(raw.contains("MIME-Version: 1.0\r\n"));
+    assert!(raw.contains("Content-Type: multipart/alternative; boundary="));
+    // RFC 2046: the last alternative is preferred, so HTML must come last or
+    // capable clients would show the plain text.
+    let plain = raw.find("Content-Type: text/plain").expect("no plain part");
+    let html = raw.find("Content-Type: text/html").expect("no html part");
+    assert!(plain < html, "plain must precede html");
+    assert_eq!(
+        decoded_parts(&raw),
+        vec![
+            "the plain version".to_string(),
+            "<p>the <b>rich</b> version</p>".to_string()
+        ]
+    );
+}
+
+#[test]
+fn html_alone_still_carries_a_plain_version() {
+    // HTML with no text part is a spam signal and unreadable in a text client.
+    let mut m = compose("a@b.com", "s", "");
+    m.html = Some("<h1>Q3 invoice</h1><p>Total: <b>$1,200</b></p>".into());
+    let parts = decoded_parts(&raw_of(&m));
+    assert_eq!(parts.len(), 2);
+    assert!(
+        parts[0].contains("Q3 invoice") && parts[0].contains("Total: $1,200"),
+        "{:?}",
+        parts[0]
+    );
+    assert!(
+        !parts[0].contains('<'),
+        "tags leaked into the plain version: {:?}",
+        parts[0]
+    );
+}
+
+#[test]
+fn html_with_attachments_nests_the_alternative_inside_mixed() {
+    let mut m = compose("a@b.com", "s", "see attached");
+    m.html = Some("<p>see <i>attached</i></p>".into());
+    m.attachments = vec![OutgoingAttachment {
+        filename: "q3.pdf".into(),
+        mime: "application/pdf".into(),
+        bytes: vec![0x25, 0x50, 0x44, 0x46],
+    }];
+    let raw = raw_of(&m);
+    let mixed = raw
+        .split("multipart/mixed; boundary=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
+    let alt = raw
+        .split("multipart/alternative; boundary=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
+    // Identical boundaries would let the inner closing line close the outer
+    // part, and the attachment would arrive silently missing.
+    assert_ne!(mixed, alt, "the two boundaries collided");
+    assert!(
+        raw.contains(&format!("--{alt}--")),
+        "alternative not closed"
+    );
+    assert!(raw.contains(&format!("--{mixed}--")), "mixed not closed");
+    assert!(
+        raw.find(&format!("--{alt}--")).unwrap() < raw.find("filename=\"q3.pdf\"").unwrap(),
+        "the attachment landed inside the alternative"
+    );
+    let parts = decoded_parts(&raw);
+    assert_eq!(parts[0], "see attached");
+    assert_eq!(parts[1], "<p>see <i>attached</i></p>");
+}
+
+#[test]
+fn a_long_single_line_of_html_is_wrapped_not_sent_raw() {
+    // Minified HTML is one enormous line, and a line over 998 characters is
+    // not legal in a mail message.
+    let mut m = compose("a@b.com", "s", "x");
+    m.html = Some(format!("<p>{}</p>", "word ".repeat(2_000)));
+    let raw = raw_of(&m);
+    assert!(
+        raw.split("\r\n").all(|l| l.len() <= 998),
+        "a line exceeded 998 characters"
+    );
+}
+
+// ---- reading HTML as text ---------------------------------------------------
+
+#[test]
+fn html_reads_as_paragraphs_lists_and_breaks() {
+    let t =
+        html_to_text("<p>First para.</p><p>Second<br>line.</p><ul><li>one</li><li>two</li></ul>");
+    assert_eq!(t, "First para.\n\nSecond\nline.\n\n- one\n- two");
+}
+
+#[test]
+fn script_style_and_head_are_dropped_not_shown() {
+    let t = html_to_text(
+        "<html><head><title>T</title><style>p{color:red}</style></head>\
+         <body><script>alert(1)</script><p>visible</p></body></html>",
+    );
+    assert_eq!(t, "visible");
+}
+
+#[test]
+fn entities_are_decoded_and_amp_is_decoded_last() {
+    assert_eq!(
+        html_to_text("a &lt;b&gt; &amp; &quot;c&quot; &#39;d&#39; &#8364; &#x263A;"),
+        "a <b> & \"c\" 'd' € ☺"
+    );
+    // `&amp;lt;` is the literal text "&lt;", not "<".
+    assert_eq!(html_to_text("&amp;lt;"), "&lt;");
+}
+
+#[test]
+fn source_newlines_and_runs_of_spaces_collapse_like_a_browser() {
+    assert_eq!(html_to_text("<p>one\n   two\t\tthree</p>"), "one two three");
+}
+
+#[test]
+fn an_html_only_message_reads_as_text_not_source() {
+    // Before: `gmail read` on a newsletter showed its raw tags.
+    let payload = serde_json::json!({
+        "mimeType": "text/html",
+        "body": {"data": b64("<p>Hello <b>there</b></p>")}
+    });
+    assert_eq!(body_text(&payload), "Hello there");
+}
+
+#[test]
+fn a_plain_alternative_is_still_preferred_over_html() {
+    let payload = serde_json::json!({
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": b64("the plain one")}},
+            {"mimeType": "text/html", "body": {"data": b64("<p>the html one</p>")}}
+        ]
+    });
+    assert_eq!(body_text(&payload), "the plain one");
+    assert!(has_html_part(&payload));
+    assert!(!has_html_part(
+        &serde_json::json!({"mimeType": "text/plain"})
+    ));
+}
+
+#[test]
+fn boundaries_for_different_roles_never_collide_even_back_to_back() {
+    // The test that actually guards the role. Called back to back, the clock
+    // alone collides ~97% of the time on macOS, so a thousand adjacent pairs
+    // without the role would all but certainly produce a match.
+    for _ in 0..1_000 {
+        let (mix, alt) = (mime_boundary("mix"), mime_boundary("alt"));
+        assert_ne!(mix, alt, "two boundaries in one message collided");
+    }
+}
+
+// ---- updates that drop content ----------------------------------------------
+
+#[test]
+fn an_update_without_html_reports_dropping_it() {
+    let before = DraftExtras {
+        has_html: true,
+        attachments: vec![],
+    };
+    let dropped = dropped_by_update(&before, &compose("a@b.com", "s", "text only"));
+    assert_eq!(dropped.len(), 1);
+    assert!(dropped[0].contains("HTML"), "{dropped:?}");
+}
+
+#[test]
+fn an_update_without_an_attachment_reports_dropping_it() {
+    // The live run: an update that re-passed both bodies still quietly lost the
+    // PDF, and said only "Updated draft".
+    let before = DraftExtras {
+        has_html: false,
+        attachments: vec!["deck.pdf".into()],
+    };
+    let dropped = dropped_by_update(&before, &compose("a@b.com", "s", "x"));
+    assert_eq!(
+        dropped,
+        vec!["attachment deck.pdf (pass --attach to keep it)".to_string()]
+    );
+}
+
+#[test]
+fn an_update_that_carries_everything_again_drops_nothing() {
+    let before = DraftExtras {
+        has_html: true,
+        attachments: vec!["deck.pdf".into()],
+    };
+    let mut after = compose("a@b.com", "s", "x");
+    after.html = Some("<p>x</p>".into());
+    after.attachments = vec![OutgoingAttachment {
+        filename: "deck.pdf".into(),
+        mime: "application/pdf".into(),
+        bytes: vec![1],
+    }];
+    assert!(dropped_by_update(&before, &after).is_empty());
+}

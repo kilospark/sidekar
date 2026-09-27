@@ -464,8 +464,23 @@ async fn cmd_gmail_draft(
                 );
             }
             let msg = compose_from(token, rest, "gmail draft update").await?;
+            // Read what the draft carries now, so the update can say what it
+            // drops. Best effort: failing to look must not block the update.
+            let before = google::gmail::draft_extras(token, &id).await.ok();
             let new_id = google::gmail::draft_update(token, &id, &msg).await?;
             out!(ctx, "Updated draft {new_id}. Nothing has been sent.");
+            if let Some(before) = before {
+                let dropped = google::gmail::dropped_by_update(&before, &msg);
+                if !dropped.is_empty() {
+                    out!(
+                        ctx,
+                        "Dropped from the draft, because an update replaces it whole:"
+                    );
+                    for d in dropped {
+                        out!(ctx, "  - {d}");
+                    }
+                }
+            }
             Ok(())
         }
         "send" => {
@@ -873,6 +888,8 @@ const COMPOSE_FLAGS: &[&str] = &[
     "--subject",
     "--body",
     "--body-file",
+    "--html",
+    "--html-file",
     "--reply",
     "--attach",
 ];
@@ -906,6 +923,7 @@ async fn compose_from(
         (None, Some(r)) => google::gmail::reply_subject(&r.subject),
         (None, None) => String::new(),
     };
+    let (body, html) = compose_bodies(args, what)?;
     let mut attachments = Vec::new();
     for path in flags_all(args, "--attach") {
         attachments.push(google::gmail::attachment_from_path(std::path::Path::new(
@@ -917,7 +935,8 @@ async fn compose_from(
         cc: flag(args, "--cc"),
         bcc: flag(args, "--bcc"),
         subject,
-        body: compose_body(args, what)?,
+        body,
+        html,
         reply,
         attachments,
     })
@@ -957,14 +976,34 @@ fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
 /// `--body-file` exists because a shell makes multi-line text awkward to pass
 /// inline, and the workaround — `--body "$(cat f)"` — silently drops trailing
 /// newlines and mangles anything with quotes in it.
-fn compose_body(args: &[String], what: &str) -> Result<String> {
-    match (flag(args, "--body"), flag(args, "--body-file")) {
-        (Some(_), Some(_)) => bail!("pass either --body or --body-file, not both"),
-        (Some(b), None) => Ok(b),
+/// One body, from an inline flag or a file, never both.
+fn one_of(args: &[String], inline: &str, file: &str) -> Result<Option<String>> {
+    match (flag(args, inline), flag(args, file)) {
+        (Some(_), Some(_)) => bail!("pass either {inline} or {file}, not both"),
+        (Some(v), None) => Ok(Some(v)),
         (None, Some(path)) => std::fs::read_to_string(&path)
-            .with_context(|| format!("could not read --body-file {path}")),
-        (None, None) => bail!("{what} needs --body <text> or --body-file <path>"),
+            .map(Some)
+            .with_context(|| format!("could not read {file} {path}")),
+        (None, None) => Ok(None),
     }
+}
+
+/// The plain-text and HTML bodies. At least one is required.
+///
+/// Text alone is sent exactly as it always was. Given HTML, the message carries
+/// both as alternatives, and when there is no text a plain version is read off
+/// the HTML: HTML with no text part is a spam signal and unreadable in a text
+/// client.
+fn compose_bodies(args: &[String], what: &str) -> Result<(String, Option<String>)> {
+    let text = one_of(args, "--body", "--body-file")?;
+    let html = one_of(args, "--html", "--html-file")?;
+    if text.is_none() && html.is_none() {
+        bail!(
+            "{what} needs a body: --body <text> or --body-file <path>, and/or \
+             --html <html> or --html-file <path>"
+        );
+    }
+    Ok((text.unwrap_or_default(), html))
 }
 
 fn human_size(bytes: u64) -> String {
