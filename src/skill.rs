@@ -86,6 +86,30 @@ pub fn install_skill(config_hint: Option<&str>) {
     }
 }
 
+/// Bring every installed copy of the sidekar skill up to this binary's.
+///
+/// Only `sidekar install` ever wrote SKILL.md, so an update replaced the
+/// binary and left the doc agents read at whatever version was current on
+/// install day: agents kept being taught commands as they were, and never
+/// heard of new ones. This rewrites copies that exist and differ; it never
+/// installs into an agent that does not already have the skill. Run where a
+/// new binary first starts — the daemon after an update, the PTY wrapper,
+/// the REPL — so it needs no step of its own. Returns how many it rewrote.
+pub fn refresh_installed_skills() -> usize {
+    refresh_skills_under(&skill_search_roots(), SKILL_MD)
+}
+
+pub(crate) fn refresh_skills_under(roots: &[PathBuf], text: &str) -> usize {
+    roots
+        .iter()
+        .map(|root| root.join("sidekar").join("SKILL.md"))
+        .filter(|path| {
+            fs::read_to_string(path).is_ok_and(|existing| existing != text)
+                && fs::write(path, text).is_ok()
+        })
+        .count()
+}
+
 /// Skill search roots used by the REPL `/skill` command — same dirs as install.
 pub fn skill_search_roots() -> Vec<PathBuf> {
     let mut roots = vec![
@@ -229,6 +253,39 @@ fn xdg_config_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_rewrites_stale_copies_and_installs_nothing_new() {
+        let root = std::env::temp_dir().join(format!(
+            "sidekar-skill-refresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let (stale, current, absent) = (root.join("a"), root.join("b"), root.join("c"));
+        for (dir, text) in [(&stale, "old doc"), (&current, "new doc")] {
+            fs::create_dir_all(dir.join("sidekar")).unwrap();
+            fs::write(dir.join("sidekar/SKILL.md"), text).unwrap();
+        }
+        let roots = vec![stale.clone(), current.clone(), absent.clone()];
+        assert_eq!(refresh_skills_under(&roots, "new doc"), 1);
+        assert_eq!(
+            fs::read_to_string(stale.join("sidekar/SKILL.md")).unwrap(),
+            "new doc"
+        );
+        assert!(
+            !absent.join("sidekar").exists(),
+            "an agent without the skill does not get it"
+        );
+        assert_eq!(
+            refresh_skills_under(&roots, "new doc"),
+            0,
+            "nothing left to do"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn expand_tilde_path_folder_name_gets_dot_prefix() {

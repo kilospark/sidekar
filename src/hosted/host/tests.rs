@@ -44,7 +44,8 @@ fn a_send_starts_a_turn_and_writes_the_message() {
     assert_eq!(reply.turn_id.as_deref(), Some("t1"));
     assert_eq!(outbox_json(&mut s)[0]["type"], "user");
     s.on_engine_line(result("hello"));
-    let done = s.events().last().unwrap();
+    let events = s.events();
+    let done = events.last().unwrap();
     assert_eq!(
         done.body,
         EventBody::TurnDone {
@@ -249,4 +250,28 @@ fn a_bus_note_says_no_reply_is_needed() {
     let note =
         crate::message::Envelope::new_fyi(crate::message::AgentId::new("a"), "b", "FYI: deployed");
     assert!(bus_turn_text(&note).contains("No reply is needed"));
+}
+
+#[test]
+fn a_late_client_still_gets_events_memory_has_let_go_of() {
+    let log = std::env::temp_dir().join(format!(
+        "sidekar-host-log-{}-{}.jsonl",
+        std::process::id(),
+        crate::message::epoch_secs()
+    ));
+    let mut s = state(ApprovalPolicy::Ask);
+    s.sink = Some(std::fs::File::create(&log).unwrap());
+    s.log = Some(log.clone());
+    for i in 0..(EVENTS_IN_MEMORY + 50) {
+        s.emit(EventBody::EngineEvent {}, Some(json!({"n": i})));
+    }
+    assert_eq!(s.events().len(), EVENTS_IN_MEMORY, "memory is capped");
+    let all = s.backlog(0);
+    assert_eq!(all.len(), EVENTS_IN_MEMORY + 50);
+    assert!(
+        all.windows(2).all(|w| w[1].seq == w[0].seq + 1),
+        "in order, no gaps"
+    );
+    assert_eq!(s.backlog(s.seq() - 3).len(), 3);
+    let _ = std::fs::remove_file(&log);
 }

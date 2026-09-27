@@ -85,6 +85,24 @@ fn reaping_takes_a_dead_session_off_the_bus() {
 }
 
 #[test]
+fn an_old_ended_session_is_deleted_and_a_recent_one_kept() {
+    let _home = crate::ScratchHome::new();
+    let now = crate::message::epoch_secs();
+    for (name, ended) in [
+        ("claude-1", now - RETENTION_SECS - 60),
+        ("claude-2", now - 60),
+    ] {
+        ensure_private_dir(&dir_of(name)).unwrap();
+        let mut m = meta(name, dead_pid(), Status::Ended);
+        m.ended_at = Some(ended);
+        write_meta(&m).unwrap();
+    }
+    reap_all();
+    assert!(!dir_of("claude-1").exists());
+    assert!(dir_of("claude-2").exists());
+}
+
+#[test]
 fn only_an_engine_command_line_counts_as_the_engine() {
     assert!(is_engine_command(
         "/opt/homebrew/bin/claude -p --input-format stream-json --output-format stream-json",

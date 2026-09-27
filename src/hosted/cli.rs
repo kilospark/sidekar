@@ -193,6 +193,9 @@ async fn resume(args: &[String]) -> Result<()> {
     if super::host_alive(&meta) {
         bail!("{name} is still running");
     }
+    // A killed host's engine can still be running. Resuming beside it would
+    // put two engines on one conversation, so it is stopped first.
+    super::reap(&mut meta)?;
     if meta.engine_session_id.is_none() {
         bail!("{name} ended before its engine reported a conversation id; nothing to resume");
     }

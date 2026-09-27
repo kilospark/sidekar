@@ -90,6 +90,29 @@ pub fn get_pid() -> Option<i32> {
 }
 
 /// Start the daemon if not already running.
+/// The binary to run the daemon from.
+///
+/// Whatever sidekar first finds the daemon down starts it, from its own path,
+/// and every later relaunch keeps that path. When that was a build under a
+/// cargo `target/` directory, the long-lived daemon ran from a file the next
+/// `cargo build` replaces and `cargo clean` deletes. A build there hands the
+/// daemon to the installed sidekar on PATH instead, when there is one.
+fn daemon_exe() -> Result<std::path::PathBuf> {
+    let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
+    if !is_cargo_build(&exe) {
+        return Ok(exe);
+    }
+    Ok(crate::which_bin("sidekar")
+        .map(std::path::PathBuf::from)
+        .filter(|p| !is_cargo_build(p))
+        .unwrap_or(exe))
+}
+
+pub(crate) fn is_cargo_build(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains("/target/debug/") || s.contains("/target/release/")
+}
+
 pub fn ensure_running() -> Result<()> {
     if is_running() {
         return Ok(());
@@ -98,7 +121,7 @@ pub fn ensure_running() -> Result<()> {
     let _ = std::fs::remove_file(pid_path());
     let _ = std::fs::remove_file(socket_path());
 
-    let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
+    let exe = daemon_exe()?;
     let child = std::process::Command::new(exe)
         .arg("daemon")
         .arg("start")
@@ -165,7 +188,7 @@ pub async fn relaunch_after_exit(old_pid: i32) -> Result<()> {
 }
 
 fn spawn_relauncher(old_pid: i32) -> Result<()> {
-    let exe = std::env::current_exe().context("Cannot find sidekar binary")?;
+    let exe = daemon_exe()?;
     std::process::Command::new(exe)
         .arg("daemon")
         .arg("relaunch")
@@ -311,6 +334,9 @@ impl DaemonState {
 /// Run the daemon (called by `sidekar daemon start`).
 pub async fn start() -> Result<()> {
     std::fs::create_dir_all(data_dir())?;
+    // The daemon restarts itself after every auto-update, so this is where a
+    // new binary's skill doc reaches the agents.
+    crate::skill::refresh_installed_skills();
 
     housekeeping::kill_orphaned_daemons();
 

@@ -21,6 +21,10 @@ use tokio::sync::{mpsc, oneshot};
 /// caller went away does not sit blocked forever.
 pub(crate) const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Events kept in memory; older ones are read back from the event log when a
+/// client asks for them. A long session would otherwise grow without bound.
+pub(crate) const EVENTS_IN_MEMORY: usize = 2000;
+
 /// How long `close` waits for the engine to exit on its own before killing it.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
@@ -53,8 +57,11 @@ struct Stream {
 pub(crate) struct State {
     engine: Box<dyn Engine>,
     policy: ApprovalPolicy,
-    events: Vec<Event>,
+    events: VecDeque<Event>,
+    last_seq: u64,
     sink: Option<std::fs::File>,
+    /// Where `sink` writes, for reading back what memory has let go of.
+    log: Option<std::path::PathBuf>,
     subscribers: Vec<mpsc::UnboundedSender<Event>>,
     next_turn: u64,
     next_engine_turn: u64,
@@ -79,8 +86,10 @@ impl State {
         Self {
             engine,
             policy,
-            events: Vec::new(),
+            events: VecDeque::new(),
+            last_seq: 0,
             sink: None,
+            log: None,
             subscribers: Vec::new(),
             next_turn: 0,
             next_engine_turn: 0,
@@ -96,12 +105,12 @@ impl State {
     }
 
     pub(crate) fn seq(&self) -> u64 {
-        self.events.last().map_or(0, |e| e.seq)
+        self.last_seq
     }
 
     #[cfg(test)]
-    pub(crate) fn events(&self) -> &[Event] {
-        &self.events
+    pub(crate) fn events(&self) -> Vec<Event> {
+        self.events.iter().cloned().collect()
     }
 
     /// A bus message becomes a turn, queued behind any running one: a sender
@@ -124,8 +133,9 @@ impl State {
     }
 
     fn emit(&mut self, body: EventBody, raw: Option<Value>) {
+        self.last_seq += 1;
         let event = Event {
-            seq: self.seq() + 1,
+            seq: self.last_seq,
             ts: crate::message::epoch_secs(),
             body,
             raw,
@@ -139,7 +149,30 @@ impl State {
             );
         }
         self.subscribers.retain(|s| s.send(event.clone()).is_ok());
-        self.events.push(event);
+        self.events.push_back(event);
+        while self.events.len() > EVENTS_IN_MEMORY {
+            self.events.pop_front();
+        }
+    }
+
+    /// Everything after `since`: from memory, with anything older than
+    /// memory holds read back from the log.
+    fn backlog(&self, since: u64) -> Vec<Event> {
+        let oldest_held = self.events.front().map_or(self.last_seq + 1, |e| e.seq);
+        let mut out = Vec::new();
+        if since + 1 < oldest_held
+            && let Some(log) = &self.log
+        {
+            out.extend(
+                std::fs::read_to_string(log)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| serde_json::from_str::<Event>(l).ok())
+                    .filter(|e| e.seq > since && e.seq < oldest_held),
+            );
+        }
+        out.extend(self.events.iter().filter(|e| e.seq > since).cloned());
+        out
     }
 
     fn write(&mut self, input: Input) {
@@ -454,12 +487,7 @@ impl State {
         let (tx, rx) = mpsc::unbounded_channel();
         self.subscribers.push(tx);
         Stream {
-            backlog: self
-                .events
-                .iter()
-                .filter(|e| e.seq > since)
-                .cloned()
-                .collect(),
+            backlog: self.backlog(since),
             live: rx,
         }
     }
@@ -630,6 +658,7 @@ pub async fn run(name: &str) -> Result<()> {
             .truncate(true)
             .open(super::events_path(name))?,
     );
+    state.log = Some(super::events_path(name));
     state.emit(
         EventBody::SessionStarted {
             engine: meta.engine.clone(),

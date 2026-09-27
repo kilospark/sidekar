@@ -354,6 +354,8 @@ pub async fn run_agent(
 ) -> Result<()> {
     // Ensure rustls crypto provider is available before any WSS connection (relay tunnel).
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // Before the agent starts reading it.
+    crate::skill::refresh_installed_skills();
 
     let (path, c_path) = resolve_agent(agent)?;
     let args: Vec<String> = if yolo {

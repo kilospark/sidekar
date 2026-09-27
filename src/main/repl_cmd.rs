@@ -8,6 +8,7 @@ pub async fn handle(
     relay_override: Option<bool>,
     proxy_override: Option<bool>,
 ) -> Result<()> {
+    sidekar::skill::refresh_installed_skills();
     // Every subcommand below reads the credential store, which lives in
     // user-scoped KV and is only visible once the account key has been fetched.
     // `main` does that for other commands — but only *after* dispatching `repl`,

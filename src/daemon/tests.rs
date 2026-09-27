@@ -12,3 +12,17 @@ async fn ping_reports_daemon_pid() {
         Some(std::process::id() as u64)
     );
 }
+
+#[test]
+fn a_cargo_build_is_not_left_running_as_the_daemon() {
+    use crate::daemon::is_cargo_build;
+    use std::path::Path;
+    assert!(is_cargo_build(Path::new(
+        "/Users/me/src/sidekar/target/release/sidekar"
+    )));
+    assert!(is_cargo_build(Path::new(
+        "/Users/me/src/sidekar/target/debug/sidekar"
+    )));
+    assert!(!is_cargo_build(Path::new("/Users/me/.cargo/bin/sidekar")));
+    assert!(!is_cargo_build(Path::new("/usr/local/bin/sidekar")));
+}

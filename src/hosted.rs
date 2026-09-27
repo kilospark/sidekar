@@ -205,8 +205,19 @@ fn kill_orphaned_engine(meta: &Meta) {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
-    if is_engine_command(&command, &meta.engine) {
-        unsafe { libc::kill(meta.engine_pid, libc::SIGTERM) };
+    if !is_engine_command(&command, &meta.engine) {
+        return;
+    }
+    unsafe { libc::kill(meta.engine_pid, libc::SIGTERM) };
+    // Wait for it: `resume` starts a new engine on the same conversation
+    // right after this, and two at once would both write to it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while crate::bus::presence::process_alive(meta.engine_pid) {
+        if std::time::Instant::now() >= deadline {
+            unsafe { libc::kill(meta.engine_pid, libc::SIGKILL) };
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
@@ -217,13 +228,28 @@ pub(crate) fn is_engine_command(command: &str, engine: &str) -> bool {
     base == engine && command.contains("stream-json")
 }
 
-/// Reap every dead host. Run by the daemon's sweep.
+/// How long an ended session's directory — its event log, its host log —
+/// is kept before the daemon's sweep deletes it.
+pub(crate) const RETENTION_SECS: u64 = 7 * 24 * 3600;
+
+/// Reap every dead host, and delete sessions that ended more than
+/// [`RETENTION_SECS`] ago. Run by the daemon's sweep.
 pub fn reap_all() -> usize {
-    list()
-        .iter_mut()
-        .filter_map(|m| reap(m).ok())
-        .filter(|reaped| *reaped)
-        .count()
+    let now = crate::message::epoch_secs();
+    let mut reaped = 0;
+    for mut meta in list() {
+        if reap(&mut meta).unwrap_or(false) {
+            reaped += 1;
+        }
+        if meta.status == Status::Ended
+            && meta
+                .ended_at
+                .is_some_and(|t| now.saturating_sub(t) > RETENTION_SECS)
+        {
+            let _ = std::fs::remove_dir_all(dir_of(&meta.name));
+        }
+    }
+    reaped
 }
 
 /// `<engine>-<n>` with the lowest `n` no live session holds. An ended
