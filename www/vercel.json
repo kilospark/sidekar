@@ -1,6 +1,7 @@
 {
   "rewrites": [
     { "source": "/api/v1/version", "destination": "/api/v1/encryption-key?endpoint=version" },
+    { "source": "/v1/version", "destination": "/api/v1/encryption-key?endpoint=version" },
     { "source": "/v1/:path*", "destination": "/api/v1/:path*" },
     { "source": "/download/v:version/:asset", "destination": "/api/download?version=v:version&asset=:asset" },
     { "source": "/download/:version/:asset", "destination": "/api/download?version=v:version&asset=:asset" },
