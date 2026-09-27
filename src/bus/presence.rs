@@ -46,6 +46,42 @@ pub(crate) fn first_free(prefix: &str, taken: &HashSet<String>) -> String {
     }
 }
 
+/// The process behind a registered pane, when its name says.
+///
+/// Lives here because this module decides the pane formats — `pty-<pid>` and
+/// `repl-<pid>` from [`Presence`], `cli-<pid>` from the CLI — so the mapping
+/// back to a pid is written once, beside the code that writes the names.
+///
+/// Only a positive pid is ever returned. `stop` hands this straight to
+/// `kill(pid, SIGTERM)`, where 0 means "my whole process group" and -1 means
+/// "every process I may signal". Sidekar only ever writes positive pids, but
+/// the registry is a file on disk, and one malformed row must not be able to
+/// turn `sidekar stop` into a kill-everything.
+pub(crate) fn pid_of_pane(pane: &str) -> Option<i32> {
+    ["pty-", "repl-", "cli-"].iter().find_map(|prefix| {
+        pane.strip_prefix(prefix)
+            .and_then(|rest| rest.parse::<i32>().ok())
+            .filter(|pid| *pid > 0)
+    })
+}
+
+/// True while `pid` names a live process.
+///
+/// Signal 0 checks existence without delivering anything. It fails with EPERM
+/// for a process that exists but belongs to someone else — that is alive, and
+/// reading it as dead is how a sweep would unregister a live agent run by
+/// another user. A pid can be reused after its process dies, so this can say
+/// "alive" for the wrong process; the registry's heartbeat is what catches that.
+pub(crate) fn process_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 /// What to register an agent as.
 pub struct Registration {
     pub name: String,
@@ -144,9 +180,15 @@ impl Presence {
             return;
         }
         self.left = true;
+        let now = crate::message::epoch_secs();
         if let Some(id) = &self.history_id {
-            let _ = broker::finish_agent_session(id, crate::message::epoch_secs());
+            let _ = broker::finish_agent_session(id, now);
         }
+        // Settle what is still addressed to us before giving up the name, never
+        // after: names are reused, so a name freed with mail still queued on it
+        // hands that mail to whichever agent takes the name next.
+        let nick = self.identity.nick.as_deref().unwrap_or_default();
+        let _ = broker::bounce_mail_for_departed(&self.identity.name, nick, now);
         let _ = broker::unregister_agent(&self.identity.name);
     }
 }

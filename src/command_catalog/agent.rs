@@ -56,6 +56,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
     ),
     spec(
+        "agents",
+        "[--watch [secs]]",
+        "Every agent on this machine, ordered by what needs you",
+        CommandGroup::Agent,
+        false,
+        false,
+        false,
+    ),
+    spec(
         "spawn",
         "<agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] | list",
         "Launch another agent on the bus and print its name",

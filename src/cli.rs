@@ -52,6 +52,7 @@ pub fn render_help(version: &str) -> String {
             ("totp", "TOTP secrets"),
             ("cron", "Scheduled jobs"),
             ("loop", "Run prompt on interval"),
+            ("agents", "Every agent here, ordered by what needs you"),
             ("spawn", "Launch another agent on the bus"),
             ("stop", "Stop an agent started by spawn"),
             ("gmail", "Gmail: search, read, send, label"),

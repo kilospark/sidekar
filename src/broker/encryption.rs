@@ -9,6 +9,23 @@ use std::sync::Mutex;
 
 static ENCRYPTION_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
+/// Set once the *account* key has been fetched in this process.
+///
+/// Recorded outright rather than inferred, because both obvious proxies are
+/// wrong. A user id is known without the key: it is hydrated from disk on
+/// first read. And a key can be loaded that is not the account's:
+/// `ensure_local_key` installs a local one before login. `ensure_account_key`
+/// once used the first proxy, and when uid hydration landed it began returning
+/// early on every logged-in machine without ever fetching — so credential
+/// reads came back as ciphertext and failed as "unknown credential".
+static ACCOUNT_KEY_LOADED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True once this process holds the account key, not merely a local one.
+pub fn account_key_loaded() -> bool {
+    ACCOUNT_KEY_LOADED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// In-memory cache of the current uid for this process. Wrapped in an outer
 /// `Option` so "never looked at disk yet" (`None`) is distinguishable from
 /// "looked, and there is no logged-in user" (`Some(None)`) -- otherwise every
@@ -32,6 +49,7 @@ pub fn set_encryption_key(key: Vec<u8>) {
 pub fn clear_encryption_key() {
     let mut guard = ENCRYPTION_KEY.lock().unwrap();
     *guard = None;
+    ACCOUNT_KEY_LOADED.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 pub fn get_encryption_key() -> Option<Vec<u8>> {
@@ -88,6 +106,12 @@ fn persist_current_user_id_inner(uid: Option<&str>) -> Result<()> {
         ),
     }?;
     Ok(())
+}
+
+/// Stand in for a successful account fetch, which needs the network.
+#[cfg(test)]
+pub(crate) fn mark_account_key_loaded_for_test() {
+    ACCOUNT_KEY_LOADED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Forget the in-memory uid cache without touching what is persisted on
@@ -325,7 +349,7 @@ pub(crate) fn migrate_login_transition(old_uid: &str, new_uid: &str) -> Result<(
 /// is loaded this is a mutex read, and it never fires for a machine that is not
 /// logged in.
 pub async fn ensure_account_key() -> Result<()> {
-    if current_user_id().is_some() || crate::auth::auth_token().is_none() {
+    if account_key_loaded() || crate::auth::auth_token().is_none() {
         return Ok(());
     }
     fetch_encryption_key().await?;
@@ -364,6 +388,7 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     let old_uid = current_user_id().unwrap_or_default();
 
     set_encryption_key(decoded.clone());
+    ACCOUNT_KEY_LOADED.store(true, std::sync::atomic::Ordering::SeqCst);
 
     if let Some(ref uid) = body.user_id {
         if old_uid != *uid {

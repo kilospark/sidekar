@@ -195,3 +195,73 @@ fn no_history_row_is_written_unless_asked_for() {
         assert!(all.iter().all(|s| s.agent_name != "t-nohistory"));
     });
 }
+
+// ---- pane -> process -------------------------------------------------------
+
+#[test]
+fn every_pane_format_maps_back_to_its_pid() {
+    assert_eq!(pid_of_pane("pty-4242"), Some(4242));
+    assert_eq!(pid_of_pane("repl-17"), Some(17));
+    assert_eq!(pid_of_pane("cli-9"), Some(9));
+}
+
+#[test]
+fn a_pane_that_is_not_ours_has_no_pid() {
+    assert_eq!(pid_of_pane("mcp-12"), None);
+    assert_eq!(pid_of_pane("pty-"), None);
+    assert_eq!(pid_of_pane("pty-abc"), None);
+    assert_eq!(pid_of_pane(""), None);
+    // A bare number is not a pane; guessing it was one could signal a stranger.
+    assert_eq!(pid_of_pane("4242"), None);
+}
+
+#[test]
+fn a_pane_can_never_yield_a_pid_that_means_everything() {
+    // `stop` passes this to kill(pid, SIGTERM). 0 is "my process group" and
+    // -1 is "every process I may signal"; either would make one malformed
+    // registry row a kill-everything.
+    assert_eq!(pid_of_pane("pty-0"), None);
+    assert_eq!(pid_of_pane("pty--1"), None);
+    assert_eq!(pid_of_pane("repl--4242"), None);
+}
+
+#[test]
+fn this_process_is_alive_and_nonsense_pids_are_not() {
+    assert!(process_alive(std::process::id() as i32));
+    assert!(
+        !process_alive(i32::MAX - 1),
+        "a pid that cannot exist read as alive"
+    );
+    assert!(!process_alive(0));
+    assert!(!process_alive(-1));
+}
+
+// ---- leaving settles mail ----------------------------------------------------
+
+#[test]
+fn leaving_withdraws_undelivered_mail_and_tells_the_sender() {
+    // The wiring, not the function: bounce_mail_for_departed is tested in the
+    // broker; this checks leave() actually calls it, and before the name is
+    // freed — so the next holder of the name cannot inherit the mail.
+    with_test_db(|| {
+        let _sender = Presence::register(registration("t-sender")).unwrap();
+        let mut leaver = Presence::register(registration("t-leaver")).unwrap();
+        broker::enqueue_bus_message("t-leaver", "t-sender", "are you there", true, None).unwrap();
+
+        leaver.leave();
+
+        let for_leaver = broker::list_queued_messages("t-leaver").unwrap();
+        assert!(for_leaver.is_empty(), "mail stayed queued on a freed name");
+        let for_sender = broker::list_queued_messages("t-sender").unwrap();
+        assert_eq!(for_sender.len(), 1, "the sender was not told");
+        assert!(
+            for_sender[0].body.contains("are you there"),
+            "{}",
+            for_sender[0].body
+        );
+
+        // A different agent takes the name and must find nothing waiting.
+        let _next = Presence::register(registration("t-leaver")).unwrap();
+        assert!(broker::list_queued_messages("t-leaver").unwrap().is_empty());
+    });
+}

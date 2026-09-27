@@ -34,6 +34,33 @@ sidekar proxy <log|show|clear> [options]
     sidekar proxy show 42
     sidekar proxy clear"
         }
+        "agents" => {
+            "\
+sidekar agents [--watch [secs]]
+
+  Every agent on this machine, ordered by what needs you.
+
+  States, most urgent first:
+    needs input   parked on a question only a human can answer
+    done          finished a turn nobody has looked at yet
+    working       its screen is changing, or it is streaming output
+    typing        someone is typing into it
+    idle          nothing to do
+    stale         still registered but has stopped reporting; check it
+    dead          its process is gone; only the registration is left
+
+  `done` means the agent settled after the last time a human typed into
+  its own terminal. Typing there is what counts as having looked.
+
+  Options:
+    --watch [secs]   Redraw in place every N seconds (default 2).
+
+  Examples:
+    sidekar agents
+    sidekar agents --watch
+    sidekar agents --watch 5
+    sidekar agents --format json"
+        }
         "spawn" => {
             "\
 sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] [--timeout <secs>]

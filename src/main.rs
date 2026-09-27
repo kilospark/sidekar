@@ -282,7 +282,17 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // Fetch encryption key from server if logged in
     if !matches!(
         command.as_str(),
-        "device" | "config" | "prompt" | "memory" | "tasks" | "compact" | "pack" | "unpack"
+        "device"
+            | "config"
+            | "prompt"
+            | "memory"
+            | "tasks"
+            | "compact"
+            | "pack"
+            | "unpack"
+            // Reads only the local registry, which is not user-scoped. In
+            // --watch it would otherwise make a network round trip per refresh.
+            | "agents"
     ) && crate::auth::auth_token().is_some()
     {
         match crate::broker::fetch_encryption_key().await {

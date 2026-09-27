@@ -234,7 +234,9 @@ fn cmd_spawn_list(ctx: &mut AppContext) -> Result<()> {
     }
     for (agent, spawner) in spawned {
         let pane = agent.id.pane.as_deref().unwrap_or("?");
-        let alive = pid_of(pane).map(is_alive).unwrap_or(false);
+        let alive = crate::bus::presence::pid_of_pane(pane)
+            .map(crate::bus::presence::process_alive)
+            .unwrap_or(false);
         out!(
             ctx,
             "{}\t{}\tby {}\t{}",
@@ -267,7 +269,7 @@ pub fn cmd_stop(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
 
     let pane = agent.id.pane.clone().unwrap_or_default();
-    let Some(pid) = pid_of(&pane) else {
+    let Some(pid) = crate::bus::presence::pid_of_pane(&pane) else {
         crate::broker::unregister_agent(&agent.id.name)?;
         out!(
             ctx,
@@ -283,21 +285,3 @@ pub fn cmd_stop(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     out!(ctx, "Stopped {} (pid {}).", agent.id.name, pid);
     Ok(())
 }
-
-fn pid_of(pane: &str) -> Option<i32> {
-    for prefix in ["pty-", "repl-", "cli-"] {
-        if let Some(rest) = pane.strip_prefix(prefix)
-            && let Ok(pid) = rest.parse::<i32>()
-        {
-            return Some(pid);
-        }
-    }
-    None
-}
-
-fn is_alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-#[cfg(test)]
-mod tests;

@@ -4,6 +4,9 @@ pub(crate) const OUTBOUND_STATUS_OPEN: &str = "open";
 pub(crate) const OUTBOUND_STATUS_ANSWERED: &str = "answered";
 pub(crate) const OUTBOUND_STATUS_TIMED_OUT: &str = "timed_out";
 pub(crate) const OUTBOUND_STATUS_CANCELLED: &str = "cancelled";
+/// The recipient left the bus before answering. Distinct from `cancelled`,
+/// which means the sender withdrew the request.
+pub(crate) const OUTBOUND_STATUS_RECIPIENT_GONE: &str = "recipient_gone";
 
 #[derive(Debug, Clone)]
 pub struct OutboundRequestRecord {

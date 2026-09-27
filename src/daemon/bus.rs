@@ -174,6 +174,17 @@ fn nudge_once() {
         if !nudge_due(&request, now) {
             continue;
         }
+        // Nobody left to remind. The nudger used to keep writing reminders to a
+        // departed agent's name on its backoff schedule, and because names are
+        // reused, the next agent to take the name received them. The request
+        // itself is closed, and its sender told, by the departure or the sweep.
+        // A lookup error leaves the old behaviour in place rather than
+        // suppressing a reminder that may be wanted.
+        if request.transport_name == "broker"
+            && !crate::broker::agent_is_registered(&request.transport_target).unwrap_or(true)
+        {
+            continue;
+        }
         if recipient_should_defer_nudge(&request) {
             continue;
         }

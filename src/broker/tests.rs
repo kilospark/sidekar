@@ -10,9 +10,13 @@ fn fresh_test_db_path() -> PathBuf {
 }
 
 fn with_test_db<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    // A test that panics while holding this poisons it. Refusing a poisoned lock
+    // turned one real failure into dozens — every later test here failed to
+    // acquire it — which hides the one that matters. The data it guards is
+    // HOME, which this function resets every time, so a poisoned lock is safe.
     let _guard = crate::test_home_lock()
         .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+        .unwrap_or_else(|e| e.into_inner());
     let old_home = env::var_os("HOME");
     let temp_home = env::temp_dir().join(format!(
         "sidekar-broker-home-{}",
@@ -1778,6 +1782,343 @@ fn cancelling_leaves_an_already_delivered_message_alone() -> Result<()> {
         assert!(
             still_there,
             "a message already pasted is past recall; its delivery record must survive cancel"
+        );
+        Ok(())
+    })
+}
+
+// ---- the account key, not a proxy for it -----------------------------------
+//
+// Every one of these runs inside `with_test_db`. `set_current_user_id` and
+// `clear_current_user_id` persist to the broker database, so outside a
+// throwaway HOME they would rewrite the developer's real login state — the
+// first draft of these tests would have logged its author out.
+
+/// Leave the process-global key state as a fresh process would find it.
+fn reset_key_state() {
+    clear_encryption_key();
+    reset_current_user_id_cache_for_test();
+}
+
+#[test]
+fn a_local_key_is_not_mistaken_for_the_account_key() -> Result<()> {
+    // The regression: ensure_account_key inferred "account key loaded" from a
+    // proxy, and when the proxy stopped holding it returned early on every
+    // logged-in machine without fetching. Installing any key other than by an
+    // account fetch must not count.
+    with_test_db(|| {
+        reset_key_state();
+        assert!(!account_key_loaded());
+        set_encryption_key(vec![7u8; 32]);
+        assert!(
+            !account_key_loaded(),
+            "installing a key directly (the local-key path) claimed the account key"
+        );
+        reset_key_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn a_known_user_id_is_not_mistaken_for_the_account_key() -> Result<()> {
+    // PR #13 hydrates the uid from disk without the key — exactly the state in
+    // which ensure_account_key used to give up without fetching.
+    with_test_db(|| {
+        reset_key_state();
+        set_current_user_id("user-123".into());
+        assert!(current_user_id().is_some());
+        assert!(
+            !account_key_loaded(),
+            "knowing the uid claimed the account key was loaded"
+        );
+        reset_key_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn clearing_the_key_forgets_that_the_account_key_was_loaded() -> Result<()> {
+    // Logout clears the key; a later ensure must fetch again rather than trust a
+    // stale flag and read with no key at all.
+    with_test_db(|| {
+        reset_key_state();
+        mark_account_key_loaded_for_test();
+        assert!(account_key_loaded());
+        clear_encryption_key();
+        assert!(!account_key_loaded());
+        reset_key_state();
+        Ok(())
+    })
+}
+
+// ---- mail for an agent that has left ----------------------------------------
+//
+// Names are reused and an unregistered agent's mail was kept, so an agent that
+// left with mail pending handed it to whoever took its name next. Observed live:
+// three reminders written after their recipient had gone, delivered eight
+// seconds after an unrelated agent registered under the reused name.
+
+fn agent(name: &str, nick: &str) -> AgentId {
+    AgentId {
+        name: name.into(),
+        nick: Some(nick.into()),
+        session: Some("sess".into()),
+        pane: Some(format!("pty-{}", 90_000 + name.len())),
+        agent_type: Some("sidekar".into()),
+    }
+}
+
+fn undelivered_to(recipient: &str) -> Result<Vec<String>> {
+    let conn = open()?;
+    let mut stmt = conn.prepare(
+        "SELECT body FROM bus_queue WHERE recipient = ?1 AND delivered_at = 0 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(params![recipient], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Open a request from `from` to `to` and queue it, the way `bus send` does.
+fn open_request(from: &AgentId, to: &str, text: &str) -> Result<Envelope> {
+    let env = Envelope::new_request(from.clone(), to, text);
+    set_pending(&env)?;
+    set_outbound_request(&env, &from.display_name(), "broker", to, None, None)?;
+    enqueue_bus_message(
+        to,
+        &from.name,
+        &format!("[request from {}]: {text}", from.name),
+        true,
+        Some(&env),
+    )?;
+    Ok(env)
+}
+
+#[test]
+fn a_departed_agents_mail_does_not_reach_the_next_agent_with_its_name() -> Result<()> {
+    // The bug itself, end to end.
+    with_test_db(|| {
+        let walrus = agent("walrus-1", "walrus");
+        register_agent(&walrus, None)?;
+        let moray = agent("claude-proj-2", "moray");
+        register_agent(&moray, None)?;
+        open_request(&walrus, &moray.name, "review the diff")?;
+        enqueue_bus_message(
+            &moray.name,
+            "sidekar",
+            "[sidekar] You have an unanswered request from walrus-1.",
+            true,
+            None,
+        )?;
+
+        bounce_mail_for_departed(&moray.name, "moray", 1_000)?;
+        unregister_agent(&moray.name)?;
+
+        // A different agent takes the freed name.
+        let vizsla = agent("claude-proj-2", "vizsla");
+        register_agent(&vizsla, None)?;
+        assert!(
+            undelivered_to(&vizsla.name)?.is_empty(),
+            "the new holder of the name inherited mail meant for the agent that left"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn an_open_request_to_a_departed_agent_is_closed_as_recipient_gone() -> Result<()> {
+    with_test_db(|| {
+        let walrus = agent("walrus-1", "walrus");
+        register_agent(&walrus, None)?;
+        register_agent(&agent("moray-2", "moray"), None)?;
+        let env = open_request(&walrus, "moray-2", "review the diff")?;
+
+        let report = bounce_mail_for_departed("moray-2", "moray", 1_000)?;
+        assert_eq!(report.requests_closed, 1);
+        let stored = outbound_request(&env.id)?.expect("request row missing");
+        // Not `cancelled`: that says the sender withdrew, which is not what happened.
+        assert_eq!(stored.status, OUTBOUND_STATUS_RECIPIENT_GONE);
+        assert!(stored.closed_at.is_some());
+        Ok(())
+    })
+}
+
+#[test]
+fn the_sender_is_told_once_however_much_was_withdrawn() -> Result<()> {
+    // A request, its three reminders and a follow-up is five rows. Telling the
+    // sender five times is noise; telling them never is the bug this replaces.
+    with_test_db(|| {
+        let walrus = agent("walrus-1", "walrus");
+        register_agent(&walrus, None)?;
+        register_agent(&agent("moray-2", "moray"), None)?;
+        open_request(&walrus, "moray-2", "review the diff")?;
+        for _ in 0..3 {
+            enqueue_bus_message(
+                "moray-2",
+                "sidekar",
+                "[sidekar] You have an unanswered request from walrus-1.",
+                true,
+                None,
+            )?;
+        }
+        enqueue_bus_message("moray-2", "walrus-1", "also check the tests", true, None)?;
+
+        let report = bounce_mail_for_departed("moray-2", "moray", 1_000)?;
+        assert_eq!(report.withdrawn, 5);
+        assert_eq!(report.notified, 1);
+
+        let notices = undelivered_to("walrus-1")?;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        let notice = &notices[0];
+        assert!(notice.contains("moray (moray-2)"), "{notice}");
+        assert!(
+            notice.contains("review the diff"),
+            "request not mentioned: {notice}"
+        );
+        assert!(
+            notice.contains("also check the tests"),
+            "follow-up not mentioned: {notice}"
+        );
+        assert!(
+            notice.contains("Nothing was passed to another agent"),
+            "{notice}"
+        );
+        // The header must not claim the agent never read it: it may have, and
+        // simply left without answering.
+        assert!(!notice.contains("before reading"), "{notice}");
+        assert!(
+            !notice.contains("unanswered request from"),
+            "a reminder was bounced as if it were mail: {notice}"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn nobody_is_told_when_the_sender_has_gone_too() -> Result<()> {
+    with_test_db(|| {
+        register_agent(&agent("moray-2", "moray"), None)?;
+        enqueue_bus_message("moray-2", "ghost-9", "hello", true, None)?;
+        let report = bounce_mail_for_departed("moray-2", "moray", 1_000)?;
+        assert_eq!(report.withdrawn, 1);
+        assert_eq!(report.notified, 0);
+        assert!(undelivered_to("ghost-9")?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn delivered_mail_and_other_agents_mail_are_left_alone() -> Result<()> {
+    with_test_db(|| {
+        let walrus = agent("walrus-1", "walrus");
+        register_agent(&walrus, None)?;
+        register_agent(&agent("moray-2", "moray"), None)?;
+        register_agent(&agent("crane-3", "crane"), None)?;
+        enqueue_bus_message("moray-2", "walrus-1", "already read", true, None)?;
+        let read_id: i64 = open()?.query_row(
+            "SELECT id FROM bus_queue WHERE recipient = 'moray-2'",
+            [],
+            |r| r.get(0),
+        )?;
+        mark_message_delivered(read_id)?;
+        enqueue_bus_message("crane-3", "walrus-1", "for crane", true, None)?;
+
+        bounce_mail_for_departed("moray-2", "moray", 1_000)?;
+        let delivered: i64 = open()?.query_row(
+            "SELECT count(*) FROM bus_queue WHERE id = ?1",
+            params![read_id],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            delivered, 1,
+            "mail already pasted into the pane was withdrawn"
+        );
+        assert_eq!(undelivered_to("crane-3")?, vec!["for crane".to_string()]);
+        Ok(())
+    })
+}
+
+#[test]
+fn settling_twice_finds_nothing_the_second_time() -> Result<()> {
+    // leave() and the sweep can both reach the same agent.
+    with_test_db(|| {
+        let walrus = agent("walrus-1", "walrus");
+        register_agent(&walrus, None)?;
+        register_agent(&agent("moray-2", "moray"), None)?;
+        open_request(&walrus, "moray-2", "review")?;
+        bounce_mail_for_departed("moray-2", "moray", 1_000)?;
+        let again = bounce_mail_for_departed("moray-2", "moray", 1_001)?;
+        assert_eq!(again, BounceReport::default());
+        assert_eq!(
+            undelivered_to("walrus-1")?.len(),
+            1,
+            "the sender was told twice"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn registration_is_checked_by_exact_name_not_nick() -> Result<()> {
+    // A nick is not an address: a sweep asking "is anyone still at this name"
+    // must not be answered by an unrelated agent that shares a nick.
+    with_test_db(|| {
+        register_agent(&agent("claude-proj-7", "moray"), None)?;
+        assert!(agent_is_registered("claude-proj-7")?);
+        assert!(!agent_is_registered("moray")?);
+        assert!(!agent_is_registered("claude-proj-2")?);
+        Ok(())
+    })
+}
+
+#[test]
+fn the_backstop_finds_mail_waiting_on_names_nobody_holds() -> Result<()> {
+    with_test_db(|| {
+        register_agent(&agent("live-1", "live"), None)?;
+        enqueue_bus_message("live-1", "x", "for a live agent", true, None)?;
+        enqueue_bus_message("gone-2", "x", "for an agent that left", true, None)?;
+        let now = crate::message::epoch_secs() + 3_600;
+        let found = orphaned_mail_recipients(now, 60)?;
+        assert_eq!(
+            found,
+            vec!["gone-2".to_string()],
+            "a live agent's mail was treated as orphaned"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn the_backstop_waits_out_its_grace_period() -> Result<()> {
+    // An agent re-registering under its own name must never be caught between
+    // its unregister and its register.
+    with_test_db(|| {
+        enqueue_bus_message("gone-2", "x", "just now", true, None)?;
+        let now = crate::message::epoch_secs();
+        assert!(orphaned_mail_recipients(now, 60)?.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn the_backstop_finds_a_request_that_was_read_but_never_answered() -> Result<()> {
+    // Nothing is left in the queue — the agent read the request, then left. A
+    // mail-only check would miss it and the request would stay open forever.
+    with_test_db(|| {
+        let walrus = agent("walrus-1", "walrus");
+        register_agent(&walrus, None)?;
+        register_agent(&agent("moray-2", "moray"), None)?;
+        open_request(&walrus, "moray-2", "review")?;
+        open()?.execute(
+            "UPDATE bus_queue SET delivered_at = 1 WHERE recipient = 'moray-2'",
+            [],
+        )?;
+        unregister_agent("moray-2")?;
+
+        let now = crate::message::epoch_secs() + 3_600;
+        assert_eq!(
+            orphaned_mail_recipients(now, 60)?,
+            vec!["moray-2".to_string()]
         );
         Ok(())
     })

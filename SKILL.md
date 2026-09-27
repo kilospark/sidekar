@@ -42,6 +42,10 @@ sidekar bus replies --limit=5
 sidekar stop "$REVIEWER"
 ```
 
+`sidekar agents` shows every agent on the machine ordered by what needs
+attention: waiting on a question, then finished-but-unread, then working. Use it
+to see which delegated agents have results for you, rather than polling each.
+
 `spawn` prints the new agent's bus name and nothing else, so it composes. It
 picks the unattended-mode flag for that particular CLI — every one of them
 spells it differently — and runs the agent detached so it survives your turn.

@@ -143,27 +143,14 @@ pub fn pick_nickname_standalone() -> String {
     pick_nickname_for_project(None)
 }
 
-fn pid_from_agent_pane(pane: &str) -> Option<i32> {
-    for prefix in ["pty-", "repl-", "cli-"] {
-        if let Some(pid_str) = pane.strip_prefix(prefix)
-            && let Ok(pid) = pid_str.parse::<i32>()
-        {
-            return Some(pid);
-        }
-    }
-    None
-}
-
-fn pid_alive(pid: i32) -> bool {
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
 fn agent_blocks_nickname_reuse(agent: &BrokerAgent) -> bool {
-    match agent.id.pane.as_deref().and_then(pid_from_agent_pane) {
-        Some(pid) => pid_alive(pid),
+    match agent
+        .id
+        .pane
+        .as_deref()
+        .and_then(super::presence::pid_of_pane)
+    {
+        Some(pid) => super::presence::process_alive(pid),
         None => true,
     }
 }

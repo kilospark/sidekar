@@ -2,6 +2,7 @@ use crate::*;
 
 mod agent_sessions;
 mod agent_tools;
+mod agents;
 mod batch;
 pub mod browser_ext;
 mod browser_run;
@@ -109,6 +110,7 @@ pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> R
         "calendar" => google::cmd_calendar(ctx, args).await,
         "sheets" => google::cmd_sheets(ctx, args).await,
         "docs" => google::cmd_docs(ctx, args).await,
+        "agents" => agents::cmd_agents(ctx, args).await,
         "spawn" => spawn::cmd_spawn(ctx, args).await,
         "stop" => spawn::cmd_stop(ctx, args),
         "launch" => cmd_launch(ctx, args).await,

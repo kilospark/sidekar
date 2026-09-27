@@ -377,6 +377,13 @@ pub async fn run_agent(
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
+    // The nick is read from KV, which is user-scoped and encrypted — and this
+    // path is dispatched before `main` fetches the account key. Without the key
+    // the read finds the row and cannot decrypt it, and a registered agent's
+    // nick becomes `$encrypted$…` in `bus who`, in the agents view, and in the
+    // header of every bus message it sends. Idempotent, and a no-op when
+    // logged out.
+    let _ = crate::broker::ensure_account_key().await;
     let nick = crate::bus::pick_nickname_for_project(Some(&cwd));
     let pre_fork_name = crate::bus::presence::unique_name(&format!("{agent}-{channel}"));
     let start_time = std::time::Instant::now();

@@ -346,3 +346,41 @@ fn nudge_once_skips_busy_recipient_without_claiming() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn nudge_once_skips_a_recipient_that_is_no_longer_registered() -> Result<()> {
+    // The mirror of `nudge_once_enqueues_due_idle_outbound`, minus the
+    // registration. The nudger used to keep writing reminders to a departed
+    // agent's name, and because names are reused the next agent to take the
+    // name received them.
+    let _home = HomeGuard::new()?;
+    let mut envelope = crate::message::Envelope::new_request(
+        crate::message::AgentId::new("sender"),
+        "departed",
+        "need update",
+    );
+    envelope.created_at = crate::message::epoch_secs().saturating_sub(61);
+    crate::broker::set_outbound_request(
+        &envelope,
+        "sender",
+        "broker",
+        "departed",
+        Some("need update"),
+        None,
+    )?;
+
+    nudge_once();
+
+    assert!(
+        crate::broker::list_queued_messages("departed")?.is_empty(),
+        "a reminder was written to a name nobody holds"
+    );
+    assert_eq!(
+        crate::broker::outbound_request(&envelope.id)?
+            .expect("outbound")
+            .nudge_count,
+        0,
+        "the nudge was counted even though nothing was sent"
+    );
+    Ok(())
+}

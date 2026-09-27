@@ -141,6 +141,10 @@ pub(super) async fn housekeeping_loop(http_port: u16, ext_state: crate::ext::Sha
             _ = sweep_interval.tick() => {
                 kill_orphaned_daemons();
                 sweep_dead_agents();
+                // Before the reaper, never after: the reaper deletes undelivered
+                // mail an hour old, and doing that first would lose it in silence
+                // instead of telling its senders.
+                settle_orphaned_mail();
                 cleanup_stale_messages();
                 crate::ext::sweep_stale_watches(&ext_state, STALE_WATCH_AGE_SECS).await;
                 crate::ext::sweep_stale_tab_monitors(&ext_state, STALE_WATCH_AGE_SECS).await;
@@ -173,31 +177,53 @@ pub(super) async fn cdp_pool_reaper(pool: Arc<Mutex<crate::cdp_proxy::CdpPool>>)
 }
 
 /// Extract a local process PID from broker pane IDs that encode one.
-pub(super) fn pid_from_agent_pane(pane: &str) -> Option<i32> {
-    for prefix in ["pty-", "repl-", "cli-"] {
-        if let Some(pid_str) = pane.strip_prefix(prefix)
-            && let Ok(pid) = pid_str.parse::<i32>()
-        {
-            return Some(pid);
-        }
-    }
-    None
-}
 
-/// Sweep dead agents from the broker. Checks each local agent PID encoded in
-/// the pane ID and unregisters agents whose process is no longer alive.
+/// Sweep dead agents from the broker: unregister any whose process is gone.
+///
+/// This is the crash path. An agent that exits normally settles its own mail on
+/// the way out; one that was killed never got the chance, so its mail is settled
+/// here — before the name is freed, so the next agent to take the name does not
+/// inherit it.
 fn sweep_dead_agents() {
     let agents = match crate::broker::list_agents(None) {
         Ok(a) => a,
         Err(_) => return,
     };
+    let now = crate::message::epoch_secs();
     for agent in agents {
-        if let Some(ref pane) = agent.id.pane
-            && let Some(pid) = pid_from_agent_pane(pane)
-            && unsafe { libc::kill(pid, 0) } != 0
-        {
+        let dead = agent
+            .id
+            .pane
+            .as_deref()
+            .and_then(crate::bus::presence::pid_of_pane)
+            .is_some_and(|pid| !crate::bus::presence::process_alive(pid));
+        if dead {
+            let nick = agent.id.nick.as_deref().unwrap_or_default();
+            let _ = crate::broker::bounce_mail_for_departed(&agent.id.name, nick, now);
             let _ = crate::broker::unregister_agent(&agent.id.name);
         }
+    }
+}
+
+/// How long mail may wait on a name nobody holds before it is settled.
+///
+/// Long enough that an agent re-registering under its own name is never caught
+/// in the gap; the same as the sweep interval, so nothing waits more than two.
+const ORPHANED_MAIL_GRACE_SECS: u64 = 60;
+
+/// Settle mail waiting on names that nobody holds.
+///
+/// The backstop for every way an agent can leave without settling its own mail —
+/// in particular, an agent still running an older sidekar, which exits the old
+/// way and leaves its mail queued on a name that is now free.
+fn settle_orphaned_mail() {
+    let now = crate::message::epoch_secs();
+    let Ok(names) = crate::broker::orphaned_mail_recipients(now, ORPHANED_MAIL_GRACE_SECS) else {
+        return;
+    };
+    for name in names {
+        let nick = crate::broker::last_known_nick(&name).unwrap_or_default();
+        let _ = crate::broker::bounce_mail_for_departed(&name, &nick, now);
     }
 }
 
