@@ -326,11 +326,25 @@ pub fn migrate_kv_login_transition(old_uid: &str, new_uid: &str) -> Result<()> {
     // Wrapped in one transaction so a crash mid-migration can't leave some
     // rows moved (or re-keyed) and others not: either every row lands under
     // `new_uid` encrypted with the active key, or none of them do.
+    let mut warnings = Vec::new();
     let mut conn = open()?;
     let tx = conn.transaction()?;
-    migrate_kv_rows(&tx, old_uid, new_uid)?;
+    migrate_kv_rows(&tx, old_uid, new_uid, &mut warnings)?;
     reencrypt_plaintext_rows(&tx, new_uid)?;
     tx.commit()?;
+
+    // Logged after the transaction commits, not from inside it: `try_log_event`
+    // opens its own connection, and writing through it while `tx` still holds
+    // an open read snapshot on this one trips SQLite's WAL promote-to-write
+    // check (`SQLITE_BUSY_SNAPSHOT`) as soon as `tx` tries its next write.
+    for (key, reason) in warnings {
+        crate::broker::try_log_event(
+            "warn",
+            "kv",
+            "could not decrypt a pre-login kv row during login migration; leaving it stranded",
+            Some(&format!("key={key}: {reason}")),
+        );
+    }
     Ok(())
 }
 
@@ -354,7 +368,21 @@ fn archive_value(conn: &Connection, uid: &str, key: &str, value: &str, tags: &st
     Ok(())
 }
 
-fn migrate_kv_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()> {
+/// Internal rows this crate regenerates on demand if lost, so dropping a
+/// stranded (undecryptable) copy during login migration is safe. See
+/// `providers::anthropic::get_or_create_device_id`.
+const REGENERABLE_KEYS: &[&str] = &["internal:device_id"];
+
+fn is_regenerable_key(key: &str) -> bool {
+    REGENERABLE_KEYS.contains(&key)
+}
+
+fn migrate_kv_rows(
+    conn: &Connection,
+    old_uid: &str,
+    new_uid: &str,
+    warnings: &mut Vec<(String, String)>,
+) -> Result<()> {
     // Rows under `old_uid` are ciphertext under whatever key was active when
     // they were written -- pre-login, that's always the persisted local key
     // (`kv_set` runs `ensure_local_key` first). `fetch_encryption_key`
@@ -377,7 +405,23 @@ fn migrate_kv_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()
     };
 
     for (key, value, tags) in rows {
-        let rekeyed = rekey_migrated_value(&value, old_key.as_deref(), &active_key)?;
+        // A stranded row (the key that protected it is gone, or the
+        // ciphertext otherwise can't be decrypted) must not fail the whole
+        // login: drop it if it's known-regenerable, otherwise leave it in
+        // place under `old_uid` and move on to the rest of the migration.
+        let rekeyed = match rekey_migrated_value(&value, old_key.as_deref(), &active_key) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push((key.clone(), format!("{e:#}")));
+                if is_regenerable_key(&key) {
+                    conn.execute(
+                        "DELETE FROM kv_store WHERE user_id = ?1 AND key = ?2",
+                        params![old_uid, key],
+                    )?;
+                }
+                continue;
+            }
+        };
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM kv_store WHERE user_id = ?1 AND key = ?2)",
             params![new_uid, key],
@@ -400,7 +444,14 @@ fn migrate_kv_rows(conn: &Connection, old_uid: &str, new_uid: &str) -> Result<()
         }
     }
 
-    migrate_kv_history(conn, old_uid, new_uid, old_key.as_deref(), &active_key)
+    migrate_kv_history(
+        conn,
+        old_uid,
+        new_uid,
+        old_key.as_deref(),
+        &active_key,
+        warnings,
+    )
 }
 
 /// Re-key a value being moved off the pre-login uid: ciphertext is
@@ -427,6 +478,7 @@ fn migrate_kv_history(
     new_uid: &str,
     old_key: Option<&[u8]>,
     active_key: &[u8],
+    warnings: &mut Vec<(String, String)>,
 ) -> Result<()> {
     let rows: Vec<(i64, String, String, String, i64)> = {
         let mut stmt = conn.prepare(
@@ -448,7 +500,16 @@ fn migrate_kv_history(
     };
 
     for (id, key, value, tags, archived_at) in rows {
-        let rekeyed = rekey_migrated_value(&value, old_key, active_key)?;
+        let rekeyed = match rekey_migrated_value(&value, old_key, active_key) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push((key.clone(), format!("{e:#}")));
+                if is_regenerable_key(&key) {
+                    conn.execute("DELETE FROM kv_history WHERE id = ?1", params![id])?;
+                }
+                continue;
+            }
+        };
         let next_version: i64 = conn
             .prepare(
                 "SELECT COALESCE(MAX(version), 0) + 1 FROM kv_history \

@@ -1536,6 +1536,158 @@ fn login_migrates_and_reencrypts_prelogin_rows() -> Result<()> {
     })
 }
 
+/// Issue #11: `current_user_id` used to be a process-local static with
+/// nothing persisting or hydrating it, so every fresh CLI process saw
+/// `old_uid = ""` and re-ran the login migration on every invocation, not
+/// just on a real uid transition.
+#[test]
+fn persisted_uid_survives_a_simulated_process_restart() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        // "Process 1": a real login transition, so migration must run.
+        set_encryption_key(vec![0x11u8; 32]);
+        crate::broker::encryption::migrate_login_transition("", "user-1")?;
+        set_current_user_id("user-1".to_string());
+
+        // Simulate a brand new CLI process: forget the in-memory cache
+        // (nothing survives across process boundaries in memory) without
+        // touching whatever got persisted to `encryption_meta`.
+        crate::broker::encryption::reset_current_user_id_cache_for_test();
+
+        // The next invocation must resolve the previously logged-in uid
+        // from disk, not fall back to "".
+        let old_uid = current_user_id().unwrap_or_default();
+        assert_eq!(
+            old_uid, "user-1",
+            "a fresh process must hydrate the uid it was last logged in as"
+        );
+
+        // Same account, so this is not a transition -- must stay a no-op
+        // and must not touch the persisted local key (there is none to
+        // touch here, but a real migration run would try to purge it).
+        crate::broker::encryption::migrate_login_transition(&old_uid, "user-1")?;
+        assert_eq!(current_user_id().as_deref(), Some("user-1"));
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+/// Issue #11 fallout: `kv_set`/`kv_get`/`kv_list` resolve the uid from the
+/// same process-local static as `fetch_encryption_key`. Before this fix, a
+/// broker call made early in a process (before anything had called
+/// `current_user_id()`) would read/write under `""` even on a machine that
+/// was already logged in, because the static had not been hydrated yet.
+#[test]
+fn kv_calls_resolve_persisted_uid_without_prior_hydration() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        set_encryption_key(vec![0x22u8; 32]);
+        set_current_user_id("user-7".to_string());
+        kv_set("token", "under-user-7", None)?;
+
+        // Simulate a fresh process: the static is unhydrated again, but
+        // nothing has been persisted differently.
+        crate::broker::encryption::reset_current_user_id_cache_for_test();
+
+        // A kv call is the very first thing this "process" does -- it must
+        // still resolve to "user-7", not "".
+        let entry = kv_get("token")?.expect("kv_get must resolve the persisted uid, not \"\"");
+        assert_eq!(entry.value, "under-user-7");
+
+        let conn = open_raw()?;
+        let orphaned: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM kv_store WHERE user_id = ''",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            orphaned, 0,
+            "no row should have been read or written under the empty uid"
+        );
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+/// Issue #11 fallout: a row that can never be decrypted again (the key that
+/// protected it is gone) must not fail the whole login migration or block
+/// every future invocation from completing it. `internal:device_id` is
+/// regenerated on demand, so migration drops a stranded copy of it; any
+/// other stranded row is left in place under the old uid instead.
+#[test]
+fn stranded_undecryptable_row_does_not_fail_migration() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+
+        // A normal pre-login row, encrypted under the local key `kv_set`
+        // establishes and persists. This is the row that must still
+        // migrate successfully even though its neighbors below cannot.
+        kv_set("normal", "still-migrates", None)?;
+
+        // Two rows under the same pre-login uid whose ciphertext will not
+        // decrypt under that same local key -- garbage bytes standing in
+        // for "the key that actually protected this is gone", which fails
+        // the same way (`rekey_migrated_value` returns `Err`).
+        let now = crate::message::epoch_secs() as i64;
+        let garbage = format!("$encrypted${}", "A".repeat(32));
+        {
+            let conn = open_raw()?;
+            for key in ["internal:device_id", "unrecoverable-secret"] {
+                conn.execute(
+                    "INSERT INTO kv_store (user_id, key, value, tags, created_at, updated_at) \
+                     VALUES ('', ?1, ?2, '[]', ?3, ?3)",
+                    params![key, garbage, now],
+                )?;
+            }
+        }
+
+        let new_uid = "user-99";
+        set_encryption_key(vec![0x33u8; 32]);
+
+        // Must succeed despite two undecryptable rows.
+        crate::broker::encryption::migrate_login_transition("", new_uid)?;
+        set_current_user_id(new_uid.to_string());
+
+        let kv = kv_list(None)?;
+        assert_eq!(
+            kv.iter()
+                .find(|e| e.key == "normal")
+                .map(|e| e.value.as_str()),
+            Some("still-migrates"),
+            "a decryptable row must still migrate even when others can't"
+        );
+
+        let conn = open_raw()?;
+
+        let device_id_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM kv_store WHERE key = 'internal:device_id'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            device_id_rows, 0,
+            "an undecryptable internal:device_id must be dropped, not left stranded"
+        );
+
+        let stranded_owner: String = conn.query_row(
+            "SELECT user_id FROM kv_store WHERE key = 'unrecoverable-secret'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(
+            stranded_owner, "",
+            "an unrecoverable, non-regenerable row must stay stranded under the old uid, not vanish"
+        );
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
 #[test]
 fn logout_purges_local_key_and_leaves_db_inert() -> Result<()> {
     with_test_db(|| {
