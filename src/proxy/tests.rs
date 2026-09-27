@@ -106,6 +106,7 @@ async fn ws_control_frames_classified() {
 /// the upstream stream.
 #[tokio::test]
 async fn mitm_websocket_echo_roundtrip() {
+    let _home = crate::ScratchHome::new();
     use base64::Engine as _;
     use futures_util::{SinkExt as _, StreamExt as _};
     use rustls::pki_types::CertificateDer;
@@ -422,6 +423,7 @@ fn reverse_client() -> reqwest::Client {
 
 #[tokio::test]
 async fn mitm_passthrough() {
+    let _home = crate::ScratchHome::new();
     let (port, ca_path) = start(true).await.expect("proxy start");
     let client = mitm_client(port, &ca_path).await;
 
@@ -440,6 +442,7 @@ async fn mitm_passthrough() {
 
 #[tokio::test]
 async fn mitm_anthropic() {
+    let _home = crate::ScratchHome::new();
     let (port, ca_path) = start(true).await.expect("proxy start");
     let client = mitm_client(port, &ca_path).await;
 
@@ -458,6 +461,7 @@ async fn mitm_anthropic() {
 
 #[tokio::test]
 async fn reverse_proxy_anthropic() {
+    let _home = crate::ScratchHome::new();
     let (port, ca_path) = start(true).await.expect("proxy start");
     let client = reverse_client();
 
@@ -479,6 +483,7 @@ async fn reverse_proxy_anthropic() {
 
 #[tokio::test]
 async fn reverse_proxy_openai() {
+    let _home = crate::ScratchHome::new();
     let (port, ca_path) = start(true).await.expect("proxy start");
     let client = reverse_client();
 

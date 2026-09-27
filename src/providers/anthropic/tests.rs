@@ -103,6 +103,7 @@ fn build_request_body_falls_back_to_system_when_no_tools() {
 
 #[test]
 fn build_request_body_honors_cache_ttl_from_config() {
+    let _home = crate::ScratchHome::new();
     let config = StreamConfig {
         max_tokens: 64_000,
         cache_ttl: Some("1h".into()),
@@ -139,6 +140,7 @@ fn build_request_body_honors_cache_ttl_from_config() {
 
 #[test]
 fn build_request_body_scope_applies_to_stable_marker_not_messages() {
+    let _home = crate::ScratchHome::new();
     // Anthropic rejects `scope` on message-content cache_control but accepts
     // it on system and tool cache_control. This test guards against
     // accidentally stamping scope on message markers and re-triggering the
@@ -184,6 +186,7 @@ fn build_request_body_scope_applies_to_stable_marker_not_messages() {
 
 #[test]
 fn build_request_body_converts_oauth_string_content_for_cache_control() {
+    let _home = crate::ScratchHome::new();
     let body = build_request_body(
         "sk-ant-oat01-test",
         "claude-sonnet-4-5",

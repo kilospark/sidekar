@@ -93,6 +93,8 @@ pub(crate) fn open() -> Result<Connection> {
 /// Open a fresh connection without running schema init. Used by `ensure_schema`
 /// itself (to avoid recursion) and by code that knows the schema is already up.
 fn open_raw() -> Result<Connection> {
+    #[cfg(test)]
+    refuse_real_database_in_tests();
     fs::create_dir_all(data_dir())?;
     let path = db_path();
     let conn = Connection::open(&path)
@@ -103,6 +105,23 @@ fn open_raw() -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(conn)
+}
+
+/// A test that reaches the broker without pointing HOME at a scratch
+/// directory is writing to the developer's real bus, memory and secrets. It
+/// also races the tests that do: they swap HOME under a lock, so an unlocked
+/// test can open *their* database mid-transaction and fail them with
+/// "database is locked". Refused loudly, so the test that did it is named.
+#[cfg(test)]
+fn refuse_real_database_in_tests() {
+    let home = dirs::home_dir().unwrap_or_default();
+    let temp = std::env::temp_dir();
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    assert!(
+        canon(&home).starts_with(canon(&temp)),
+        "test opened the broker with HOME={} — wrap it in a test-database helper",
+        home.display()
+    );
 }
 
 fn ensure_schema(conn: &Connection) -> Result<()> {

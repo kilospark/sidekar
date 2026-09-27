@@ -555,9 +555,11 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         fs::create_dir_all(&home_a)?;
         fs::create_dir_all(&home_b)?;
 
+        // HOME first: resetting clears the persisted user id, and doing that
+        // before the switch cleared the developer's real one.
         let switch_to = |home: &std::path::Path| {
-            reset_encryption_state();
             unsafe { env::set_var("HOME", home) };
+            reset_encryption_state();
             set_encryption_key(account_key.clone());
             set_current_user_id(uid.to_string());
             auth_set("token", uid).expect("auth_set should persist the fake device token");
@@ -589,6 +591,8 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         assert!(kv_get("shared-key")?.is_none());
 
         server.stop();
+        // Still inside device A's HOME, so this clears A's state, not the real one.
+        reset_encryption_state();
         match old_api_url {
             Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
             None => unsafe { env::remove_var("SIDEKAR_API_URL") },
@@ -599,7 +603,6 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         }
         let _ = fs::remove_dir_all(&home_a);
         let _ = fs::remove_dir_all(&home_b);
-        reset_encryption_state();
 
         Ok(())
     })

@@ -232,6 +232,8 @@ mod tests {
 
     #[test]
     fn expand_tilde_path_folder_name_gets_dot_prefix() {
+        // Reads HOME twice; without the lock another test can swap it between.
+        let _home = crate::ScratchHome::new();
         let home = home_dir();
         assert_eq!(
             expand_tilde_path(PathBuf::from("claude-work")),
@@ -241,6 +243,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_path_dot_folder_under_home() {
+        let _home = crate::ScratchHome::new();
         let home = home_dir();
         assert_eq!(
             expand_tilde_path(PathBuf::from(".claude-work")),
@@ -258,6 +261,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_path_tilde_slash() {
+        let _home = crate::ScratchHome::new();
         let home = home_dir();
         assert_eq!(
             expand_tilde_path(PathBuf::from("~/profiles/work")),
@@ -267,6 +271,7 @@ mod tests {
 
     #[test]
     fn skill_search_roots_includes_grok_default() {
+        let _home = crate::ScratchHome::new();
         let roots = skill_search_roots();
         assert!(roots.contains(&home_dir().join(".grok/skills")));
     }

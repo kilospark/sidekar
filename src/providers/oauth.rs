@@ -1759,6 +1759,7 @@ mod tests {
 
     #[test]
     fn resolve_provider_unknown_arbitrary_nickname_without_kv() {
+        let _home = crate::ScratchHome::new();
         assert_eq!(
             resolve_provider_type_for_credential("meaningless-zx-not-stored"),
             None
@@ -1807,6 +1808,7 @@ mod tests {
 
     #[test]
     fn resolve_credential_type_handles_legacy_kv_stems() {
+        let _home = crate::ScratchHome::new();
         assert_eq!(
             resolve_provider_type_for_credential("anthropic"),
             Some("anthropic")

@@ -34,6 +34,53 @@ pub(crate) fn test_home_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// HOME pointed at a fresh scratch directory for as long as this lives.
+///
+/// For a test that reaches the broker, or anything else under `~/.sidekar`,
+/// without meaning to test HOME itself. Holds [`test_home_lock`], so it must
+/// not be combined with a helper that takes the lock too.
+#[cfg(test)]
+pub(crate) struct ScratchHome {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    old: Option<std::ffi::OsString>,
+    dir: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl ScratchHome {
+    pub(crate) fn new() -> Self {
+        let lock = test_home_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "sidekar-scratch-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch HOME");
+        let old = std::env::var_os("HOME");
+        // SAFETY: serialized by test_home_lock, restored on drop.
+        unsafe { std::env::set_var("HOME", &dir) };
+        Self {
+            _lock: lock,
+            old,
+            dir,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScratchHome {
+    fn drop(&mut self) {
+        match self.old.take() {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 const MAX_PENDING_EVENTS: usize = 1000;
 
 #[macro_export]

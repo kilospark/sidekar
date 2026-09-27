@@ -831,17 +831,19 @@ mod tests {
             crate::message::epoch_secs()
         ));
         fs::create_dir_all(&temp_home)?;
+        // Safety: tests run in-process and this helper restores HOME before returning.
+        // HOME first: clearing the user id persists, and doing it outside the
+        // scratch HOME cleared the developer's real one.
+        unsafe { env::set_var("HOME", &temp_home) };
         crate::broker::clear_current_user_id();
         crate::broker::clear_encryption_key();
-        // Safety: tests run in-process and this helper restores HOME before returning.
-        unsafe { env::set_var("HOME", &temp_home) };
         let result = f();
+        crate::broker::clear_current_user_id();
+        crate::broker::clear_encryption_key();
         match old_home {
             Some(home) => unsafe { env::set_var("HOME", home) },
             None => unsafe { env::remove_var("HOME") },
         }
-        crate::broker::clear_current_user_id();
-        crate::broker::clear_encryption_key();
         let _ = fs::remove_dir_all(&temp_home);
         result
     }

@@ -543,6 +543,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn error_before_content_returns_midstream_no_content() {
+        let _home = crate::ScratchHome::new();
         // Simulated flow: stream opened, no TextDelta arrived, the
         // provider emitted an Error event (the SSE chunk read
         // failure path). Must surface MidStreamNoContent so the
@@ -563,6 +564,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn error_after_text_delta_does_not_return_midstream_no_content() {
+        let _home = crate::ScratchHome::new();
         // Classifier invariant: once any TextDelta has crossed,
         // the error path must NOT yield MidStreamNoContent —
         // double-rendering protection.
@@ -587,6 +589,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn error_after_thinking_delta_does_not_retry() {
+        let _home = crate::ScratchHome::new();
         // Thinking tokens are user-visible on models with
         // extended thinking — they render to the terminal. Same
         // double-render rule applies.
@@ -605,6 +608,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn error_after_tool_call_start_does_not_retry() {
+        let _home = crate::ScratchHome::new();
         // ToolCallStart is the first moment a tool panel appears
         // on screen. Retrying would re-show the panel and the
         // model might re-issue different args.
@@ -625,6 +629,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn connecting_and_waiting_alone_do_not_count_as_content() {
+        let _home = crate::ScratchHome::new();
         // Spec: Connecting and Waiting are status events. A stream
         // that only emits those before failing is still a zero-
         // content failure and must be retryable.
@@ -645,6 +650,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn channel_closed_without_events_is_midstream_no_content() {
+        let _home = crate::ScratchHome::new();
         // Provider task dropped the sender without ever firing
         // Error or Done. This manifests as rx returning None on
         // the first recv(). Should be retryable — it's almost
@@ -673,6 +679,7 @@ mod consume_stream_tests {
 
     #[tokio::test]
     async fn midstream_no_content_message_survives_round_trip() {
+        let _home = crate::ScratchHome::new();
         // The inner String of MidStreamNoContent must carry the
         // original provider error so is_retryable_error can
         // classify it. If this round-trip ever breaks, the retry
