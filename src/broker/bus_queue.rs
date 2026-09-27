@@ -179,6 +179,19 @@ pub fn release_all_claimed_messages() -> Result<usize> {
 }
 
 /// Remove one delivered message from the queue.
+/// Withdraw the not-yet-pasted copy of one envelope.
+///
+/// For an answer already read some other way (`bus await`), so it is not
+/// pasted into the asker's pane a second time. A row already claimed is being
+/// pasted right now and is left alone.
+pub fn withdraw_undelivered_envelope(envelope_id: &str) -> Result<usize> {
+    let conn = open()?;
+    Ok(conn.execute(
+        "DELETE FROM bus_queue WHERE envelope_id = ?1 AND delivered_at = 0 AND claimed_at = 0",
+        params![envelope_id],
+    )?)
+}
+
 pub fn delete_queued_message(id: i64) -> Result<()> {
     let conn = open()?;
     conn.execute("DELETE FROM bus_queue WHERE id = ?1", params![id])?;

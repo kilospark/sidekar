@@ -63,10 +63,24 @@ sidekar agents [--watch [secs]]
         }
         "spawn" => {
             "\
-sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] [--timeout <secs>]
+sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo]
+              [--wait] [--timeout <duration>]
 sidekar spawn list
 
   Launch another agent, wait for it to reach the bus, and print its bus name.
+
+  A task is sent as a tracked request: it carries a request id and the exact
+  `bus send ... --reply-to=<id>` command to answer with, and the id is printed
+  on stderr for `sidekar bus await <id>`.
+
+  --wait stays until the agent answers and prints the answer on stdout instead
+  of the name (the name goes to stderr). Exit 0 answered, 2 the agent left
+  without answering, 1 no answer within --timeout (default 10m). The agent keeps
+  running for follow-ups; stop it when done. Run from a plain shell, spawn gives
+  itself a bus address for the length of the wait.
+
+  --timeout takes 90s, 20m, 1h or bare seconds. Without --wait it bounds how
+  long to wait for the agent to register (default 30s).
 
   The agent runs detached with its own session, so it outlives this command and
   ignores a Ctrl-C meant for your terminal. Unattended mode is on by default —
@@ -89,9 +103,11 @@ sidekar spawn list
   than line by line, and to be complete once the agent exits.
 
   Examples:
-    REVIEWER=$(sidekar spawn codex \"Review the diff on this branch. Reply with findings.\")
-    sidekar bus wait \"$REVIEWER\"
-    sidekar bus replies --limit=5
+    FINDINGS=$(sidekar spawn codex \"Review the diff on this branch.\" --wait --timeout 20m)
+
+    REVIEWER=$(sidekar spawn codex)
+    ID=$(sidekar bus send \"$REVIEWER\" \"Review the diff on this branch.\" --id-only)
+    FINDINGS=$(sidekar bus await \"$ID\" --timeout 20m)
     sidekar stop \"$REVIEWER\"
 
     sidekar spawn claude --cwd ~/src/other-repo \"Run the test suite and report failures\"
@@ -114,19 +130,25 @@ sidekar stop <agent-name> [--force]
         }
         "bus" => {
             "\
-sidekar bus <who|requests|replies|show|send|done|wait|explain|cancel|dismiss> [args...]
+sidekar bus <who|requests|replies|show|send|done|wait|await|explain|cancel|dismiss> [args...]
 
   Agent bus subcommands:
     who [--all]
     requests [--status=open|answered|timed-out|cancelled|all] [--limit=N]
     replies [--msg-id=<request_id>] [--limit=N]
     show <msg_id>
-    send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt]
+    send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt] [--id-only]
+    (--id-only prints just the request id, for `bus await`.)
     (plain send defaults to request: tracked outbound that nudges until replied.
      Short closing acks (\"ok\", \"done\", \"thanks\") and --kind=fyi send an
      untracked note that ends with \"[no reply needed]\".)
     done <next> <summary> <request|--file=path> [--reply-to=<msg_id>] [--interrupt]
     wait <agent> [--until=settled|idle|needs-input|working|user-typing] [--timeout=<ms>]
+    await <msg_id> [--timeout <duration>]
+    (await blocks until the request is answered and prints the answer — read from
+     the broker, so it arrives in this turn rather than pasted after it. Exit 0
+     answered, 2 the recipient left or the request was cancelled, 1 timed out.
+     Duration: 90s, 10m, 1h or bare seconds; default 10m.)
     explain <agent>
     cancel <msg_id>... | --all
     dismiss <msg_id>...

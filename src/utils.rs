@@ -428,5 +428,33 @@ pub fn new_session_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
 }
 
+/// An error that ends the process with a particular exit status.
+///
+/// Most failures exit 1. A command whose callers branch on *why* it failed —
+/// `bus await`, where "no answer yet" and "no answer ever" call for different
+/// next steps — returns this instead, and `main` exits with its code.
+#[derive(Debug)]
+pub struct ExitWith {
+    pub code: i32,
+    pub message: String,
+}
+
+impl ExitWith {
+    pub fn new(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ExitWith {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ExitWith {}
+
 #[cfg(test)]
 mod tests;

@@ -37,6 +37,7 @@ pub(super) async fn dispatch_agent_command(
         "bus-cancel" => cmd_bus_cancel(ctx, args),
         "bus-dismiss" => cmd_bus_dismiss(ctx, args),
         "bus-wait" => cmd_bus_wait(ctx, args).await,
+        "bus-await" => crate::bus::cmd_await(ctx, args).await,
         "bus-explain" => cmd_bus_explain(ctx, args),
         "cron" => dispatch_cron_root(ctx, args).await,
         "cron-create" => cmd_cron_create(ctx, args).await,
@@ -66,9 +67,10 @@ async fn dispatch_bus_root(ctx: &mut AppContext, args: &[String]) -> Result<()> 
         "cancel" => "bus-cancel",
         "dismiss" => "bus-dismiss",
         "wait" => "bus-wait",
+        "await" => "bus-await",
         "explain" => "bus-explain",
         _ => bail!(
-            "Usage: sidekar bus <who|requests|replies|show|send|done|wait|explain|cancel|dismiss> [args...]"
+            "Usage: sidekar bus <who|requests|replies|show|send|done|wait|await|explain|cancel|dismiss> [args...]"
         ),
     };
     Box::pin(super::dispatch(ctx, subcommand, &args[1..])).await
@@ -157,6 +159,7 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let reply_to = args.iter().find_map(|a| a.strip_prefix("--reply-to="));
     let file_path = args.iter().find_map(|a| a.strip_prefix("--file="));
     let interrupt = args.iter().any(|a| a == "--interrupt");
+    let id_only = args.iter().any(|a| a == "--id-only");
     let filtered: Vec<&str> = args
         .iter()
         .filter(|a| {
@@ -164,6 +167,7 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 && !a.starts_with("--reply-to=")
                 && !a.starts_with("--file=")
                 && a.as_str() != "--interrupt"
+                && a.as_str() != "--id-only"
         })
         .map(String::as_str)
         .collect();
@@ -182,11 +186,11 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .unwrap_or_else(|| default_send_kind(reply_to, &message));
     if to.is_empty() || message.is_empty() {
         bail!(
-            "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt]"
+            "Usage: sidekar bus send <to> <message|--file=path> [--kind=request|fyi|response] [--reply-to=<msg_id>] [--interrupt] [--id-only]"
         );
     }
     let mut bus_state = recovered_bus_state(ctx);
-    crate::bus::cmd_send_message(
+    let id = crate::bus::cmd_send_message(
         &mut bus_state,
         ctx,
         &to,
@@ -195,6 +199,11 @@ fn cmd_bus_send(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         reply_to,
         interrupt,
     )?;
+    if id_only {
+        // For `ID=$(sidekar bus send ... --id-only)`, feeding `bus await`.
+        let _ = ctx.drain_output();
+        out!(ctx, "{id}");
+    }
     Ok(())
 }
 

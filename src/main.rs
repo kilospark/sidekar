@@ -15,7 +15,10 @@ fn main() {
 
     if let Err(err) = rt.block_on(run(raw_args)) {
         eprintln!("Error: {err:#}");
-        std::process::exit(1);
+        let code = err
+            .downcast_ref::<sidekar::utils::ExitWith>()
+            .map_or(1, |e| e.code);
+        std::process::exit(code);
     }
 }
 

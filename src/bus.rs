@@ -10,12 +10,14 @@ use crate::transport::Transport;
 use crate::*;
 use std::io::Write as _;
 
+pub(crate) mod await_reply;
 mod commands;
 mod explain;
 mod nickname;
 pub(crate) mod presence;
 mod wait;
 
+pub use await_reply::cmd_await;
 pub use commands::*;
 pub use explain::cmd_explain;
 pub use nickname::*;

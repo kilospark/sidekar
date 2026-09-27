@@ -102,7 +102,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "bus",
-        "<who|requests|replies|show|send|done|cancel> [args]",
+        "<who|requests|replies|show|send|done|wait|await|cancel> [args]",
         "Agent bus subcommands",
         CommandGroup::Agent,
         false,

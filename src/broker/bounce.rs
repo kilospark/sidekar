@@ -101,10 +101,10 @@ pub fn bounce_mail_for_departed(agent_name: &str, nick: &str, now: u64) -> Resul
                 "DELETE FROM pending_requests WHERE id = ?1",
                 params![msg_id],
             )?;
-            notices.entry(sender.clone()).or_default().push(format!(
-                "request {msg_id} went unanswered: {}",
-                excerpt(preview)
-            ));
+            notices
+                .entry(sender.clone())
+                .or_default()
+                .push(unanswered_line(msg_id, preview));
         }
         report.requests_closed = requests.len();
         closed_ids = requests.into_iter().map(|(id, _, _)| id).collect();
@@ -162,6 +162,103 @@ pub fn bounce_mail_for_departed(agent_name: &str, nick: &str, now: u64) -> Resul
         }
     }
     Ok(report)
+}
+
+/// Cancel what `sender` still has open with `recipient`, because `sender` is
+/// the one stopping it.
+///
+/// Stopping an agent settles its mail, and each sender is told what went
+/// unanswered. That is news to anyone except whoever did the stopping: told
+/// "the agent you just stopped left with your request open", they learn only
+/// what they did. Their requests are withdrawn first, so the notice goes to the
+/// others alone. Returns how many were cancelled.
+pub fn cancel_requests_before_stopping(sender: &str, recipient: &str) -> Result<usize> {
+    let now = crate::message::epoch_secs();
+    let mut cancelled = 0;
+    for request in outbound_for_sender(sender)? {
+        if request.transport_name == "broker" && request.transport_target == recipient {
+            cancelled += cancel_outbound_request(&request.msg_id, now)?;
+        }
+    }
+    Ok(cancelled)
+}
+
+/// The line a notice carries for one unanswered request.
+fn unanswered_line(msg_id: &str, preview: &str) -> String {
+    format!("request {msg_id} went unanswered: {}", excerpt(preview))
+}
+
+/// A departure the asker has already been told about some other way, by
+/// `bus await` failing: close the request, and take it out of any notice still
+/// waiting to be pasted.
+///
+/// Closing matters when the recipient crashed. Nothing has closed its request
+/// yet, so the daemon's sweep would otherwise find it later and send the notice
+/// after the wait already reported it. A notice about several things keeps its
+/// other lines; one left with nothing to say is withdrawn.
+pub fn settle_reported_departure(msg_id: &str) -> Result<()> {
+    let Some(request) = outbound_request(msg_id)? else {
+        return Ok(());
+    };
+    let now = crate::message::epoch_secs() as i64;
+    let mut conn = open()?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE outbound_requests
+         SET status = ?2, closed_at = COALESCE(closed_at, ?3)
+         WHERE msg_id = ?1 AND status = ?4",
+        params![
+            msg_id,
+            OUTBOUND_STATUS_RECIPIENT_GONE,
+            now,
+            OUTBOUND_STATUS_OPEN
+        ],
+    )?;
+    tx.execute(
+        "DELETE FROM pending_requests WHERE id = ?1",
+        params![msg_id],
+    )?;
+
+    let marker = format!("request {msg_id} went unanswered:");
+    let notices: Vec<(i64, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, body FROM bus_queue
+             WHERE recipient = ?1 AND sender = 'sidekar'
+               AND delivered_at = 0 AND claimed_at = 0 AND instr(body, ?2) > 0",
+        )?;
+        stmt.query_map(params![request.sender_name, marker], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, body) in notices {
+        match without_line(&body, &marker) {
+            Some(rest) => tx.execute(
+                "UPDATE bus_queue SET body = ?2 WHERE id = ?1",
+                params![id, rest],
+            )?,
+            None => tx.execute("DELETE FROM bus_queue WHERE id = ?1", params![id])?,
+        };
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// `body` with the line containing `marker` removed, or `None` when that was
+/// its only line and nothing is left worth sending.
+pub(crate) fn without_line(body: &str, marker: &str) -> Option<String> {
+    let mut lines = body.lines();
+    let header = lines.next().unwrap_or_default();
+    let rest: Vec<&str> = lines.filter(|l| !l.contains(marker)).collect();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut out = header.to_string();
+    for l in rest {
+        out.push('\n');
+        out.push_str(l);
+    }
+    Some(out)
 }
 
 /// The notice a sender gets, one per sender however much was withdrawn.

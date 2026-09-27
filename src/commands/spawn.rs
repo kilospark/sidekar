@@ -22,7 +22,7 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             bail!(
                 "Usage: sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] \
                  [--model <model>] [--window] [--app <name>] [--log <path>] \
-                 [--no-yolo] [--timeout <secs>]\n       \
+                 [--no-yolo] [--wait] [--timeout <duration>]\n       \
                  sidekar spawn list"
             )
         }
@@ -36,7 +36,8 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut cwd: Option<String> = None;
     let mut model: Option<String> = None;
     let mut yolo = true;
-    let mut timeout = REGISTER_TIMEOUT;
+    let mut timeout: Option<Duration> = None;
+    let mut wait = false;
     let mut window = false;
     let mut app: Option<String> = None;
     let mut log: Option<String> = None;
@@ -57,6 +58,7 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             "--no-yolo" => yolo = false,
             "--yolo" | "--auto-approve" => yolo = true,
             "--window" => window = true,
+            "--wait" => wait = true,
             _ if a.starts_with("--app") => {
                 app = Some(take_value("--app")?);
                 window = true;
@@ -66,10 +68,9 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             _ if a.starts_with("--cwd") => cwd = Some(take_value("--cwd")?),
             _ if a.starts_with("--model") => model = Some(take_value("--model")?),
             _ if a.starts_with("--timeout") => {
-                let secs: u64 = take_value("--timeout")?
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("--timeout expects whole seconds"))?;
-                timeout = Duration::from_secs(secs);
+                timeout = Some(crate::bus::await_reply::parse_duration(&take_value(
+                    "--timeout",
+                )?)?);
             }
             _ if a.starts_with('-') => bail!("unknown option for spawn: {a}"),
             _ if agent.is_empty() => agent = a.to_string(),
@@ -81,6 +82,11 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 
     if agent.is_empty() {
         bail!("Usage: sidekar spawn <agent> [task] — run `sidekar spawn --help` for options");
+    }
+    if wait && task.is_none() {
+        bail!(
+            "--wait waits for the answer to a task; give one: sidekar spawn {agent} \"<task>\" --wait"
+        );
     }
     if !crate::pty::is_agent_command(&agent) {
         bail!("'{agent}' is not a PTY-wrappable agent; see `sidekar help` for the supported list");
@@ -95,9 +101,52 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         );
     }
 
+    // Without --wait the timeout is how long to wait for the agent to come up;
+    // with it, how long to wait for the answer.
+    let register_timeout = match (wait, timeout) {
+        (false, Some(t)) => t,
+        (true, Some(t)) => t.min(REGISTER_TIMEOUT),
+        (_, None) => REGISTER_TIMEOUT,
+    };
+    let answer_timeout = timeout.unwrap_or(crate::bus::await_reply::DEFAULT_AWAIT);
+
     let token = crate::message::gen_msg_id();
-    let spawner = crate::bus::resolve_registered_agent_bus_name_for_current_process()
-        .unwrap_or_else(|| "cli".to_string());
+    // Somewhere on the bus for the answer to go. An agent spawning a helper
+    // already has one. A plain shell does not, so for --wait it gets one for
+    // as long as it waits; without --wait there is nobody to answer to.
+    let mut transient: Option<crate::bus::presence::Presence> = None;
+    let spawner = match crate::bus::resolve_registered_agent_bus_name_for_current_process() {
+        Some(name) => Some(name),
+        None if wait => {
+            let p = transient_identity()?;
+            let name = p.name().to_string();
+            transient = Some(p);
+            Some(name)
+        }
+        None => None,
+    };
+
+    // The task still goes in on the command line — typing it into the agent's
+    // terminal raced its startup — but it now carries a request id and the
+    // command to answer it with, the same footer every bus request has, so
+    // the answer is recorded against the task instead of only pasted.
+    let request = match (&spawner, &task) {
+        (Some(from), Some(t)) => {
+            let from_id = crate::broker::find_agent(from, None)?
+                .map(|a| a.id)
+                .unwrap_or_else(|| crate::message::AgentId::new(from));
+            Some(crate::message::Envelope::new_request(
+                from_id,
+                "",
+                t.clone(),
+            ))
+        }
+        _ => None,
+    };
+    if let Some(ref req) = request {
+        task = Some(with_reply_footer(&req.message, &req.from.name, &req.id));
+    }
+    let spawner = spawner.unwrap_or_else(|| "cli".to_string());
 
     let exe = std::env::current_exe()?;
 
@@ -206,12 +255,11 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     };
 
     let started = Instant::now();
-    loop {
+    let found = loop {
         if let Ok(Some(found)) = crate::broker::agent_for_spawn_token(&token) {
-            out!(ctx, "{}", found.id.name);
-            return Ok(());
+            break found;
         }
-        if started.elapsed() >= timeout {
+        if started.elapsed() >= register_timeout {
             let where_to_look = match pid {
                 Some(p) => format!("pid {p}; stop it with `kill {p}`"),
                 None => "the window that just opened".to_string(),
@@ -219,11 +267,105 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             bail!(
                 "{agent} was launched ({where_to_look}) but never registered on the bus \
                  within {}s. Check it with `sidekar bus who`.",
-                timeout.as_secs()
+                register_timeout.as_secs()
             );
         }
         std::thread::sleep(POLL_INTERVAL);
+    };
+    let name = found.id.name.clone();
+
+    let Some(mut request) = request else {
+        out!(ctx, "{name}");
+        return Ok(());
+    };
+    request.to = name.clone();
+    track_request(&request, &found);
+
+    if !wait {
+        eprintln!(
+            "[sidekar] task sent as request {id}; `sidekar bus await {id}` waits for the answer.",
+            id = request.id
+        );
+        out!(ctx, "{name}");
+        return Ok(());
     }
+
+    eprintln!(
+        "[sidekar] {name} is working on it (request {}). Waiting up to {}.",
+        request.id,
+        crate::bus::await_reply::describe(answer_timeout)
+    );
+    let recipient = crate::bus::await_reply::Recipient {
+        name: name.clone(),
+        pane: found.id.pane.clone(),
+    };
+    let outcome =
+        crate::bus::await_reply::await_reply(&request.id, Some(recipient), answer_timeout).await?;
+    if transient.is_some() && matches!(outcome, crate::bus::await_reply::AwaitOutcome::TimedOut) {
+        // Nobody will be at this address to take a late answer, so withdraw the
+        // request rather than leave the agent reminded to answer it.
+        let _ = crate::broker::cancel_outbound_request(&request.id, crate::message::epoch_secs());
+        bail!(
+            "No answer from {name} within {}. It is still running; stop it with \
+             `sidekar stop {name}`.",
+            crate::bus::await_reply::describe(answer_timeout)
+        );
+    }
+    let answer = crate::bus::await_reply::answer_or_exit(&request.id, outcome, answer_timeout)?;
+    drop(transient);
+    // The agent stays up for follow-ups; say where, off stdout so the answer
+    // is all that `$(...)` captures.
+    eprintln!("[sidekar] answered by {name}; it is still running (`sidekar stop {name}`).");
+    out!(ctx, "{answer}");
+    Ok(())
+}
+
+/// The task, plus how to answer it.
+fn with_reply_footer(task: &str, reply_to: &str, msg_id: &str) -> String {
+    format!(
+        "{task}\n\nWhen you have the answer, send it back with:\n\
+         sidekar bus send {reply_to} \"<your answer>\" --reply-to={msg_id}\n\
+         (for a long answer, write it to a file and pass --file=<path> instead of the quoted text)"
+    )
+}
+
+/// Record the task as an open request to the agent now running it, as `bus
+/// send` does for a request: so its answer is linked to it, the agent is
+/// reminded if it goes quiet without answering, and the request is closed as
+/// `recipient_gone` if the agent leaves first.
+fn track_request(request: &crate::message::Envelope, agent: &crate::broker::BrokerAgent) {
+    let _ = crate::broker::set_pending(request);
+    let project = crate::bus::detect_project_name();
+    let _ = crate::broker::set_outbound_request(
+        request,
+        &request.from.display_name(),
+        "broker",
+        &agent.id.name,
+        request.from.session.as_deref(),
+        Some(project.as_str()),
+    );
+    let _ = crate::broker::mark_agent_session_request(
+        &request.from.name,
+        &request.id,
+        request.created_at,
+    );
+}
+
+/// A bus address for a plain shell for the length of one `spawn --wait`.
+///
+/// Registered under a `cli-<pid>` pane so the daemon's dead-agent sweep
+/// removes it if this process is killed mid-wait.
+fn transient_identity() -> Result<crate::bus::presence::Presence> {
+    let project = crate::bus::detect_project_name();
+    let name = crate::bus::presence::unique_name(&format!("cli-{project}"));
+    crate::bus::presence::Presence::register(crate::bus::presence::Registration {
+        nick: name.clone(),
+        name,
+        channel: crate::pty::detect_channel(),
+        pane: format!("cli-{}", std::process::id()),
+        agent_type: "sidekar",
+        history: None,
+    })
 }
 
 fn cmd_spawn_list(ctx: &mut AppContext) -> Result<()> {
@@ -268,6 +410,10 @@ pub fn cmd_stop(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         );
     }
 
+    if let Some(me) = crate::bus::resolve_registered_agent_bus_name_for_current_process() {
+        let _ = crate::broker::cancel_requests_before_stopping(&me, &agent.id.name);
+    }
+
     let pane = agent.id.pane.clone().unwrap_or_default();
     let Some(pid) = crate::bus::presence::pid_of_pane(&pane) else {
         crate::broker::unregister_agent(&agent.id.name)?;
@@ -285,3 +431,6 @@ pub fn cmd_stop(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     out!(ctx, "Stopped {} (pid {}).", agent.id.name, pid);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

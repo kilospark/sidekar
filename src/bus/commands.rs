@@ -920,7 +920,7 @@ pub fn cmd_send_message(
     kind: &str,
     reply_to: Option<&str>,
     interrupt: bool,
-) -> Result<()> {
+) -> Result<String> {
     let from_id = state.agent_id();
     let msg_kind = MessageKind::from_str_lossy(kind);
     let mut envelope = Envelope::new(from_id, to, msg_kind, message);
@@ -928,7 +928,9 @@ pub fn cmd_send_message(
         envelope.reply_to = Some(rt.to_string());
     }
     envelope.interrupt = interrupt;
-    send_directed_envelope(state, ctx, envelope, reply_to, "Message sent")
+    let id = envelope.id.clone();
+    send_directed_envelope(state, ctx, envelope, reply_to, "Message sent")?;
+    Ok(id)
 }
 
 pub fn cmd_signal_done(
