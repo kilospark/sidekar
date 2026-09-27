@@ -5,9 +5,7 @@
 //! signal forwarding, resize handling, and broker registration.
 
 use crate::broker;
-use crate::message::AgentId;
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 
@@ -26,15 +24,14 @@ mod waiting;
 
 use chrome::{cleanup_chrome_session, watch_session_file};
 use event_loop::event_loop;
-use identity::{prepare_args, resolve_agent, unique_agent_name};
+use identity::{prepare_args, resolve_agent};
 use session::{
     cleanup_child_and_state, connect_relay_tunnel, relay_policy_label, resolved_relay_policy,
 };
 
 type PtySetupState = (
     Arc<OwnedFd>,
-    AgentId,
-    String,
+    crate::bus::presence::Presence,
     String,
     Arc<crate::poller::UserInputState>,
     tokio::sync::mpsc::UnboundedReceiver<crate::poller::PtyNotice>,
@@ -365,7 +362,7 @@ pub async fn run_agent(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     let nick = crate::bus::pick_nickname_for_project(Some(&cwd));
-    let pre_fork_name = unique_agent_name(agent, &channel);
+    let pre_fork_name = crate::bus::presence::unique_name(&format!("{agent}-{channel}"));
     let start_time = std::time::Instant::now();
     let started_at = crate::message::epoch_secs();
 
@@ -436,9 +433,8 @@ pub async fn run_agent(
         }
     }
 
-    // From here, any setup failure must clean up the child + broker.
-    let mut registered_name: Option<String> = None;
-
+    // From here, any setup failure must clean up the child. The broker cleans
+    // itself up: a Presence that never reaches the caller has already left.
     let setup_result = (|| -> Result<PtySetupState> {
         // Copy parent terminal size to child PTY
         let _ = copy_terminal_size(master_raw);
@@ -446,39 +442,27 @@ pub async fn run_agent(
         // Set master fd to non-blocking for async I/O
         set_nonblocking(master_raw)?;
 
-        // Build session identity with unique name
-        let session_id = format!("pty-{child_pid}");
-        let name = pre_fork_name.clone();
-
-        let identity = AgentId {
-            name: name.clone(),
-            nick: Some(nick.clone()),
-            session: Some(channel.clone()),
-            pane: Some(session_id.clone()),
-            agent_type: Some("sidekar".into()),
-        };
-        let agent_session_id = format!("pty:{child_pid}:{started_at}");
-
-        // Register with broker
-        broker::register_agent(&identity, Some(&session_id))?;
-        registered_name = Some(name.clone());
-        broker::create_agent_session(
-            &agent_session_id,
-            &identity.name,
-            Some(agent),
-            identity.nick.as_deref(),
-            &cwd,
-            identity.session.as_deref(),
-            Some(&cwd),
-            started_at,
-        )?;
+        let presence =
+            crate::bus::presence::Presence::register(crate::bus::presence::Registration {
+                name: pre_fork_name.clone(),
+                nick: nick.clone(),
+                channel: channel.clone(),
+                pane: format!("pty-{child_pid}"),
+                agent_type: "sidekar",
+                history: Some(crate::bus::presence::History {
+                    id: format!("pty:{child_pid}:{started_at}"),
+                    agent: agent.to_string(),
+                    cwd: cwd.clone(),
+                    started_at,
+                }),
+            })?;
 
         // Start bus message poller (reads from SQLite, writes to PTY)
         let master_arc = Arc::new(master);
         let input_state = Arc::new(crate::poller::UserInputState::default());
         let (notice_tx, notice_rx) = tokio::sync::mpsc::unbounded_channel();
         crate::poller::start_poller(
-            identity.name.clone(),
+            presence.name().to_string(),
             agent.to_string(),
             master_arc.clone(),
             input_state.clone(),
@@ -486,22 +470,14 @@ pub async fn run_agent(
             notice_tx,
         );
 
-        Ok((
-            master_arc,
-            identity,
-            nick,
-            agent_session_id,
-            input_state,
-            notice_rx,
-        ))
+        Ok((master_arc, presence, nick, input_state, notice_rx))
     })();
 
-    let (master_arc, identity, nick, agent_session_id, input_state, notice_rx) = match setup_result
-    {
+    let (master_arc, mut presence, nick, input_state, notice_rx) = match setup_result {
         Ok(v) => v,
         Err(e) => {
             // silent — error propagated via return
-            cleanup_child_and_state(child_pid, registered_name.as_deref());
+            cleanup_child_and_state(child_pid, None);
             if let Some((_, ref ca_path)) = proxy_info {
                 crate::proxy::cleanup_ca_file(ca_path);
             }
@@ -544,7 +520,7 @@ pub async fn run_agent(
         }
         crate::config::RelayMode::On => {
             if let Some(token) = crate::auth::auth_token() {
-                match connect_relay_tunnel(&token, &identity.name, agent, &cwd, &nick).await {
+                match connect_relay_tunnel(&token, presence.name(), agent, &cwd, &nick).await {
                     Ok(t) => Some(t),
                     Err(e) => {
                         crate::broker::try_log_error(
@@ -570,7 +546,7 @@ pub async fn run_agent(
     let _ = crate::daemon::ensure_running();
 
     let pty_project = crate::scope::resolve_project_name(None);
-    crate::commands::cron::start_default_cron_loop(identity.name.clone(), pty_project).await;
+    crate::commands::cron::start_default_cron_loop(presence.name().to_string(), pty_project).await;
 
     // Start a background task to watch for the child's Chrome session.
     // When the child calls `sidekar launch` or `sidekar connect`, the
@@ -598,8 +574,8 @@ pub async fn run_agent(
             if proxy_injected_codex_toml {
                 crate::proxy::remove_codex_ca();
             }
-            let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
-            cleanup_child_and_state(child_pid, Some(&identity.name));
+            presence.leave();
+            cleanup_child_and_state(child_pid, None);
             return Err(e);
         }
     };
@@ -611,7 +587,7 @@ pub async fn run_agent(
         agent,
         tunnel,
         &nick,
-        &identity.name,
+        presence.name(),
         &input_state,
         notice_rx,
     )
@@ -637,8 +613,8 @@ pub async fn run_agent(
         crate::proxy::remove_codex_ca();
     }
 
-    let _ = broker::finish_agent_session(&agent_session_id, crate::message::epoch_secs());
-    let _ = broker::unregister_agent(&identity.name);
+    // Explicitly, not by drop: process::exit below skips destructors.
+    presence.leave();
 
     // Hand this session's transcript to `memory import`, the way the REPL runs a
     // final journal pass on its way out. Detached, because the agent has gone and

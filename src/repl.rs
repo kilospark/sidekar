@@ -36,7 +36,6 @@ use self::slash::{
 };
 use self::system_prompt::build_system_prompt_with_project;
 use crate::broker;
-use crate::message::AgentId;
 use crate::providers::{self, ChatMessage, ContentBlock, Provider, Role, StreamEvent};
 use crate::session;
 use crate::tunnel::tunnel_println;
@@ -293,31 +292,27 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
     let nick = crate::bus::pick_nickname_for_project(Some(&project));
     let pane_id = format!("repl-{}", std::process::id());
 
-    let existing_names: std::collections::HashSet<String> = broker::list_agents(None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|a| a.id.name)
-        .collect();
-    let mut n = 1u32;
-    let bus_name = loop {
-        let candidate = format!("sidekar-repl-{project}-{n}");
-        if !existing_names.contains(&candidate) {
-            break candidate;
-        }
-        n += 1;
-    };
+    let bus_name = crate::bus::presence::unique_name(&format!("sidekar-repl-{project}"));
 
-    let identity = AgentId {
-        name: bus_name.clone(),
-        nick: Some(nick.clone()),
-        session: Some(cwd.clone()),
-        pane: Some(pane_id.clone()),
-        agent_type: Some("sidekar-repl".to_string()),
-    };
-
-    if let Err(e) = broker::register_agent(&identity, Some(&pane_id)) {
-        broker::try_log_error("bus", &format!("registration failed: {e}"), None);
-    }
+    // A failed registration is logged and the REPL carries on unregistered, as
+    // it always has: a REPL is still useful off the bus. Held for the rest of
+    // the function so every early return below leaves the bus on the way out —
+    // before this, `-p` without `-c` bailed with the registration still live.
+    let mut presence =
+        match crate::bus::presence::Presence::register(crate::bus::presence::Registration {
+            name: bus_name.clone(),
+            nick: nick.clone(),
+            channel: cwd.clone(),
+            pane: pane_id.clone(),
+            agent_type: "sidekar-repl",
+            history: None,
+        }) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                broker::try_log_error("bus", &format!("registration failed: {e}"), None);
+                None
+            }
+        };
 
     crate::bus::set_repl_terminal_title(&nick, false);
     crate::activity::publish(&bus_name, crate::activity::ActivityState::Idle);
@@ -482,7 +477,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
         stop_relay(tunnel_tx.take(), tunnel_input_bridge.take());
         crate::poller::shutdown_poller();
-        let _ = broker::unregister_agent(&bus_name);
+        if let Some(p) = presence.as_mut() {
+            p.leave();
+        }
         return Ok(());
     }
 
@@ -965,7 +962,9 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 
     stop_relay(tunnel_tx, tunnel_input_bridge);
     crate::poller::shutdown_poller();
-    let _ = broker::unregister_agent(&bus_name);
+    if let Some(p) = presence.as_mut() {
+        p.leave();
+    }
 
     // ExecSession cleanup: kill any still-running PTY sessions.
     #[cfg(unix)]

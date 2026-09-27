@@ -56,22 +56,3 @@ pub(crate) fn detect_channel() -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "local".into())
 }
-
-/// Pick a unique agent name like `{agent}-{channel}-{n}`, checking the broker
-/// for existing names to avoid collisions.
-pub(crate) fn unique_agent_name(agent: &str, channel: &str) -> String {
-    let mut existing: HashSet<String> = HashSet::new();
-    if let Ok(agents) = broker::list_agents(None) {
-        for a in agents {
-            existing.insert(a.id.name);
-        }
-    }
-    let mut n = 1u32;
-    loop {
-        let candidate = format!("{agent}-{channel}-{n}");
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
-}

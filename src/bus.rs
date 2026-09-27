@@ -13,6 +13,7 @@ use std::io::Write as _;
 mod commands;
 mod explain;
 mod nickname;
+pub(crate) mod presence;
 mod wait;
 
 pub use commands::*;
@@ -290,23 +291,9 @@ impl SidekarBusState {
         let pane_unique = format!("cli-{}", std::process::id());
         let project = detect_project_name();
 
-        let name = if let Some(custom) = custom_name {
-            custom.to_string()
-        } else {
-            let agent_type = detect_agent_type();
-            let existing_names: HashSet<String> = broker::list_agents(None)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|a| a.id.name)
-                .collect();
-            let mut n = 1u32;
-            loop {
-                let candidate = format!("{agent_type}-{project}-{n}");
-                if !existing_names.contains(&candidate) {
-                    break candidate;
-                }
-                n += 1;
-            }
+        let name = match custom_name {
+            Some(custom) => custom.to_string(),
+            None => presence::unique_name(&format!("{}-{project}", detect_agent_type())),
         };
 
         let nick = pick_nickname_for_project(Some(&project));
