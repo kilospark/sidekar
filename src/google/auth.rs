@@ -262,6 +262,14 @@ fn wait_for_code(listener: TcpListener, expect_state: &str) -> Result<String> {
 
                 let target = request_line.split_whitespace().nth(1).unwrap_or("/");
                 let params = query_params(target);
+                // Browsers open speculative connections and ask for /favicon.ico; neither
+                // carries the redirect, so keep waiting for the one that does.
+                if !params.contains_key("state") && !params.contains_key("error") {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
                 let body = if params.contains_key("code") {
                     "Signed in. You can close this tab and return to the terminal."
                 } else {
