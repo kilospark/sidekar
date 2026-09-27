@@ -1,5 +1,16 @@
 import { getDb } from "../../_db.js";
 import { getUserOrDevice } from "../../_auth.js";
+import { ensureSecretSyncIndexes } from "../../_sync-indexes.js";
+
+// Production MONGODB_URI is only reachable from inside Vercel, so init-db.js
+// can't be run against it from outside. Bootstrap the indexes here instead,
+// once per function instance. A failure here must not break sync traffic;
+// it just means the endpoint runs without the index until the next cold start.
+const indexesReady = getDb()
+  .then((db) => ensureSecretSyncIndexes(db))
+  .catch((err) => {
+    console.error("secret_sync index bootstrap failed:", err.message);
+  });
 
 const MAX_BATCH = 500;
 const VALID_KINDS = new Set(["kv", "totp"]);
@@ -75,6 +86,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Not authenticated" });
   }
 
+  await indexesReady;
   const db = await getDb();
   const collection = db.collection("secret_sync");
 
