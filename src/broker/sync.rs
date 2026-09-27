@@ -604,7 +604,7 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
 
     let mut summary = PullSummary::default();
     for rec in &body.records {
-        let applied = apply_remote_record(
+        match apply_remote_record(
             &conn,
             uid,
             &rec.kind,
@@ -612,11 +612,26 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
             &rec.ciphertext,
             rec.version,
             rec.deleted,
-        )?;
-        if applied {
-            summary.applied += 1;
-        } else {
-            summary.skipped += 1;
+        ) {
+            Ok(applied) => {
+                if applied {
+                    summary.applied += 1;
+                } else {
+                    summary.skipped += 1;
+                }
+            }
+            Err(e) => {
+                try_log_event(
+                    "warn",
+                    "sync",
+                    "skipping undecryptable sync record",
+                    Some(&format!(
+                        "kind={} record_id={}: {:#}",
+                        rec.kind, rec.record_id, e
+                    )),
+                );
+                summary.skipped += 1;
+            }
         }
     }
 

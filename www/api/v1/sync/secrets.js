@@ -26,7 +26,7 @@ function validateRecord(record) {
  *
  * A single findOneAndUpdate with `{$or: [{version: {$lt}}, {version: {$exists:false}}]}`
  * and `upsert: true` cannot express "reject when a doc exists with an equal
- * or higher version" on its own — when that CAS filter fails to match an
+ * or higher version" on its own: when that CAS filter fails to match an
  * *existing* document, Mongo's upsert path still tries to insert a new one,
  * which collides with the unique (user_id, kind, record_id) index and throws
  * E11000 instead of rejecting cleanly. Catching that error and reporting the
