@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 13;
+const SCHEMA_VERSION: u32 = 14;
 
 mod activity;
 mod agent_registry;
@@ -32,6 +32,7 @@ mod kv_store;
 mod outbound;
 mod prompts;
 mod proxy_log_store;
+mod sync;
 mod totp;
 
 pub use activity::*;
@@ -46,6 +47,7 @@ pub use kv_store::*;
 pub use outbound::*;
 pub use prompts::*;
 pub use proxy_log_store::*;
+pub use sync::*;
 pub use totp::*;
 
 fn data_dir() -> PathBuf {
@@ -622,6 +624,32 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_kv_history_key
             ON kv_history(user_id, key);
+        ",
+    )?;
+
+    // Same-account cross-device secret sync. `sync_state` tracks the local
+    // push/pull cursor per (user_id, kind, record_id) -- kind is 'kv' or
+    // 'totp'; record_id is the kv key, or `service || CHAR(0) || account`
+    // for totp. Kept as side tables rather than columns on kv_store/totp_secrets
+    // so a tombstoned record still has somewhere to live after its row is
+    // gone, and so totp's composite identity doesn't need its own column pair
+    // duplicated here.
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sync_state (
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 1,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (user_id, kind, record_id)
+        );
+        CREATE TABLE IF NOT EXISTS sync_meta (
+            user_id TEXT PRIMARY KEY,
+            last_pull_at INTEGER NOT NULL DEFAULT 0
+        );
         ",
     )?;
 

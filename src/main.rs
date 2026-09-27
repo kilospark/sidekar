@@ -284,9 +284,17 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         command.as_str(),
         "device" | "config" | "prompt" | "memory" | "tasks" | "compact" | "pack" | "unpack"
     ) && crate::auth::auth_token().is_some()
-        && let Err(e) = crate::broker::fetch_encryption_key().await
     {
-        eprintln!("Warning: could not fetch encryption key: {}", e);
+        match crate::broker::fetch_encryption_key().await {
+            Err(e) => eprintln!("Warning: could not fetch encryption key: {}", e),
+            Ok(_) => {
+                if let Some(uid) = crate::broker::current_user_id()
+                    && let Err(e) = crate::broker::sync_bootstrap(&uid).await
+                {
+                    eprintln!("Warning: could not sync secrets: {}", e);
+                }
+            }
+        }
     }
 
     if let Some(port) = env::var("CDP_PORT")

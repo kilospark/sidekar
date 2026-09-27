@@ -36,5 +36,14 @@ await db.collection("sessions").createIndex({ session_id: 1 }, { unique: true })
 await db.collection("sessions").createIndex({ last_heartbeat: 1 }, { expireAfterSeconds: 120 });
 console.log("  sessions: user_id, session_id (unique), last_heartbeat (TTL 120s)");
 
+// Secret sync indexes (KV/TOTP ciphertext blobs, same-account cross-device sync).
+// No TTL index here: a TTL race could delete a tombstone before a late device pulls it.
+await db.collection("secret_sync").createIndex(
+  { user_id: 1, kind: 1, record_id: 1 },
+  { unique: true }
+);
+await db.collection("secret_sync").createIndex({ user_id: 1, updated_at: 1 });
+console.log("  secret_sync: user_id+kind+record_id (unique), user_id+updated_at");
+
 await client.close();
 console.log("Done.");

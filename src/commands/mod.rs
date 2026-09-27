@@ -75,6 +75,25 @@ fn extract_optional_value(args: &[String], prefix: &str) -> Option<String> {
         .find_map(|a| a.strip_prefix(prefix).map(|v| v.to_string()))
 }
 
+/// Best-effort push of the dirty sync backlog after a kv/totp mutation.
+/// Never fails the command: a push failure (offline, network error, no
+/// account key yet) is logged at warn level and nothing else -- the row
+/// stays `dirty` and flushes on the next mutating command or pull cycle.
+pub(crate) async fn push_sync_after_mutation() {
+    let uid = crate::broker::current_user_id().unwrap_or_default();
+    if uid.is_empty() {
+        return;
+    }
+    if let Err(e) = crate::broker::push_dirty(&uid, std::time::Duration::from_millis(1500)).await {
+        crate::broker::try_log_event(
+            "warn",
+            "sync",
+            "push after mutation failed",
+            Some(&format!("{e:#}")),
+        );
+    }
+}
+
 pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> Result<()> {
     let command = crate::command_handler(command).unwrap_or(command);
     if let Some(result) = dispatch_system_command(ctx, command, args).await {

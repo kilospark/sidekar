@@ -47,7 +47,11 @@ fn read_kv_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KvEntry> {
 }
 
 /// Archive current value to kv_history before overwrite. Keeps last 10 versions.
-fn kv_archive(conn: &Connection, uid: &str, key: &str) -> Result<()> {
+///
+/// `pub(crate)` so `sync::apply_kv_remote` can archive a locally-overwritten
+/// value the same way a local `kv_set` does when a remote-driven write wins
+/// a merge.
+pub(crate) fn kv_archive(conn: &Connection, uid: &str, key: &str) -> Result<()> {
     // Check if there's an existing value to archive
     let existing: Option<(String, String)> = conn
         .prepare("SELECT value, tags FROM kv_store WHERE user_id = ?1 AND key = ?2")?
@@ -116,6 +120,7 @@ pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
          ON CONFLICT(user_id, key) DO UPDATE SET value = ?3, tags = ?4, updated_at = ?6",
         params![uid, key, value_to_store, tags_json, now, now],
     )?;
+    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
     Ok(())
 }
 
@@ -168,6 +173,7 @@ pub fn kv_delete(key: &str) -> Result<()> {
         "DELETE FROM kv_history WHERE user_id = ?1 AND key = ?2",
         params![uid, key],
     )?;
+    super::sync::mark_dirty(&conn, &uid, "kv", key, true)?;
     Ok(())
 }
 
@@ -193,6 +199,7 @@ pub fn kv_tag_add(key: &str, new_tags: &[String]) -> Result<()> {
         "UPDATE kv_store SET tags = ?1 WHERE user_id = ?2 AND key = ?3",
         params![tags_to_json(&tags), uid, key],
     )?;
+    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
     Ok(())
 }
 
@@ -216,6 +223,7 @@ pub fn kv_tag_remove(key: &str, rm_tags: &[String]) -> Result<()> {
         "UPDATE kv_store SET tags = ?1 WHERE user_id = ?2 AND key = ?3",
         params![tags_to_json(&tags), uid, key],
     )?;
+    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
     Ok(())
 }
 
@@ -274,6 +282,7 @@ pub fn kv_rollback(key: &str, target_version: i64) -> Result<()> {
          WHERE user_id = ?4 AND key = ?5",
         params![target_value, target_tags, now, uid, key],
     )?;
+    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
     Ok(())
 }
 
