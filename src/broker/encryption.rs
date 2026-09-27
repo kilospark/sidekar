@@ -171,6 +171,31 @@ fn decrypt_with_key(encrypted: &str, key: &[u8]) -> Result<String> {
     String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e))
 }
 
+/// Envelope prefix for records pushed to the server-side sync store. Distinct
+/// from `$encrypted$` on purpose: a sync blob must never be readable through
+/// the local KV/TOTP decrypt path (`is_encrypted`/`decrypt`) or vice versa,
+/// so the two ciphertext families can't be confused for one another.
+const SYNC_PREFIX: &str = "$sync1$";
+
+/// Encrypt `plaintext` for the sync store under the `$sync1$` envelope.
+pub(crate) fn sync_encrypt(key: &[u8], plaintext: &str) -> Result<String> {
+    let local = encrypt_with_key(plaintext, key)?;
+    let data = local
+        .strip_prefix("$encrypted$")
+        .context("internal: encrypt_with_key produced an unexpected envelope")?;
+    Ok(format!("{SYNC_PREFIX}{data}"))
+}
+
+/// Decrypt a `$sync1$` blob pulled from the sync store. Rejects anything not
+/// under that prefix (including plain `$encrypted$` values) instead of
+/// silently reinterpreting it.
+pub(crate) fn sync_decrypt(key: &[u8], blob: &str) -> Result<String> {
+    let data = blob
+        .strip_prefix(SYNC_PREFIX)
+        .context("sync ciphertext missing $sync1$ prefix")?;
+    decrypt_with_key(&format!("$encrypted${data}"), key)
+}
+
 /// Re-encrypt a ciphertext value from `old_key` to `new_key`. A no-op for
 /// anything that isn't `$encrypted$...` -- login migration also routes
 /// legacy-plaintext rows through the same call site, and those are handled

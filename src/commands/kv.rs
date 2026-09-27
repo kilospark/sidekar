@@ -13,8 +13,9 @@ pub async fn cmd_kv(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "history" => cmd_kv_history(ctx, &args[1..]).await,
         "rollback" => cmd_kv_rollback(ctx, &args[1..]).await,
         "exec" => cmd_kv_exec(ctx, &args[1..]).await,
+        "sync-status" => cmd_kv_sync_status(ctx, &args[1..]).await,
         _ => bail!(
-            "Unknown subcommand: {}. Use: set, get, list, delete, tag, history, rollback, exec",
+            "Unknown subcommand: {}. Use: set, get, list, delete, tag, history, rollback, exec, sync-status",
             args[0]
         ),
     }
@@ -47,6 +48,7 @@ async fn cmd_kv_set(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let value = positional[1];
 
     crate::broker::kv_set(key, value, tags.as_deref())?;
+    crate::commands::push_sync_after_mutation().await;
     let tag_str = tags
         .as_ref()
         .map(|t| format!(" [{}]", t.join(",")))
@@ -153,6 +155,7 @@ async fn cmd_kv_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
 
     crate::broker::kv_delete(key)?;
+    crate::commands::push_sync_after_mutation().await;
     let msg = format!("Deleted key '{}'.", key);
     out!(
         ctx,
@@ -181,6 +184,7 @@ async fn cmd_kv_tag(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         }
         _ => bail!("Usage: sidekar kv tag <add|remove> <key> <tags>"),
     };
+    crate::commands::push_sync_after_mutation().await;
     out!(
         ctx,
         "{}",
@@ -284,6 +288,7 @@ async fn cmd_kv_rollback(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .map_err(|_| anyhow!("Version must be a number"))?;
 
     crate::broker::kv_rollback(key, version)?;
+    crate::commands::push_sync_after_mutation().await;
     let msg = format!("Rolled back '{}' to v{}.", key, version);
     out!(
         ctx,
@@ -403,6 +408,36 @@ async fn cmd_kv_exec(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         bail!("Command exited with status {}", code);
     }
 
+    Ok(())
+}
+
+async fn cmd_kv_sync_status(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let uid = crate::broker::current_user_id().unwrap_or_default();
+    if uid.is_empty() {
+        bail!("Not logged in.");
+    }
+
+    if args.iter().any(|a| a == "--force") {
+        crate::broker::pull_merge(&uid).await?;
+    }
+
+    let status = crate::broker::sync_status(&uid)?;
+    let msg = if status.last_pull_at == 0 {
+        format!(
+            "Never pulled. {} dirty, {} tombstoned.",
+            status.dirty_count, status.tombstone_count
+        )
+    } else {
+        format!(
+            "Last pull: {}. {} dirty, {} tombstoned.",
+            status.last_pull_at, status.dirty_count, status.tombstone_count
+        )
+    };
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(msg))?
+    );
     Ok(())
 }
 

@@ -88,6 +88,7 @@ async fn cmd_totp_add(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let _ = totp.generate(now);
 
     crate::broker::totp_add(service, account, &secret, &algorithm, digits, period)?;
+    crate::commands::push_sync_after_mutation().await;
     let msg = format!(
         "Added TOTP for {} ({}). Current code: {}",
         service,
@@ -319,6 +320,7 @@ async fn cmd_totp_remove(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             .context("Expected a numeric ID or <service> <account>")?
     };
     crate::broker::totp_delete(id)?;
+    crate::commands::push_sync_after_mutation().await;
     let msg = format!("Deleted TOTP secret {}.", id);
     out!(
         ctx,

@@ -38,6 +38,8 @@ pub fn totp_add(
          ON CONFLICT(user_id, service, account) DO UPDATE SET secret = ?4, algorithm = ?5, digits = ?6, period = ?7",
         params![uid, service, account, secret_to_store, algorithm, digits, period, now],
     )?;
+    let record_id = super::sync::totp_record_id(service, account);
+    super::sync::mark_dirty(&conn, &uid, "totp", &record_id, false)?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -106,10 +108,25 @@ pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
 pub fn totp_delete(id: i64) -> Result<()> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
+
+    // Look up service/account before the row is gone: sync needs them to
+    // build the tombstone's record_id, and there's nowhere else to recover
+    // them from once the DELETE below runs (unlike kv, totp has no history
+    // table to fall back on).
+    let found: Option<(String, String)> = conn
+        .prepare("SELECT service, account FROM totp_secrets WHERE id = ?1 AND user_id = ?2")?
+        .query_row(params![id, uid], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+
     conn.execute(
         "DELETE FROM totp_secrets WHERE id = ?1 AND user_id = ?2",
         params![id, uid],
     )?;
+
+    if let Some((service, account)) = found {
+        let record_id = super::sync::totp_record_id(&service, &account);
+        super::sync::mark_dirty(&conn, &uid, "totp", &record_id, true)?;
+    }
     Ok(())
 }
 
