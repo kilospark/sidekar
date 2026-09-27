@@ -63,7 +63,7 @@ sidekar agents [--watch [secs]]
         }
         "session" => {
             "\
-sidekar session start <engine> [--cwd <dir>] [--model <m>] [--approvals ask|allow|deny] [--name <n>]
+sidekar session start <engine> [--cwd <dir>] [--model <m>] [--approvals ask|allow|deny] [--name <n>] [--refresh-env]
 sidekar session send <name> <text|--file=path> [--wait] [--timeout <d>] [--queue|--interrupt]
 sidekar session wait <name> [--turn <id>] [--timeout <d>]
 sidekar session approve <name> <request_id> allow|deny [--message <why>]
@@ -96,6 +96,11 @@ sidekar session list
   If the host dies, `send` exits 2 and `resume` continues the same conversation.
   `events` prints the session's event log as JSON lines; every event keeps the
   engine's original message in `raw`.
+
+  --refresh-env: each send carries the caller's proxy environment, and the
+  host restarts the engine with it before the turn when it changed. For
+  environments where the network credentials the host started with go stale
+  (rotating egress proxies); off by default.
 
   Examples:
     S=$(sidekar session start claude --cwd ~/src/app)

@@ -79,10 +79,18 @@ pub(crate) struct State {
     /// Lines for the engine's stdin, written by the caller of the state
     /// machine. Kept apart so the bookkeeping is testable without a process.
     outbox: Vec<String>,
+    /// Refresh the engine's environment from each send's caller.
+    refresh_env: bool,
+    /// The environment the engine was last started with. A send carrying
+    /// different values restarts the engine before its turn.
+    engine_env: HashMap<String, String>,
+    /// Fresh environment waiting for the engine to restart with, set by
+    /// `handle` and taken by the loop that owns the process.
+    pending_env: Option<HashMap<String, String>>,
 }
 
 impl State {
-    pub(crate) fn new(engine: Box<dyn Engine>, policy: ApprovalPolicy) -> Self {
+    pub(crate) fn new(engine: Box<dyn Engine>, policy: ApprovalPolicy, refresh_env: bool) -> Self {
         Self {
             engine,
             policy,
@@ -101,6 +109,9 @@ impl State {
             bus_turns: HashMap::new(),
             bus_answers: Vec::new(),
             outbox: Vec::new(),
+            refresh_env,
+            engine_env: HashMap::new(),
+            pending_env: None,
         }
     }
 
@@ -215,6 +226,35 @@ impl State {
 
     pub(crate) fn send(&mut self, text: String, busy: Busy) -> Reply {
         self.send_as(text, busy, "send")
+    }
+
+    /// The caller of a send hands over its environment. When this session
+    /// refreshes the engine's env and the values differ from what the
+    /// engine was started with, the loop restarts the engine with them
+    /// before the turn runs.
+    pub(crate) fn note_caller_env(&mut self, env: Option<HashMap<String, String>>) {
+        if !self.refresh_env {
+            return;
+        }
+        let Some(env) = env else { return };
+        if env.is_empty() || env == self.engine_env {
+            return;
+        }
+        self.engine_env = env.clone();
+        self.pending_env = Some(env);
+    }
+
+    /// Fresh environment the loop should restart the engine with, if any.
+    pub(crate) fn take_pending_env(&mut self) -> Option<HashMap<String, String>> {
+        self.pending_env.take()
+    }
+
+    /// The engine's program and arguments, resuming its conversation.
+    pub(crate) fn engine_command(&self, model: Option<String>) -> (String, Vec<String>) {
+        self.engine.command(&StartOptions {
+            model,
+            resume: self.engine_session_id.clone(),
+        })
     }
 
     fn send_as(&mut self, text: String, busy: Busy, source: &'static str) -> Reply {
@@ -494,9 +534,15 @@ impl State {
 
     fn handle(&mut self, request: Request) -> (Reply, Option<Stream>) {
         match request {
-            Request::Send { text, busy, follow } => {
+            Request::Send {
+                text,
+                busy,
+                follow,
+                env,
+            } => {
                 let before = self.seq();
                 let stream = follow.then(|| self.subscribe(before));
+                self.note_caller_env(env);
                 let mut reply = self.send(text, busy);
                 if !reply.ok {
                     return (reply, None);
@@ -611,6 +657,64 @@ fn answer_on_bus(
     let _ = crate::broker::record_reply(&message.id, &reply);
 }
 
+/// The environment variables a session tracks for refreshing the engine.
+/// Only these are captured from callers and applied to the engine.
+const TRACKED_ENV_VARS: &[&str] = &[
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+/// The tracked environment variables from this process.
+fn tracked_env() -> HashMap<String, String> {
+    TRACKED_ENV_VARS
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+}
+
+/// A running engine: the process and its pipes.
+struct EngineProcess {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    lines: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+}
+
+/// Start the engine with the given environment overrides applied on top of
+/// the host's own environment.
+fn spawn_engine(
+    program: &str,
+    args: &[String],
+    cwd: &str,
+    extra_env: &HashMap<String, String>,
+    log: &std::fs::File,
+) -> Result<EngineProcess> {
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .envs(extra_env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::from(log.try_clone()?))
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("failed to start {program}"))?;
+    let stdin = child.stdin.take().context("engine stdin")?;
+    let stdout = child.stdout.take().context("engine stdout")?;
+    let lines = BufReader::new(stdout).lines();
+    Ok(EngineProcess {
+        child,
+        stdin,
+        lines,
+    })
+}
+
 /// Run the session named `name`, whose meta the CLI has already written.
 pub async fn run(name: &str) -> Result<()> {
     let mut meta = super::read_meta(name)?;
@@ -628,19 +732,15 @@ pub async fn run(name: &str) -> Result<()> {
         .create(true)
         .append(true)
         .open(super::log_path(name))?;
-    let mut child = tokio::process::Command::new(&program)
-        .args(&args)
-        .current_dir(&meta.cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::from(log))
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("failed to start {program}"))?;
-    meta.engine_pid = child.id().map_or(0, |p| p as i32);
-    let mut stdin = child.stdin.take().context("engine stdin")?;
-    let stdout = child.stdout.take().context("engine stdout")?;
-    let mut lines = BufReader::new(stdout).lines();
+    // The engine starts with the host's environment; when the session
+    // refreshes its env, later sends carry fresher values.
+    let initial_env = if meta.refresh_env {
+        tracked_env()
+    } else {
+        HashMap::new()
+    };
+    let mut engine_proc = spawn_engine(&program, &args, &meta.cwd, &initial_env, &log)?;
+    meta.engine_pid = engine_proc.child.id().map_or(0, |p| p as i32);
 
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to listen on {}", socket.display()))?;
@@ -649,8 +749,9 @@ pub async fn run(name: &str) -> Result<()> {
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     }
 
-    let mut state = State::new(engine, meta.approvals);
+    let mut state = State::new(engine, meta.approvals, meta.refresh_env);
     state.engine_session_id = meta.engine_session_id.clone();
+    state.engine_env = initial_env;
     state.sink = Some(
         std::fs::OpenOptions::new()
             .create(true)
@@ -699,7 +800,7 @@ pub async fn run(name: &str) -> Result<()> {
 
     let exit_code = loop {
         tokio::select! {
-            line = lines.next_line() => match line {
+            line = engine_proc.lines.next_line() => match line {
                 Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
                     Ok(raw) => {
                         state.on_engine_line(raw);
@@ -709,7 +810,7 @@ pub async fn run(name: &str) -> Result<()> {
                 },
                 // Output closed: the engine is exiting; the wait below says how.
                 _ => {
-                    let status = child.wait().await.ok();
+                    let status = engine_proc.child.wait().await.ok();
                     break status.and_then(|s| s.code());
                 }
             },
@@ -726,6 +827,26 @@ pub async fn run(name: &str) -> Result<()> {
                 } else {
                     let answer = state.handle(call.request);
                     let _ = call.reply.send(answer);
+                    // A send with fresher environment restarts the engine
+                    // before its turn runs, so the turn uses it.
+                    if let Some(env) = state.take_pending_env() {
+                        let (program, args) = state.engine_command(meta.model.clone());
+                        match spawn_engine(&program, &args, &meta.cwd, &env, &log) {
+                            Ok(new_proc) => {
+                                // The old engine is idle: its turn has not
+                                // started, so dropping it (kill on drop)
+                                // loses nothing.
+                                engine_proc = new_proc;
+                                meta.engine_pid =
+                                    engine_proc.child.id().map_or(0, |p| p as i32);
+                                let _ = super::write_meta(&meta);
+                            }
+                            Err(e) => eprintln!(
+                                "[host] engine restart for env refresh failed: {e:#}; \
+                                 keeping the old engine"
+                            ),
+                        }
+                    }
                 }
             }
             _ = bus_tick.tick(), if presence.is_some() && closing.is_none() => {
@@ -734,7 +855,7 @@ pub async fn run(name: &str) -> Result<()> {
             _ = tick.tick() => {
                 state.expire_approvals(APPROVAL_TIMEOUT);
                 if closing.is_some_and(|t| t.elapsed() >= CLOSE_GRACE) {
-                    let _ = child.start_kill();
+                    let _ = engine_proc.child.start_kill();
                 }
             }
             _ = sigterm.recv() => {
@@ -749,9 +870,9 @@ pub async fn run(name: &str) -> Result<()> {
             if closing.is_some() {
                 break;
             }
-            let _ = stdin.write_all(line.as_bytes()).await;
-            let _ = stdin.write_all(b"\n").await;
-            let _ = stdin.flush().await;
+            let _ = engine_proc.stdin.write_all(line.as_bytes()).await;
+            let _ = engine_proc.stdin.write_all(b"\n").await;
+            let _ = engine_proc.stdin.flush().await;
         }
     };
 
