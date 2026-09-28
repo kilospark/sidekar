@@ -669,10 +669,28 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE TABLE IF NOT EXISTS sync_meta (
             user_id TEXT PRIMARY KEY,
-            last_pull_at INTEGER NOT NULL DEFAULT 0
+            last_pull_at INTEGER NOT NULL DEFAULT 0,
+            last_push_attempt_at INTEGER NOT NULL DEFAULT 0
         );
         ",
     )?;
+
+    // Migration: existing sync_meta tables lack last_push_attempt_at.
+    // Backoff for failed initial uploads (see sync.rs) needs it.
+    let has_push_attempt: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sync_meta') WHERE name = 'last_push_attempt_at'",
+            [],
+            |r| r.get(0),
+        )
+        .map(|c: i64| c > 0)
+        .unwrap_or(false);
+    if !has_push_attempt {
+        conn.execute(
+            "ALTER TABLE sync_meta ADD COLUMN last_push_attempt_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
 
     // Encryption key marker
     conn.execute_batch(

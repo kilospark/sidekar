@@ -704,19 +704,49 @@ fn seed_sync_state(conn: &Connection, uid: &str) -> Result<()> {
 /// per account, before the first pull, so a device upgrading from a
 /// pre-sync build uploads what it already has instead of an empty pull
 /// clobbering it.
+///
+/// If the push fails, the attempt time is recorded and subsequent bootstraps
+/// back off for 10 minutes -- a device with hundreds of secrets on a slow
+/// network should not block every command for the full push timeout.
 pub async fn initial_upload(uid: &str) -> Result<()> {
     let conn = open()?;
     let has_meta: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE user_id = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE user_id = ?1 AND last_pull_at > 0)",
         params![uid],
         |r| r.get(0),
     )?;
     if has_meta {
         return Ok(());
     }
+    let last_attempt: i64 = conn
+        .query_row(
+            "SELECT last_push_attempt_at FROM sync_meta WHERE user_id = ?1",
+            params![uid],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let now = crate::message::epoch_secs() as i64;
+    // Backoff: don't retry a failed initial upload more than once per 10 min.
+    if now - last_attempt < 600 {
+        return Ok(());
+    }
     seed_sync_state(&conn, uid)?;
     drop(conn);
-    push_dirty(uid, Duration::from_secs(20)).await?;
+    let push_result = push_dirty(uid, Duration::from_secs(60)).await;
+    if let Err(e) = push_result {
+        // Record the attempt so the next bootstrap backs off instead of
+        // blocking the command again. The rows stay dirty and will flush
+        // on a later attempt or via push-after-mutation.
+        let conn = open()?;
+        conn.execute(
+            "INSERT INTO sync_meta (user_id, last_pull_at, last_push_attempt_at) \
+             VALUES (?1, 0, ?2) \
+             ON CONFLICT(user_id) DO UPDATE SET last_push_attempt_at = ?2",
+            params![uid, now],
+        )?;
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -724,16 +754,27 @@ pub async fn initial_upload(uid: &str) -> Result<()> {
 /// upload anything pre-existing on a first-ever sync for this account, then
 /// pull and merge whatever the server has. Callers swallow errors -- this is
 /// always best-effort, same as the encryption-key fetch it follows.
+///
+/// A failed initial upload does not block the pull: the rows stay dirty and
+/// will flush on a later attempt, and the pull lets the device see secrets
+/// from other devices in the meantime.
 pub async fn sync_bootstrap(uid: &str) -> Result<()> {
     let conn = open()?;
     let has_meta: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE user_id = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE user_id = ?1 AND last_pull_at > 0)",
         params![uid],
         |r| r.get(0),
     )?;
     drop(conn);
     if !has_meta {
-        initial_upload(uid).await?;
+        if let Err(e) = initial_upload(uid).await {
+            try_log_event(
+                "warn",
+                "sync",
+                "initial sync upload failed (will retry with backoff)",
+                Some(&format!("{e:#}")),
+            );
+        }
     }
     pull_merge(uid).await?;
     Ok(())
