@@ -75,6 +75,16 @@ pub enum EventBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// The engine was replaced by a new process continuing the same
+    /// conversation, e.g. to pick up refreshed proxy credentials.
+    EngineRestarted {
+        reason: String,
+    },
+    /// A restart was needed and failed; the old engine is still in use and
+    /// the restart is tried again before the next turn.
+    EngineRestartFailed {
+        error: String,
+    },
     /// A message the adapter does not model. Nothing is dropped.
     EngineEvent {},
     SessionEnded {

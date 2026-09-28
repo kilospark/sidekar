@@ -97,10 +97,11 @@ sidekar session list
   `events` prints the session's event log as JSON lines; every event keeps the
   engine's original message in `raw`.
 
-  --refresh-env: each send carries the caller's proxy environment, and the
-  host restarts the engine with it before the turn when it changed. For
-  environments where the network credentials the host started with go stale
-  (rotating egress proxies); off by default.
+  --refresh-env: each send carries the caller's proxy variables (http_proxy,
+  https_proxy, all_proxy, no_proxy in either case, NODE_EXTRA_CA_CERTS). When
+  they differ from the engine's, the engine is restarted with them, continuing
+  the same conversation, just before the next turn starts — never during one.
+  For environments whose proxy credentials rotate; off by default.
 
   Examples:
     S=$(sidekar session start claude --cwd ~/src/app)

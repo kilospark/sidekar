@@ -4,7 +4,6 @@ use super::protocol::{Busy, Event, EventBody, Reply, Request};
 use super::{ApprovalPolicy, Meta, Status};
 use crate::utils::ExitWith;
 use anyhow::{Context, Result, bail};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -340,25 +339,6 @@ fn refused(reply: Reply) -> anyhow::Error {
     }
 }
 
-/// The proxy environment this process runs with, for handing to a session
-/// whose engine needs fresh network credentials on each turn.
-fn caller_proxy_env() -> HashMap<String, String> {
-    const VARS: &[&str] = &[
-        "http_proxy",
-        "https_proxy",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "all_proxy",
-        "ALL_PROXY",
-        "no_proxy",
-        "NO_PROXY",
-        "NODE_EXTRA_CA_CERTS",
-    ];
-    VARS.iter()
-        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
-        .collect()
-}
-
 async fn send(args: &[String]) -> Result<()> {
     let a = Args::parse(args, &["timeout", "file"], &["wait", "queue", "interrupt"])?;
     let name = a.name()?.to_string();
@@ -383,7 +363,7 @@ async fn send(args: &[String]) -> Result<()> {
     // proxy environment so the engine's network keeps working.
     let env = meta
         .refresh_env
-        .then(caller_proxy_env)
+        .then(super::proxy_env)
         .filter(|m| !m.is_empty());
 
     let mut client = Client::connect(&name).await?;

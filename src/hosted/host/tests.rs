@@ -294,37 +294,144 @@ fn proxy_env(value: &str) -> HashMap<String, String> {
         .collect()
 }
 
+fn send_with_env(s: &mut State, text: &str, busy: Busy, proxy: &str) -> Reply {
+    s.handle(Request::Send {
+        text: text.into(),
+        busy,
+        follow: false,
+        env: Some(proxy_env(proxy)),
+    })
+    .0
+}
+
 #[test]
-fn env_refresh_signals_respawn_when_caller_env_differs() {
+fn a_new_env_on_an_idle_session_restarts_before_the_turn_is_written() {
     let mut s = state_with_refresh(ApprovalPolicy::Ask);
     s.engine_env = proxy_env("http://old:3128");
-    let fresh = proxy_env("http://new:3128");
-    // Through handle(), as a Send request carries it.
-    let (reply, _) = s.handle(Request::Send {
+    assert!(send_with_env(&mut s, "hi", Busy::Reject, "http://new:3128").ok);
+    let (at, env) = s.take_restart().expect("restart");
+    assert_eq!(env, proxy_env("http://new:3128"));
+    let outbox = s.take_outbox();
+    assert_eq!(at, 0, "the new engine gets the whole turn");
+    assert!(outbox[at].contains("\"hi\""));
+    s.restarted(env.clone());
+    assert_eq!(s.engine_env, env);
+    assert!(matches!(
+        s.events().last().unwrap().body,
+        EventBody::EngineRestarted { .. }
+    ));
+}
+
+#[test]
+fn a_refused_send_changes_nothing() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_env = proxy_env("http://old:3128");
+    s.send("long task".into(), Busy::Reject);
+    let reply = send_with_env(&mut s, "second", Busy::Reject, "http://new:3128");
+    assert_eq!(reply.code.as_deref(), Some("busy"));
+    s.on_engine_line(result("done"));
+    s.send("third".into(), Busy::Reject);
+    assert!(
+        s.take_restart().is_none(),
+        "the refused send's env was not adopted"
+    );
+}
+
+#[test]
+fn a_send_during_a_turn_defers_the_restart_to_the_next_turn() {
+    // Restarting mid-turn killed the turn, and the session waited for its
+    // result forever: every later send was refused as busy.
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_env = proxy_env("http://old:3128");
+    s.send("long task".into(), Busy::Reject);
+    s.take_outbox();
+    assert!(send_with_env(&mut s, "next", Busy::Queue, "http://new:3128").ok);
+    assert!(s.take_restart().is_none(), "not while t1 runs");
+    s.on_engine_line(result("t1 done"));
+    let (at, env) = s.take_restart().expect("restart as t2 starts");
+    assert_eq!(env, proxy_env("http://new:3128"));
+    let outbox = s.take_outbox();
+    assert!(outbox[at].contains("\"next\""), "t2 goes to the new engine");
+    assert_eq!(s.status()["current"], "t2");
+}
+
+#[test]
+fn an_interrupting_send_restarts_after_the_interrupt_reaches_the_old_engine() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_env = proxy_env("http://old:3128");
+    s.send("long task".into(), Busy::Reject);
+    s.take_outbox();
+    assert!(send_with_env(&mut s, "instead", Busy::Interrupt, "http://new:3128").ok);
+    assert!(s.take_restart().is_none());
+    assert!(
+        s.take_outbox()[0].contains("interrupt"),
+        "the old engine is told to stop"
+    );
+    s.on_engine_line(json!({"type": "result", "is_error": true,
+        "terminal_reason": "aborted_streaming", "errors": []}));
+    assert!(s.take_restart().is_some());
+}
+
+#[test]
+fn a_turn_the_engine_started_defers_the_restart() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_env = proxy_env("http://old:3128");
+    s.on_engine_line(
+        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "bg"}]}}),
+    );
+    assert!(send_with_env(&mut s, "hi", Busy::Reject, "http://new:3128").ok);
+    assert!(
+        s.take_restart().is_none(),
+        "e1 is still running on this engine"
+    );
+}
+
+#[test]
+fn the_same_env_as_the_engine_needs_no_restart() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    s.engine_env = proxy_env("http://same:3128");
+    assert!(send_with_env(&mut s, "hi", Busy::Reject, "http://same:3128").ok);
+    assert!(s.take_restart().is_none());
+}
+
+#[test]
+fn without_refresh_env_a_callers_env_is_ignored() {
+    let mut s = state(ApprovalPolicy::Ask);
+    assert!(send_with_env(&mut s, "hi", Busy::Reject, "http://new:3128").ok);
+    assert!(s.take_restart().is_none());
+}
+
+#[test]
+fn only_proxy_variables_reach_the_engine() {
+    let mut s = state_with_refresh(ApprovalPolicy::Ask);
+    let mut env = proxy_env("http://new:3128");
+    env.insert("DYLD_INSERT_LIBRARIES".into(), "/tmp/x.dylib".into());
+    env.insert("NODE_OPTIONS".into(), "--require /tmp/x.js".into());
+    s.handle(Request::Send {
         text: "hi".into(),
         busy: Busy::Reject,
         follow: false,
-        env: Some(fresh.clone()),
+        env: Some(env),
     });
-    assert!(reply.ok);
-    assert_eq!(s.take_pending_env(), Some(fresh));
-    assert!(s.take_pending_env().is_none(), "pending env is taken once");
+    let (_, applied) = s.take_restart().expect("restart");
+    assert_eq!(applied, proxy_env("http://new:3128"));
 }
 
 #[test]
-fn env_refresh_ignores_unchanged_env() {
+fn a_failed_restart_is_retried_at_the_next_turn() {
     let mut s = state_with_refresh(ApprovalPolicy::Ask);
-    let env = proxy_env("http://same:3128");
-    s.engine_env = env.clone();
-    s.note_caller_env(Some(env));
-    assert!(s.take_pending_env().is_none());
-}
-
-#[test]
-fn env_refresh_disabled_ignores_caller_env() {
-    let mut s = state(ApprovalPolicy::Ask);
-    s.note_caller_env(Some(proxy_env("http://new:3128")));
-    assert!(s.take_pending_env().is_none());
+    s.engine_env = proxy_env("http://old:3128");
+    send_with_env(&mut s, "one", Busy::Reject, "http://new:3128");
+    let (_, env) = s.take_restart().unwrap();
+    s.restart_failed(env, "spawn failed".into());
+    assert_eq!(
+        s.engine_env,
+        proxy_env("http://old:3128"),
+        "still the old engine's"
+    );
+    s.on_engine_line(result("done on the old engine"));
+    s.send("two".into(), Busy::Reject);
+    assert!(s.take_restart().is_some(), "tried again");
 }
 
 #[test]

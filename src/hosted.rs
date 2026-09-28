@@ -95,6 +95,39 @@ pub struct Meta {
     pub exit_code: Option<i32>,
 }
 
+/// What a `--refresh-env` session carries from each send's caller to its
+/// engine: proxy settings, and the CA bundle a proxy that intercepts TLS
+/// needs. Nothing else crosses — the host applies only these, whatever a
+/// request carries.
+pub(crate) const PROXY_ENV_VARS: &[&str] = &[
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+/// This process's values of [`PROXY_ENV_VARS`].
+pub(crate) fn proxy_env() -> std::collections::HashMap<String, String> {
+    PROXY_ENV_VARS
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+}
+
+/// `env` with everything but [`PROXY_ENV_VARS`] dropped.
+pub(crate) fn only_proxy_vars(
+    env: std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    env.into_iter()
+        .filter(|(k, _)| PROXY_ENV_VARS.contains(&k.as_str()))
+        .collect()
+}
+
 /// Where sessions live. `SIDEKAR_SESSIONS_DIR` overrides it, for tests: a unix
 /// socket path is capped near 104 bytes, and a scratch HOME under the temp
 /// directory is already most of that.
