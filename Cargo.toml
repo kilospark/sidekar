@@ -13,6 +13,14 @@ readme = "README.md"
 name = "sidekar"
 path = "src/main.rs"
 
+# Full debug info made target/debug 7GB+ per build and filled the disk more
+# than once. Line tables keep file:line in backtraces and panics.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = true
 codegen-units = 1
