@@ -699,6 +699,74 @@ fn seed_sync_state(conn: &Connection, uid: &str) -> Result<()> {
     Ok(())
 }
 
+/// How long after one background push attempt the next may start.
+pub(crate) const PUSH_RETRY_SECS: i64 = 600;
+
+/// The body of `sidekar _sync_push`: load the account key, push the dirty
+/// backlog, exit. Everything is best-effort; rows that do not make it stay
+/// dirty for the next attempt.
+pub async fn run_sync_push_worker() -> Result<()> {
+    if crate::auth::auth_token().is_none() {
+        return Ok(());
+    }
+    // A fresh process has no key in memory, and push encrypts with it.
+    if let Err(e) = super::fetch_encryption_key().await {
+        try_log_event(
+            "warn",
+            "sync",
+            "sync push worker: no account key",
+            Some(&format!("{e:#}")),
+        );
+        return Ok(());
+    }
+    let uid = super::current_user_id().unwrap_or_default();
+    if uid.is_empty() {
+        return Ok(());
+    }
+    if let Err(e) = push_dirty(&uid, Duration::from_secs(60)).await {
+        try_log_event(
+            "warn",
+            "sync",
+            "background sync push failed",
+            Some(&format!("{e:#}")),
+        );
+    }
+    Ok(())
+}
+
+/// Whether rows are waiting to be pushed and no attempt ran in the last
+/// [`PUSH_RETRY_SECS`]; if so, record this attempt. A failed push is retried
+/// this way — from the next command after the wait — rather than only when
+/// something else changes on this device.
+fn claim_push_retry(uid: &str, now: i64) -> Result<bool> {
+    let conn = open()?;
+    let dirty: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE user_id = ?1 AND dirty = 1)",
+        params![uid],
+        |r| r.get(0),
+    )?;
+    if !dirty {
+        return Ok(false);
+    }
+    let last_attempt: i64 = conn
+        .query_row(
+            "SELECT last_push_attempt_at FROM sync_meta WHERE user_id = ?1",
+            params![uid],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    if now - last_attempt < PUSH_RETRY_SECS {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO sync_meta (user_id, last_pull_at, last_push_attempt_at) VALUES (?1, 0, ?2) \
+         ON CONFLICT(user_id) DO UPDATE SET last_push_attempt_at = ?2",
+        params![uid, now],
+    )?;
+    Ok(true)
+}
+
 /// Seed `sync_state` for the initial upload and spawn a detached background
 /// worker to push it. Run once per account, before the first pull, so a device
 /// upgrading from a pre-sync build uploads what it already has instead of an
@@ -727,7 +795,7 @@ pub fn seed_initial_upload(uid: &str) -> Result<()> {
         .unwrap_or(0);
     let now = crate::message::epoch_secs() as i64;
     // Backoff: don't spawn a background upload more than once per 10 min.
-    if now - last_attempt < 600 {
+    if now - last_attempt < PUSH_RETRY_SECS {
         return Ok(());
     }
     seed_sync_state(&conn, uid)?;
@@ -774,6 +842,9 @@ pub async fn sync_bootstrap(uid: &str) -> Result<()> {
         }
     }
     pull_merge(uid).await?;
+    if claim_push_retry(uid, crate::message::epoch_secs() as i64).unwrap_or(false) {
+        crate::commands::spawn_detached_sync_push();
+    }
     Ok(())
 }
 

@@ -607,3 +607,37 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         Ok(())
     })
 }
+
+// ---------------------------------------------------------------------------
+// Background push retry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_dirty_backlog_is_retried_at_most_once_per_window() -> Result<()> {
+    with_test_db(|| {
+        let uid = "retry-user";
+        let conn = open()?;
+        conn.execute(
+            "INSERT INTO sync_state (user_id, kind, record_id, version, deleted, dirty, updated_at) \
+             VALUES (?1, 'kv', 'k', 1, 0, 1, 0)",
+            params![uid],
+        )?;
+        let now = 10_000;
+        assert!(claim_push_retry(uid, now)?, "dirty and never tried");
+        assert!(!claim_push_retry(uid, now + 1)?, "just tried");
+        assert!(!claim_push_retry(uid, now + PUSH_RETRY_SECS - 1)?);
+        assert!(
+            claim_push_retry(uid, now + PUSH_RETRY_SECS)?,
+            "the window has passed"
+        );
+        conn.execute(
+            "UPDATE sync_state SET dirty = 0 WHERE user_id = ?1",
+            params![uid],
+        )?;
+        assert!(
+            !claim_push_retry(uid, now + 10 * PUSH_RETRY_SECS)?,
+            "nothing to push"
+        );
+        Ok(())
+    })
+}

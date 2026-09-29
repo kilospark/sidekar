@@ -96,12 +96,21 @@ pub(crate) fn spawn_detached_sync_push() {
         Ok(e) => e,
         Err(_) => return,
     };
-    let _ = std::process::Command::new(exe)
+    let Ok(mut child) = std::process::Command::new(exe)
         .arg("_sync_push")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+    else {
+        return;
+    };
+    // Wait on it off-thread: a long-lived caller (the REPL, the daemon)
+    // would otherwise collect one zombie per push. A short-lived one exits
+    // first and the worker is reparented, which is fine too.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> Result<()> {

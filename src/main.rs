@@ -263,6 +263,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if command == "session" {
         return sidekar::hosted::cli::handle(&args).await;
     }
+    // Hidden: the detached sync push worker (see
+    // `commands::spawn_detached_sync_push`). Routed here, not through the
+    // command table, which does not know it — as `dispatch` it was refused
+    // as an unknown command, silently, since the worker's output is null.
+    if command == "_sync_push" {
+        return sidekar::broker::run_sync_push_worker().await;
+    }
 
     if let Some(replacement) = sidekar::removed_command_replacement(&raw_command) {
         bail!("Command '{raw_command}' was removed. Use: sidekar {replacement}");
