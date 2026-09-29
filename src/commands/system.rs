@@ -9,6 +9,21 @@ pub(super) async fn dispatch_system_command(
 ) -> Option<Result<()>> {
     let result = match command {
         "event" => cmd_event(ctx, args),
+        "_sync_push" => {
+            // Hidden: background sync push worker. Spawned detached by
+            // push_sync_after_mutation and sync_bootstrap so commands don't
+            // block on network I/O. Runs the push with a generous budget
+            // and exits; rows stay dirty and retry later on failure.
+            let uid = crate::broker::current_user_id().unwrap_or_default();
+            if !uid.is_empty() {
+                let _ = crate::broker::push_dirty(
+                    &uid,
+                    std::time::Duration::from_secs(60),
+                )
+                .await;
+            }
+            Ok(())
+        }
         "install" => cmd_setup(ctx, args).await,
         "uninstall" => cmd_uninstall(ctx).await,
         "config" => {

@@ -77,22 +77,31 @@ fn extract_optional_value(args: &[String], prefix: &str) -> Option<String> {
 }
 
 /// Best-effort push of the dirty sync backlog after a kv/totp mutation.
-/// Never fails the command: a push failure (offline, network error, no
-/// account key yet) is logged at warn level and nothing else -- the row
-/// stays `dirty` and flushes on the next mutating command or pull cycle.
-pub(crate) async fn push_sync_after_mutation() {
+/// Spawns a detached background worker so the command never blocks on
+/// network I/O. If the push fails, rows stay `dirty` and flush on the next
+/// mutation or pull cycle.
+pub(crate) fn push_sync_after_mutation() {
     let uid = crate::broker::current_user_id().unwrap_or_default();
     if uid.is_empty() {
         return;
     }
-    if let Err(e) = crate::broker::push_dirty(&uid, std::time::Duration::from_millis(1500)).await {
-        crate::broker::try_log_event(
-            "warn",
-            "sync",
-            "push after mutation failed",
-            Some(&format!("{e:#}")),
-        );
-    }
+    spawn_detached_sync_push();
+}
+
+/// Spawn `sidekar _sync_push` as a fully detached background process.
+/// Stdio is nulled; the child is reparented on parent exit and runs the
+/// push to completion (or its 60s budget) without blocking the caller.
+pub(crate) fn spawn_detached_sync_push() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let _ = std::process::Command::new(exe)
+        .arg("_sync_push")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 pub async fn dispatch(ctx: &mut AppContext, command: &str, args: &[String]) -> Result<()> {

@@ -48,7 +48,7 @@ async fn cmd_kv_set(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let value = positional[1];
 
     crate::broker::kv_set(key, value, tags.as_deref())?;
-    crate::commands::push_sync_after_mutation().await;
+    crate::commands::push_sync_after_mutation();
     let tag_str = tags
         .as_ref()
         .map(|t| format!(" [{}]", t.join(",")))
@@ -155,7 +155,7 @@ async fn cmd_kv_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let key = &args[0];
 
     crate::broker::kv_delete(key)?;
-    crate::commands::push_sync_after_mutation().await;
+    crate::commands::push_sync_after_mutation();
     let msg = format!("Deleted key '{}'.", key);
     out!(
         ctx,
@@ -184,7 +184,7 @@ async fn cmd_kv_tag(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         }
         _ => bail!("Usage: sidekar kv tag <add|remove> <key> <tags>"),
     };
-    crate::commands::push_sync_after_mutation().await;
+    crate::commands::push_sync_after_mutation();
     out!(
         ctx,
         "{}",
@@ -288,7 +288,7 @@ async fn cmd_kv_rollback(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .map_err(|_| anyhow!("Version must be a number"))?;
 
     crate::broker::kv_rollback(key, version)?;
-    crate::commands::push_sync_after_mutation().await;
+    crate::commands::push_sync_after_mutation();
     let msg = format!("Rolled back '{}' to v{}.", key, version);
     out!(
         ctx,
