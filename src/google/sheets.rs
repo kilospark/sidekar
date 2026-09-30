@@ -30,7 +30,7 @@ pub async fn set(
         urlencoding::encode(range)
     );
     let token = super::auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .put(&url)
         .bearer_auth(token)
         .json(&json!({"values": values}))
