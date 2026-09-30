@@ -84,7 +84,7 @@ pub fn shared_mitm_proxy_port() -> Option<u16> {
 pub(crate) fn build_streaming_client(
     timeout: std::time::Duration,
 ) -> anyhow::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(timeout);
+    let mut builder = crate::http_client::client_builder().timeout(timeout);
     let snapshot = ATTACHED_MITM_PROXY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1100,7 +1100,7 @@ pub(crate) const MODEL_CATALOG_TIMEOUT_SECS: u64 = 10;
 
 /// Build a short-timeout client for model catalog / metadata requests.
 pub(crate) fn catalog_http_client(secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::http_client::client_builder()
         .timeout(std::time::Duration::from_secs(secs))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))

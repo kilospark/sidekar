@@ -67,7 +67,7 @@ pub fn verify_ext_token(ext_token: &str) -> VerifyResult {
         }
     };
 
-    let client = match reqwest::blocking::Client::builder()
+    let client = match crate::http_client::blocking_client_builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
     {

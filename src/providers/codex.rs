@@ -824,30 +824,6 @@ fn get_pending_tool_call_mut<'a>(
     None
 }
 
-/// Parse PEM-encoded certificates without the `rustls_pemfile` crate.
-fn parse_pem_certs(pem: &[u8]) -> Vec<rustls::pki_types::CertificateDer<'static>> {
-    use base64::Engine;
-    let text = String::from_utf8_lossy(pem);
-    let mut certs = Vec::new();
-    let mut in_cert = false;
-    let mut b64 = String::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed == "-----BEGIN CERTIFICATE-----" {
-            in_cert = true;
-            b64.clear();
-        } else if trimmed == "-----END CERTIFICATE-----" {
-            in_cert = false;
-            if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                certs.push(rustls::pki_types::CertificateDer::from(der));
-            }
-        } else if in_cert {
-            b64.push_str(trimmed);
-        }
-    }
-    certs
-}
-
 fn split_tool_call_ids(stored_id: &str) -> (String, String) {
     if let Some((call_id, item_id)) = stored_id.split_once('|') {
         return (call_id.to_string(), item_id.to_string());
@@ -1192,10 +1168,9 @@ async fn connect_ws(
     let ws_request = req_builder.body(()).context("failed to build WS request")?;
 
     // Build rustls TLS config (explicit ring provider)
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut roots = crate::http_client::web_root_store();
     if let Some((_port, ref ca_pem)) = super::attached_mitm_for_custom_tls() {
-        for cert in parse_pem_certs(ca_pem) {
+        for cert in crate::http_client::pem_certs_der(ca_pem) {
             let _ = roots.add(cert);
         }
     }
