@@ -97,7 +97,7 @@ pub async fn download(token: &super::auth::TokenRef, id: &str) -> Result<Downloa
     };
 
     let access = super::auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .get(&url)
         .bearer_auth(access)
         .send()
@@ -186,7 +186,7 @@ pub async fn put(
     body.extend_from_slice(format!("\r\n--{BOUNDARY}--").as_bytes());
 
     let access = super::auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .post(format!("{UPLOAD}?uploadType=multipart"))
         .bearer_auth(access)
         .header(
@@ -264,7 +264,7 @@ pub async fn move_to(
         url.push_str(&format!("&removeParents={}", urlencoding::encode(r)));
     }
     let access = super::auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .patch(&url)
         .bearer_auth(access)
         .json(&json!({}))
@@ -287,7 +287,7 @@ pub async fn move_to(
 /// deletion of someone's Drive file has no undo, so it has to be asked for.
 pub async fn remove(token: &super::auth::TokenRef, id: &str, permanent: bool) -> Result<()> {
     let token = super::auth::access_token_for(token).await?;
-    let client = reqwest::Client::new();
+    let client = crate::http_client::client();
     let res = if permanent {
         client
             .delete(format!("{FILES}/{id}"))

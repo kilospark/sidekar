@@ -333,7 +333,7 @@ async fn exchange_code(
     code: &str,
     redirect_uri: &str,
 ) -> Result<serde_json::Value> {
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", code),
@@ -359,7 +359,7 @@ pub async fn access_token_for(token: &TokenRef) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("{} is not in sidekar kv", token.client_id_key))?;
     let client_secret = kv(&token.client_secret_key)?
         .ok_or_else(|| anyhow::anyhow!("{} is not in sidekar kv", token.client_secret_key))?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("refresh_token", refresh.as_str()),
@@ -410,7 +410,7 @@ pub(crate) fn explain_refresh_failure(token: &TokenRef, err: &serde_json::Value)
 }
 
 async fn fetch_email(access: &str) -> Result<String> {
-    let json: serde_json::Value = reqwest::Client::new()
+    let json: serde_json::Value = crate::http_client::client()
         .get("https://www.googleapis.com/oauth2/v2/userinfo")
         .bearer_auth(access)
         .send()

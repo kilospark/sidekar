@@ -66,7 +66,7 @@ fn is_not_found(e: &anyhow::Error) -> bool {
 /// GET a Google API endpoint with the caller's token.
 pub(crate) async fn api_get(token: &auth::TokenRef, url: &str) -> Result<Value> {
     let token = auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .get(url)
         .bearer_auth(token)
         .send()
@@ -77,7 +77,7 @@ pub(crate) async fn api_get(token: &auth::TokenRef, url: &str) -> Result<Value> 
 /// POST JSON to a Google API endpoint with the caller's token.
 pub(crate) async fn api_post(token: &auth::TokenRef, url: &str, body: &Value) -> Result<Value> {
     let token = auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .post(url)
         .bearer_auth(token)
         .json(body)
@@ -91,7 +91,7 @@ pub(crate) async fn api_post(token: &auth::TokenRef, url: &str, body: &Value) ->
 /// Gmail updates a draft by replacing it, not by patching it.
 pub(crate) async fn api_put(token: &auth::TokenRef, url: &str, body: &Value) -> Result<Value> {
     let token = auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .put(url)
         .bearer_auth(token)
         .json(body)
@@ -106,7 +106,7 @@ pub(crate) async fn api_put(token: &auth::TokenRef, url: &str, body: &Value) -> 
 /// `read_json` already treats an empty body as `Value::Null`.
 pub(crate) async fn api_delete(token: &auth::TokenRef, url: &str) -> Result<()> {
     let token = auth::access_token_for(token).await?;
-    let res = reqwest::Client::new()
+    let res = crate::http_client::client()
         .delete(url)
         .bearer_auth(token)
         .send()

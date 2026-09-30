@@ -13,7 +13,7 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_CHECK_INTERVAL_SECS: u64 = 60 * 60; // 1 hour
 
 static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
+    crate::http_client::client_builder()
         .timeout(SHUTDOWN_TIMEOUT)
         .build()
         .expect("failed to build HTTP client")
@@ -21,7 +21,7 @@ static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::
 
 static HTTP_CLIENT_SHORT_TIMEOUT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
-        reqwest::Client::builder()
+        crate::http_client::client_builder()
             .timeout(TIMEOUT)
             .build()
             .expect("failed to build HTTP client")
@@ -29,7 +29,7 @@ static HTTP_CLIENT_SHORT_TIMEOUT: std::sync::LazyLock<reqwest::Client> =
 
 static HTTP_CLIENT_DOWNLOAD: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
-        reqwest::Client::builder()
+        crate::http_client::client_builder()
             .timeout(DOWNLOAD_TIMEOUT)
             .build()
             .expect("failed to build HTTP client")
