@@ -704,7 +704,7 @@ fn relay_secret_request(payload: serde_json::Value) -> Result<SecretRpcResponse>
         crate::transport::relay_http_base().trim_end_matches('/')
     );
     std::thread::spawn(move || -> Result<SecretRpcResponse> {
-        let client = reqwest::blocking::Client::builder()
+        let client = crate::http_client::blocking_client_builder()
             .timeout(Duration::from_secs(20))
             .build()?;
         let resp = client

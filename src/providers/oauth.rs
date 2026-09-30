@@ -1225,7 +1225,7 @@ async fn complete_pkce_login(pending: PendingPkceLogin) -> Result<OAuthCredentia
     // so the body shape has a unit test that locks in both variants;
     // the last two regressions on this code path were caused by
     // blind edits to an inline json!{} literal.
-    let client = reqwest::Client::new();
+    let client = crate::http_client::client();
     let body = build_token_exchange_body(
         client_id,
         &code,
@@ -1294,7 +1294,7 @@ async fn complete_pkce_login_form(pending: PendingPkceLogin) -> Result<OAuthCred
 
     server.abort();
 
-    let client = reqwest::Client::new();
+    let client = crate::http_client::client();
     let mut last_err = None;
     for attempt in 0..3u32 {
         match client
@@ -1350,7 +1350,7 @@ async fn refresh_token_form(
     refresh_token: &str,
     metadata: serde_json::Value,
 ) -> Result<OAuthCredentials> {
-    let client = reqwest::Client::new();
+    let client = crate::http_client::client();
     let mut last_err = None;
     for attempt in 0..3u32 {
         match client
@@ -1401,7 +1401,7 @@ async fn refresh_token_generic(
     refresh_token: &str,
     metadata: serde_json::Value,
 ) -> Result<OAuthCredentials> {
-    let client = reqwest::Client::new();
+    let client = crate::http_client::client();
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "client_id": client_id,

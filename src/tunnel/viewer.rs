@@ -35,7 +35,7 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
     let enc = urlencoding::encode(session_id);
     let resolve_url = format!("{base}/session/{enc}/resolve");
 
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::client_builder()
         .timeout(Duration::from_secs(25))
         .build()
         .context("build HTTP client for relay resolve")?;
@@ -75,11 +75,16 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
             .context("invalid Authorization header value for viewer WS")?,
     );
 
-    let (mut ws_write, mut ws_read) = tokio_tungstenite::connect_async(request)
-        .await
-        .with_context(|| format!("WebSocket viewer connect failed: {ws_url}"))?
-        .0
-        .split();
+    let (mut ws_write, mut ws_read) = tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        false,
+        Some(crate::http_client::ws_connector()),
+    )
+    .await
+    .with_context(|| format!("WebSocket viewer connect failed: {ws_url}"))?
+    .0
+    .split();
 
     // Claim the session size for this viewer. The relay replays its own
     // scrollback right after the connect, so no replay is requested here —

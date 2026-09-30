@@ -18,9 +18,14 @@ pub(super) async fn ws_connect_and_register(params: &ConnectParams) -> Result<(W
             .context("invalid auth header value")?,
     );
 
-    let (mut ws, _response) = tokio_tungstenite::connect_async(request)
-        .await
-        .with_context(|| format!("failed to connect to relay at {url}"))?;
+    let (mut ws, _response) = tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        false,
+        Some(crate::http_client::ws_connector()),
+    )
+    .await
+    .with_context(|| format!("failed to connect to relay at {url}"))?;
 
     // Send register message
     let register = RegisterMsg {

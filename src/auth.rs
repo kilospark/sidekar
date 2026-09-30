@@ -9,7 +9,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const POLL_TIMEOUT: Duration = Duration::from_secs(15 * 60); // 15 minutes
 
 static HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
+    crate::http_client::client_builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("failed to build HTTP client")

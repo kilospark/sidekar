@@ -360,7 +360,7 @@ pub async fn fetch_encryption_key() -> Result<Option<Vec<u8>>> {
     let token = crate::auth::auth_token().ok_or_else(|| anyhow::anyhow!("Not logged in"))?;
     let base =
         std::env::var("SIDEKAR_API_URL").unwrap_or_else(|_| "https://sidekar.dev".to_string());
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::client_builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
     let resp = client

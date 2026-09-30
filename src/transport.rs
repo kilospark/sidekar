@@ -98,7 +98,7 @@ pub(crate) fn relay_session_activity(
     let url = format!("{}/sessions/{}", base.trim_end_matches('/'), session_id);
 
     std::thread::spawn(move || -> Result<crate::activity::ActivitySnapshot> {
-        let client = reqwest::blocking::Client::builder()
+        let client = crate::http_client::blocking_client_builder()
             .timeout(Duration::from_secs(15))
             .build()?;
         let resp = client
@@ -127,7 +127,7 @@ pub(crate) fn fetch_relay_sessions() -> Result<Vec<RelaySessionInfo>> {
     // Run blocking HTTP on a dedicated OS thread to avoid panicking when
     // called from within a tokio runtime (reqwest::blocking creates its own runtime).
     std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::builder()
+        let client = crate::http_client::blocking_client_builder()
             .timeout(Duration::from_secs(15))
             .build()?;
         let resp = client
@@ -168,7 +168,7 @@ impl Transport for RelayHttp {
         // Run blocking HTTP on a dedicated OS thread to avoid panicking when
         // called from within a tokio runtime (reqwest::blocking creates its own runtime).
         std::thread::spawn(move || {
-            let client = reqwest::blocking::Client::builder()
+            let client = crate::http_client::blocking_client_builder()
                 .timeout(Duration::from_secs(15))
                 .build()?;
             let resp = client
@@ -218,7 +218,7 @@ pub fn deliver_relay_envelope(
     });
 
     std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::builder()
+        let client = crate::http_client::blocking_client_builder()
             .timeout(Duration::from_secs(15))
             .build()?;
         let resp = client

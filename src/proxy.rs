@@ -233,8 +233,7 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     let ca_cert = ca_params.self_signed(&ca_key)?;
 
     // TLS connector for outbound (proxy → real API server)
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let root_store = crate::http_client::web_root_store();
     let client_config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();

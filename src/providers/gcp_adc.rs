@@ -168,7 +168,7 @@ struct TokenResponse {
 }
 
 async fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::http_client::client_builder()
         .timeout(Duration::from_secs(45))
         .build()
         .context("building HTTP client for GCP auth")

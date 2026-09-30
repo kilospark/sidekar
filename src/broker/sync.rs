@@ -311,7 +311,9 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
 
     let token = crate::auth::auth_token().context("not logged in")?;
     let base = sync_api_base();
-    let client = reqwest::Client::builder().timeout(budget).build()?;
+    let client = crate::http_client::client_builder()
+        .timeout(budget)
+        .build()?;
 
     let mut summary = PushSummary::default();
     for batch in records.chunks(500) {
@@ -588,7 +590,7 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
 
     let token = crate::auth::auth_token().context("not logged in")?;
     let base = sync_api_base();
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::client_builder()
         .timeout(Duration::from_secs(10))
         .build()?;
     let resp = client
