@@ -124,3 +124,61 @@ async fn a_websocket_through_an_intercepting_ca_needs_that_ca_and_works_with_it(
     }
     connect(port, roots).await.unwrap();
 }
+
+/// Every connection to a remote host has to go through this module, or it
+/// quietly stops trusting `SSL_CERT_FILE`: the first version of this fix
+/// covered the Google clients and missed twenty others. Nothing in CI runs
+/// clippy, so this is the check that holds the line — `cargo test` runs
+/// before every release.
+#[test]
+fn remote_connections_are_only_built_in_http_client() {
+    const FORBIDDEN: &[&str] = &[
+        "Client::builder()",
+        "Client::new()",
+        "connect_async(",
+        "RootCertStore::empty()",
+    ];
+    // Clients that only talk to Chrome's debugging port on localhost, where
+    // there is no proxy in the way.
+    const LOCALHOST_ONLY: &[&str] = &["src/app_context.rs", "src/pty/chrome.rs"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut stack = vec![root.join("src")];
+    let mut offenders = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let exempt = !rel.ends_with(".rs")
+                || rel == "src/http_client.rs"
+                || rel.starts_with("src/http_client/")
+                || rel.ends_with("/tests.rs")
+                || rel.contains("/tests/")
+                || LOCALHOST_ONLY.contains(&rel.as_str());
+            if exempt {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if let Some(pat) = FORBIDDEN.iter().find(|p| line.contains(*p)) {
+                    offenders.push(format!("{rel}:{}: {pat}", n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "build remote HTTP/TLS/WebSocket clients with crate::http_client \
+         (client_builder, blocking_client_builder, web_root_store, ws_connector) \
+         so they trust SSL_CERT_FILE:\n  {}",
+        offenders.join("\n  ")
+    );
+}
