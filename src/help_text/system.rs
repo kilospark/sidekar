@@ -162,23 +162,29 @@ sidekar hotp <add|get|list|show|counter|remove> [args...]
         }
         "duo" => {
             "\
-sidekar duo enroll <service> <account> <activation-url>
+sidekar duo enroll  <service> <account> <activation-url>
+sidekar duo approve <service> <account> [--window <secs>]
 
-  Capture a Duo Mobile enrollment into the HOTP store, so
-  `sidekar hotp get <service> <account>` produces Duo passcodes.
+  enroll captures a Duo Mobile enrollment: it stores the HOTP secret (so
+  `sidekar hotp get <service> <account>` yields passcodes) and a device key
+  (so `duo approve` can answer pushes).
 
-  THE ACTIVATION CODE IS SINGLE USE. Run this BEFORE you scan the QR in Duo
+  THE ACTIVATION CODE IS SINGLE USE. Run enroll BEFORE you scan the QR in Duo
   Mobile — once a phone claims the activation, there is nothing left to capture
   and you need a fresh enrollment QR. Decode the enrollment QR with any QR
   reader to get the https://api-<host>.duosecurity.com/push/v2/activation/<code>
   URL, and pass that.
 
-  This stores a passcode source only (the same thing storing Duo in an
-  authenticator app gives you). It does not answer Duo push prompts.
+  approve answers a push you just triggered: it waits up to --window seconds
+  (default 30) for ONE pending push and approves it. Run it right after you
+  start the login that sends the push. If two pushes are pending it approves
+  neither — one may be someone else signing in as you, and the device API
+  cannot tell them apart. It never polls outside that window.
 
-  Example:
+  Examples:
     sidekar duo enroll msft alice 'https://api-abc123.duosecurity.com/push/v2/activation/CODE'
-    sidekar hotp get msft alice"
+    sidekar hotp get msft alice
+    sidekar duo approve msft alice --window 60"
         }
         "pack" => {
             "\
