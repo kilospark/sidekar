@@ -98,6 +98,14 @@ pub struct TotpListEntry {
     pub period: i32,
     pub owner: String,
     pub local: bool,
+    /// `totp` or `hotp`. Absent from devices that predate HOTP, whose
+    /// secrets are all TOTP.
+    #[serde(default = "default_otp_kind")]
+    pub kind: String,
+}
+
+fn default_otp_kind() -> String {
+    crate::broker::KIND_TOTP.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +287,7 @@ pub(crate) fn list_local_totp() -> Result<Vec<TotpListEntry>> {
             period: s.period,
             owner: "local".to_string(),
             local: true,
+            kind: s.kind,
         })
         .collect())
 }
@@ -587,10 +596,42 @@ pub fn totp_secret_bytes(secret: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// An HOTP code (RFC 4226) for `counter`.
+///
+/// TOTP is HOTP of the time divided by the step, so the TOTP generator with
+/// a one-second step, given the counter as the time, is exactly HOTP; the
+/// RFC 4226 test vectors in the tests hold it to that.
+pub fn hotp_code(secret: &str, algorithm: &str, digits: i32, counter: u64) -> Result<String> {
+    let algo = match algorithm {
+        "SHA256" => totp_rs::Algorithm::SHA256,
+        "SHA512" => totp_rs::Algorithm::SHA512,
+        _ => totp_rs::Algorithm::SHA1,
+    };
+    let key = totp_secret_bytes(secret)?;
+    let generator =
+        totp_rs::TOTP::new_unchecked(algo, digits as usize, 0, 1, key, None, String::new());
+    Ok(generator.generate(counter))
+}
+
+/// Base32 for raw key bytes — the form secrets are stored in.
+pub fn base32_secret(bytes: &[u8]) -> String {
+    totp_rs::Secret::Raw(bytes.to_vec()).to_encoded().to_string()
+}
+
 fn local_totp_code(service: &str, account: &str) -> Result<Option<String>> {
     let Some(rec) = crate::broker::totp_get(service, account)? else {
         return Ok(None);
     };
+    if rec.kind == crate::broker::KIND_HOTP {
+        // Taking a code advances the counter, so it is a change to sync.
+        let Some((rec, counter)) = crate::broker::hotp_take(service, account)? else {
+            return Ok(None);
+        };
+        let code = hotp_code(&rec.secret, &rec.algorithm, rec.digits, counter)
+            .with_context(|| format!("stored HOTP secret for {service} ({account})"))?;
+        crate::commands::push_sync_after_mutation();
+        return Ok(Some(code));
+    }
     let algo = match rec.algorithm.as_str() {
         "SHA1" => totp_rs::Algorithm::SHA1,
         "SHA256" => totp_rs::Algorithm::SHA256,
@@ -941,5 +982,48 @@ mod tests {
             assert_eq!(listed[0].owner, "local");
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod hotp_tests {
+    use super::*;
+    use crate::commands::duo;
+
+    /// RFC 4226 Appendix D: the published HOTP codes for the ASCII secret
+    /// "12345678901234567890", counters 0..=9. These pin the generator.
+    #[test]
+    fn matches_the_rfc4226_test_vectors() {
+        // base32 of the RFC's ASCII secret.
+        let secret = base32_secret(b"12345678901234567890");
+        let expected = [
+            "755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583",
+            "399871", "520489",
+        ];
+        for (counter, want) in expected.iter().enumerate() {
+            assert_eq!(
+                hotp_code(&secret, "SHA1", 6, counter as u64).unwrap(),
+                *want,
+                "counter {counter}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_duo_activation_url_parses_host_and_code() {
+        let (host, code) = duo::parse_activation(
+            "https://api-abc1234.duosecurity.com/push/v2/activation/DEADBEEFcode1234?foo=bar",
+        )
+        .unwrap();
+        assert_eq!(host, "api-abc1234.duosecurity.com");
+        assert_eq!(code, "DEADBEEFcode1234");
+        assert!(duo::is_duo_host(&host));
+    }
+
+    #[test]
+    fn a_non_duo_host_is_refused() {
+        assert!(!duo::is_duo_host("evil.example.com"));
+        assert!(!duo::is_duo_host("duosecurity.com.evil.com"));
+        assert!(duo::is_duo_host("api-x.duosecurity.com"));
     }
 }

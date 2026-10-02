@@ -1,5 +1,5 @@
 pub const COMMANDS: &[&str] = &[
-    "config", "prompt", "device", "relay", "event", "daemon", "totp", "pack", "unpack", "kv",
+    "config", "prompt", "device", "relay", "event", "daemon", "totp", "hotp", "duo", "pack", "unpack", "kv",
     "install", "skill",
 ];
 
@@ -138,6 +138,47 @@ sidekar totp <add|list|get|remove> [args...]
     sidekar totp list
     sidekar totp get github alice
     sidekar totp remove 12"
+        }
+        "hotp" => {
+            "\
+sidekar hotp <add|get|list|show|counter|remove> [args...]
+
+  Counter-based one-time passwords (RFC 4226), as used by Duo Mobile passcodes.
+  Stored and synced beside TOTP secrets, but each code comes from a counter that
+  advances on every `get`, so a code is never issued twice (an HOTP server
+  refuses a code it has already accepted).
+
+  Use `sidekar duo enroll` for a Duo account; use `hotp add` when you already
+  have the raw base32 secret and its starting counter.
+
+  `hotp counter` resyncs the counter if the server has moved ahead of you
+  (symptom: codes start being rejected).
+
+  Examples:
+    sidekar hotp add acme alice JBSWY3DPEHPK3PXP --counter=0
+    sidekar hotp get acme alice
+    sidekar hotp counter acme alice 40
+    sidekar hotp list"
+        }
+        "duo" => {
+            "\
+sidekar duo enroll <service> <account> <activation-url>
+
+  Capture a Duo Mobile enrollment into the HOTP store, so
+  `sidekar hotp get <service> <account>` produces Duo passcodes.
+
+  THE ACTIVATION CODE IS SINGLE USE. Run this BEFORE you scan the QR in Duo
+  Mobile — once a phone claims the activation, there is nothing left to capture
+  and you need a fresh enrollment QR. Decode the enrollment QR with any QR
+  reader to get the https://api-<host>.duosecurity.com/push/v2/activation/<code>
+  URL, and pass that.
+
+  This stores a passcode source only (the same thing storing Duo in an
+  authenticator app gives you). It does not answer Duo push prompts.
+
+  Example:
+    sidekar duo enroll msft alice 'https://api-abc123.duosecurity.com/push/v2/activation/CODE'
+    sidekar hotp get msft alice"
         }
         "pack" => {
             "\

@@ -641,3 +641,38 @@ fn a_dirty_backlog_is_retried_at_most_once_per_window() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn an_hotp_counter_merges_to_the_higher_of_the_two() {
+    with_test_db(|| {
+        reset_encryption_state();
+        let uid = "hotp-merge";
+        set_encryption_key(vec![7u8; 32]);
+        set_current_user_id(uid.to_string());
+
+        hotp_add("duo", "me", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "SHA1", 6, 9)?;
+        let rid = totp_record_id("duo", "me");
+        let conn = open()?;
+        let key = get_encryption_key().unwrap();
+
+        // A remote record with a LOWER counter must not drag ours back:
+        // that would let a server-accepted code be issued again.
+        let lower = super::encryption::sync_encrypt(&key, &serde_json::json!({
+            "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            "algorithm": "SHA1", "digits": 6, "period": 30, "counter": 3,
+        }).to_string())?;
+        apply_remote_record(&conn, uid, "hotp", &rid, &lower, 99, false)?;
+        assert_eq!(totp_get("duo", "me")?.unwrap().counter, 9, "kept the higher local counter");
+
+        // A remote record with a HIGHER counter wins.
+        let higher = super::encryption::sync_encrypt(&key, &serde_json::json!({
+            "secret": "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            "algorithm": "SHA1", "digits": 6, "period": 30, "counter": 40,
+        }).to_string())?;
+        apply_remote_record(&conn, uid, "hotp", &rid, &higher, 100, false)?;
+        assert_eq!(totp_get("duo", "me")?.unwrap().counter, 40, "took the higher remote counter");
+        assert_eq!(totp_get("duo", "me")?.unwrap().kind, "hotp");
+        Ok::<(), anyhow::Error>(())
+    })
+    .unwrap();
+}

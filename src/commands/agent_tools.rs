@@ -10,6 +10,8 @@ use super::doc::cmd_doc;
 use super::journal::cmd_journal;
 use super::kv::cmd_kv;
 use super::monitor::cmd_monitor;
+use super::duo::cmd_duo;
+use super::hotp::cmd_hotp;
 use super::totp::cmd_totp;
 use crate::pakt::{cmd_pack, cmd_unpack};
 
@@ -48,6 +50,8 @@ pub(super) async fn dispatch_agent_command(
         "pack" => cmd_pack(ctx, args),
         "unpack" => cmd_unpack(ctx, args),
         "totp" => cmd_totp(ctx, args).await,
+        "hotp" => cmd_hotp(ctx, args).await,
+        "duo" => cmd_duo(ctx, args).await,
         "kv" => cmd_kv(ctx, args).await,
         "doc" => cmd_doc(ctx, args),
         _ => return None,

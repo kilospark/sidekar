@@ -50,6 +50,8 @@ pub fn render_help(version: &str) -> String {
             ("compact", "Output compaction"),
             ("kv", "Encrypted key/value secrets"),
             ("totp", "TOTP secrets"),
+            ("hotp", "Counter-based (HOTP) secrets, e.g. Duo"),
+            ("duo", "Enroll a Duo Mobile activation as HOTP"),
             ("cron", "Scheduled jobs"),
             ("loop", "Run prompt on interval"),
             ("agents", "Every agent here, ordered by what needs you"),

@@ -2123,3 +2123,66 @@ fn the_backstop_finds_a_request_that_was_read_but_never_answered() -> Result<()>
         Ok(())
     })
 }
+
+#[test]
+fn hotp_take_advances_the_counter_so_a_code_is_never_reused() {
+    with_test_db(|| {
+        ensure_local_key()?;
+        hotp_add("duo", "me", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "SHA1", 6, 0)?;
+        let (rec0, c0) = hotp_take("duo", "me")?.expect("first");
+        let (_rec1, c1) = hotp_take("duo", "me")?.expect("second");
+        assert_eq!(c0, 0);
+        assert_eq!(c1, 1);
+        assert_eq!(rec0.kind, KIND_HOTP);
+        assert_eq!(totp_get("duo", "me")?.unwrap().counter, 2);
+        Ok::<(), anyhow::Error>(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn hotp_take_returns_none_for_a_totp_secret() {
+    with_test_db(|| {
+        ensure_local_key()?;
+        totp_add("gh", "me", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "SHA1", 6, 30)?;
+        assert!(hotp_take("gh", "me")?.is_none());
+        Ok::<(), anyhow::Error>(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn set_counter_resyncs_and_only_touches_hotp() {
+    with_test_db(|| {
+        ensure_local_key()?;
+        hotp_add("duo", "me", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "SHA1", 6, 5)?;
+        assert!(hotp_set_counter("duo", "me", 42)?);
+        assert_eq!(totp_get("duo", "me")?.unwrap().counter, 42);
+        assert!(!hotp_set_counter("nope", "me", 1)?);
+        Ok::<(), anyhow::Error>(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn switching_a_secret_between_totp_and_hotp_moves_its_sync_kind() {
+    with_test_db(|| {
+        ensure_local_key()?;
+        let uid = current_user_id().unwrap_or_default();
+        totp_add("acct", "me", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "SHA1", 6, 30)?;
+        hotp_add("acct", "me", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "SHA1", 6, 0)?;
+        let rid = super::sync::totp_record_id("acct", "me");
+        let conn = open()?;
+        let totp_deleted: bool = conn.query_row(
+            "SELECT deleted FROM sync_state WHERE user_id=?1 AND kind='totp' AND record_id=?2",
+            params![uid, rid], |r| r.get(0))?;
+        let hotp_live: bool = conn.query_row(
+            "SELECT NOT deleted FROM sync_state WHERE user_id=?1 AND kind='hotp' AND record_id=?2",
+            params![uid, rid], |r| r.get(0))?;
+        assert!(totp_deleted, "old totp record tombstoned");
+        assert!(hotp_live, "new hotp record live");
+        assert_eq!(totp_get("acct", "me")?.unwrap().kind, KIND_HOTP);
+        Ok::<(), anyhow::Error>(())
+    })
+    .unwrap();
+}

@@ -13,12 +13,12 @@ const indexesReady = getDb()
   });
 
 const MAX_BATCH = 500;
-const VALID_KINDS = new Set(["kv", "totp"]);
+const VALID_KINDS = new Set(["kv", "totp", "hotp"]);
 
 function validateRecord(record) {
   if (!record || typeof record !== "object") return "record must be an object";
   const { kind, record_id, ciphertext, version } = record;
-  if (!VALID_KINDS.has(kind)) return "kind must be 'kv' or 'totp'";
+  if (!VALID_KINDS.has(kind)) return "kind must be 'kv', 'totp' or 'hotp'";
   if (typeof record_id !== "string" || !record_id) return "record_id required";
   if (typeof ciphertext !== "string") return "ciphertext must be a string";
   if (!Number.isInteger(version) || version < 1) return "version must be a positive integer";

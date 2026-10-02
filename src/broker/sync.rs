@@ -178,30 +178,43 @@ fn read_kv_plain(conn: &Connection, uid: &str, key: &str) -> Result<Option<(Stri
     Ok(Some((decrypted, tags)))
 }
 
+/// A one-time-password row as it syncs: secret decrypted, plus HOTP's counter.
+struct OtpPlain {
+    secret: String,
+    algorithm: String,
+    digits: i32,
+    period: i32,
+    counter: i64,
+}
+
 fn read_totp_plain(
     conn: &Connection,
     uid: &str,
     service: &str,
     account: &str,
-) -> Result<Option<(String, String, i32, i32)>> {
-    let row: Option<(String, String, i32, i32)> = conn
+) -> Result<Option<OtpPlain>> {
+    let row = conn
         .prepare(
-            "SELECT secret, algorithm, digits, period FROM totp_secrets \
+            "SELECT secret, algorithm, digits, period, counter FROM totp_secrets \
              WHERE user_id = ?1 AND service = ?2 AND account = ?3",
         )?
         .query_row(params![uid, service, account], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok(OtpPlain {
+                secret: r.get(0)?,
+                algorithm: r.get(1)?,
+                digits: r.get(2)?,
+                period: r.get(3)?,
+                counter: r.get(4)?,
+            })
         })
         .optional()?;
-    let Some((secret, algorithm, digits, period)) = row else {
+    let Some(mut row) = row else {
         return Ok(None);
     };
-    let decrypted = if is_encrypted(&secret) {
-        decrypt(&secret)?
-    } else {
-        secret
-    };
-    Ok(Some((decrypted, algorithm, digits, period)))
+    if is_encrypted(&row.secret) {
+        row.secret = decrypt(&row.secret)?;
+    }
+    Ok(Some(row))
 }
 
 fn build_ciphertext(
@@ -218,19 +231,20 @@ fn build_ciphertext(
             let payload = json!({ "value": value, "tags": tags }).to_string();
             super::encryption::sync_encrypt(key, &payload)
         }
-        "totp" => {
+        "totp" | "hotp" => {
             let (service, account) = split_totp_record_id(record_id)?;
-            let (secret, algorithm, digits, period) =
-                read_totp_plain(conn, uid, &service, &account)?
-                    .ok_or_else(|| anyhow!("totp record '{record_id}' vanished before push"))?;
-            let payload = json!({
-                "secret": secret,
-                "algorithm": algorithm,
-                "digits": digits,
-                "period": period,
-            })
-            .to_string();
-            super::encryption::sync_encrypt(key, &payload)
+            let row = read_totp_plain(conn, uid, &service, &account)?
+                .ok_or_else(|| anyhow!("{kind} record '{record_id}' vanished before push"))?;
+            let mut payload = json!({
+                "secret": row.secret,
+                "algorithm": row.algorithm,
+                "digits": row.digits,
+                "period": row.period,
+            });
+            if kind == "hotp" {
+                payload["counter"] = row.counter.into();
+            }
+            super::encryption::sync_encrypt(key, &payload.to_string())
         }
         other => bail!("unknown sync kind: {other}"),
     }
@@ -442,11 +456,13 @@ fn delete_local_record(conn: &Connection, uid: &str, kind: &str, record_id: &str
                 params![uid, record_id],
             )?;
         }
-        "totp" => {
+        "totp" | "hotp" => {
+            // Only a row of the kind deleted: a secret that switched kinds
+            // must not be removed by a late delete of its old kind.
             let (service, account) = split_totp_record_id(record_id)?;
             conn.execute(
-                "DELETE FROM totp_secrets WHERE user_id = ?1 AND service = ?2 AND account = ?3",
-                params![uid, service, account],
+                "DELETE FROM totp_secrets WHERE user_id = ?1 AND service = ?2 AND account = ?3 AND kind = ?4",
+                params![uid, service, account, kind],
             )?;
         }
         other => bail!("unknown sync kind: {other}"),
@@ -485,6 +501,7 @@ fn apply_kv_remote(conn: &Connection, uid: &str, key: &str, plaintext: &str) -> 
 fn apply_totp_remote(
     conn: &Connection,
     uid: &str,
+    kind: &str,
     service: &str,
     account: &str,
     plaintext: &str,
@@ -495,6 +512,8 @@ fn apply_totp_remote(
         algorithm: String,
         digits: i32,
         period: i32,
+        #[serde(default)]
+        counter: i64,
     }
     let parsed: TotpPayload =
         serde_json::from_str(plaintext).context("invalid totp sync payload")?;
@@ -502,12 +521,16 @@ fn apply_totp_remote(
     let now = crate::message::epoch_secs() as i64;
     let secret_to_store = encrypt(&parsed.secret)
         .context("failed to encrypt a remote totp secret under the local key")?;
+    // An HOTP counter only moves forward. Taking the larger of the two means
+    // a code this device already issued is never issued again because an
+    // older count arrived from elsewhere.
     conn.execute(
-        "INSERT INTO totp_secrets (user_id, service, account, secret, algorithm, digits, period, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+        "INSERT INTO totp_secrets (user_id, service, account, secret, algorithm, digits, period, created_at, kind, counter) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
          ON CONFLICT(user_id, service, account) DO UPDATE SET \
-             secret = ?4, algorithm = ?5, digits = ?6, period = ?7",
-        params![uid, service, account, secret_to_store, parsed.algorithm, parsed.digits, parsed.period, now],
+             secret = ?4, algorithm = ?5, digits = ?6, period = ?7, kind = ?9, \
+             counter = CASE WHEN kind = ?9 THEN MAX(counter, ?10) ELSE ?10 END",
+        params![uid, service, account, secret_to_store, parsed.algorithm, parsed.digits, parsed.period, now, kind, parsed.counter],
     )?;
     Ok(())
 }
@@ -537,9 +560,9 @@ fn apply_remote_record(
                 let plaintext = super::encryption::sync_decrypt(&key, ciphertext)?;
                 match kind {
                     "kv" => apply_kv_remote(conn, uid, record_id, &plaintext)?,
-                    "totp" => {
+                    "totp" | "hotp" => {
                         let (service, account) = split_totp_record_id(record_id)?;
-                        apply_totp_remote(conn, uid, &service, &account, &plaintext)?;
+                        apply_totp_remote(conn, uid, kind, &service, &account, &plaintext)?;
                     }
                     other => bail!("unknown sync kind: {other}"),
                 }
@@ -683,19 +706,19 @@ fn seed_sync_state(conn: &Connection, uid: &str) -> Result<()> {
         seed_one(conn, uid, "kv", &key, now)?;
     }
 
-    let totp_pairs: Vec<(String, String)> = {
+    let totp_pairs: Vec<(String, String, String)> = {
         let mut stmt =
-            conn.prepare("SELECT service, account FROM totp_secrets WHERE user_id = ?1")?;
+            conn.prepare("SELECT service, account, kind FROM totp_secrets WHERE user_id = ?1")?;
         let mut out = Vec::new();
         let mut rows = stmt.query(params![uid])?;
         while let Some(row) = rows.next()? {
-            out.push((row.get(0)?, row.get(1)?));
+            out.push((row.get(0)?, row.get(1)?, row.get(2)?));
         }
         out
     };
-    for (service, account) in totp_pairs {
+    for (service, account, kind) in totp_pairs {
         let record_id = totp_record_id(&service, &account);
-        seed_one(conn, uid, "totp", &record_id, now)?;
+        seed_one(conn, uid, super::totp::sync_kind(&kind), &record_id, now)?;
     }
 
     Ok(())

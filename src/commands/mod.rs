@@ -23,6 +23,8 @@ mod prompt;
 mod session;
 pub mod spawn;
 mod system;
+pub mod duo;
+pub mod hotp;
 pub mod totp;
 
 use agent_tools::*;

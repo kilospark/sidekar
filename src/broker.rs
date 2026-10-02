@@ -163,6 +163,44 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     ensure_bus_queue_claim_columns(conn)?;
     ensure_delivery_tracking_columns(conn)?;
     ensure_agent_spawn_columns(conn)?;
+    ensure_added_columns(conn)?;
+    Ok(())
+}
+
+/// Columns added to existing tables after they shipped.
+///
+/// Run on every open, not only when `user_version` is behind: `init_schema`
+/// runs only on a version bump, and a column added there without one never
+/// reaches a database already at the current version. That happened to
+/// `sync_meta.last_push_attempt_at`, which every upgraded install lacked, so
+/// the sync push retry and the deferred initial upload failed on "no such
+/// column" and the error was swallowed.
+fn ensure_added_columns(conn: &Connection) -> Result<()> {
+    for (table, column, ddl) in [
+        (
+            "sync_meta",
+            "last_push_attempt_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        // HOTP lives beside TOTP: `kind` says which, and `counter` is the
+        // next HOTP counter to use.
+        ("totp_secrets", "kind", "TEXT NOT NULL DEFAULT 'totp'"),
+        ("totp_secrets", "counter", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column(conn, table, column, ddl)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
+    let present: bool = conn.query_row(
+        &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = ?1"),
+        params![column],
+        |r| r.get(0),
+    )?;
+    if !present {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"), [])?;
+    }
     Ok(())
 }
 
@@ -674,23 +712,6 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
-
-    // Migration: existing sync_meta tables lack last_push_attempt_at.
-    // Backoff for failed initial uploads (see sync.rs) needs it.
-    let has_push_attempt: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('sync_meta') WHERE name = 'last_push_attempt_at'",
-            [],
-            |r| r.get(0),
-        )
-        .map(|c: i64| c > 0)
-        .unwrap_or(false);
-    if !has_push_attempt {
-        conn.execute(
-            "ALTER TABLE sync_meta ADD COLUMN last_push_attempt_at INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-    }
 
     // Encryption key marker
     conn.execute_batch(
