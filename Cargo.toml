@@ -52,6 +52,7 @@ regex = "1.12"
 ignore = "0.4"
 globset = "0.4"
 sha2 = "0.10"
+rsa = { version = "0.9", features = ["sha2"] }
 tokio = { version = "1.48", features = ["rt-multi-thread", "net", "io-util", "io-std", "time", "sync", "macros", "signal", "process"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 flate2 = "1.1"

@@ -15,20 +15,29 @@
 use crate::*;
 use serde_json::Value;
 
+pub(crate) mod push;
+
 const USAGE: &str = "\
-Usage: sidekar duo enroll <service> <account> <activation-url-or-code>
+Usage: sidekar duo enroll   <service> <account> <activation-url-or-code>
+       sidekar duo approve  <service> <account> [--window <secs>]
 
-  Consume a Duo Mobile activation and store its HOTP secret, so
-  `sidekar hotp get <service> <account>` produces Duo passcodes.
+  enroll consumes a Duo Mobile activation and stores its HOTP secret (so
+  `sidekar hotp get <service> <account>` yields Duo passcodes) and a device
+  key (so `duo approve` can answer pushes).
 
-  The activation code is SINGLE USE. Run this BEFORE scanning the QR in
+  The activation code is SINGLE USE. Run enroll BEFORE scanning the QR in
   Duo Mobile — once the phone claims it, there is nothing left to capture.
   Pass the full https://api-<host>.duosecurity.com/push/v2/activation/<code>
-  URL the QR encodes (decode it with any QR reader), or <host>:<code>.";
+  URL the QR encodes (decode it with any QR reader), or <host>:<code>.
+
+  approve waits up to --window seconds (default 30) for ONE pending push and
+  approves it. Run it right after you start the login that sends the push.
+  If two pushes are pending it approves neither (one may not be yours).";
 
 pub async fn cmd_duo(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("enroll") => cmd_enroll(ctx, args.get(1..).unwrap_or(&[])).await,
+        Some("approve") => push::cmd_approve(ctx, args.get(1..).unwrap_or(&[])).await,
         _ => bail!("{USAGE}"),
     }
 }
@@ -79,11 +88,18 @@ async fn cmd_enroll(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let url = format!("https://{host}/push/v2/activation/{code}");
 
+    // A device keypair, so this enrollment can also answer pushes later. The
+    // public half goes to Duo now; the private half is stored below. If the
+    // pubkey is somehow not accepted, passcodes still work — only push-approve
+    // would need a fresh enrollment.
+    let (device_priv_pem, device_pub_pem) = push::generate_device_keypair()?;
+
     // Duo's app sends a platform; without it the activation can be rejected.
     let resp = crate::http_client::client()
         .post(&url)
         .form(&[
             ("pkpush", "rsa-sha512"),
+            ("pubkey", device_pub_pem.as_str()),
             ("platform", "Android"),
             ("app_id", "com.duosecurity.duomobile"),
             ("app_version", "4.57.0"),
@@ -126,27 +142,24 @@ async fn cmd_enroll(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     crate::secrets::hotp_code(&secret, "SHA1", 6, 0)?;
     crate::broker::hotp_add(service, account, &secret, "SHA1", 6, 0)?;
 
-    // Keep pkey/akey beside the secret for a possible push-signing feature.
-    let mut kept = Vec::new();
+    // Keep pkey/akey, the device private key, and the API host beside the
+    // secret, so `duo approve` can answer a push from this device later.
     for field in ["pkey", "akey"] {
         if let Some(v) = data.get(field).and_then(Value::as_str) {
             crate::broker::kv_set(&format!("duo:{service}:{account}:{field}"), v, None)?;
-            kept.push(field);
         }
     }
+    crate::broker::kv_set(&push::privkey_kv(service, account), &device_priv_pem, None)?;
+    crate::broker::kv_set(&format!("duo:{service}:{account}:host"), &host, None)?;
     crate::commands::push_sync_after_mutation();
 
-    let extra = if kept.is_empty() {
-        String::new()
-    } else {
-        format!(" Kept {} in kv under duo:{service}:{account}:*.", kept.join(" and "))
-    };
     out!(
         ctx,
         "{}",
         crate::output::to_string(&crate::output::PlainOutput::new(format!(
-            "Enrolled Duo for {service} ({account}). \
-             Get a passcode with: sidekar hotp get {service} {account}.{extra}"
+            "Enrolled Duo for {service} ({account}).\n\
+             Passcode:  sidekar hotp get {service} {account}\n\
+             Approve a push you just triggered:  sidekar duo approve {service} {account}"
         )))?
     );
     Ok(())
