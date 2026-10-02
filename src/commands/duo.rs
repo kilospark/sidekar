@@ -136,21 +136,46 @@ async fn cmd_enroll(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("Duo activation returned no hotp_secret"))?;
 
-    // Duo's hotp_secret is already base32. Store it exactly as a 6-digit
-    // SHA1 HOTP from counter 0, which is how Duo passcodes are computed.
-    let secret = crate::secrets::normalize_totp_secret(hotp_secret)?;
-    crate::secrets::hotp_code(&secret, "SHA1", 6, 0)?;
-    crate::broker::hotp_add(service, account, &secret, "SHA1", 6, 0)?;
-
-    // Keep pkey/akey, the device private key, and the API host beside the
-    // secret, so `duo approve` can answer a push from this device later.
-    for field in ["pkey", "akey"] {
+    // The activation code is now SPENT (the POST above consumed it). From
+    // here on nothing may silently discard what we captured: an earlier
+    // version threw a base32 error at this point and lost the secret, leaving
+    // an orphaned device on Duo's side. Persist the push-approval material
+    // first, so a problem decoding the passcode secret cannot also cost us the
+    // keys `duo approve` needs. reactivation_token lets the device be
+    // re-activated without a fresh QR.
+    for field in ["pkey", "akey", "reactivation_token"] {
         if let Some(v) = data.get(field).and_then(Value::as_str) {
             crate::broker::kv_set(&format!("duo:{service}:{account}:{field}"), v, None)?;
         }
     }
     crate::broker::kv_set(&push::privkey_kv(service, account), &device_priv_pem, None)?;
     crate::broker::kv_set(&format!("duo:{service}:{account}:host"), &host, None)?;
+
+    // Duo returns hotp_secret as 32 hex chars, NOT base32 (hex includes 0, 1,
+    // 8 and 9, which base32 forbids). Decode hex to bytes and store the base32
+    // of those bytes — lossless, so Duo passcodes compute as 6-digit SHA1 HOTP
+    // from counter 0.
+    let secret = match crate::secrets::duo_hotp_secret_to_base32(hotp_secret) {
+        Ok(secret) => secret,
+        Err(e) => {
+            // The code is spent; keep the raw secret so it stays recoverable
+            // rather than being wasted on a parse failure.
+            let _ = crate::broker::kv_set(
+                &format!("duo:{service}:{account}:hotp_secret_raw"),
+                hotp_secret,
+                None,
+            );
+            crate::commands::push_sync_after_mutation();
+            bail!(
+                "Captured the Duo device, but its hotp_secret could not be decoded ({e}). \
+                 It is saved at kv key `duo:{service}:{account}:hotp_secret_raw`, and \
+                 pkey/akey were stored so `duo approve` still works."
+            );
+        }
+    };
+    crate::secrets::hotp_code(&secret, "SHA1", 6, 0)
+        .context("the decoded Duo hotp_secret did not produce a valid HOTP code")?;
+    crate::broker::hotp_add(service, account, &secret, "SHA1", 6, 0)?;
     crate::commands::push_sync_after_mutation();
 
     out!(

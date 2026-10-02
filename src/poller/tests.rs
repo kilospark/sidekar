@@ -445,7 +445,7 @@ fn split_frames_reassemble_across_reads() {
 
     let mut inbox: Vec<u8> = Vec::new();
     let mut pending: Vec<PendingMessage> = Vec::new();
-    let mut drain = |inbox: &mut Vec<u8>, pending: &mut Vec<PendingMessage>| {
+    let drain = |inbox: &mut Vec<u8>, pending: &mut Vec<PendingMessage>| {
         while let Some(eol) = inbox.iter().position(|&b| b == b'\n') {
             let frame: Vec<u8> = inbox.drain(..=eol).collect();
             if let Some(msg) = parse_bus_frame(&frame[..eol]) {

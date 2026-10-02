@@ -618,6 +618,40 @@ pub fn base32_secret(bytes: &[u8]) -> String {
     totp_rs::Secret::Raw(bytes.to_vec()).to_encoded().to_string()
 }
 
+/// Decode a hex string to bytes. Duo's activation returns its `hotp_secret`
+/// as 32 lowercase hex characters, not base32.
+pub fn hex_decode(s: &str) -> Result<Vec<u8>> {
+    let chars: Vec<char> = s.trim().chars().collect();
+    if chars.is_empty() || chars.len() % 2 != 0 {
+        bail!("not a hex string: {} characters", chars.len());
+    }
+    let nibble = |c: char| -> Result<u8> {
+        c.to_digit(16)
+            .map(|d| d as u8)
+            .ok_or_else(|| anyhow!("'{c}' is not a hex character"))
+    };
+    chars
+        .chunks(2)
+        .map(|p| Ok((nibble(p[0])? << 4) | nibble(p[1])?))
+        .collect()
+}
+
+/// Convert Duo's `hotp_secret` into the base32 form the secret store and
+/// [`hotp_code`] use. Duo returns it as a 32-char hex string, which includes
+/// 0, 1, 8 and 9 — characters base32 forbids — so it must be hex-decoded to
+/// bytes, NOT base32-validated. Re-encoding those bytes as base32 is lossless,
+/// so the stored secret yields identical RFC 4226 codes. Falls back to the
+/// base32 path only if the value is not valid hex, so a later format change
+/// still works.
+pub fn duo_hotp_secret_to_base32(raw: &str) -> Result<String> {
+    if let Ok(bytes) = hex_decode(raw) {
+        if bytes.len() >= 10 {
+            return Ok(base32_secret(&bytes));
+        }
+    }
+    normalize_totp_secret(raw)
+}
+
 fn local_totp_code(service: &str, account: &str) -> Result<Option<String>> {
     let Some(rec) = crate::broker::totp_get(service, account)? else {
         return Ok(None);
@@ -1007,6 +1041,42 @@ mod hotp_tests {
                 "counter {counter}"
             );
         }
+    }
+
+    #[test]
+    fn hex_decode_round_trips_and_rejects_bad_input() {
+        assert_eq!(hex_decode("48656c6c6f").unwrap(), b"Hello");
+        assert_eq!(hex_decode("00FF").unwrap(), vec![0x00, 0xff]); // case-insensitive
+        assert!(hex_decode("abc").is_err(), "odd length");
+        assert!(hex_decode("zz").is_err(), "non-hex char");
+        assert!(hex_decode("").is_err(), "empty");
+    }
+
+    /// Regression: Duo's hotp_secret is hex, not base32. Enroll used to
+    /// base32-validate it and reject any secret containing 0/1/8/9, AFTER the
+    /// single-use activation code was already spent. Decoding hex to bytes and
+    /// storing base32 produces correct RFC 4226 codes — proven by feeding the
+    /// RFC's own secret in as hex.
+    #[test]
+    fn a_duo_hex_secret_decodes_to_rfc4226_codes() {
+        // hex of the ASCII secret "12345678901234567890".
+        let hex = "3132333435363738393031323334353637383930";
+        let stored = duo_hotp_secret_to_base32(hex).unwrap();
+        assert_eq!(stored, base32_secret(b"12345678901234567890"));
+        assert_eq!(hotp_code(&stored, "SHA1", 6, 0).unwrap(), "755224");
+        assert_eq!(hotp_code(&stored, "SHA1", 6, 1).unwrap(), "287082");
+    }
+
+    /// A real-shaped Duo secret: 32 hex chars (16 bytes) that includes the
+    /// very digits base32 forbids. The old enroll path rejected exactly this.
+    #[test]
+    fn a_32_char_duo_secret_enrolls_without_a_base32_error() {
+        let duo = "0123456789abcdef8899aabbccddeeff";
+        assert!(normalize_totp_secret(duo).is_err(), "it is not valid base32");
+        let stored = duo_hotp_secret_to_base32(duo).unwrap();
+        let code = hotp_code(&stored, "SHA1", 6, 0).unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
     }
 
     #[test]
