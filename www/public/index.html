@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sidekar: the utility layer for coding agents</title>
-<meta name="description" content="One binary and one skill file that give Claude Code, Codex, Cursor, and other coding agents a real browser, macOS desktop control, an inter-agent bus, encrypted secrets, and durable memory. MIT licensed, runs locally, no MCP server.">
+<meta name="description" content="One binary and one skill file that give Claude Code, Codex, Cursor, and other coding agents a real browser, macOS desktop control, an inter-agent bus, encrypted secrets, and durable memory. MIT licensed, runs locally. Skill-first, with an optional MCP server for apps that cannot run a shell command.">
 <meta name="theme-color" content="#10231d">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" type="image/png" href="/favicon-32.png" sizes="32x32">
@@ -917,7 +917,7 @@ h1 {
       <div class="hero-notes">
         <span>MIT licensed</span>
         <span>Runs on your machine</span>
-        <span>No MCP server to configure</span>
+        <span>Skill-first, MCP optional</span>
       </div>
       <div class="agent-strip">
         <span>Claude Code</span>
@@ -1103,14 +1103,14 @@ h1 {
     <div class="section-header">
       <div>
         <h2>Works with the agent you already use.</h2>
-        <p>Sidekar does not replace your agent, host it, or ask it to speak a new protocol. It installs a skill file and stays out of the way.</p>
+        <p>Sidekar does not replace your agent or host it. It installs a skill file and stays out of the way — and for apps that cannot run a shell command, it speaks MCP instead.</p>
       </div>
     </div>
     <div class="split-grid">
       <div class="split-panel">
-        <h3>A skill file, not an MCP server</h3>
+        <h3>A skill file first, MCP when you need it</h3>
         <p><code>sidekar install</code> writes <code>SKILL.md</code> into the config directories of every agent it detects: Claude Code, Codex, Gemini CLI, Grok, OpenCode, and Pi. The agent reads it like any other skill and calls the CLI.</p>
-        <p>There is no server to run, no JSON tool schema to keep in sync, and no per-agent integration to maintain. If your agent can run a shell command, it can use Sidekar.</p>
+        <p>There is no server to run, no JSON tool schema to keep in sync, and no per-agent integration to maintain. If your agent can run a shell command, that is all it needs. For apps that cannot — Claude Desktop, Cowork, Codex sandboxes — <code>sidekar mcp</code> exposes the same commands over the Model Context Protocol.</p>
       </div>
       <div class="split-panel">
         <h3>Wrap it, or don't</h3>
@@ -1260,7 +1260,7 @@ h1 {
       <details>
         <summary>Do I need to configure an MCP server?</summary>
         <div class="faq-body">
-          <p>No. Sidekar deliberately has no MCP server. It installs a <code>SKILL.md</code> file that your agent reads, and the agent calls the <code>sidekar</code> binary as a normal shell command. Nothing to run, nothing to keep in sync, and it works with any agent that can execute commands.</p>
+          <p>Not for most agents. Sidekar installs a <code>SKILL.md</code> file that your agent reads, and the agent calls the <code>sidekar</code> binary as a normal shell command — nothing to run, nothing to keep in sync. For GUI or sandboxed apps that cannot run a shell command (Claude Desktop, Cowork, Codex), <code>sidekar mcp</code> runs an MCP server over stdio; <code>sidekar mcp install</code> registers it.</p>
         </div>
       </details>
       <details>
@@ -1292,7 +1292,7 @@ h1 {
     <div class="cta-band">
       <div>
         <h3>Give it a real set of hands.</h3>
-        <p>One binary, one skill file, no server. Uninstall is one command if it is not for you.</p>
+        <p>One binary, one skill file. Uninstall is one command if it is not for you.</p>
       </div>
       <div class="hero-actions">
         <a href="#setup" class="primary-cta">Install sidekar</a>

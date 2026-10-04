@@ -1,6 +1,6 @@
 # sidekar
 
-> The utility layer for coding agents. One binary and one skill file give Claude Code, Codex, Copilot, Cursor, Gemini CLI, Grok, OpenCode, and Pi a real browser, macOS desktop control, an inter-agent bus, encrypted secrets, and durable memory. MIT licensed, runs locally, no MCP server.
+> The utility layer for coding agents. One binary and one skill file give Claude Code, Codex, Copilot, Cursor, Gemini CLI, Grok, OpenCode, and Pi a real browser, macOS desktop control, an inter-agent bus, encrypted secrets, and durable memory. MIT licensed, runs locally. Skill-first, with an optional MCP server (`sidekar mcp`) for apps that cannot run a shell command.
 
 ## What is sidekar?
 
