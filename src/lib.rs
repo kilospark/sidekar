@@ -127,6 +127,7 @@ pub mod help_text;
 pub mod hosted;
 pub mod http_client;
 pub mod input_mode;
+pub mod mcp;
 pub mod md;
 pub mod memory;
 pub mod message;

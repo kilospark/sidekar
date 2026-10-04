@@ -263,6 +263,9 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if command == "session" {
         return sidekar::hosted::cli::handle(&args).await;
     }
+    if command == "mcp" {
+        return sidekar::mcp::handle(&args).await;
+    }
     // Hidden: the detached sync push worker (see
     // `commands::spawn_detached_sync_push`). Routed here, not through the
     // command table, which does not know it — as `dispatch` it was refused

@@ -109,6 +109,7 @@ pub fn render_help(version: &str) -> String {
             ("install", "Install skill file"),
             ("uninstall", "Remove local data and skill files"),
             ("skill", "Print SKILL.md"),
+            ("mcp", "MCP server for GUI/sandboxed apps"),
         ],
         CYAN,
         YELLOW,

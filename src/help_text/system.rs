@@ -1,6 +1,6 @@
 pub const COMMANDS: &[&str] = &[
     "config", "prompt", "device", "relay", "event", "daemon", "totp", "hotp", "duo", "pack", "unpack", "kv",
-    "install", "skill",
+    "install", "skill", "mcp",
 ];
 
 pub fn get(command: &str) -> Option<&'static str> {
@@ -254,6 +254,26 @@ sidekar install [config-folder]
                            .claude-work, ~/profiles/work"
         }
         "skill" => "sidekar skill\n\n  Print the embedded SKILL.md to stdout (for agents to read).",
+        "mcp" => {
+            "\
+sidekar mcp [install|status]
+
+  Run a Model Context Protocol server over stdio, exposing Sidekar to apps that
+  cannot run a shell command and read SKILL.md: Claude Desktop, Cowork, and
+  Codex. Agents that can run shell commands should use the skill instead.
+
+  It exposes one generic `sidekar` tool (any CLI command) plus `bus_inbox`, and
+  registers on the agent bus so it can send and receive inter-agent messages.
+
+  Subcommands:
+    (none)     Serve on stdio. Apps launch this for you; you rarely run it.
+    install    Register the server with Codex (codex mcp add) and Claude Desktop.
+    status     Print how to add the server to an app by hand.
+
+  Examples:
+    sidekar mcp install
+    sidekar mcp status"
+        }
         _ => return None,
     })
 }

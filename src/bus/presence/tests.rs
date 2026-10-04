@@ -203,11 +203,13 @@ fn every_pane_format_maps_back_to_its_pid() {
     assert_eq!(pid_of_pane("pty-4242"), Some(4242));
     assert_eq!(pid_of_pane("repl-17"), Some(17));
     assert_eq!(pid_of_pane("cli-9"), Some(9));
+    assert_eq!(pid_of_pane("session-55"), Some(55));
+    assert_eq!(pid_of_pane("mcp-12"), Some(12));
 }
 
 #[test]
 fn a_pane_that_is_not_ours_has_no_pid() {
-    assert_eq!(pid_of_pane("mcp-12"), None);
+    assert_eq!(pid_of_pane("tmux-12"), None);
     assert_eq!(pid_of_pane("pty-"), None);
     assert_eq!(pid_of_pane("pty-abc"), None);
     assert_eq!(pid_of_pane(""), None);

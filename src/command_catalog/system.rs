@@ -73,4 +73,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         false,
         false,
     ),
+    spec(
+        "mcp",
+        "[install|status]",
+        "MCP server over stdio for apps that can't run a shell command",
+        CommandGroup::System,
+        false,
+        false,
+        false,
+    ),
 ];

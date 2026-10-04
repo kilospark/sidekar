@@ -49,8 +49,9 @@ pub(crate) fn first_free(prefix: &str, taken: &HashSet<String>) -> String {
 /// The process behind a registered pane, when its name says.
 ///
 /// Lives here because this module decides the pane formats — `pty-<pid>` and
-/// `repl-<pid>` from [`Presence`], `cli-<pid>` from the CLI — so the mapping
-/// back to a pid is written once, beside the code that writes the names.
+/// `repl-<pid>` from [`Presence`], `cli-<pid>` from the CLI, `mcp-<pid>` from
+/// the MCP server — so the mapping back to a pid is written once, beside the
+/// code that writes the names.
 ///
 /// Only a positive pid is ever returned. `stop` hands this straight to
 /// `kill(pid, SIGTERM)`, where 0 means "my whole process group" and -1 means
@@ -58,7 +59,7 @@ pub(crate) fn first_free(prefix: &str, taken: &HashSet<String>) -> String {
 /// the registry is a file on disk, and one malformed row must not be able to
 /// turn `sidekar stop` into a kill-everything.
 pub(crate) fn pid_of_pane(pane: &str) -> Option<i32> {
-    ["pty-", "repl-", "cli-", "session-"]
+    ["pty-", "repl-", "cli-", "session-", "mcp-"]
         .iter()
         .find_map(|prefix| {
             pane.strip_prefix(prefix)
