@@ -111,6 +111,9 @@ struct TotpSecretOut {
     algorithm: String,
     digits: i32,
     period: i32,
+    /// Why the secret can't be decrypted, if it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unreadable: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -126,12 +129,21 @@ impl crate::output::CommandOutput for TotpListOutput {
         }
         writeln!(w, "{} TOTP secrets:", self.items.len())?;
         for s in &self.items {
+            let mark = if s.unreadable.is_some() {
+                "  (can't be decrypted)"
+            } else {
+                ""
+            };
             writeln!(
                 w,
-                "  [{}] {} {} ({} digits, {}s period)",
+                "  [{}] {} {} ({} digits, {}s period){mark}",
                 s.id, s.service, s.account, s.digits, s.period
             )?;
         }
+        crate::output::write_unreadable_reasons(
+            w,
+            self.items.iter().filter_map(|s| s.unreadable.as_deref()),
+        )?;
         Ok(())
     }
 }
@@ -148,6 +160,7 @@ async fn cmd_totp_list(ctx: &mut AppContext) -> Result<()> {
                 algorithm: s.algorithm,
                 digits: s.digits,
                 period: s.period,
+                unreadable: s.unreadable,
             })
             .collect(),
     };
@@ -307,12 +320,12 @@ async fn cmd_totp_remove(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         bail!("Usage: sidekar totp remove <id>  OR  sidekar totp remove <service> <account>");
     }
     let id = if args.len() >= 2 {
-        // service + account form
+        // service + account form. Found without decrypting, so a secret that
+        // can't be decrypted can still be removed.
         let service = &args[0];
         let account = &args[1];
-        let rec = crate::broker::totp_get(service, account)?
-            .ok_or_else(|| anyhow::anyhow!("No TOTP secret found for {} ({})", service, account))?;
-        rec.id
+        crate::broker::totp_id(service, account)?
+            .ok_or_else(|| anyhow::anyhow!("No TOTP secret found for {} ({})", service, account))?
     } else {
         // numeric id form
         args[0]

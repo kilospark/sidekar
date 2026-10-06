@@ -98,11 +98,14 @@ pub(crate) fn token_ref_from(key: &str, tags: &[String]) -> Option<TokenRef> {
     })
 }
 
-/// Every stored Google token, by the key it lives under.
+/// Every stored Google token, by the key it lives under. One whose value
+/// can't be decrypted is still listed: using it then says why it fails.
 pub fn tokens() -> Result<Vec<TokenRef>> {
-    let mut out: Vec<TokenRef> = crate::broker::kv_list(None)?
+    let listing = crate::broker::kv_scan(None)?;
+    let mut out: Vec<TokenRef> = listing
+        .keys()
         .into_iter()
-        .filter_map(|e| token_ref_from(&e.key, &e.tags))
+        .filter_map(|(key, tags)| token_ref_from(key, tags))
         .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(out)

@@ -1373,7 +1373,11 @@ fn cancelling_a_request_withdraws_it_from_the_queue() -> Result<()> {
 #[test]
 fn a_machine_that_never_logged_in_has_no_device_token() -> Result<()> {
     with_test_db(|| {
-        assert_eq!(auth_get("token"), None, "no row is no token, not an empty one");
+        assert_eq!(
+            auth_get("token"),
+            None,
+            "no row is no token, not an empty one"
+        );
         assert!(crate::auth::auth_token().is_none());
 
         auth_set("token", "tok-123")?;
@@ -1423,6 +1427,184 @@ fn kv_set_before_login_writes_ciphertext_on_disk() -> Result<()> {
             |r| r.get(0),
         )?;
         assert!(!stored_key.is_empty());
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn a_value_that_cant_be_decrypted_is_an_error_never_the_ciphertext() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+        kv_set("api-key", "sk-live-123", Some(&["deploy".to_string()]))?;
+
+        // Another key is loaded: the row is now under a key this process
+        // doesn't hold, as after a half-finished migration.
+        set_encryption_key(vec![0x42u8; 32]);
+        kv_set("other", "readable", Some(&["deploy".to_string()]))?;
+
+        let err = format!("{:#}", kv_get("api-key").unwrap_err());
+        assert!(
+            err.contains("'api-key'") && err.contains("can't be decrypted"),
+            "{err}"
+        );
+        assert!(!err.contains("$encrypted$"), "{err}");
+
+        // A listing keeps the readable entries and reports the other.
+        let listing = kv_scan(None)?;
+        let keys: Vec<_> = listing.entries.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["other"]);
+        assert_eq!(listing.unreadable.len(), 1);
+        assert_eq!(listing.unreadable[0].key, "api-key");
+        assert_eq!(
+            listing.unreadable[0].tags,
+            ["deploy"],
+            "tags are not encrypted"
+        );
+        assert_eq!(
+            kv_list(None)?
+                .iter()
+                .map(|e| e.key.as_str())
+                .collect::<Vec<_>>(),
+            ["other"]
+        );
+
+        // exec never injects ciphertext, whether the key was named or tagged.
+        assert!(kv_get_for_exec(&["api-key".to_string()], None).is_err());
+        let err = format!("{:#}", kv_get_for_exec(&[], Some("deploy")).unwrap_err());
+        assert!(err.contains("'api-key'"), "{err}");
+        assert_eq!(
+            kv_get_for_exec(&["other".to_string()], None)?[0].value,
+            "readable"
+        );
+
+        // Setting it again is the way out; the old value stays in history,
+        // marked rather than shown as ciphertext.
+        kv_set("api-key", "sk-live-456", None)?;
+        assert_eq!(kv_get("api-key")?.unwrap().value, "sk-live-456");
+        let history = kv_history("api-key")?;
+        assert_eq!(history.len(), 1);
+        let reason = history[0].value.as_ref().unwrap_err();
+        assert!(!reason.contains("$encrypted$"), "{reason}");
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn a_new_logged_out_process_reads_its_own_secrets() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+        kv_set("token", "plain-value", None)?;
+        totp_add(
+            "github",
+            "me@example.com",
+            "JBSWY3DPEHPK3PXP",
+            "SHA1",
+            6,
+            30,
+        )?;
+
+        // A new process starts with no key in memory. Writes load the local
+        // key; reads never did, so they returned the ciphertext.
+        clear_encryption_key();
+        assert_eq!(kv_get("token")?.unwrap().value, "plain-value");
+
+        clear_encryption_key();
+        let totp = totp_get("github", "me@example.com")?.unwrap();
+        assert_eq!(totp.secret, "JBSWY3DPEHPK3PXP");
+
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn logged_in_without_the_account_key_neither_reads_nor_writes() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+        set_encryption_key(vec![0x42u8; 32]);
+        set_current_user_id("user-1".to_string());
+        kv_set("token", "account-value", None)?;
+        auth_set("token", "device-token")?;
+
+        // The account key fetch failed in this process.
+        clear_encryption_key();
+
+        let err = format!("{:#}", kv_get("token").unwrap_err());
+        assert!(
+            err.contains("account's encryption key is not loaded"),
+            "{err}"
+        );
+
+        // A write would have generated a local key and stored a value under
+        // the account that the account's key can't decrypt.
+        assert!(kv_set("new", "value", None).is_err());
+        let conn = open_raw()?;
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM kv_store WHERE key = 'new'", [], |r| {
+                r.get(0)
+            })?;
+        assert_eq!(rows, 0);
+        let local_keys: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM encryption_meta WHERE key = 'account_data_key_v1'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(local_keys, 0, "no local key was made while logged in");
+
+        auth_clear()?;
+        reset_encryption_state();
+        Ok(())
+    })
+}
+
+#[test]
+fn a_totp_secret_that_cant_be_decrypted_is_listed_and_removable() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+        totp_add(
+            "github",
+            "me@example.com",
+            "JBSWY3DPEHPK3PXP",
+            "SHA1",
+            6,
+            30,
+        )?;
+        hotp_add("duo", "me@example.com", "JBSWY3DPEHPK3PXP", "SHA1", 6, 7)?;
+        set_encryption_key(vec![0x42u8; 32]);
+
+        let err = format!("{:#}", totp_get("github", "me@example.com").unwrap_err());
+        assert!(
+            err.contains("github (me@example.com)") && err.contains("can't be decrypted"),
+            "{err}"
+        );
+
+        // No code is taken from an HOTP secret that can't be read, so its
+        // counter doesn't move.
+        assert!(hotp_take("duo", "me@example.com").is_err());
+        let counter: i64 = open_raw()?.query_row(
+            "SELECT counter FROM totp_secrets WHERE service = 'duo'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(counter, 7);
+
+        assert!(totp_list()?.is_empty());
+        let listing = totp_scan()?;
+        let names: Vec<_> = listing
+            .unreadable
+            .iter()
+            .map(|u| u.service.as_str())
+            .collect();
+        assert_eq!(names, ["duo", "github"]);
+
+        // Removable by name: finding it doesn't need the secret.
+        let id = totp_id("github", "me@example.com")?.expect("still there");
+        totp_delete(id)?;
+        assert_eq!(totp_scan()?.unreadable.len(), 1);
 
         reset_encryption_state();
         Ok(())
@@ -1493,7 +1675,7 @@ fn login_migrates_and_reencrypts_prelogin_rows() -> Result<()> {
         // also have been re-keyed to the account key.
         let history_entries = kv_history("token")?;
         assert_eq!(history_entries.len(), 1);
-        assert_eq!(history_entries[0].value, "pre-login-value");
+        assert_eq!(history_entries[0].value.as_deref(), Ok("pre-login-value"));
 
         let totp = totp_list()?;
         assert!(
@@ -1729,11 +1911,18 @@ fn logout_purges_local_key_and_leaves_db_inert() -> Result<()> {
         assert_eq!(meta, 0, "logout must purge the persisted local key");
 
         // Without a key, the store can no longer decrypt what it already
-        // wrote -- reads fall back to the raw ciphertext instead of the
-        // original value.
-        let entry = kv_get("secret")?.expect("row still exists on disk");
-        assert_ne!(entry.value, "shhh");
-        assert!(is_encrypted(&entry.value));
+        // wrote: reading it is an error saying so, never the value, and
+        // never the ciphertext passed off as the value (#21).
+        let err = format!("{:#}", kv_get("secret").unwrap_err());
+        assert!(
+            err.contains("'secret'") && err.contains("no local encryption key"),
+            "{err}"
+        );
+        let raw: String =
+            conn.query_row("SELECT value FROM kv_store WHERE key = 'secret'", [], |r| {
+                r.get(0)
+            })?;
+        assert!(is_encrypted(&raw), "the row is still on disk");
 
         reset_encryption_state();
         Ok(())

@@ -126,6 +126,9 @@ struct HotpOut {
     algorithm: String,
     digits: i32,
     counter: u64,
+    /// Why the secret can't be decrypted, if it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unreadable: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -141,20 +144,32 @@ impl crate::output::CommandOutput for HotpListOutput {
         }
         writeln!(w, "{} HOTP secrets:", self.items.len())?;
         for s in &self.items {
+            let mark = if s.unreadable.is_some() {
+                "  (can't be decrypted)"
+            } else {
+                ""
+            };
             writeln!(
                 w,
-                "  [{}] {} {} ({} digits, counter {})",
+                "  [{}] {} {} ({} digits, counter {}){mark}",
                 s.id, s.service, s.account, s.digits, s.counter
             )?;
         }
+        crate::output::write_unreadable_reasons(
+            w,
+            self.items.iter().filter_map(|s| s.unreadable.as_deref()),
+        )?;
         Ok(())
     }
 }
 
 fn cmd_list(ctx: &mut AppContext) -> Result<()> {
-    let items = crate::broker::totp_list()?
+    let listing = crate::broker::totp_scan()?;
+    let is_hotp = |kind: &str| kind == crate::broker::KIND_HOTP;
+    let readable = listing
+        .secrets
         .into_iter()
-        .filter(|s| s.kind == crate::broker::KIND_HOTP)
+        .filter(|s| is_hotp(&s.kind))
         .map(|s| HotpOut {
             id: s.id,
             service: s.service,
@@ -162,8 +177,23 @@ fn cmd_list(ctx: &mut AppContext) -> Result<()> {
             algorithm: s.algorithm,
             digits: s.digits,
             counter: s.counter,
-        })
-        .collect();
+            unreadable: None,
+        });
+    let unreadable = listing
+        .unreadable
+        .into_iter()
+        .filter(|u| is_hotp(&u.kind))
+        .map(|u| HotpOut {
+            id: u.id,
+            service: u.service,
+            account: u.account,
+            algorithm: u.algorithm,
+            digits: u.digits,
+            counter: u.counter,
+            unreadable: Some(u.reason),
+        });
+    let mut items: Vec<HotpOut> = readable.chain(unreadable).collect();
+    items.sort_by(|a, b| (&a.service, &a.account).cmp(&(&b.service, &b.account)));
     out!(ctx, "{}", crate::output::to_string(&HotpListOutput { items })?);
     Ok(())
 }

@@ -182,13 +182,14 @@ pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 }
             );
             for key in [&token.client_id_key, &token.client_secret_key] {
-                let present = crate::broker::kv_get(key)?.is_some();
-                out!(
-                    ctx,
-                    "  {} {}",
-                    if present { "ok  " } else { "MISSING" },
-                    key
-                );
+                let state = match crate::broker::kv_lookup(key)? {
+                    Some(Ok(_)) => "ok  ".to_string(),
+                    Some(Err(unreadable)) => {
+                        format!("UNREADABLE ({})", unreadable.reason)
+                    }
+                    None => "MISSING".to_string(),
+                };
+                out!(ctx, "  {} {}", state, key);
             }
             match google::auth::access_token_for(&token).await {
                 Ok(_) => out!(ctx, "  ok   token refreshes"),

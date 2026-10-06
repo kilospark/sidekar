@@ -1130,7 +1130,11 @@ fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<(
         switch_to(&home_a);
         assert_eq!(pull_merge(uid).await?.applied, 1);
         assert_eq!(kv_get("shared")?.unwrap().value, "from-b");
-        assert!(kv_history("shared")?.iter().any(|h| h.value == "from-a"));
+        assert!(
+            kv_history("shared")?
+                .iter()
+                .any(|h| h.value.as_deref() == Ok("from-a"))
+        );
 
         server.stop();
         reset_encryption_state();

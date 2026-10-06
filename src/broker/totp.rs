@@ -23,6 +23,42 @@ pub struct TotpSecret {
 pub const KIND_TOTP: &str = "totp";
 pub const KIND_HOTP: &str = "hotp";
 
+/// A one-time-password row whose secret can't be decrypted. Everything but
+/// the secret is stored in the clear, so it can still be listed and removed.
+#[derive(Debug, Clone)]
+pub struct TotpUnreadable {
+    pub id: i64,
+    pub service: String,
+    pub account: String,
+    pub algorithm: String,
+    pub digits: i32,
+    pub period: i32,
+    pub kind: String,
+    pub counter: u64,
+    /// Why the secret can't be decrypted.
+    pub reason: String,
+}
+
+impl TotpUnreadable {
+    fn into_error(self) -> anyhow::Error {
+        anyhow!(
+            "the {} secret for {} ({}) can't be decrypted: {}",
+            self.kind,
+            self.service,
+            self.account,
+            self.reason
+        )
+    }
+}
+
+/// What a listing found: the secrets that could be read, and the rows whose
+/// secrets could not.
+#[derive(Debug, Clone, Default)]
+pub struct TotpListing {
+    pub secrets: Vec<TotpSecret>,
+    pub unreadable: Vec<TotpUnreadable>,
+}
+
 /// The sync kind a secret travels under. HOTP has its own, so a sidekar
 /// that predates HOTP rejects the record instead of storing it as TOTP and
 /// producing wrong codes from it.
@@ -144,18 +180,14 @@ pub fn hotp_set_counter(service: &str, account: &str, counter: u64) -> Result<bo
 const SELECT_COLUMNS: &str =
     "id, service, account, secret, algorithm, digits, period, created_at, kind, counter";
 
-fn row_to_secret(row: &rusqlite::Row<'_>) -> rusqlite::Result<TotpSecret> {
-    let secret: String = row.get(3)?;
-    let decrypted = if is_encrypted(&secret) {
-        decrypt(&secret).unwrap_or(secret)
-    } else {
-        secret
-    };
+/// Read a row selected with [`SELECT_COLUMNS`]. Its secret is as stored,
+/// possibly still encrypted; [`open_secret`] decrypts it.
+fn read_stored(row: &rusqlite::Row<'_>) -> rusqlite::Result<TotpSecret> {
     Ok(TotpSecret {
         id: row.get(0)?,
         service: row.get(1)?,
         account: row.get(2)?,
-        secret: decrypted,
+        secret: row.get(3)?,
         algorithm: row.get(4)?,
         digits: row.get(5)?,
         period: row.get(6)?,
@@ -165,31 +197,89 @@ fn row_to_secret(row: &rusqlite::Row<'_>) -> rusqlite::Result<TotpSecret> {
     })
 }
 
+/// Decrypt a stored row's secret. One that can't be decrypted comes back as
+/// [`TotpUnreadable`]: returning the ciphertext as the secret made codes from
+/// it, or failed far from the cause (#21).
+// The error is a row for a listing to show, not one passed up with `?`.
+#[allow(clippy::result_large_err)]
+fn open_secret(mut rec: TotpSecret) -> std::result::Result<TotpSecret, TotpUnreadable> {
+    match decrypt_stored(&rec.secret) {
+        Ok(secret) => {
+            rec.secret = secret;
+            Ok(rec)
+        }
+        Err(e) => Err(TotpUnreadable {
+            id: rec.id,
+            service: rec.service,
+            account: rec.account,
+            algorithm: rec.algorithm,
+            digits: rec.digits,
+            period: rec.period,
+            kind: rec.kind,
+            counter: rec.counter,
+            reason: format!("{e:#}"),
+        }),
+    }
+}
+
 fn select_one(conn: &Connection, uid: &str, service: &str, account: &str) -> Result<Option<TotpSecret>> {
     conn.prepare(&format!(
         "SELECT {SELECT_COLUMNS} FROM totp_secrets WHERE user_id = ?1 AND service = ?2 AND account = ?3"
     ))?
-    .query_row(params![uid, service, account], row_to_secret)
-    .optional()
-    .map_err(Into::into)
+    .query_row(params![uid, service, account], read_stored)
+    .optional()?
+    .map(|rec| open_secret(rec).map_err(TotpUnreadable::into_error))
+    .transpose()
 }
 
-/// List all TOTP secrets for current user.
-pub fn totp_list() -> Result<Vec<TotpSecret>> {
+/// Every one-time-password row for the current user: the secrets that could
+/// be read, and the rows whose secrets could not.
+pub fn totp_scan() -> Result<TotpListing> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
     let mut stmt = conn.prepare(&format!(
         "SELECT {SELECT_COLUMNS} FROM totp_secrets WHERE user_id = ?1 ORDER BY service, account"
     ))?;
-    let rows = stmt.query_map(params![uid], row_to_secret)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let rows = stmt
+        .query_map(params![uid], read_stored)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut listing = TotpListing::default();
+    for rec in rows {
+        match open_secret(rec) {
+            Ok(secret) => listing.secrets.push(secret),
+            Err(unreadable) => listing.unreadable.push(unreadable),
+        }
+    }
+    Ok(listing)
 }
 
-/// Get a one-time-password secret for a service+account, scoped to current user.
+/// The one-time-password secrets for the current user that can be read. A
+/// row whose secret can't be decrypted is left out; [`totp_scan`] reports
+/// those.
+pub fn totp_list() -> Result<Vec<TotpSecret>> {
+    Ok(totp_scan()?.secrets)
+}
+
+/// Get a one-time-password secret for a service+account, scoped to current
+/// user. A secret that can't be decrypted is an error naming it.
 pub fn totp_get(service: &str, account: &str) -> Result<Option<TotpSecret>> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
     select_one(&conn, &uid, service, account)
+}
+
+/// The id of the secret for a service+account, found without decrypting it,
+/// so one that can't be decrypted can still be removed by name.
+pub fn totp_id(service: &str, account: &str) -> Result<Option<i64>> {
+    let conn = open()?;
+    let uid = current_user_id().unwrap_or_default();
+    conn.query_row(
+        "SELECT id FROM totp_secrets WHERE user_id = ?1 AND service = ?2 AND account = ?3",
+        params![uid, service, account],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// Delete a TOTP secret (by id — already scoped by user via query)

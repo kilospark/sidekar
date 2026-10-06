@@ -85,6 +85,9 @@ pub struct KvListEntry {
     pub tags: Vec<String>,
     pub owner: String,
     pub local: bool,
+    /// Why the value can't be decrypted, if it can't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +105,9 @@ pub struct TotpListEntry {
     /// secrets are all TOTP.
     #[serde(default = "default_otp_kind")]
     pub kind: String,
+    /// Why the secret can't be decrypted, if it can't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
 }
 
 fn default_otp_kind() -> String {
@@ -143,12 +149,15 @@ struct SecretRpcResponse {
     code: Option<String>,
 }
 
+/// Every local credential. One whose value can't be decrypted is still
+/// listed: using it then says why it fails.
 pub(crate) fn list_local_credentials() -> Vec<CredentialListEntry> {
-    let entries = crate::broker::kv_list(None).unwrap_or_default();
-    entries
+    let listing = crate::broker::kv_scan(None).unwrap_or_default();
+    listing
+        .keys()
         .into_iter()
-        .filter_map(|e| {
-            let name = e.key.strip_prefix("oauth:")?;
+        .filter_map(|(key, _)| {
+            let name = key.strip_prefix("oauth:")?;
             let wire = crate::providers::oauth::resolve_provider_type_for_credential(name)
                 .unwrap_or("unknown");
             let provider = crate::providers::oauth::credential_provider_display_label(wire);
@@ -204,17 +213,28 @@ pub fn credential_email(reference: &str) -> Option<String> {
     .and_then(|resp| resp.email)
 }
 
+/// Every local key, including those whose values can't be decrypted, which
+/// are marked rather than left out.
 pub(crate) fn list_local_kv(filter_tag: Option<&str>) -> Result<Vec<KvListEntry>> {
-    Ok(crate::broker::kv_list(filter_tag)?
+    let listing = crate::broker::kv_scan(filter_tag)?;
+    let readable = listing.entries.into_iter().map(|e| (e.key, e.tags, None));
+    let unreadable = listing
+        .unreadable
         .into_iter()
-        .map(|e| KvListEntry {
-            reference: e.key.clone(),
-            key: e.key,
-            tags: e.tags,
+        .map(|u| (u.key, u.tags, Some(u.reason)));
+    let mut items: Vec<KvListEntry> = readable
+        .chain(unreadable)
+        .map(|(key, tags, unreadable)| KvListEntry {
+            reference: key.clone(),
+            key,
+            tags,
             owner: "local".to_string(),
             local: true,
+            unreadable,
         })
-        .collect())
+        .collect();
+    items.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(items)
 }
 
 pub fn list_kv(filter_tag: Option<&str>) -> Result<Vec<KvListEntry>> {
@@ -274,22 +294,39 @@ pub fn get_kv_for_exec(
     Ok(out)
 }
 
+/// Every local one-time-password secret, including those that can't be
+/// decrypted, which are marked rather than left out.
 pub(crate) fn list_local_totp() -> Result<Vec<TotpListEntry>> {
-    Ok(crate::broker::totp_list()?
-        .into_iter()
-        .map(|s| TotpListEntry {
-            id: Some(s.id),
-            reference: format!("{} {}", s.service, s.account),
-            service: s.service,
-            account: s.account,
-            algorithm: s.algorithm,
-            digits: s.digits,
-            period: s.period,
-            owner: "local".to_string(),
-            local: true,
-            kind: s.kind,
-        })
-        .collect())
+    let listing = crate::broker::totp_scan()?;
+    let readable = listing.secrets.into_iter().map(|s| TotpListEntry {
+        id: Some(s.id),
+        reference: format!("{} {}", s.service, s.account),
+        service: s.service,
+        account: s.account,
+        algorithm: s.algorithm,
+        digits: s.digits,
+        period: s.period,
+        owner: "local".to_string(),
+        local: true,
+        kind: s.kind,
+        unreadable: None,
+    });
+    let unreadable = listing.unreadable.into_iter().map(|u| TotpListEntry {
+        id: Some(u.id),
+        reference: format!("{} {}", u.service, u.account),
+        service: u.service,
+        account: u.account,
+        algorithm: u.algorithm,
+        digits: u.digits,
+        period: u.period,
+        owner: "local".to_string(),
+        local: true,
+        kind: u.kind,
+        unreadable: Some(u.reason),
+    });
+    let mut items: Vec<TotpListEntry> = readable.chain(unreadable).collect();
+    items.sort_by(|a, b| (&a.service, &a.account).cmp(&(&b.service, &b.account)));
+    Ok(items)
 }
 
 pub fn list_totp() -> Result<Vec<TotpListEntry>> {
@@ -921,6 +958,24 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&temp_home);
         result
+    }
+
+    #[test]
+    fn listing_marks_a_value_that_cant_be_decrypted_instead_of_dropping_it() -> Result<()> {
+        with_test_home(|| {
+            crate::broker::kv_set("broken", "v", None)?;
+            // Under another key, as after a half-finished migration.
+            crate::broker::set_encryption_key(vec![0x42u8; 32]);
+            crate::broker::kv_set("fine", "v", None)?;
+
+            let items = list_local_kv(None)?;
+            let marked: Vec<_> = items
+                .iter()
+                .map(|e| (e.key.as_str(), e.unreadable.is_some()))
+                .collect();
+            assert_eq!(marked, [("broken", true), ("fine", false)]);
+            Ok(())
+        })
     }
 
     #[test]

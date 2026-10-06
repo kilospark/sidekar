@@ -147,9 +147,17 @@ const LOCAL_KEY_META_KEY: &str = "account_data_key_v1";
 /// random 256-bit local key on first use if none is loaded yet (in memory)
 /// or stored (in `encryption_meta`). Called from `kv_set`/`totp_add` so a
 /// write before login is encrypted instead of falling back to plaintext.
+///
+/// Logged in, the key is the account's, and only `fetch_encryption_key`
+/// loads it. If that failed, this refuses rather than encrypt under a local
+/// key: the row would sit under the account where nothing could decrypt it,
+/// including sync, which would fail on it every run.
 pub fn ensure_local_key() -> Result<Vec<u8>> {
     if let Some(key) = get_encryption_key() {
         return Ok(key);
+    }
+    if crate::auth::auth_token().is_some() {
+        bail!(ACCOUNT_KEY_NOT_LOADED);
     }
 
     let conn = open()?;
@@ -241,6 +249,42 @@ fn encrypt_with_key(plaintext: &str, key: &[u8]) -> Result<String> {
 pub fn decrypt(encrypted: &str) -> Result<String> {
     let key = get_encryption_key().context("No encryption key set")?;
     decrypt_with_key(encrypted, &key)
+}
+
+const ACCOUNT_KEY_NOT_LOADED: &str =
+    "logged in, but the account's encryption key is not loaded (it is fetched from sidekar.dev)";
+
+/// Decrypt a value read from the kv or totp store. A value stored before
+/// encryption existed is plaintext and passes through.
+///
+/// This never hands back the ciphertext. A value that can't be decrypted is
+/// an error, so a caller can't go on to use `$encrypted$...` as the secret
+/// itself, for example by sending it as an API key (#21).
+pub(crate) fn decrypt_stored(value: &str) -> Result<String> {
+    if !is_encrypted(value) {
+        return Ok(value.to_string());
+    }
+    decrypt_with_key(value, &read_key()?)
+        .context("it is encrypted under a key other than the one this machine holds, or damaged")
+}
+
+/// The key stored values are read with, loaded on first use.
+///
+/// Logged out, rows are encrypted under the persisted local key. Writes load
+/// it (`ensure_local_key`) but reads never did, so a fresh process read its
+/// own secrets back as ciphertext. Logged in, rows are encrypted under the
+/// account key, and the local key would decrypt none of them.
+fn read_key() -> Result<Vec<u8>> {
+    if let Some(key) = get_encryption_key() {
+        return Ok(key);
+    }
+    if crate::auth::auth_token().is_some() {
+        bail!(ACCOUNT_KEY_NOT_LOADED);
+    }
+    let key = read_persisted_local_key(&open()?)?
+        .context("no local encryption key is stored on this machine (logging out removes it)")?;
+    set_encryption_key(key.clone());
+    Ok(key)
 }
 
 fn decrypt_with_key(encrypted: &str, key: &[u8]) -> Result<String> {

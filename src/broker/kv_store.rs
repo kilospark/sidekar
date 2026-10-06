@@ -15,9 +15,60 @@ pub struct KvEntry {
 #[derive(Debug, Clone)]
 pub struct KvHistoryEntry {
     pub version: i64,
-    pub value: String,
+    /// The archived value, or why it can't be decrypted.
+    pub value: std::result::Result<String, String>,
     pub tags: Vec<String>,
     pub archived_at: u64,
+}
+
+/// A kv row whose value can't be decrypted. Its key and tags are stored in
+/// the clear, so it can still be listed and deleted; the value is unusable
+/// until it is set again, or the key it was encrypted under is loaded.
+#[derive(Debug, Clone)]
+pub struct KvUnreadable {
+    pub key: String,
+    pub tags: Vec<String>,
+    /// Why the value can't be decrypted.
+    pub reason: String,
+}
+
+/// What a kv listing found: the entries whose values could be read, and the
+/// keys whose values could not.
+#[derive(Debug, Clone, Default)]
+pub struct KvListing {
+    pub entries: Vec<KvEntry>,
+    pub unreadable: Vec<KvUnreadable>,
+}
+
+impl KvListing {
+    /// Every key with its tags, whether or not its value could be read, in
+    /// key order.
+    pub fn keys(&self) -> Vec<(&str, &[String])> {
+        let readable = self
+            .entries
+            .iter()
+            .map(|e| (e.key.as_str(), e.tags.as_slice()));
+        let unreadable = self
+            .unreadable
+            .iter()
+            .map(|u| (u.key.as_str(), u.tags.as_slice()));
+        let mut keys: Vec<_> = readable.chain(unreadable).collect();
+        keys.sort_by_key(|(key, _)| *key);
+        keys
+    }
+}
+
+/// The error for values that can't be decrypted, naming each key.
+fn kv_unreadable_error(unreadable: &[KvUnreadable]) -> anyhow::Error {
+    let keys: Vec<String> = unreadable.iter().map(|u| format!("'{}'", u.key)).collect();
+    let reason = unreadable
+        .first()
+        .map(|u| u.reason.as_str())
+        .unwrap_or_default();
+    match keys.len() {
+        1 => anyhow!("kv value {} can't be decrypted: {reason}", keys[0]),
+        _ => anyhow!("kv values {} can't be decrypted: {reason}", keys.join(", ")),
+    }
 }
 
 fn parse_tags_json(s: &str) -> Vec<String> {
@@ -28,22 +79,55 @@ fn tags_to_json(tags: &[String]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string())
 }
 
-fn read_kv_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KvEntry> {
-    let value: String = row.get(2)?;
-    let decrypted = if is_encrypted(&value) {
-        decrypt(&value).unwrap_or(value)
-    } else {
-        value
-    };
+const SELECT_KV: &str = "SELECT id, key, value, tags, created_at, updated_at FROM kv_store";
+
+/// Read a row selected with [`SELECT_KV`]. Its value is as stored, possibly
+/// still encrypted; [`open_kv`] decrypts it.
+fn read_stored_kv(row: &rusqlite::Row<'_>) -> rusqlite::Result<KvEntry> {
     let tags_raw: String = row.get(3)?;
     Ok(KvEntry {
         id: row.get(0)?,
         key: row.get(1)?,
-        value: decrypted,
+        value: row.get(2)?,
         tags: parse_tags_json(&tags_raw),
         created_at: row.get::<_, i64>(4)? as u64,
         updated_at: row.get::<_, i64>(5)? as u64,
     })
+}
+
+/// Decrypt a stored entry's value. One that can't be decrypted comes back as
+/// [`KvUnreadable`]: returning the ciphertext as the value let callers use
+/// `$encrypted$...` as the secret itself (#21).
+fn open_kv(mut entry: KvEntry) -> std::result::Result<KvEntry, KvUnreadable> {
+    match decrypt_stored(&entry.value) {
+        Ok(value) => {
+            entry.value = value;
+            Ok(entry)
+        }
+        Err(e) => Err(KvUnreadable {
+            key: entry.key,
+            tags: entry.tags,
+            reason: format!("{e:#}"),
+        }),
+    }
+}
+
+fn kv_lookup_in(
+    conn: &Connection,
+    uid: &str,
+    key: &str,
+) -> Result<Option<std::result::Result<KvEntry, KvUnreadable>>> {
+    Ok(conn
+        .prepare(&format!("{SELECT_KV} WHERE user_id = ?1 AND key = ?2"))?
+        .query_row(params![uid, key], read_stored_kv)
+        .optional()?
+        .map(open_kv))
+}
+
+fn kv_get_in(conn: &Connection, uid: &str, key: &str) -> Result<Option<KvEntry>> {
+    kv_lookup_in(conn, uid, key)?
+        .map(|found| found.map_err(|u| kv_unreadable_error(&[u])))
+        .transpose()
 }
 
 /// Archive current value to kv_history before overwrite. Keeps last 10 versions.
@@ -142,41 +226,53 @@ pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
     Ok(())
 }
 
-/// Get a KV value, scoped to current user.
+/// Get a KV value, scoped to current user. A value that can't be decrypted
+/// is an error naming the key.
 pub fn kv_get(key: &str) -> Result<Option<KvEntry>> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
-
-    conn.prepare(
-        "SELECT id, key, value, tags, created_at, updated_at FROM kv_store \
-         WHERE user_id = ?1 AND key = ?2",
-    )?
-    .query_row(params![uid, key], read_kv_entry)
-    .optional()
-    .map_err(Into::into)
+    kv_get_in(&conn, &uid, key)
 }
 
-/// List all KV entries for current user. Optionally filter by tag.
-pub fn kv_list(filter_tag: Option<&str>) -> Result<Vec<KvEntry>> {
+/// Look up a KV key, scoped to current user, with a value that can't be
+/// decrypted reported as [`KvUnreadable`] rather than as an error. For
+/// callers that show the state, like `kv history`; the rest want [`kv_get`].
+pub fn kv_lookup(key: &str) -> Result<Option<std::result::Result<KvEntry, KvUnreadable>>> {
+    let conn = open()?;
+    let uid = current_user_id().unwrap_or_default();
+    kv_lookup_in(&conn, &uid, key)
+}
+
+/// Every KV row for the current user, optionally only those tagged
+/// `filter_tag`: the entries whose values could be read, and the keys whose
+/// values could not.
+pub fn kv_scan(filter_tag: Option<&str>) -> Result<KvListing> {
     let conn = open()?;
     let uid = current_user_id().unwrap_or_default();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, key, value, tags, created_at, updated_at FROM kv_store \
-         WHERE user_id = ?1 ORDER BY key",
-    )?;
-    let mut out = Vec::new();
+    let mut stmt = conn.prepare(&format!("{SELECT_KV} WHERE user_id = ?1 ORDER BY key"))?;
+    let mut listing = KvListing::default();
     let mut rows = stmt.query(params![uid])?;
     while let Some(row) = rows.next()? {
-        let entry = read_kv_entry(row)?;
+        let entry = read_stored_kv(row)?;
         if let Some(tag) = filter_tag
             && !entry.tags.iter().any(|t| t == tag)
         {
             continue;
         }
-        out.push(entry);
+        match open_kv(entry) {
+            Ok(entry) => listing.entries.push(entry),
+            Err(unreadable) => listing.unreadable.push(unreadable),
+        }
     }
-    Ok(out)
+    Ok(listing)
+}
+
+/// The KV entries for the current user whose values can be read, optionally
+/// only those tagged `filter_tag`. A row whose value can't be decrypted is
+/// left out; [`kv_scan`] reports those.
+pub fn kv_list(filter_tag: Option<&str>) -> Result<Vec<KvEntry>> {
+    Ok(kv_scan(filter_tag)?.entries)
 }
 
 /// Delete a KV entry, scoped to current user.
@@ -258,15 +354,10 @@ pub fn kv_history(key: &str) -> Result<Vec<KvHistoryEntry>> {
     let mut rows = stmt.query(params![uid, key])?;
     while let Some(row) = rows.next()? {
         let value: String = row.get(1)?;
-        let decrypted = if is_encrypted(&value) {
-            decrypt(&value).unwrap_or(value)
-        } else {
-            value
-        };
         let tags_raw: String = row.get(2)?;
         out.push(KvHistoryEntry {
             version: row.get(0)?,
-            value: decrypted,
+            value: decrypt_stored(&value).map_err(|e| format!("{e:#}")),
             tags: parse_tags_json(&tags_raw),
             archived_at: row.get::<_, i64>(3)? as u64,
         });
@@ -305,32 +396,27 @@ pub fn kv_rollback(key: &str, target_version: i64) -> Result<()> {
 }
 
 /// Get all KV entries matching given keys or tags (for exec injection).
+///
+/// A value that can't be decrypted is an error, whether it was named or came
+/// with the tag: running the command without it would fail somewhere less
+/// obvious.
 pub fn kv_get_for_exec(keys: &[String], filter_tag: Option<&str>) -> Result<Vec<KvEntry>> {
-    let conn = open()?;
-    let uid = current_user_id().unwrap_or_default();
-
     if !keys.is_empty() {
-        // Fetch specific keys
-        let mut out = Vec::new();
-        for key in keys {
-            let entry = conn
-                .prepare(
-                    "SELECT id, key, value, tags, created_at, updated_at FROM kv_store \
-                     WHERE user_id = ?1 AND key = ?2",
-                )?
-                .query_row(params![uid, key], read_kv_entry)
-                .optional()?
-                .ok_or_else(|| anyhow!("Key '{}' not found", key))?;
-            out.push(entry);
-        }
-        Ok(out)
-    } else if let Some(tag) = filter_tag {
-        // Fetch by tag
-        kv_list(Some(tag))
-    } else {
-        // All secrets
-        kv_list(None)
+        let conn = open()?;
+        let uid = current_user_id().unwrap_or_default();
+        return keys
+            .iter()
+            .map(|key| {
+                kv_get_in(&conn, &uid, key)?.ok_or_else(|| anyhow!("Key '{}' not found", key))
+            })
+            .collect();
     }
+    // By tag, or every key.
+    let listing = kv_scan(filter_tag)?;
+    if !listing.unreadable.is_empty() {
+        return Err(kv_unreadable_error(&listing.unreadable));
+    }
+    Ok(listing.entries)
 }
 
 /// After a login transitions the account id (pre-login `''` -> the logged
@@ -406,8 +492,7 @@ fn migrate_kv_rows(
     // (`kv_set` runs `ensure_local_key` first). `fetch_encryption_key`
     // installs the account key as active *before* calling this migration,
     // so without re-keying here those rows would sit under a key nothing
-    // still holds, and `decrypt(...).unwrap_or(raw)` on the read path would
-    // silently return raw ciphertext forever instead of erroring.
+    // still holds, and every read of them would fail.
     let old_key = super::encryption::read_persisted_local_key(conn)?;
     let active_key =
         get_encryption_key().context("no active encryption key during login migration")?;

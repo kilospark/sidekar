@@ -94,6 +94,9 @@ async fn cmd_kv_get(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 struct KvListItemOut {
     key: String,
     tags: Vec<String>,
+    /// Why the value can't be decrypted, if it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unreadable: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -114,12 +117,21 @@ impl crate::output::CommandOutput for KvListOutput {
             writeln!(w, "{} keys:", self.items.len())?;
         }
         for e in &self.items {
-            if e.tags.is_empty() {
-                writeln!(w, "  {}", e.key)?;
+            let mark = if e.unreadable.is_some() {
+                "  (can't be decrypted)"
             } else {
-                writeln!(w, "  {}  [{}]", e.key, e.tags.join(","))?;
+                ""
+            };
+            if e.tags.is_empty() {
+                writeln!(w, "  {}{mark}", e.key)?;
+            } else {
+                writeln!(w, "  {}  [{}]{mark}", e.key, e.tags.join(","))?;
             }
         }
+        crate::output::write_unreadable_reasons(
+            w,
+            self.items.iter().filter_map(|e| e.unreadable.as_deref()),
+        )?;
         Ok(())
     }
 }
@@ -141,6 +153,7 @@ async fn cmd_kv_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             .map(|e| KvListItemOut {
                 key: e.key,
                 tags: e.tags,
+                unreadable: e.unreadable,
             })
             .collect(),
     };
@@ -196,9 +209,33 @@ async fn cmd_kv_tag(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 #[derive(serde::Serialize)]
 struct KvHistoryEntryOut {
     version: String,
-    value: String,
+    /// `None` when the value can't be decrypted; `unreadable` says why.
+    value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unreadable: Option<String>,
     tags: Vec<String>,
     age: Option<String>,
+}
+
+impl KvHistoryEntryOut {
+    fn new(
+        version: String,
+        value: Result<String, String>,
+        tags: Vec<String>,
+        age: Option<String>,
+    ) -> Self {
+        let (value, unreadable) = match value {
+            Ok(value) => (Some(value), None),
+            Err(reason) => (None, Some(reason)),
+        };
+        Self {
+            version,
+            value,
+            unreadable,
+            tags,
+            age,
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -222,9 +259,18 @@ impl crate::output::CommandOutput for KvHistoryOutput {
             } else {
                 format!(" [{}]", e.tags.join(","))
             };
+            let value = match (&e.value, &e.unreadable) {
+                (Some(value), _) => value.clone(),
+                (None, reason) => {
+                    format!(
+                        "(can't be decrypted: {})",
+                        reason.as_deref().unwrap_or_default()
+                    )
+                }
+            };
             match &e.age {
-                Some(age) => writeln!(w, "  {}  {}{}  ({})", e.version, e.value, tag_str, age)?,
-                None => writeln!(w, "  {}  {}{}", e.version, e.value, tag_str)?,
+                Some(age) => writeln!(w, "  {}  {}{}  ({})", e.version, value, tag_str, age)?,
+                None => writeln!(w, "  {}  {}{}", e.version, value, tag_str)?,
             }
         }
         Ok(())
@@ -241,13 +287,20 @@ async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut versions: Vec<KvHistoryEntryOut> = Vec::new();
 
     if !entries.is_empty() {
-        if let Ok(Some(current)) = crate::broker::kv_get(key) {
-            versions.push(KvHistoryEntryOut {
-                version: "current".to_string(),
-                value: current.value,
-                tags: current.tags,
-                age: None,
-            });
+        match crate::broker::kv_lookup(key)? {
+            Some(Ok(current)) => versions.push(KvHistoryEntryOut::new(
+                "current".to_string(),
+                Ok(current.value),
+                current.tags,
+                None,
+            )),
+            Some(Err(unreadable)) => versions.push(KvHistoryEntryOut::new(
+                "current".to_string(),
+                Err(unreadable.reason),
+                unreadable.tags,
+                None,
+            )),
+            None => {}
         }
         let now = crate::message::epoch_secs();
         for e in &entries {
@@ -261,12 +314,12 @@ async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             } else {
                 format!("{}d ago", ago / 86400)
             };
-            versions.push(KvHistoryEntryOut {
-                version: format!("v{}", e.version),
-                value: e.value.clone(),
-                tags: e.tags.clone(),
-                age: Some(age),
-            });
+            versions.push(KvHistoryEntryOut::new(
+                format!("v{}", e.version),
+                e.value.clone(),
+                e.tags.clone(),
+                Some(age),
+            ));
         }
     }
 

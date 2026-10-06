@@ -29,3 +29,13 @@ fn parse_rejects_unknown() {
 fn default_is_text() {
     assert_eq!(OutputFormat::default(), OutputFormat::Text);
 }
+
+#[test]
+fn unreadable_reasons_are_said_once_each() {
+    let mut out = Vec::new();
+    write_unreadable_reasons(&mut out, ["no key", "damaged", "no key"]).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "2 can't be decrypted: no key\n1 can't be decrypted: damaged\n"
+    );
+}

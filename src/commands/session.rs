@@ -927,13 +927,20 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
             cdp.close().await;
         }
         "list" => {
-            let all = crate::broker::kv_list(None)?;
-            let auth_entries: Vec<_> = all.iter().filter(|e| e.key.starts_with("auth:")).collect();
+            let listing = crate::broker::kv_scan(None)?;
+            let auth_entries: Vec<_> = listing
+                .entries
+                .iter()
+                .filter(|e| e.key.starts_with("auth:"))
+                .collect();
             #[derive(serde::Serialize)]
             struct AuthListEntry {
                 name: String,
                 username: String,
                 url: String,
+                /// Why the entry can't be decrypted, if it can't.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                unreadable: Option<String>,
             }
             #[derive(serde::Serialize)]
             struct AuthListOutput {
@@ -946,16 +953,22 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                         return Ok(());
                     }
                     for e in &self.entries {
-                        if e.url.is_empty() {
+                        if e.unreadable.is_some() {
+                            writeln!(w, "  {} — (can't be decrypted)", e.name)?;
+                        } else if e.url.is_empty() {
                             writeln!(w, "  {} — user: {}", e.name, e.username)?;
                         } else {
                             writeln!(w, "  {} — user: {} url: {}", e.name, e.username, e.url)?;
                         }
                     }
+                    crate::output::write_unreadable_reasons(
+                        w,
+                        self.entries.iter().filter_map(|e| e.unreadable.as_deref()),
+                    )?;
                     Ok(())
                 }
             }
-            let entries: Vec<_> = auth_entries
+            let mut entries: Vec<AuthListEntry> = auth_entries
                 .iter()
                 .map(|kv| {
                     let name = kv.key.strip_prefix("auth:").unwrap_or(&kv.key).to_string();
@@ -974,9 +987,19 @@ pub(super) async fn cmd_auth(ctx: &mut AppContext, args: &[String]) -> Result<()
                         name,
                         username: user,
                         url,
+                        unreadable: None,
                     }
                 })
                 .collect();
+            entries.extend(listing.unreadable.into_iter().filter_map(|u| {
+                Some(AuthListEntry {
+                    name: u.key.strip_prefix("auth:")?.to_string(),
+                    username: String::new(),
+                    url: String::new(),
+                    unreadable: Some(u.reason),
+                })
+            }));
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
             let output = AuthListOutput { entries };
             out!(ctx, "{}", crate::output::to_string(&output)?);
         }

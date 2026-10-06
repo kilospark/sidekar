@@ -290,13 +290,16 @@ pub fn credential_provider_display_label(wire_type: &str) -> String {
     }
 }
 
-/// List stored credentials as `(nickname, provider_label)` for display.
+/// List stored credentials as `(nickname, provider_label)` for display. One
+/// whose value can't be decrypted is still listed: using it then says why it
+/// fails.
 pub fn list_credentials() -> Vec<(String, String)> {
-    let entries = crate::broker::kv_list(None).unwrap_or_default();
-    entries
+    let listing = crate::broker::kv_scan(None).unwrap_or_default();
+    listing
+        .keys()
         .into_iter()
-        .filter_map(|e| {
-            let name = e.key.strip_prefix("oauth:")?;
+        .filter_map(|(key, _)| {
+            let name = key.strip_prefix("oauth:")?;
             let wire = resolve_provider_type_for_credential(name).unwrap_or("unknown");
             let label = credential_provider_display_label(wire);
             Some((name.to_string(), label))

@@ -119,5 +119,25 @@ impl CommandOutput for PlainOutput {
     }
 }
 
+/// End a listing whose lines can be marked "can't be decrypted" by saying
+/// why: one line per distinct reason, so a cause they share, like a key that
+/// isn't loaded, is said once rather than on every line.
+pub fn write_unreadable_reasons<'a>(
+    w: &mut dyn Write,
+    reasons: impl IntoIterator<Item = &'a str>,
+) -> io::Result<()> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for reason in reasons {
+        match counts.iter_mut().find(|(r, _)| *r == reason) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((reason, 1)),
+        }
+    }
+    for (reason, n) in counts {
+        writeln!(w, "{n} can't be decrypted: {reason}")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;
