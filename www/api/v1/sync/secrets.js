@@ -1,3 +1,4 @@
+import { ObjectId } from "mongodb";
 import { getDb } from "../../_db.js";
 import { getUserOrDevice } from "../../_auth.js";
 import { ensureSecretSyncIndexes } from "../../_sync-indexes.js";
@@ -13,12 +14,20 @@ const indexesReady = getDb()
   });
 
 const MAX_BATCH = 500;
-const VALID_KINDS = new Set(["kv", "totp", "hotp"]);
+const VALID_KINDS = new Set(["kv", "totp", "hotp", "memory"]);
+
+// A page of a paged pull. A Vercel function's response body is capped at
+// 4.5 MB; once memory archives synced, an account's whole history could pass
+// that, and the single-response pull failed for every kind. Clients that send
+// `paged=1` read their history a page at a time; older clients still get the
+// single response.
+const PAGE_BYTES = 3_000_000;
+const PAGE_RECORDS = 1000;
 
 function validateRecord(record) {
   if (!record || typeof record !== "object") return "record must be an object";
   const { kind, record_id, ciphertext, version } = record;
-  if (!VALID_KINDS.has(kind)) return "kind must be 'kv', 'totp' or 'hotp'";
+  if (!VALID_KINDS.has(kind)) return "kind must be 'kv', 'totp', 'hotp' or 'memory'";
   if (typeof record_id !== "string" || !record_id) return "record_id required";
   if (typeof ciphertext !== "string") return "ciphertext must be a string";
   if (!Number.isInteger(version) || version < 1) return "version must be a positive integer";
@@ -80,6 +89,60 @@ async function upsertRecord(collection, userId, record) {
   }
 }
 
+function toRecord(d) {
+  return {
+    kind: d.kind,
+    record_id: d.record_id,
+    ciphertext: d.ciphertext,
+    version: d.version,
+    device_id: d.device_id || "",
+    deleted: !!d.deleted,
+  };
+}
+
+/**
+ * One page of the records changed after `since`, oldest first, ordered by
+ * (updated_at, _id) so a page boundary never splits records that share a
+ * timestamp. `afterId` resumes after the last record of the previous page.
+ */
+async function pagedPull(collection, userId, since, afterId) {
+  // Taken before the read: a record written while this page is read is either
+  // in it or newer than the watermark the client keeps.
+  const serverTime = Date.now();
+  const sinceDate = new Date(since);
+  const filter = { user_id: userId };
+  if (afterId && ObjectId.isValid(afterId)) {
+    filter.$or = [
+      { updated_at: { $gt: sinceDate } },
+      { updated_at: sinceDate, _id: { $gt: new ObjectId(afterId) } },
+    ];
+  } else {
+    filter.updated_at = { $gt: sinceDate };
+  }
+
+  const records = [];
+  let bytes = 0;
+  let last = null;
+  let hasMore = false;
+  for await (const d of collection.find(filter).sort({ updated_at: 1, _id: 1 })) {
+    const size = (d.ciphertext || "").length;
+    if (records.length > 0 && (records.length >= PAGE_RECORDS || bytes + size > PAGE_BYTES)) {
+      hasMore = true;
+      break;
+    }
+    records.push(toRecord(d));
+    bytes += size;
+    last = d;
+  }
+
+  return {
+    records,
+    server_time: serverTime,
+    has_more: hasMore,
+    next: hasMore ? { since: last.updated_at.getTime(), after_id: last._id.toString() } : null,
+  };
+}
+
 export default async function handler(req, res) {
   const user = await getUserOrDevice(req);
   if (!user) {
@@ -114,21 +177,16 @@ export default async function handler(req, res) {
 
   if (req.method === "GET") {
     const since = Number(req.query.since) || 0;
+    if (req.query.paged) {
+      return res.json(await pagedPull(collection, user.user_id, since, req.query.after_id));
+    }
+
     const docs = await collection
       .find({ user_id: user.user_id, updated_at: { $gt: new Date(since) } })
       .sort({ updated_at: 1 })
       .toArray();
 
-    const records = docs.map((d) => ({
-      kind: d.kind,
-      record_id: d.record_id,
-      ciphertext: d.ciphertext,
-      version: d.version,
-      device_id: d.device_id || "",
-      deleted: !!d.deleted,
-    }));
-
-    return res.json({ records, server_time: Date.now() });
+    return res.json({ records: docs.map(toRecord), server_time: Date.now() });
   }
 
   res.status(405).end();

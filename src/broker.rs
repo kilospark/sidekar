@@ -189,17 +189,97 @@ fn ensure_added_columns(conn: &Connection) -> Result<()> {
     ] {
         ensure_column(conn, table, column, ddl)?;
     }
+    ensure_memory_sync_columns(conn)?;
     Ok(())
 }
 
 pub(crate) fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
-    let present: bool = conn.query_row(
-        &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = ?1"),
-        params![column],
+    ensure_column_added(conn, table, column, ddl).map(|_| ())
+}
+
+/// [`ensure_column`], saying whether this call is the one that added it.
+///
+/// Two processes opening the database for the first time after an upgrade
+/// (the daemon and a CLI command, say) can both find the column missing, and
+/// the loser's ALTER fails with "duplicate column name". That means the column
+/// is there, not that anything went wrong, so only the winner reports adding it.
+fn ensure_column_added(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<bool> {
+    let has_column = |conn: &Connection| -> Result<bool> {
+        Ok(conn.query_row(
+            &format!("SELECT COUNT(*) > 0 FROM pragma_table_info('{table}') WHERE name = ?1"),
+            params![column],
+            |r| r.get(0),
+        )?)
+    };
+    if has_column(conn)? {
+        return Ok(false);
+    }
+    match conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"), []) {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if has_column(conn)? {
+                Ok(false)
+            } else {
+                Err(e.into())
+            }
+        }
+    }
+}
+
+/// Columns, uids and indexes for cross-device memory sync (#31).
+///
+/// `uid` names a memory across devices; the autoincrement `id` means nothing
+/// outside this database. `sync_owner` is the account a memory uploads to; see
+/// `memory::sync` for why memory needs one when kv and totp do not.
+fn ensure_memory_sync_columns(conn: &Connection) -> Result<()> {
+    let added = ensure_column_added(conn, "memory_events", "uid", "TEXT")?;
+    ensure_column(conn, "memory_events", "sync_owner", "TEXT")?;
+
+    // Every memory needs a uid to sync. New rows get one when inserted; this
+    // fills rows from before the column existed, and any insert that left it
+    // out. This runs on every open, so a read guards the write: an open with
+    // nothing to fill, which is nearly all of them, never takes the write lock.
+    let missing: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memory_events WHERE uid IS NULL)",
+        [],
         |r| r.get(0),
     )?;
-    if !present {
-        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"), [])?;
+    if missing {
+        conn.execute(
+            "UPDATE memory_events SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL",
+            [],
+        )?;
+    }
+
+    for (name, ddl) in [
+        (
+            "idx_memory_events_uid",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_events_uid ON memory_events(uid)",
+        ),
+        (
+            "idx_memory_events_sync_owner",
+            "CREATE INDEX IF NOT EXISTS idx_memory_events_sync_owner ON memory_events(sync_owner)",
+        ),
+    ] {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            conn.execute(ddl, [])?;
+        }
+    }
+
+    if added {
+        // A device that pulled on a build without memory sync dropped the
+        // memory records it couldn't read, but still moved its pull watermark
+        // past them, so after upgrading it would never fetch them. Rewind the
+        // watermark once, on the open that adds the column. The next pull then
+        // re-reads the account's history (records already held merge as
+        // no-ops), and because the account looks un-synced, the initial upload
+        // runs again and seeds this device's existing memories.
+        conn.execute("UPDATE sync_meta SET last_pull_at = 0", [])?;
     }
     Ok(())
 }

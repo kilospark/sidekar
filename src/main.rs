@@ -301,7 +301,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         "device"
             | "config"
             | "prompt"
-            | "memory"
+            // Not `memory`: it syncs across devices (#31), so its commands
+            // pull, the same as kv and totp.
             | "tasks"
             | "compact"
             | "pack"

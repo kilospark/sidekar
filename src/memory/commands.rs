@@ -2,7 +2,7 @@ use super::*;
 
 pub async fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
-    match sub {
+    let result = match sub {
         "write" => cmd_memory_write(ctx, &args[1..]),
         "archive" => cmd_memory_archive(ctx, &args[1..]),
         "search" => cmd_memory_search(ctx, &args[1..]),
@@ -19,7 +19,18 @@ pub async fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "import" => super::import::cmd_memory_import(ctx, &args[1..]).await,
         "" => cmd_memory_list(ctx, args),
         other => bail!("Unknown memory subcommand: {other}"),
+    };
+    // Upload what changed to the account's other devices: best-effort and in
+    // the background, the same as after a kv or totp change.
+    if result.is_ok()
+        && matches!(
+            sub,
+            "write" | "archive" | "rate" | "delete" | "compact" | "patterns" | "import"
+        )
+    {
+        crate::commands::push_sync_after_mutation();
     }
+    result
 }
 
 /// Compact brief appended to the REPL system prompt. Returns only real user-authored
@@ -121,6 +132,12 @@ fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The largest archive accepted. An archive syncs to the account's other
+/// devices as a single record, and a sync request is capped at 4.5 MB (a
+/// Vercel function's body limit) after encryption and base64. 1 MiB of text,
+/// already far beyond any session summary, stays well inside that.
+const MAX_ARCHIVE_BYTES: usize = 1 << 20;
+
 /// `sidekar memory archive` — store a session summary/transcript an agent hands
 /// us (via `--file=PATH` or stdin) as a durable, searchable record. This is the
 /// provider-independent way to tell any agent "send a copy of this session to
@@ -162,6 +179,13 @@ fn cmd_memory_archive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         bail!(
             "No content to archive. Pipe a summary in, or pass --file=<path>:\n  \
              echo \"<summary>\" | sidekar memory archive --title=\"login debug\""
+        );
+    }
+    if body.len() > MAX_ARCHIVE_BYTES {
+        bail!(
+            "This archive is {} bytes; the limit is {MAX_ARCHIVE_BYTES} (1 MiB). Archive a \
+             summary of the session rather than the raw transcript, or split it into parts.",
+            body.len()
         );
     }
 
@@ -408,7 +432,7 @@ fn cmd_memory_delete(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         .optional()?
         .context(format!("No memory with id [{}].", id))?;
 
-    conn.execute("DELETE FROM memory_events WHERE id = ?1", [id])?;
+    super::sync::delete_memory(&conn, id)?;
 
     let msg = format!("Deleted memory [{}]: {}", id, summary);
     out!(
@@ -630,6 +654,7 @@ fn cmd_memory_rate(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             params![id, serde_json::to_string(&merged)?],
         )?;
     }
+    super::sync::touch(&conn, id)?;
     out!(
         ctx,
         "Rated memory [{}]: {:.2} -> {:.2}",

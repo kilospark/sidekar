@@ -161,6 +161,48 @@ struct PushResponse {
     results: Vec<PushResultItem>,
 }
 
+/// The most records one push request carries; matches the server's
+/// `MAX_BATCH`.
+const MAX_BATCH_RECORDS: usize = 500;
+
+/// The most ciphertext one push request carries. A Vercel function's request
+/// body is capped at 4.5 MB. kv and totp records are tiny, so a count limit
+/// was enough until memory archives made a single record able to reach about
+/// 1.4 MB. This keeps each request under the cap, with room for the JSON
+/// around it.
+const MAX_BATCH_BYTES: usize = 3_000_000;
+
+/// The most ciphertext a single record may carry. A larger one can never be
+/// pushed, so it is held back, and left dirty, rather than failing every batch
+/// it rides in.
+const MAX_RECORD_BYTES: usize = MAX_BATCH_BYTES;
+
+/// Split `records` into push requests of at most `max_records` records and
+/// `max_bytes` of ciphertext each. A record larger than `max_bytes` goes in a
+/// request of its own.
+fn push_batches(
+    records: &[PushRecord],
+    max_records: usize,
+    max_bytes: usize,
+) -> Vec<&[PushRecord]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (i, record) in records.iter().enumerate() {
+        let size = record.ciphertext.len();
+        if i > start && (i - start == max_records || bytes + size > max_bytes) {
+            batches.push(&records[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += size;
+    }
+    if start < records.len() {
+        batches.push(&records[start..]);
+    }
+    batches
+}
+
 fn read_kv_plain(conn: &Connection, uid: &str, key: &str) -> Result<Option<(String, Vec<String>)>> {
     let row: Option<(String, String)> = conn
         .prepare("SELECT value, tags FROM kv_store WHERE user_id = ?1 AND key = ?2")?
@@ -246,6 +288,11 @@ fn build_ciphertext(
             }
             super::encryption::sync_encrypt(key, &payload.to_string())
         }
+        "memory" => {
+            let payload = crate::memory::sync_payload(conn, record_id)?
+                .ok_or_else(|| anyhow!("memory record '{record_id}' vanished before push"))?;
+            super::encryption::sync_encrypt(key, &payload)
+        }
         other => bail!("unknown sync kind: {other}"),
     }
 }
@@ -309,6 +356,18 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
                 }
             }
         };
+        if ciphertext.len() > MAX_RECORD_BYTES {
+            try_log_event(
+                "warn",
+                "sync",
+                "a dirty record is too large to push",
+                Some(&format!(
+                    "kind={kind} record_id={record_id}: {} bytes of ciphertext, limit {MAX_RECORD_BYTES}",
+                    ciphertext.len()
+                )),
+            );
+            continue;
+        }
         records.push(PushRecord {
             kind: kind.clone(),
             record_id: record_id.clone(),
@@ -329,8 +388,19 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
         .timeout(budget)
         .build()?;
 
+    // Memory and secrets never share a request. A server from before memory
+    // sync rejects a whole batch over one record of a kind it doesn't know,
+    // and kv and totp must not wait on that: mid-release, the new binary can
+    // be downloaded a few minutes before the server that accepts memory is
+    // live.
+    let (memory, secrets): (Vec<PushRecord>, Vec<PushRecord>) =
+        records.into_iter().partition(|r| r.kind == "memory");
+    let batches = push_batches(&secrets, MAX_BATCH_RECORDS, MAX_BATCH_BYTES)
+        .into_iter()
+        .chain(push_batches(&memory, MAX_BATCH_RECORDS, MAX_BATCH_BYTES));
+
     let mut summary = PushSummary::default();
-    for batch in records.chunks(500) {
+    for batch in batches {
         let version_by_id: HashMap<(String, String), i64> = batch
             .iter()
             .map(|r| ((r.kind.clone(), r.record_id.clone()), r.version))
@@ -395,7 +465,24 @@ struct RemoteRecord {
 struct PullResponse {
     records: Vec<RemoteRecord>,
     server_time: i64,
+    /// Set by a server that pages (`paged=1`) when more records follow.
+    #[serde(default)]
+    has_more: bool,
+    #[serde(default)]
+    next: Option<PullCursor>,
 }
+
+/// Where the next page starts: after the record with this `updated_at`
+/// (server milliseconds) and id.
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+struct PullCursor {
+    since: i64,
+    after_id: String,
+}
+
+/// A guard against a server that never stops paging, not a size limit: at 3 MB
+/// a page it is far beyond any real account.
+const MAX_PULL_PAGES: usize = 10_000;
 
 fn local_sync_state(
     conn: &Connection,
@@ -465,6 +552,7 @@ fn delete_local_record(conn: &Connection, uid: &str, kind: &str, record_id: &str
                 params![uid, service, account, kind],
             )?;
         }
+        "memory" => crate::memory::delete_synced(conn, uid, record_id)?,
         other => bail!("unknown sync kind: {other}"),
     }
     Ok(())
@@ -564,6 +652,7 @@ fn apply_remote_record(
                         let (service, account) = split_totp_record_id(record_id)?;
                         apply_totp_remote(conn, uid, kind, &service, &account, &plaintext)?;
                     }
+                    "memory" => crate::memory::apply_synced(conn, uid, record_id, &plaintext)?,
                     other => bail!("unknown sync kind: {other}"),
                 }
             }
@@ -616,54 +705,91 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
     let client = crate::http_client::client_builder()
         .timeout(Duration::from_secs(10))
         .build()?;
-    let resp = client
-        .get(format!("{base}/api/v1/sync/secrets?since={since}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .context("failed to pull sync records")?;
-    if !resp.status().is_success() {
-        bail!("pull failed: HTTP {}", resp.status());
-    }
-    let body: PullResponse = resp.json().await.context("failed to parse pull response")?;
-
+    // Memory archives made a whole-history pull able to pass the 4.5 MB cap on
+    // a Vercel function's response, which failed the pull for every kind. So
+    // ask for pages and follow them. A server that doesn't page ignores
+    // `paged` and answers in one response with no `has_more`, which ends the
+    // loop after the first page.
     let mut summary = PullSummary::default();
-    for rec in &body.records {
-        match apply_remote_record(
-            &conn,
-            uid,
-            &rec.kind,
-            &rec.record_id,
-            &rec.ciphertext,
-            rec.version,
-            rec.deleted,
-        ) {
-            Ok(applied) => {
-                if applied {
-                    summary.applied += 1;
-                } else {
+    let mut cursor: Option<PullCursor> = None;
+    let mut server_time = since;
+    let mut finished = false;
+    for _ in 0..MAX_PULL_PAGES {
+        let url = match &cursor {
+            None => format!("{base}/api/v1/sync/secrets?paged=1&since={since}"),
+            Some(c) => format!(
+                "{base}/api/v1/sync/secrets?paged=1&since={}&after_id={}",
+                c.since, c.after_id
+            ),
+        };
+        let resp = client
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .context("failed to pull sync records")?;
+        if !resp.status().is_success() {
+            bail!("pull failed: HTTP {}", resp.status());
+        }
+        let body: PullResponse = resp.json().await.context("failed to parse pull response")?;
+
+        for rec in &body.records {
+            match apply_remote_record(
+                &conn,
+                uid,
+                &rec.kind,
+                &rec.record_id,
+                &rec.ciphertext,
+                rec.version,
+                rec.deleted,
+            ) {
+                Ok(applied) => {
+                    if applied {
+                        summary.applied += 1;
+                    } else {
+                        summary.skipped += 1;
+                    }
+                }
+                Err(e) => {
+                    try_log_event(
+                        "warn",
+                        "sync",
+                        "skipping undecryptable sync record",
+                        Some(&format!(
+                            "kind={} record_id={}: {:#}",
+                            rec.kind, rec.record_id, e
+                        )),
+                    );
                     summary.skipped += 1;
                 }
             }
-            Err(e) => {
-                try_log_event(
-                    "warn",
-                    "sync",
-                    "skipping undecryptable sync record",
-                    Some(&format!(
-                        "kind={} record_id={}: {:#}",
-                        rec.kind, rec.record_id, e
-                    )),
-                );
-                summary.skipped += 1;
+        }
+
+        // The last page's server time becomes the watermark. Pages come in
+        // `updated_at` order, so a record written mid-pull either lands on a
+        // later page or is newer than the watermark.
+        server_time = body.server_time;
+        match body.next.filter(|_| body.has_more) {
+            None => {
+                finished = true;
+                break;
+            }
+            Some(next) => {
+                if cursor.as_ref() == Some(&next) {
+                    bail!("sync pull cursor did not advance");
+                }
+                cursor = Some(next);
             }
         }
+    }
+    if !finished {
+        bail!("sync pull did not finish within {MAX_PULL_PAGES} pages");
     }
 
     conn.execute(
         "INSERT INTO sync_meta (user_id, last_pull_at) VALUES (?1, ?2) \
          ON CONFLICT(user_id) DO UPDATE SET last_pull_at = ?2",
-        params![uid, body.server_time],
+        params![uid, server_time],
     )?;
 
     Ok(summary)
@@ -719,6 +845,13 @@ fn seed_sync_state(conn: &Connection, uid: &str) -> Result<()> {
     for (service, account, kind) in totp_pairs {
         let record_id = totp_record_id(&service, &account);
         seed_one(conn, uid, super::totp::sync_kind(&kind), &record_id, now)?;
+    }
+
+    // Memory: rows written while nobody was logged in are claimed for this
+    // account, then every memory the account owns is seeded.
+    crate::memory::claim_unowned(conn, uid)?;
+    for mem_uid in crate::memory::owned_uids(conn, uid)? {
+        seed_one(conn, uid, "memory", &mem_uid, now)?;
     }
 
     Ok(())
@@ -867,10 +1000,34 @@ pub async fn sync_bootstrap(uid: &str) -> Result<()> {
         }
     }
     pull_merge(uid).await?;
-    if claim_push_retry(uid, crate::message::epoch_secs() as i64).unwrap_or(false) {
+    // Memories written since the last sync while nobody was logged in have no
+    // owner yet; they upload to this account. Once claimed they push straight
+    // away rather than waiting out the retry backoff.
+    let claimed = claim_unowned_memories(uid).unwrap_or_else(|e| {
+        try_log_event(
+            "warn",
+            "sync",
+            "could not claim unowned memories",
+            Some(&format!("{e:#}")),
+        );
+        0
+    });
+    if claimed > 0 || claim_push_retry(uid, crate::message::epoch_secs() as i64).unwrap_or(false)
+    {
         crate::commands::spawn_detached_sync_push();
     }
     Ok(())
+}
+
+/// Claim every unowned memory for `uid` and mark it for upload. Returns how
+/// many were claimed.
+fn claim_unowned_memories(uid: &str) -> Result<usize> {
+    let conn = open()?;
+    let claimed = crate::memory::claim_unowned(&conn, uid)?;
+    for mem_uid in &claimed {
+        mark_dirty(&conn, uid, "memory", mem_uid, false)?;
+    }
+    Ok(claimed.len())
 }
 
 // ---------------------------------------------------------------------------

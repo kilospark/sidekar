@@ -311,7 +311,13 @@ sidekar memory <write|archive|search|list|delete|context|compact|hygiene|pattern
 
   memory write stores one distilled learning (deduped). memory archive stores a
   whole session summary verbatim (never deduped) so any agent can \"send a copy
-  of this session to sidekar\" — pipe it in or pass --file. Both are searchable.
+  of this session to sidekar\" — pipe it in or pass --file (up to 1 MiB). Both
+  are searchable.
+
+  Logged in (sidekar device login), memory syncs across your devices, encrypted
+  with your account key like kv and totp. A memory uploads only to the account
+  it was written under; memories written while logged out upload to the next
+  account you log in with. `sidekar kv sync-status` shows what is pending.
 
   Examples:
     sidekar memory write convention \"Use Readability.js before scraping article text\"

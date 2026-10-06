@@ -150,9 +150,11 @@ mod commands;
 mod hygiene;
 pub(crate) mod import;
 mod store;
+mod sync;
 mod util;
 
 pub(crate) use candidates::process_journal_candidates;
+pub(crate) use sync::{apply_synced, claim_unowned, delete_synced, owned_uids, sync_payload};
 pub use commands::cmd_memory;
 pub use commands::startup_brief;
 use hygiene::*;

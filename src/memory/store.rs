@@ -43,6 +43,12 @@ pub(super) fn write_memory_event(
              WHERE id = ?1",
             params![existing_id, new_confidence, now],
         )?;
+        // Re-learning a memory raises its confidence until it tops out. Only a
+        // real change is worth uploading; otherwise every `memory import` re-run
+        // would re-upload each row it had already imported.
+        if (new_confidence - old_confidence).abs() > f64::EPSILON {
+            super::sync::touch(&conn, existing_id)?;
+        }
         return Ok(format!("Deduplicated existing memory [{}].", existing_id));
     }
 
@@ -67,6 +73,9 @@ pub(super) fn write_memory_event(
                  WHERE id = ?1",
                 params![candidate.row.id, new_confidence, now],
             )?;
+            if (new_confidence - old_confidence).abs() > f64::EPSILON {
+                super::sync::touch(&conn, candidate.row.id)?;
+            }
             return Ok(format!(
                 "Deduplicated existing memory [{}].",
                 candidate.row.id
@@ -89,8 +98,8 @@ pub(super) fn write_memory_event(
         "INSERT INTO memory_events (
             project, event_type, scope, summary, summary_norm, confidence, tags_json,
             supersedes_json, trigger_kind, source_kind, last_reinforced_at,
-            reinforcement_count, summary_hash, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?11, ?11)",
+            reinforcement_count, summary_hash, created_at, updated_at, uid
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?11, ?11, ?13)",
         params![
             project,
             event_type,
@@ -103,7 +112,8 @@ pub(super) fn write_memory_event(
             trigger_kind,
             source_kind,
             now,
-            hash
+            hash,
+            super::sync::new_uid()
         ],
     )?;
     let event_id = conn.last_insert_rowid();
@@ -115,6 +125,7 @@ pub(super) fn write_memory_event(
         )?;
     }
 
+    super::sync::touch(&conn, event_id)?;
     Ok(format!("Stored memory [{}].", event_id))
 }
 
@@ -147,11 +158,23 @@ pub(super) fn write_session_archive(
         "INSERT INTO memory_events (
             project, event_type, scope, summary, summary_norm, confidence, tags_json,
             supersedes_json, trigger_kind, source_kind, last_reinforced_at,
-            reinforcement_count, summary_hash, created_at, updated_at
-         ) VALUES (?1, 'session', ?2, ?3, ?4, 1.0, ?5, '[]', 'archive', ?6, NULL, 0, ?7, ?8, ?8)",
-        params![project, scope, summary, summary_norm, tags_json, source_kind, hash, now],
+            reinforcement_count, summary_hash, created_at, updated_at, uid
+         ) VALUES (?1, 'session', ?2, ?3, ?4, 1.0, ?5, '[]', 'archive', ?6, NULL, 0, ?7, ?8, ?8, ?9)",
+        params![
+            project,
+            scope,
+            summary,
+            summary_norm,
+            tags_json,
+            source_kind,
+            hash,
+            now,
+            super::sync::new_uid()
+        ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    super::sync::touch(&conn, id)?;
+    Ok(id)
 }
 
 pub(super) fn search_events(
@@ -534,6 +557,7 @@ pub(super) fn mark_memory_resolved(memory_id: i64) -> Result<()> {
          WHERE id = ?1",
         params![memory_id, serde_json::to_string(&tags)?, now],
     )?;
+    super::sync::touch(&conn, memory_id)?;
     Ok(())
 }
 
