@@ -223,6 +223,9 @@ pub struct SidekarBusState {
     /// True when identity was borrowed from another process (CLI recovering PTY state).
     /// Drop will NOT unregister — the owning process manages the registration.
     pub borrowed: bool,
+    /// True when registered for a single `sidekar bus` command run from a
+    /// shell. Its requests outlive it, for `sidekar bus await` to collect.
+    pub one_shot: bool,
 }
 
 impl SidekarBusState {
@@ -232,6 +235,7 @@ impl SidekarBusState {
             pane_unique_id: None,
             inherited_pty: false,
             borrowed: false,
+            one_shot: false,
         }
     }
 
@@ -265,7 +269,11 @@ impl SidekarBusState {
 
     pub fn unregister(&mut self) {
         if let Some(name) = self.name().map(String::from) {
-            let _ = broker::unregister_agent(&name);
+            let _ = if self.one_shot {
+                broker::unregister_one_shot(&name)
+            } else {
+                broker::unregister_agent(&name)
+            };
         }
 
         self.identity = None;
@@ -316,6 +324,7 @@ impl SidekarBusState {
 
         self.identity = Some(identity);
         self.pane_unique_id = Some(pane_unique);
+        self.one_shot = true;
 
         if let (Some(name), Some(nick), Some(_channel)) = (self.name(), self.nick(), self.channel())
         {

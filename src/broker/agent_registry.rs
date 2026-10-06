@@ -118,6 +118,20 @@ pub fn touch_agent(name: &str) -> Result<()> {
 }
 
 pub fn unregister_agent(name: &str) -> Result<()> {
+    unregister(name, true)
+}
+
+/// Unregister a one-shot `sidekar bus` command run from a shell, keeping the
+/// requests it sent. It registered only to send them, and their answers are
+/// collected afterwards by id with `sidekar bus await`, which needs the
+/// request to still be there. Deleting them, as for an agent that leaves,
+/// made that impossible: the command is gone before anyone can answer. The
+/// hourly sweep removes them like any other.
+pub fn unregister_one_shot(name: &str) -> Result<()> {
+    unregister(name, false)
+}
+
+fn unregister(name: &str, delete_requests: bool) -> Result<()> {
     let conn = open()?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM agents WHERE name = ?1", params![name])?;
@@ -131,10 +145,12 @@ pub fn unregister_agent(name: &str) -> Result<()> {
         "UPDATE bus_queue SET claimed_at = 0 WHERE recipient = ?1 AND delivered_at = 0",
         params![name],
     )?;
-    tx.execute(
-        "DELETE FROM outbound_requests WHERE sender_name = ?1",
-        params![name],
-    )?;
+    if delete_requests {
+        tx.execute(
+            "DELETE FROM outbound_requests WHERE sender_name = ?1",
+            params![name],
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }

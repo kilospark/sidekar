@@ -356,3 +356,96 @@ fn whoever_stops_an_agent_is_not_told_it_left() {
         assert_eq!(status, broker::OUTBOUND_STATUS_CANCELLED);
     });
 }
+
+// ---- a sender that has already left ----------------------------------------
+
+/// `sidekar bus <cmd>` from a plain shell: registered for one command only.
+fn one_shot_shell(name: &str, pane: &str) -> crate::bus::SidekarBusState {
+    let mut shell = crate::bus::SidekarBusState::new();
+    shell.identity = Some(register(name, pane));
+    shell.pane_unique_id = Some(pane.into());
+    shell.one_shot = true;
+    shell
+}
+
+/// The agent `helper`, answering from its own pane.
+fn helper_pane(id: AgentId) -> crate::bus::SidekarBusState {
+    let mut state = crate::bus::SidekarBusState::new();
+    state.identity = Some(id);
+    state.borrowed = true;
+    state
+}
+
+#[test]
+fn a_request_from_a_shell_is_answered_and_awaited_after_the_shell_command_exits() {
+    // REVIEWER=$(sidekar spawn codex)
+    // ID=$(sidekar bus send "$REVIEWER" "..." --id-only)
+    // sidekar bus await "$ID"
+    with_test_db(|| {
+        let helper = register("helper", "pty-2");
+        let mut ctx = crate::AppContext::new().unwrap();
+        let mut shell = one_shot_shell("cli-proj-1", "cli-1");
+        let id = crate::bus::cmd_send_message(
+            &mut shell,
+            &mut ctx,
+            "helper",
+            "review the diff",
+            "request",
+            None,
+            false,
+        )
+        .unwrap();
+        drop(shell); // the command exits, and its name leaves the bus
+
+        // The footer tells helper to answer the name that has now gone.
+        let mut helper_state = helper_pane(helper);
+        crate::bus::cmd_send_message(
+            &mut helper_state,
+            &mut ctx,
+            "cli-proj-1",
+            "looks fine",
+            "response",
+            Some(&id),
+            false,
+        )
+        .expect("an answer to a departed asker is kept, not refused");
+        assert!(
+            ctx.drain_output()
+                .contains(&format!("sidekar bus await {id}"))
+        );
+
+        assert!(
+            broker::outbound_request(&id).unwrap().is_some(),
+            "`bus await` refuses an id it has no request for"
+        );
+        match block_on(await_reply(&id, None, SHORT)).unwrap() {
+            AwaitOutcome::Answered(r) => assert_eq!(r.message, "looks fine"),
+            other => panic!("expected the kept answer, got {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn an_unknown_name_is_still_refused_when_the_request_was_not_theirs() {
+    with_test_db(|| {
+        let helper = register("helper", "pty-2");
+        let asker = register("asker", "cli-1");
+        let req = request(&asker, "helper");
+
+        // Answering the right request, but to a name that never asked it.
+        let mut ctx = crate::AppContext::new().unwrap();
+        let mut helper_state = helper_pane(helper);
+        let err = crate::bus::cmd_send_message(
+            &mut helper_state,
+            &mut ctx,
+            "nobody",
+            "looks fine",
+            "response",
+            Some(&req.id),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Unknown agent"), "{err}");
+        assert!(first_reply(&req.id).unwrap().is_none());
+    });
+}

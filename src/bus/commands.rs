@@ -94,6 +94,15 @@ fn cleanup_tracking(msg_id: &str) {
     let _ = broker::delete_outbound_request(msg_id);
 }
 
+/// Whether request `msg_id` was sent by `requester`, named as the reply
+/// footer names it: by bus name, or by nick on the same channel.
+fn request_sent_by(msg_id: &str, requester: &str) -> bool {
+    if let Ok(Some(request)) = broker::pending_message(msg_id) {
+        return request.from.name == requester || request.from.nick.as_deref() == Some(requester);
+    }
+    matches!(broker::outbound_request(msg_id), Ok(Some(r)) if r.sender_name == requester)
+}
+
 fn resolve_reply(envelope: &Envelope, reply_to: Option<&str>) {
     if let Some(reply_id) = reply_to {
         let _ = broker::record_reply(reply_id, envelope);
@@ -270,13 +279,31 @@ fn send_directed_envelope(
         );
     }
 
-    let delivery = find_delivery_target(&envelope.to, &channel).ok_or_else(|| {
+    let Some(delivery) = find_delivery_target(&envelope.to, &channel) else {
+        // An answer to someone who has left: typically a one-shot `bus send`
+        // from a shell, gone as soon as it sent. The answer is kept against
+        // the request for `sidekar bus await <id>`, which is how that sender
+        // collects it. Not queued under the name, which the next agent to
+        // take it would receive.
+        if let Some(id) = reply_to.filter(|id| request_sent_by(id, &envelope.to)) {
+            broker::record_reply(id, &envelope)
+                .with_context(|| format!("failed to keep the answer to request {id}"))?;
+            if let Some(self_name) = state.name() {
+                cleanup_completed_exchange(self_name, &envelope.to, state.channel(), Some(id));
+            }
+            out!(
+                ctx,
+                "{} has left the bus. The answer to request {id} is kept for `sidekar bus await {id}`.",
+                envelope.to
+            );
+            return Ok(());
+        }
         let available = available_agents_str(&channel, &envelope.from.name);
-        anyhow!(
+        bail!(
             "Unknown agent \"{}\". Available on this channel: {available}. Use `sidekar bus who` to see all agents.",
             envelope.to
-        )
-    })?;
+        );
+    };
 
     let full_message = format_delivered_bus_body(&envelope, &channel, &delivery.route);
 
