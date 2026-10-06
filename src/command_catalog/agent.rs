@@ -75,7 +75,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "spawn",
-        "<agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] | list",
+        "<agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo] [--relay] | list",
         "Launch another agent on the bus and print its name",
         CommandGroup::Agent,
         false,

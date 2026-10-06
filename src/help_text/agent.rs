@@ -112,7 +112,7 @@ sidekar session list
         "spawn" => {
             "\
 sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo]
-              [--wait] [--timeout <duration>]
+              [--relay|--no-relay] [--proxy|--no-proxy] [--wait] [--timeout <duration>]
 sidekar spawn list
 
   Launch another agent, wait for it to reach the bus, and print its bus name.
@@ -134,6 +134,11 @@ sidekar spawn list
   ignores a Ctrl-C meant for your terminal. Unattended mode is on by default —
   each CLI spells that differently and spawn picks the right flag, so never pass
   the agent's own permission flags yourself. Use --no-yolo to leave approvals on.
+
+  --relay opens a relay tunnel for the agent, so it can be watched from
+  sidekar.dev; --no-relay keeps it closed whatever the relay setting says.
+  --proxy and --no-proxy turn the API proxy on and off the same way. All four
+  reach the agent's wrapper as they would with `sidekar <agent>`.
 
   Two agents have no unattended mode: opencode (its --auto is only on
   `opencode run`) and pi. Spawn warns and launches them anyway; they will stop

@@ -22,7 +22,8 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             bail!(
                 "Usage: sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] \
                  [--model <model>] [--window] [--app <name>] [--log <path>] \
-                 [--no-yolo] [--wait] [--timeout <duration>]\n       \
+                 [--no-yolo] [--relay|--no-relay] [--proxy|--no-proxy] [--wait] \
+                 [--timeout <duration>]\n       \
                  sidekar spawn list"
             )
         }
@@ -36,6 +37,8 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut cwd: Option<String> = None;
     let mut model: Option<String> = None;
     let mut yolo = true;
+    let mut relay: Option<bool> = None;
+    let mut proxy: Option<bool> = None;
     let mut timeout: Option<Duration> = None;
     let mut wait = false;
     let mut window = false;
@@ -57,6 +60,10 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         match a {
             "--no-yolo" => yolo = false,
             "--yolo" | "--auto-approve" => yolo = true,
+            "--relay" => relay = Some(true),
+            "--no-relay" => relay = Some(false),
+            "--proxy" => proxy = Some(true),
+            "--no-proxy" => proxy = Some(false),
             "--window" => window = true,
             "--wait" => wait = true,
             _ if a.starts_with("--app") => {
@@ -151,17 +158,8 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let exe = std::env::current_exe()?;
 
     // The argv is the same either way; only who holds the terminal differs.
-    let mut argv: Vec<String> = vec![agent.clone()];
-    if yolo {
-        argv.push("--yolo".into());
-    }
-    if let Some(ref m) = model {
-        argv.push("--model".into());
-        argv.push(m.clone());
-    }
-    if let Some(ref t) = task {
-        argv.push(t.clone());
-    }
+    let wrapper = WrapperFlags { yolo, relay, proxy };
+    let argv = child_argv(&agent, &wrapper, model.as_deref(), task.as_deref());
 
     let pid = if window {
         let chosen = match app.as_deref() {
@@ -321,6 +319,43 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 /// The task, plus how to answer it.
+/// The flags `sidekar <agent>` takes for itself, which spawn passes on.
+struct WrapperFlags {
+    yolo: bool,
+    /// `--relay` or `--no-relay`; neither leaves it to the `relay` setting.
+    relay: Option<bool>,
+    /// `--proxy` or `--no-proxy`; neither leaves it to SIDEKAR_PROXY.
+    proxy: Option<bool>,
+}
+
+/// The arguments spawn runs `sidekar` with: the agent, the wrapper's flags,
+/// then the model and task for the agent.
+fn child_argv(
+    agent: &str,
+    wrapper: &WrapperFlags,
+    model: Option<&str>,
+    task: Option<&str>,
+) -> Vec<String> {
+    let mut argv = vec![agent.to_string()];
+    if wrapper.yolo {
+        argv.push("--yolo".into());
+    }
+    if let Some(on) = wrapper.relay {
+        argv.push(if on { "--relay" } else { "--no-relay" }.into());
+    }
+    if let Some(on) = wrapper.proxy {
+        argv.push(if on { "--proxy" } else { "--no-proxy" }.into());
+    }
+    if let Some(m) = model {
+        argv.push("--model".into());
+        argv.push(m.to_string());
+    }
+    if let Some(t) = task {
+        argv.push(t.to_string());
+    }
+    argv
+}
+
 fn with_reply_footer(task: &str, reply_to: &str, msg_id: &str) -> String {
     format!(
         "{task}\n\nWhen you have the answer, send it back with:\n\

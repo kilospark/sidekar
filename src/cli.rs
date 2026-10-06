@@ -145,19 +145,19 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--proxy{RST}             {DIM}Enable MITM proxy for sidekar <agent>{RST}"
+        "  {GREEN}--proxy{RST}             {DIM}Enable MITM proxy for sidekar <agent> or spawn{RST}"
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--no-proxy{RST}          {DIM}Disable MITM proxy for sidekar <agent>{RST}"
+        "  {GREEN}--no-proxy{RST}          {DIM}Disable MITM proxy for sidekar <agent> or spawn{RST}"
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--relay{RST}             {DIM}Enable relay tunnel for sidekar <agent>{RST}"
+        "  {GREEN}--relay{RST}             {DIM}Enable relay tunnel for sidekar <agent> or spawn{RST}"
     );
     let _ = writeln!(
         out,
-        "  {GREEN}--no-relay{RST}          {DIM}Disable relay tunnel for sidekar <agent>{RST}"
+        "  {GREEN}--no-relay{RST}          {DIM}Disable relay tunnel for sidekar <agent> or spawn{RST}"
     );
     let _ = writeln!(
         out,

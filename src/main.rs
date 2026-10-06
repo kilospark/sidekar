@@ -286,9 +286,21 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         return sidekar::pty::run_agent(&command, &args, relay_override, proxy_override, yolo)
             .await;
     }
-    if relay_override.is_some() || proxy_override.is_some() || yolo {
+    if command == "spawn" {
+        // Spawn runs `sidekar <agent>`, so the wrapper's flags are its flags
+        // too. They were taken off argv above; put them back for it to pass on.
+        let flags = [
+            relay_override.map(|on| if on { "--relay" } else { "--no-relay" }),
+            proxy_override.map(|on| if on { "--proxy" } else { "--no-proxy" }),
+            yolo.then_some("--yolo"),
+        ];
+        for flag in flags.into_iter().flatten().rev() {
+            args.insert(0, flag.to_string());
+        }
+    } else if relay_override.is_some() || proxy_override.is_some() || yolo {
         bail!(
-            "--relay/--no-relay/--proxy/--no-proxy/--yolo only apply to: sidekar <agent> [args...]"
+            "--relay/--no-relay/--proxy/--no-proxy/--yolo only apply to: sidekar <agent> [args...] \
+             and sidekar spawn"
         );
     }
     if !sidekar::is_known_command(&command) {
