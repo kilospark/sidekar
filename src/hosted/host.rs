@@ -717,12 +717,24 @@ struct EngineProcess {
 fn spawn_engine(
     program: &str,
     args: &[String],
-    cwd: &str,
+    meta: &Meta,
     proxy_env: Option<&HashMap<String, String>>,
     log: &std::fs::File,
 ) -> Result<EngineProcess> {
     let mut command = tokio::process::Command::new(program);
-    command.args(args).current_dir(cwd);
+    command.args(args).current_dir(&meta.cwd);
+    // The engine's own `sidekar` calls speak as this session, as a PTY
+    // agent's speak as its wrapper. The host inherited whoever started it:
+    // an agent's bus name, its PTY marker, and spawn's markers for the
+    // host's own registration. An engine that kept those would talk on the
+    // bus as the agent that spawned it.
+    command
+        .env("SIDEKAR_AGENT_NAME", &meta.name)
+        .env("SIDEKAR_CHANNEL", &meta.cwd)
+        .env_remove("SIDEKAR_PTY")
+        .env_remove("SIDEKAR_NICK")
+        .env_remove("SIDEKAR_SPAWNED_BY")
+        .env_remove("SIDEKAR_SPAWN_TOKEN");
     if let Some(env) = proxy_env {
         for var in super::PROXY_ENV_VARS {
             match env.get(*var) {
@@ -783,7 +795,7 @@ pub async fn run(name: &str) -> Result<()> {
     } else {
         HashMap::new()
     };
-    let mut engine_proc = spawn_engine(&program, &args, &meta.cwd, None, &log)?;
+    let mut engine_proc = spawn_engine(&program, &args, &meta, None, &log)?;
     meta.engine_pid = engine_proc.child.id().map_or(0, |p| p as i32);
 
     let listener = UnixListener::bind(&socket)
@@ -898,7 +910,7 @@ pub async fn run(name: &str) -> Result<()> {
         write_lines(&mut engine_proc.stdin, &outbox[..split], closing.is_some()).await;
         if let Some((_, env)) = restart {
             let (program, args) = state.engine_command(meta.model.clone());
-            match spawn_engine(&program, &args, &meta.cwd, Some(&env), &log) {
+            match spawn_engine(&program, &args, &meta, Some(&env), &log) {
                 Ok(fresh) => {
                     // Nothing is running on the old engine: it is stopped
                     // only at the start of a turn, before the turn's input.

@@ -139,42 +139,74 @@ async fn start(args: &[String]) -> Result<()> {
         .first()
         .context("start which engine? e.g. `sidekar session start claude`")?
         .clone();
-    super::engine::for_name(&engine)?;
     let approvals = match a.value("approvals") {
         Some(v) => ApprovalPolicy::parse(v)?,
         None => ApprovalPolicy::Ask,
     };
-    let cwd = match a.value("cwd") {
-        Some(d) => std::fs::canonicalize(d)
+    let name = start_session(
+        NewSession {
+            engine,
+            cwd: a.value("cwd").map(String::from),
+            model: a.value("model").map(String::from),
+            approvals,
+            refresh_env: a.has("refresh-env"),
+            name: a.value("name").map(String::from),
+        },
+        &[],
+    )
+    .await?;
+    println!("{name}");
+    Ok(())
+}
+
+/// A session to start.
+pub(crate) struct NewSession {
+    pub engine: String,
+    /// Where the engine runs; the caller's directory when `None`.
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub approvals: ApprovalPolicy,
+    pub refresh_env: bool,
+    /// The session's name, which is also its bus name; `<engine>-<n>` when
+    /// `None`.
+    pub name: Option<String>,
+}
+
+/// Start a session and wait until it takes turns. `host_env` is set for its
+/// host alone. Returns the session's name.
+pub(crate) async fn start_session(new: NewSession, host_env: &[(&str, &str)]) -> Result<String> {
+    super::engine::for_name(&new.engine)?;
+    let cwd = match new.cwd {
+        Some(d) => std::fs::canonicalize(&d)
             .with_context(|| format!("--cwd {d}"))?
             .to_string_lossy()
             .to_string(),
         None => std::env::current_dir()?.to_string_lossy().to_string(),
     };
     super::ensure_private_dir(&super::root())?;
-    let name = match a.value("name") {
+    let name = match new.name {
         Some(n) => {
             if n.is_empty() || n.contains('/') || n.starts_with('.') {
                 bail!("--name {n:?}: use letters, digits and dashes");
             }
-            if let Ok(m) = super::read_meta(n)
+            if let Ok(m) = super::read_meta(&n)
                 && m.status != Status::Ended
                 && super::host_alive(&m)
             {
                 bail!("a session named {n} is already running");
             }
-            n.to_string()
+            n
         }
-        None => super::free_name(&engine),
+        None => super::free_name(&new.engine),
     };
     super::ensure_private_dir(&super::dir_of(&name))?;
     let meta = Meta {
         name: name.clone(),
-        engine,
+        engine: new.engine,
         cwd,
-        model: a.value("model").map(String::from),
-        approvals,
-        refresh_env: a.has("refresh-env"),
+        model: new.model,
+        approvals: new.approvals,
+        refresh_env: new.refresh_env,
         status: Status::Starting,
         pid: 0,
         engine_pid: 0,
@@ -184,9 +216,26 @@ async fn start(args: &[String]) -> Result<()> {
         exit_code: None,
     };
     super::write_meta(&meta)?;
-    launch_host(&name).await?;
-    println!("{name}");
-    Ok(())
+    launch_host(&name, host_env).await?;
+    Ok(name)
+}
+
+/// Send `text` to session `name` as a turn, queued behind any it is running.
+/// Returns the turn's id.
+pub(crate) async fn send_turn(name: &str, text: String) -> Result<String> {
+    let mut client = Client::connect(name).await?;
+    let reply = client
+        .call(&Request::Send {
+            text,
+            busy: Busy::Queue,
+            follow: false,
+            env: None,
+        })
+        .await?;
+    if !reply.ok {
+        return Err(refused(reply));
+    }
+    Ok(reply.turn_id.unwrap_or_default())
 }
 
 /// Start a new host for a session whose host is gone, continuing the
@@ -210,12 +259,12 @@ async fn resume(args: &[String]) -> Result<()> {
     meta.ended_at = None;
     meta.exit_code = None;
     super::write_meta(&meta)?;
-    launch_host(name).await?;
+    launch_host(name, &[]).await?;
     println!("{name}");
     Ok(())
 }
 
-async fn launch_host(name: &str) -> Result<()> {
+async fn launch_host(name: &str, env: &[(&str, &str)]) -> Result<()> {
     let exe = std::env::current_exe()?;
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -223,6 +272,7 @@ async fn launch_host(name: &str) -> Result<()> {
         .open(super::log_path(name))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["session", "__host", name])
+        .envs(env.iter().copied())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(log));

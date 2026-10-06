@@ -21,7 +21,7 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         None | Some("-h") | Some("--help") => {
             bail!(
                 "Usage: sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] \
-                 [--model <model>] [--window] [--app <name>] [--log <path>] \
+                 [--model <model>] [--window] [--app <name>] [--log <path>] [--pty] \
                  [--no-yolo] [--relay|--no-relay] [--proxy|--no-proxy] [--wait] \
                  [--timeout <duration>]\n       \
                  sidekar spawn list"
@@ -42,6 +42,7 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let mut timeout: Option<Duration> = None;
     let mut wait = false;
     let mut window = false;
+    let mut pty = false;
     let mut app: Option<String> = None;
     let mut log: Option<String> = None;
 
@@ -65,6 +66,7 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             "--proxy" => proxy = Some(true),
             "--no-proxy" => proxy = Some(false),
             "--window" => window = true,
+            "--pty" => pty = true,
             "--wait" => wait = true,
             _ if a.starts_with("--app") => {
                 app = Some(take_value("--app")?);
@@ -98,7 +100,25 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     if !crate::pty::is_agent_command(&agent) {
         bail!("'{agent}' is not a PTY-wrappable agent; see `sidekar help` for the supported list");
     }
-    if yolo && !crate::agent_cli::supports_yolo(&agent) {
+    // Where the engine has one, the agent runs as a session (#17): a turn in
+    // and a result out, over the engine's own protocol. Nothing is typed into
+    // a screen, so there is no reply footer to skip and no idle to guess. The
+    // terminal wrapper stays for what needs a terminal: a window to watch, a
+    // transcript of the screen, a relay tunnel, the API proxy, or --pty.
+    let as_session = !pty
+        && !window
+        && log.is_none()
+        && relay != Some(true)
+        && proxy != Some(true)
+        && crate::hosted::engine::for_name(&agent).is_ok();
+    if as_session && let Some(ref n) = nick {
+        // A session's nick is its bus name, and registering a name takes it
+        // from whoever has it.
+        if crate::broker::find_agent(n, None)?.is_some() {
+            bail!("'{n}' is already on the bus (`sidekar bus who`); pick another --nick");
+        }
+    }
+    if !as_session && yolo && !crate::agent_cli::supports_yolo(&agent) {
         // Spawned agents have nobody to answer a prompt, so an agent that always
         // asks will sit there until it is stopped. Say so at launch rather than
         // letting it look like a hang.
@@ -150,7 +170,11 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         }
         _ => None,
     };
-    if let Some(ref req) = request {
+    // A session answers each request itself, so only the terminal needs the
+    // footer.
+    if let Some(ref req) = request
+        && !as_session
+    {
         task = Some(with_reply_footer(&req.message, &req.from.name, &req.id));
     }
     let spawner = spawner.unwrap_or_else(|| "cli".to_string());
@@ -170,7 +194,35 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let wrapper = WrapperFlags { yolo, relay, proxy };
     let argv = child_argv(&agent, &wrapper, model.as_deref(), task.as_deref());
 
-    let pid = if window {
+    let where_to_look = if as_session {
+        let approvals = if yolo {
+            crate::hosted::ApprovalPolicy::Allow
+        } else {
+            crate::hosted::ApprovalPolicy::Ask
+        };
+        let name = crate::hosted::cli::start_session(
+            crate::hosted::cli::NewSession {
+                engine: agent.clone(),
+                cwd: cwd.clone(),
+                model: model.clone(),
+                approvals,
+                refresh_env: false,
+                name: nick.clone(),
+            },
+            &[
+                ("SIDEKAR_SPAWNED_BY", spawner.as_str()),
+                ("SIDEKAR_SPAWN_TOKEN", token.as_str()),
+            ],
+        )
+        .await?;
+        if !yolo {
+            eprintln!(
+                "[sidekar] approvals are on: `sidekar session events {name}` shows what is \
+                 waiting, `sidekar session approve {name} <id> allow|deny` answers it."
+            );
+        }
+        format!("session {name}; stop it with `sidekar session stop {name}`")
+    } else if window {
         let chosen = match app.as_deref() {
             Some(name) => terminal::TerminalApp::parse(name).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -219,7 +271,7 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             line = terminal::with_transcript(&line, l);
         }
         terminal::open_window(chosen, &line)?;
-        None
+        "the window that just opened".to_string()
     } else {
         let mut child = Command::new(&exe);
         child.args(&argv);
@@ -258,7 +310,8 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 Ok(())
             });
         }
-        Some(child.spawn()?.id())
+        let pid = child.spawn()?.id();
+        format!("pid {pid}; stop it with `kill {pid}`")
     };
 
     let started = Instant::now();
@@ -267,10 +320,6 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             break found;
         }
         if started.elapsed() >= register_timeout {
-            let where_to_look = match pid {
-                Some(p) => format!("pid {p}; stop it with `kill {p}`"),
-                None => "the window that just opened".to_string(),
-            };
             bail!(
                 "{agent} was launched ({where_to_look}) but never registered on the bus \
                  within {}s. Check it with `sidekar bus who`.",
@@ -282,11 +331,32 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let name = found.id.name.clone();
 
     let Some(mut request) = request else {
+        if as_session && let Some(task) = task {
+            // From a plain shell there is nobody on the bus for an answer to
+            // go to, so the task goes in as a turn and `session wait` collects
+            // its result.
+            let turn = crate::hosted::cli::send_turn(&name, task).await?;
+            eprintln!(
+                "[sidekar] task sent as turn {turn}; `sidekar session wait {name}` waits for \
+                 the answer."
+            );
+        }
         out!(ctx, "{name}");
         return Ok(());
     };
     request.to = name.clone();
     track_request(&request, &found);
+    if as_session {
+        // The session takes its bus mail as turns and answers each request
+        // itself, recorded against the request's id.
+        crate::broker::enqueue_bus_message(
+            &name,
+            &request.from.name,
+            &request.message,
+            true,
+            Some(&request),
+        )?;
+    }
 
     if !wait {
         eprintln!(
@@ -327,7 +397,6 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The task, plus how to answer it.
 /// Spawned agents still running, as `(name, spawner)`. A registration whose
 /// process has died is not one: it waits for the sweep, and must not hold a
 /// place under the limit until then.
@@ -424,6 +493,7 @@ fn child_argv(
     argv
 }
 
+/// The task, plus how to answer it.
 fn with_reply_footer(task: &str, reply_to: &str, msg_id: &str) -> String {
     format!(
         "{task}\n\nWhen you have the answer, send it back with:\n\

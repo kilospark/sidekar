@@ -50,8 +50,9 @@ allow|deny`, then `sidekar session wait "$S"`), 5 when the turn failed, 2 when
 the session ended, 1 on timeout. Start with `--approvals allow` or `deny` for
 unattended work. `sidekar help session` has the rest.
 
-For an agent a human should be able to watch in a terminal, spawn it instead
-and get its answer back in the same command:
+`spawn` starts an agent and gets its answer back in the same command. For
+`claude` it starts a session like the one above, so the same structured turns
+carry the task and the answer. Other CLIs run in their own terminal UI:
 
 ```bash
 FINDINGS=$(sidekar spawn codex "Review the diff on this branch." --wait --timeout 20m)
@@ -81,10 +82,11 @@ Without `--wait`, `spawn` prints the new agent's bus name and nothing else, so i
 picks the unattended-mode flag for that particular CLI — every one of them
 spells it differently — and runs the agent detached so it survives your turn.
 
-Headless by default. Add `--window` to open it in a real terminal window the
-human can watch and type into; it reuses whichever terminal app you are running
-under, and `--app` overrides that. Add `--log <path>` for a transcript either
-way.
+Headless by default. Add `--window` to open the agent's terminal UI in a real
+window the human can watch and type into; it reuses whichever terminal app you
+are running under, and `--app` overrides that. Add `--log <path>` for a
+transcript of that terminal. Either one, `--relay`, `--proxy` or `--pty` runs
+even `claude` in its terminal UI rather than as a session.
 
 Delegate work that is genuinely separable: an independent review, a second
 opinion, a long build, a task in another repo via `--cwd`. A spawned agent is

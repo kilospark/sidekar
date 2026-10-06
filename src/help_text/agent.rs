@@ -112,10 +112,18 @@ sidekar session list
         "spawn" => {
             "\
 sidekar spawn <agent> [task] [--nick <name>] [--cwd <dir>] [--model <m>] [--no-yolo]
-              [--relay|--no-relay] [--proxy|--no-proxy] [--wait] [--timeout <duration>]
+              [--pty] [--relay|--no-relay] [--proxy|--no-proxy] [--wait] [--timeout <duration>]
 sidekar spawn list
 
   Launch another agent, wait for it to reach the bus, and print its bus name.
+
+  claude runs as a session (`sidekar help session`): turns go in and results
+  come out over its structured protocol, and a request is answered by the turn
+  it starts, with no reply command for the agent to run. --nick names the
+  session. Without a bus address to answer to (a plain shell, no --wait), the
+  task goes in as a turn instead, and `sidekar session wait <name>` returns its
+  result. Other agents, and claude given --window, --log, --relay, --proxy or
+  --pty, run in their terminal UI under the PTY wrapper.
 
   A task is sent as a tracked request: it carries a request id and the exact
   `bus send ... --reply-to=<id>` command to answer with, and the id is printed
@@ -133,7 +141,8 @@ sidekar spawn list
   The agent runs detached with its own session, so it outlives this command and
   ignores a Ctrl-C meant for your terminal. Unattended mode is on by default —
   each CLI spells that differently and spawn picks the right flag, so never pass
-  the agent's own permission flags yourself. Use --no-yolo to leave approvals on.
+  the agent's own permission flags yourself. Use --no-yolo to leave approvals on;
+  a session then waits for `sidekar session approve`.
 
   At most 5 spawned agents run per spawner and 15 in all; spawn refuses past
   that and names the ones running. `sidekar config set max_spawned_per_agent`
