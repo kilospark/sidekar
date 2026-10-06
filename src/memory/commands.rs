@@ -4,6 +4,7 @@ pub async fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     match sub {
         "write" => cmd_memory_write(ctx, &args[1..]),
+        "archive" => cmd_memory_archive(ctx, &args[1..]),
         "search" => cmd_memory_search(ctx, &args[1..]),
         "list" => cmd_memory_list(ctx, &args[1..]),
         "delete" => cmd_memory_delete(ctx, &args[1..]),
@@ -116,6 +117,62 @@ fn cmd_memory_write(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         ctx,
         "{}",
         crate::output::to_string(&crate::output::PlainOutput::new(message))?
+    );
+    Ok(())
+}
+
+/// `sidekar memory archive` — store a session summary/transcript an agent hands
+/// us (via `--file=PATH` or stdin) as a durable, searchable record. This is the
+/// provider-independent way to tell any agent "send a copy of this session to
+/// sidekar": the agent pipes a summary in, and it survives beyond that
+/// provider's chat history.
+fn cmd_memory_archive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let scope = crate::scope::parse_stored_scope(
+        &extract_optional_value(args, "--scope=")
+            .unwrap_or_else(|| crate::scope::PROJECT_SCOPE.to_string()),
+    )?
+    .to_string();
+    let project = if scope == crate::scope::PROJECT_SCOPE {
+        extract_optional_value(args, "--project=")
+            .unwrap_or_else(|| crate::scope::resolve_project_name(None))
+    } else {
+        "global".to_string()
+    };
+    let title = extract_optional_value(args, "--title=");
+    let source = extract_optional_value(args, "--from=").unwrap_or_else(|| "agent".to_string());
+    let tags = parse_csv_list(extract_optional_value(args, "--tags="));
+
+    // Content from --file=PATH, otherwise stdin (the common `… | sidekar memory
+    // archive` pipe).
+    let body = match extract_optional_value(args, "--file=") {
+        Some(path) => {
+            std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?
+        }
+        None => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("reading session content from stdin")?;
+            buf
+        }
+    };
+    let body = body.trim();
+    if body.is_empty() {
+        bail!(
+            "No content to archive. Pipe a summary in, or pass --file=<path>:\n  \
+             echo \"<summary>\" | sidekar memory archive --title=\"login debug\""
+        );
+    }
+
+    let id = super::store::write_session_archive(&project, &scope, title.as_deref(), body, &source, &tags)?;
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(format!(
+            "Archived session [{id}] ({} chars, {scope} scope). Find it with: sidekar memory search <terms>",
+            body.len()
+        )))?
     );
     Ok(())
 }

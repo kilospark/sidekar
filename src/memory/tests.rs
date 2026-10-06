@@ -54,6 +54,65 @@ fn search_normalizes_punctuation_for_fts() -> Result<()> {
 }
 
 #[test]
+fn session_archives_are_verbatim_and_never_deduped() -> Result<()> {
+    with_test_home(|| {
+        // write_memory_event would merge two identical rows; archives must not.
+        let a = write_session_archive(
+            "alpha",
+            "project",
+            Some("Login debug"),
+            "fixed the remembered-device MFA cookie",
+            "muse",
+            &[],
+        )?;
+        let b = write_session_archive(
+            "alpha",
+            "project",
+            Some("Login debug"),
+            "fixed the remembered-device MFA cookie",
+            "muse",
+            &[],
+        )?;
+        assert_ne!(a, b, "identical archives are distinct rows, not merged");
+        Ok(())
+    })
+}
+
+#[test]
+fn a_session_archive_is_searchable_by_body_and_title() -> Result<()> {
+    with_test_home(|| {
+        write_session_archive(
+            "alpha",
+            "project",
+            Some("Readability pipeline"),
+            "we switched to the mozilla parser for articles",
+            "grok",
+            &["research".to_string()],
+        )?;
+        let by_body = search_events(
+            "mozilla parser",
+            crate::scope::ScopeView::Project,
+            Some("alpha"),
+            None,
+            5,
+        )?;
+        assert_eq!(by_body.len(), 1, "found by a body term");
+        assert_eq!(by_body[0].row.event_type, "session");
+
+        // The title leads the stored text, so it is indexed too.
+        let by_title = search_events(
+            "Readability pipeline",
+            crate::scope::ScopeView::Project,
+            Some("alpha"),
+            None,
+            5,
+        )?;
+        assert_eq!(by_title.len(), 1, "found by a title term");
+        Ok(())
+    })
+}
+
+#[test]
 fn detect_patterns_promotes_global_memory() -> Result<()> {
     with_test_home(|| {
         write_memory_event(

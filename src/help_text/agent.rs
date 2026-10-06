@@ -288,37 +288,42 @@ sidekar monitor <start|stop|status> [tab_id|all]
         }
         "memory" => {
             "\
-sidekar memory <write|search|context|observe|sessions|compact|hygiene|patterns|rate|detail|history|import> ...
+sidekar memory <write|archive|search|list|delete|context|compact|hygiene|patterns|rate|detail|usage|candidates|import> ...
 
   Local SQLite-backed memory for Sidekar agent sessions.
   Replaces hosted memory/hook flows with in-binary storage and retrieval.
 
   Subcommands:
     write <type> <summary>                     Store a durable memory (project by default)
+    archive [--file=P | -] [--title=T]         Archive a session summary/transcript an agent hands you
     search <query>                             Search memories in current project scope by default
+    list                                       List recent memories by scope/type
+    delete <id>                                Delete a memory by id
     context                                    Show a scoped startup memory brief
-    observe <tool> <summary>                   Append a raw observation
-    sessions                                   List recent memory session summaries
     compact                                    Synthesize related project memories
     hygiene [--project=P]                      Audit: find duplicates, stale, low-confidence, short entries
     patterns                                   Promote repeated cross-project patterns
     rate <id> <helpful|wrong|outdated>         Adjust confidence on a memory
     detail <id>                                Show the full memory record
-    history <id>                               Show the memory change history
+    usage <id>                                 Show where a memory has been used
+    candidates                                 Review journal-extracted memory candidates
     import [--source=<list>] [--dry-run]       Import memories from ~/.claude, ~/.codex, etc.
+
+  memory write stores one distilled learning (deduped). memory archive stores a
+  whole session summary verbatim (never deduped) so any agent can \"send a copy
+  of this session to sidekar\" — pipe it in or pass --file. Both are searchable.
 
   Examples:
     sidekar memory write convention \"Use Readability.js before scraping article text\"
     sidekar memory write convention \"Use Readability.js\" --scope=global
+    echo \"<session summary>\" | sidekar memory archive --title=\"login debug\" --from=muse
+    sidekar memory archive --file=summary.md --tags=auth,mfa
     sidekar memory search readability
     sidekar memory search readability --scope=all
     sidekar memory context
     sidekar memory compact
-    sidekar memory hygiene
     sidekar memory rate 12 helpful
     sidekar memory detail 12
-    sidekar memory import --dry-run
-    sidekar memory import --source=manifests --yes
     sidekar memory import --source=codex --since=14d --max-sessions=10"
         }
         "journal" => {

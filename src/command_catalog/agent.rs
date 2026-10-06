@@ -120,7 +120,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "memory",
-        "<write|search|context|observe|sessions|compact|patterns|rate|detail|history|import> ...",
+        "<write|archive|search|list|delete|context|compact|patterns|rate|detail|usage|import> ...",
         "Local agent memory on SQLite",
         CommandGroup::Agent,
         false,

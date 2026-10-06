@@ -118,6 +118,42 @@ pub(super) fn write_memory_event(
     Ok(format!("Stored memory [{}].", event_id))
 }
 
+/// Store a session summary/transcript an agent handed us as a durable,
+/// FTS-searchable record. Unlike [`write_memory_event`], archives are verbatim:
+/// no dedup, no supersede, confidence pinned at 1.0 — two similar session
+/// summaries must never be merged into one. Stored under the reserved
+/// `session` event type, which the compact startup brief does not surface (it
+/// allowlists the six authored types), while `memory search` still finds it.
+pub(super) fn write_session_archive(
+    project: &str,
+    scope: &str,
+    title: Option<&str>,
+    body: &str,
+    source_kind: &str,
+    user_tags: &[String],
+) -> Result<i64> {
+    let conn = crate::broker::open_db()?;
+    let now = now_epoch_ms();
+    // A title, if given, leads the stored text so FTS indexes it alongside the
+    // body.
+    let summary = match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("{t}\n\n{body}"),
+        None => body.to_string(),
+    };
+    let summary_norm = normalize_summary(&summary);
+    let hash = summary_hash(&summary);
+    let tags_json = serde_json::to_string(&merge_tags(user_tags, &auto_tag(&summary)))?;
+    conn.execute(
+        "INSERT INTO memory_events (
+            project, event_type, scope, summary, summary_norm, confidence, tags_json,
+            supersedes_json, trigger_kind, source_kind, last_reinforced_at,
+            reinforcement_count, summary_hash, created_at, updated_at
+         ) VALUES (?1, 'session', ?2, ?3, ?4, 1.0, ?5, '[]', 'archive', ?6, NULL, 0, ?7, ?8, ?8)",
+        params![project, scope, summary, summary_norm, tags_json, source_kind, hash, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
 pub(super) fn search_events(
     query: &str,
     scope_view: crate::scope::ScopeView,
