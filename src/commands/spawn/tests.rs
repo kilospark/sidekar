@@ -1,5 +1,60 @@
 use super::*;
 
+fn running(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(name, by)| (name.to_string(), by.to_string()))
+        .collect()
+}
+
+#[test]
+fn a_spawner_at_its_limit_is_refused_and_told_what_is_running() {
+    let up = running(&[
+        ("codex-a", "lead"),
+        ("codex-b", "lead"),
+        ("gemini-c", "other"),
+    ]);
+    let refusal = spawn_limit_refusal(&up, "lead", 2, 15).expect("lead is at 2");
+    assert!(
+        refusal.contains("lead already has 2 spawned agents running"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("codex-a, codex-b"), "{refusal}");
+    assert!(
+        !refusal.contains("gemini-c"),
+        "only lead's own are named: {refusal}"
+    );
+    assert!(refusal.contains("sidekar stop <name>"), "{refusal}");
+    assert!(
+        refusal.contains("sidekar config set max_spawned_per_agent"),
+        "{refusal}"
+    );
+
+    assert_eq!(
+        spawn_limit_refusal(&up, "other", 2, 15),
+        None,
+        "other has one"
+    );
+}
+
+#[test]
+fn the_overall_limit_counts_every_spawner() {
+    let up = running(&[("a", "x"), ("b", "y"), ("c", "z")]);
+    let refusal = spawn_limit_refusal(&up, "w", 5, 3).expect("3 running, limit 3");
+    assert!(
+        refusal.contains("3 spawned agents are already running"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("max_spawned is 3"), "{refusal}");
+    assert_eq!(spawn_limit_refusal(&up, "w", 5, 4), None);
+}
+
+#[test]
+fn a_limit_of_zero_is_no_limit() {
+    let up = running(&[("a", "x"), ("b", "x")]);
+    assert_eq!(spawn_limit_refusal(&up, "x", 0, 0), None);
+}
+
 #[test]
 fn the_wrapper_flags_reach_the_spawned_agent() {
     let wrapper = WrapperFlags {

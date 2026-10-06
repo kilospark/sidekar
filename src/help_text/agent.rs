@@ -135,6 +135,10 @@ sidekar spawn list
   each CLI spells that differently and spawn picks the right flag, so never pass
   the agent's own permission flags yourself. Use --no-yolo to leave approvals on.
 
+  At most 5 spawned agents run per spawner and 15 in all; spawn refuses past
+  that and names the ones running. `sidekar config set max_spawned_per_agent`
+  and `max_spawned` change the limits (0 means none).
+
   --relay opens a relay tunnel for the agent, so it can be watched from
   sidekar.dev; --no-relay keeps it closed whatever the relay setting says.
   --proxy and --no-proxy turn the API proxy on and off the same way. All four

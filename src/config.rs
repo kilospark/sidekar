@@ -81,6 +81,20 @@ pub static CONFIG_KEYS: &[ConfigKey] = &[
         description: "Maximum cron jobs",
     },
     ConfigKey {
+        // Low enough to stop an agent stuck in a loop around `spawn` before
+        // it has started a crowd of CLIs, each with its own model usage.
+        key: "max_spawned_per_agent",
+        kind: ConfigKind::Int,
+        default: "5",
+        description: "Most agents one agent or shell can have spawned and running at once (0: no limit)",
+    },
+    ConfigKey {
+        key: "max_spawned",
+        kind: ConfigKind::Int,
+        default: "15",
+        description: "Most spawned agents running at once, whoever spawned them (0: no limit)",
+    },
+    ConfigKey {
         // Persistent default for the background journaling subsystem.
         // CLI --journal/--no-journal, SIDEKAR_JOURNAL env var, and the
         // /journal slash command all override this at process / session
@@ -285,7 +299,7 @@ fn get_bool(key: &str) -> bool {
     v == "true" || v == "1"
 }
 
-fn get_usize(key: &str) -> usize {
+pub(crate) fn get_usize(key: &str) -> usize {
     config_get(key).parse().unwrap_or_else(|_| {
         find_key(key)
             .map(|k| k.default.parse().unwrap_or(0))

@@ -155,6 +155,15 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     }
     let spawner = spawner.unwrap_or_else(|| "cli".to_string());
 
+    if let Some(refusal) = spawn_limit_refusal(
+        &running_spawned()?,
+        &spawner,
+        crate::config::get_usize("max_spawned_per_agent"),
+        crate::config::get_usize("max_spawned"),
+    ) {
+        bail!("{refusal}");
+    }
+
     let exe = std::env::current_exe()?;
 
     // The argv is the same either way; only who holds the terminal differs.
@@ -319,6 +328,65 @@ pub async fn cmd_spawn(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 /// The task, plus how to answer it.
+/// Spawned agents still running, as `(name, spawner)`. A registration whose
+/// process has died is not one: it waits for the sweep, and must not hold a
+/// place under the limit until then.
+fn running_spawned() -> Result<Vec<(String, String)>> {
+    Ok(crate::broker::spawned_agents()?
+        .into_iter()
+        .filter(|(agent, _)| {
+            agent
+                .id
+                .pane
+                .as_deref()
+                .and_then(crate::bus::presence::pid_of_pane)
+                .is_some_and(crate::bus::presence::process_alive)
+        })
+        .map(|(agent, spawner)| (agent.id.name, spawner))
+        .collect())
+}
+
+/// Why `spawner` may not spawn another agent while `running` are up, if it
+/// may not. A limit of 0 is no limit.
+fn spawn_limit_refusal(
+    running: &[(String, String)],
+    spawner: &str,
+    per_spawner: usize,
+    total: usize,
+) -> Option<String> {
+    let mine: Vec<&str> = running
+        .iter()
+        .filter(|(_, by)| by == spawner)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let (what, key, limit, names) = if per_spawner > 0 && mine.len() >= per_spawner {
+        (
+            format!(
+                "{spawner} already has {} spawned agents running",
+                mine.len()
+            ),
+            "max_spawned_per_agent",
+            per_spawner,
+            mine,
+        )
+    } else if total > 0 && running.len() >= total {
+        (
+            format!("{} spawned agents are already running", running.len()),
+            "max_spawned",
+            total,
+            running.iter().map(|(name, _)| name.as_str()).collect(),
+        )
+    } else {
+        return None;
+    };
+    Some(format!(
+        "Not spawning: {what} ({key} is {limit}): {}.\n\
+         Stop one with `sidekar stop <name>` (`sidekar spawn list` shows them all), \
+         or raise the limit with `sidekar config set {key} <n>` (0 means no limit).",
+        names.join(", ")
+    ))
+}
+
 /// The flags `sidekar <agent>` takes for itself, which spawn passes on.
 struct WrapperFlags {
     yolo: bool,
