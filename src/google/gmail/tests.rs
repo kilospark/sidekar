@@ -270,17 +270,14 @@ fn a_filename_cannot_escape_the_directory_it_is_written_to() {
 fn an_outgoing_filename_cannot_break_its_own_header() {
     // The name goes into Content-Disposition inside quotes; a quote or a CRLF
     // would end the header early, the same way an injected Cc does.
-    let dir = std::env::temp_dir().join(format!("sidekar-attach-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::ScratchDir::new("attach-test");
     let bad = dir.join("has\"quote.txt");
     if std::fs::write(&bad, b"x").is_ok() {
         assert!(attachment_from_path(&bad).is_err());
-        let _ = std::fs::remove_file(&bad);
     }
     let good = dir.join("fine.txt");
     std::fs::write(&good, b"x").unwrap();
     assert!(attachment_from_path(&good).is_ok());
-    let _ = std::fs::remove_file(&good);
 }
 
 #[test]

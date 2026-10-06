@@ -5,38 +5,16 @@ use std::sync::{Arc, Mutex};
 /// Mirrors `src/broker/tests.rs` `with_test_db`: swaps HOME for a fresh temp
 /// dir for the duration of `f`, serialized against every other test that
 /// touches process-global broker state (HOME, the encryption key, the
-/// current user id).
+/// current user id). HOME is restored and the directory removed even if `f`
+/// panics.
 fn with_test_db<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
-    let old_home = env::var_os("HOME");
-    let temp_home = env::temp_dir().join(format!("sidekar-sync-test-home-{}", unique_suffix()));
-    fs::create_dir_all(&temp_home)?;
-    // Safety: tests run in-process and this helper restores HOME before returning.
-    unsafe { env::set_var("HOME", &temp_home) };
-    let result = f();
-    match old_home {
-        Some(home) => unsafe { env::set_var("HOME", home) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-    let _ = fs::remove_dir_all(&temp_home);
-    result
+    let _home = crate::ScratchHome::new();
+    f()
 }
 
 fn reset_encryption_state() {
     clear_encryption_key();
     clear_current_user_id();
-}
-
-fn unique_suffix() -> String {
-    static COUNTER: AtomicI64 = AtomicI64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{nanos}-{n}")
 }
 
 // ---------------------------------------------------------------------------
@@ -582,9 +560,9 @@ fn handle_get(store: &Arc<Mutex<Vec<ServerDoc>>>, user_id: &str, query: &str) ->
 
 #[test]
 fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+    // Holds the HOME lock, and restores HOME however the test ends. The
+    // device homes below are removed the same way.
+    let _home = crate::ScratchHome::new();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -592,7 +570,6 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         let server = FakeSyncServer::start(store).await?;
 
         let old_api_url = env::var_os("SIDEKAR_API_URL");
-        let old_home = env::var_os("HOME");
         unsafe {
             env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr));
         }
@@ -600,10 +577,8 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         let uid = "shared-account";
         let account_key = vec![11u8; 32];
 
-        let home_a = env::temp_dir().join(format!("sidekar-sync-test-a-{}", unique_suffix()));
-        let home_b = env::temp_dir().join(format!("sidekar-sync-test-b-{}", unique_suffix()));
-        fs::create_dir_all(&home_a)?;
-        fs::create_dir_all(&home_b)?;
+        let home_a = crate::ScratchDir::new("sync-test-a");
+        let home_b = crate::ScratchDir::new("sync-test-b");
 
         // HOME first: resetting clears the persisted user id, and doing that
         // before the switch cleared the developer's real one.
@@ -616,14 +591,14 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         };
 
         // Device A: create a key, then push it.
-        switch_to(&home_a);
+        switch_to(home_a.path());
         kv_set("shared-key", "value-from-a", None)?;
         let push_a = push_dirty(uid, Duration::from_secs(5)).await?;
         assert_eq!(push_a.pushed, 1);
         assert_eq!(push_a.failed, 0);
 
         // Device B: pull, must see A's value.
-        switch_to(&home_b);
+        switch_to(home_b.path());
         let pull_b = pull_merge(uid).await?;
         assert_eq!(pull_b.applied, 1);
         let seen = kv_get("shared-key")?.expect("device B should see device A's kv row");
@@ -635,7 +610,7 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
         assert_eq!(push_b.pushed, 1);
 
         // Device A pulls again: the key must be gone.
-        switch_to(&home_a);
+        switch_to(home_a.path());
         let pull_a = pull_merge(uid).await?;
         assert_eq!(pull_a.applied, 1);
         assert!(kv_get("shared-key")?.is_none());
@@ -647,12 +622,6 @@ fn two_device_kv_set_pull_delete_push_round_trip() -> Result<()> {
             Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
             None => unsafe { env::remove_var("SIDEKAR_API_URL") },
         }
-        match old_home {
-            Some(v) => unsafe { env::set_var("HOME", v) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        let _ = fs::remove_dir_all(&home_a);
-        let _ = fs::remove_dir_all(&home_b);
 
         Ok(())
     })
@@ -836,9 +805,9 @@ fn adding_the_memory_uid_column_rewinds_the_pull_watermark_once() -> Result<()> 
 
 #[test]
 fn two_device_memory_sync_follows_pages_and_carries_tombstones() -> Result<()> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+    // Holds the HOME lock, and restores HOME however the test ends. The
+    // device homes below are removed the same way.
+    let _home = crate::ScratchHome::new();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -846,17 +815,14 @@ fn two_device_memory_sync_follows_pages_and_carries_tombstones() -> Result<()> {
         let server = FakeSyncServer::start(store.clone()).await?;
 
         let old_api_url = env::var_os("SIDEKAR_API_URL");
-        let old_home = env::var_os("HOME");
         unsafe {
             env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr));
         }
 
         let uid = "memory-account";
         let account_key = vec![13u8; 32];
-        let home_a = env::temp_dir().join(format!("sidekar-memsync-a-{}", unique_suffix()));
-        let home_b = env::temp_dir().join(format!("sidekar-memsync-b-{}", unique_suffix()));
-        fs::create_dir_all(&home_a)?;
-        fs::create_dir_all(&home_b)?;
+        let home_a = crate::ScratchDir::new("memsync-a");
+        let home_b = crate::ScratchDir::new("memsync-b");
 
         let switch_to = |home: &std::path::Path| {
             unsafe { env::set_var("HOME", home) };
@@ -867,7 +833,7 @@ fn two_device_memory_sync_follows_pages_and_carries_tombstones() -> Result<()> {
         };
 
         // Device A: five memories, pushed.
-        switch_to(&home_a);
+        switch_to(home_a.path());
         let conn = open()?;
         for i in 0..5 {
             let mem_uid = format!("mem-{i}");
@@ -891,7 +857,7 @@ fn two_device_memory_sync_follows_pages_and_carries_tombstones() -> Result<()> {
         );
 
         // Device B pulls two records a page and still gets all five.
-        switch_to(&home_b);
+        switch_to(home_b.path());
         FAKE_PAGE_SIZE.store(2, Ordering::SeqCst);
         let pulled = pull_merge(uid).await;
         FAKE_PAGE_SIZE.store(usize::MAX, Ordering::SeqCst);
@@ -916,7 +882,7 @@ fn two_device_memory_sync_follows_pages_and_carries_tombstones() -> Result<()> {
         drop(conn);
         assert_eq!(push_dirty(uid, Duration::from_secs(5)).await?.pushed, 1);
 
-        switch_to(&home_a);
+        switch_to(home_a.path());
         assert_eq!(pull_merge(uid).await?.applied, 1, "only the tombstone is news to A");
         let conn = open()?;
         let left: Vec<String> = conn
@@ -932,33 +898,25 @@ fn two_device_memory_sync_follows_pages_and_carries_tombstones() -> Result<()> {
             Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
             None => unsafe { env::remove_var("SIDEKAR_API_URL") },
         }
-        match old_home {
-            Some(v) => unsafe { env::set_var("HOME", v) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        let _ = fs::remove_dir_all(&home_a);
-        let _ = fs::remove_dir_all(&home_b);
         Ok(())
     })
 }
 
 #[test]
 fn a_server_without_memory_sync_does_not_hold_up_kv() -> Result<()> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+    // Holds the HOME lock, and restores HOME however the test ends. The
+    // device homes below are removed the same way.
+    let _home = crate::ScratchHome::new();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
         let server = FakeSyncServer::start(store).await?;
         let old_api_url = env::var_os("SIDEKAR_API_URL");
-        let old_home = env::var_os("HOME");
-        let home = env::temp_dir().join(format!("sidekar-memsync-old-{}", unique_suffix()));
-        fs::create_dir_all(&home)?;
+        let home = crate::ScratchDir::new("memsync-old");
         unsafe {
             env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr));
-            env::set_var("HOME", &home);
+            env::set_var("HOME", home.path());
         }
         let uid = "old-server-account";
         reset_encryption_state();
@@ -1000,11 +958,6 @@ fn a_server_without_memory_sync_does_not_hold_up_kv() -> Result<()> {
             Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
             None => unsafe { env::remove_var("SIDEKAR_API_URL") },
         }
-        match old_home {
-            Some(v) => unsafe { env::set_var("HOME", v) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        let _ = fs::remove_dir_all(&home);
         Ok(())
     })
 }
@@ -1074,26 +1027,23 @@ fn leftover_sync_rows_for_per_device_keys_are_dropped_on_open() -> Result<()> {
 
 #[test]
 fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<()> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+    // Holds the HOME lock, and restores HOME however the test ends. The
+    // device homes below are removed the same way.
+    let _home = crate::ScratchHome::new();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
         let server = FakeSyncServer::start(store).await?;
         let old_api_url = env::var_os("SIDEKAR_API_URL");
-        let old_home = env::var_os("HOME");
         unsafe {
             env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr));
         }
 
         let uid = "conflict-account";
         let account_key = vec![23u8; 32];
-        let home_a = env::temp_dir().join(format!("sidekar-conflict-a-{}", unique_suffix()));
-        let home_b = env::temp_dir().join(format!("sidekar-conflict-b-{}", unique_suffix()));
-        fs::create_dir_all(&home_a)?;
-        fs::create_dir_all(&home_b)?;
+        let home_a = crate::ScratchDir::new("conflict-a");
+        let home_b = crate::ScratchDir::new("conflict-b");
         let switch_to = |home: &std::path::Path| {
             unsafe { env::set_var("HOME", home) };
             reset_encryption_state();
@@ -1103,17 +1053,17 @@ fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<(
         };
 
         // Each device sets the same key on its own, so both reach version 1.
-        switch_to(&home_a);
+        switch_to(home_a.path());
         kv_set("shared", "from-a", None)?;
-        switch_to(&home_b);
+        switch_to(home_b.path());
         kv_set("shared", "from-b", None)?;
 
-        switch_to(&home_a);
+        switch_to(home_a.path());
         assert_eq!(push_dirty(uid, Duration::from_secs(5)).await?.pushed, 1);
 
         // B's version-1 push is refused. B moves past the server's version and
         // re-pushes in the same call, instead of staying refused forever.
-        switch_to(&home_b);
+        switch_to(home_b.path());
         let pushed = push_dirty(uid, Duration::from_secs(5)).await?;
         assert_eq!((pushed.pushed, pushed.failed, pushed.bumped), (1, 0, 1));
         let conn = open()?;
@@ -1127,7 +1077,7 @@ fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<(
         drop(conn);
 
         // A adopts B's value and keeps its own in history.
-        switch_to(&home_a);
+        switch_to(home_a.path());
         assert_eq!(pull_merge(uid).await?.applied, 1);
         assert_eq!(kv_get("shared")?.unwrap().value, "from-b");
         assert!(
@@ -1142,12 +1092,6 @@ fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<(
             Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
             None => unsafe { env::remove_var("SIDEKAR_API_URL") },
         }
-        match old_home {
-            Some(v) => unsafe { env::set_var("HOME", v) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        let _ = fs::remove_dir_all(&home_a);
-        let _ = fs::remove_dir_all(&home_b);
         Ok(())
     })
 }

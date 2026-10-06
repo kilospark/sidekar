@@ -34,6 +34,46 @@ pub(crate) fn test_home_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// A fresh directory under the system temp dir, removed when this drops,
+/// whether the test passed or panicked.
+///
+/// Test fixtures go here rather than in a directory named after the process
+/// id and removed at the end, if at all: those piled up by the hundred.
+#[cfg(test)]
+pub(crate) struct ScratchDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl ScratchDir {
+    /// A new directory named `sidekar-<label>-...`.
+    pub(crate) fn new(label: &str) -> Self {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sidekar-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        // A crashed run with the same pid can leave one behind.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        Self(dir)
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    pub(crate) fn join(&self, name: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// HOME pointed at a fresh scratch directory for as long as this lives.
 ///
 /// For a test that reaches the broker, or anything else under `~/.sidekar`,
@@ -41,32 +81,29 @@ pub(crate) fn test_home_lock() -> &'static std::sync::Mutex<()> {
 /// not be combined with a helper that takes the lock too.
 #[cfg(test)]
 pub(crate) struct ScratchHome {
-    _lock: std::sync::MutexGuard<'static, ()>,
+    // Fields drop in order: the directory goes while the lock is still held.
+    dir: ScratchDir,
     old: Option<std::ffi::OsString>,
-    dir: std::path::PathBuf,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]
 impl ScratchHome {
     pub(crate) fn new() -> Self {
         let lock = test_home_lock().lock().unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "sidekar-scratch-home-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).expect("create scratch HOME");
+        let dir = ScratchDir::new("scratch-home");
         let old = std::env::var_os("HOME");
         // SAFETY: serialized by test_home_lock, restored on drop.
-        unsafe { std::env::set_var("HOME", &dir) };
+        unsafe { std::env::set_var("HOME", dir.path()) };
         Self {
-            _lock: lock,
-            old,
             dir,
+            old,
+            _lock: lock,
         }
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self.dir.path()
     }
 }
 
@@ -77,9 +114,11 @@ impl Drop for ScratchHome {
             Some(h) => unsafe { std::env::set_var("HOME", h) },
             None => unsafe { std::env::remove_var("HOME") },
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 const MAX_PENDING_EVENTS: usize = 1000;
 

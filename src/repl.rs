@@ -983,48 +983,7 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
 mod cancel_turn_tests {
     use super::{BusInterruptWatcher, cancelled_turn_rollback_len};
     use crate::message::{AgentId, Envelope};
-    use std::{env, ffi::OsString, fs, sync::MutexGuard, time::Duration};
-
-    struct HomeGuard {
-        _lock: MutexGuard<'static, ()>,
-        old_home: Option<OsString>,
-        temp_home: std::path::PathBuf,
-    }
-
-    impl HomeGuard {
-        fn new() -> Self {
-            let lock = crate::test_home_lock()
-                .lock()
-                .expect("failed to lock test HOME mutex");
-            let suffix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time before epoch")
-                .as_nanos();
-            let temp_home = env::temp_dir().join(format!(
-                "sidekar-repl-interrupt-test-{}-{}",
-                std::process::id(),
-                suffix
-            ));
-            fs::create_dir_all(&temp_home).expect("create temp home");
-            let old_home = env::var_os("HOME");
-            unsafe { env::set_var("HOME", &temp_home) };
-            Self {
-                _lock: lock,
-                old_home,
-                temp_home,
-            }
-        }
-    }
-
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
-            match &self.old_home {
-                Some(home) => unsafe { env::set_var("HOME", home) },
-                None => unsafe { env::remove_var("HOME") },
-            }
-            let _ = fs::remove_dir_all(&self.temp_home);
-        }
-    }
+    use std::time::Duration;
 
     #[test]
     fn cancelled_typed_turn_rolls_back_user_prompt_too() {
@@ -1046,7 +1005,7 @@ mod cancel_turn_tests {
 
     #[test]
     fn bus_interrupt_watcher_sets_cancel_for_interrupt_envelope() {
-        let _home = HomeGuard::new();
+        let _home = crate::ScratchHome::new();
         let mut envelope = Envelope::new_fyi(AgentId::new("sender"), "repl", "stop");
         envelope.interrupt = true;
         crate::broker::enqueue_bus_message(

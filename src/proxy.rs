@@ -26,8 +26,37 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
+const PROXY_DIR_PREFIX: &str = "sidekar-proxy-";
+
+/// This process's directory for CA PEMs. [`cleanup_ca_file`] removes it with
+/// the last PEM; [`prune_dead_proxy_dirs`] removes those of processes that
+/// died before they could.
 fn proxy_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("sidekar-proxy-{}", std::process::id()))
+    std::env::temp_dir().join(format!("{PROXY_DIR_PREFIX}{}", std::process::id()))
+}
+
+/// Remove the PEM directories of proxies whose process is gone. One is left
+/// by every proxied session that is killed rather than exiting.
+fn prune_dead_proxy_dirs() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(PROXY_DIR_PREFIX))
+            .and_then(|pid| pid.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        // kill(pid, 0) fails with ESRCH only when no such process exists.
+        let gone = unsafe { libc::kill(pid, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +242,10 @@ const MAX_RESPONSE_CAPTURE: usize = 10 * 1024 * 1024; // 10MB
 /// does not delete another proxy's PEM.
 static CA_PEM_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Held to write a PEM and to remove the directory, so one proxy's cleanup
+/// can't remove the directory another is about to write its PEM into.
+static PEM_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Start the proxy. Returns `(port, ca_cert_path)`.
 pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -239,15 +272,19 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
         .with_no_client_auth();
     let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
 
+    prune_dead_proxy_dirs();
     let dir = proxy_dir();
-    std::fs::create_dir_all(&dir)?;
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
     let seq = CA_PEM_SEQ.fetch_add(1, Ordering::Relaxed);
     let ca_pem_path = dir.join(format!("ca-{port}-{seq}.pem"));
-    std::fs::write(&ca_pem_path, ca_cert.pem())?;
+    {
+        let _dir = PEM_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&ca_pem_path, ca_cert.pem())?;
+    }
 
     // Prune entries older than 7 days on startup
     let _ = tokio::task::spawn_blocking(|| crate::broker::proxy_log_prune(7 * 86400)).await;
@@ -275,9 +312,15 @@ pub async fn start(verbose: bool) -> Result<(u16, PathBuf)> {
     Ok((port, ca_pem_path))
 }
 
-/// Clean up the CA PEM file written by `start()`.
+/// Clean up the CA PEM file written by `start()`, and this process's PEM
+/// directory with it once no other proxy here still has a PEM in it.
 pub fn cleanup_ca_file(ca_path: &std::path::Path) {
+    let _dir = PEM_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _ = std::fs::remove_file(ca_path);
+    if ca_path.parent() == Some(proxy_dir().as_path()) {
+        // Fails, harmlessly, while the directory is not empty.
+        let _ = std::fs::remove_dir(proxy_dir());
+    }
 }
 
 async fn accept_loop(listener: TcpListener, state: Arc<ProxyState>) {

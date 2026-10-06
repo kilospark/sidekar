@@ -337,18 +337,9 @@ mod tests {
 
     #[test]
     fn save_oauth_credential_marks_cli_proxy() {
-        let _guard = crate::test_home_lock()
-            .lock()
-            .unwrap_or_else(|_| panic!("failed to lock test HOME mutex"));
-        let old_home = std::env::var_os("HOME");
-        let fake_home = std::env::temp_dir().join(format!(
-            "sidekar-grok-oauth-home-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&fake_home).expect("create fake home");
         // HOME first: clearing the user id persists, and doing it before the
         // switch cleared the developer's real one.
-        unsafe { std::env::set_var("HOME", &fake_home) };
+        let _home = crate::ScratchHome::new();
         crate::broker::clear_current_user_id();
         crate::broker::clear_encryption_key();
 
@@ -365,12 +356,7 @@ mod tests {
         assert!(credential_uses_cli_proxy(&nickname));
 
         crate::broker::clear_current_user_id();
-        match old_home {
-            Some(home) => unsafe { std::env::set_var("HOME", home) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
         crate::broker::clear_encryption_key();
-        let _ = std::fs::remove_dir_all(&fake_home);
     }
 
     #[test]

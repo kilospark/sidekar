@@ -4,24 +4,11 @@ use super::*;
 /// user id is process-global, so it is reset on the way in and out; otherwise
 /// one test's login would leak into the next.
 fn with_test_home<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let old_home = std::env::var_os("HOME");
-    let temp_home =
-        std::env::temp_dir().join(format!("sidekar-memory-sync-test-{}", new_uid()));
-    std::fs::create_dir_all(&temp_home)?;
-    // Safety: tests that touch HOME are serialized by test_home_lock, and HOME
-    // is restored before the lock is released.
-    unsafe { std::env::set_var("HOME", &temp_home) };
+    // Restores HOME and removes the directory even if `f` panics.
+    let _home = crate::ScratchHome::new();
     crate::broker::clear_current_user_id();
     let result = f();
     crate::broker::clear_current_user_id();
-    match old_home {
-        Some(home) => unsafe { std::env::set_var("HOME", home) },
-        None => unsafe { std::env::remove_var("HOME") },
-    }
-    let _ = std::fs::remove_dir_all(&temp_home);
     result
 }
 

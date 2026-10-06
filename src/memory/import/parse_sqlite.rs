@@ -249,16 +249,17 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn tmp_db(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sidekar-sqlite-test-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join(name)
+    /// A path for a database called `name`, in a directory removed when
+    /// the returned guard drops.
+    fn tmp_db(name: &str) -> (crate::ScratchDir, PathBuf) {
+        let dir = crate::ScratchDir::new("sqlite-test");
+        let path = dir.join(name);
+        (dir, path)
     }
 
     #[test]
     fn cursor_blobs_produce_turns_and_workspace_path() {
-        let path = tmp_db("cursor.db");
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = tmp_db("cursor.db");
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);")
             .unwrap();
@@ -287,8 +288,7 @@ mod tests {
 
     #[test]
     fn cursor_parser_handles_missing_workspace_path() {
-        let path = tmp_db("cursor-nowork.db");
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = tmp_db("cursor-nowork.db");
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB);")
             .unwrap();
@@ -307,8 +307,7 @@ mod tests {
 
     #[test]
     fn opencode_joins_session_message_and_part() {
-        let path = tmp_db("opencode.db");
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = tmp_db("opencode.db");
         let conn = Connection::open(&path).unwrap();
         // Use time_created to match the real Opencode schema; our
         // query also has a plain-query fallback so older DBs work.
@@ -365,8 +364,7 @@ mod tests {
 
     #[test]
     fn opencode_empty_session_omitted() {
-        let path = tmp_db("opencode-empty.db");
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = tmp_db("opencode-empty.db");
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "\

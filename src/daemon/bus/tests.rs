@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use rand::RngCore;
 use std::{env, ffi::OsString, fs, path::PathBuf, sync::MutexGuard, time::Duration};
 
@@ -22,7 +22,7 @@ impl HomeGuard {
     fn new() -> Result<Self> {
         let lock = crate::test_home_lock()
             .lock()
-            .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+            .unwrap_or_else(|p| p.into_inner());
         let old_home = env::var_os("HOME");
         let home = temp_home();
         fs::create_dir_all(&home)?;

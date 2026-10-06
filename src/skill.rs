@@ -256,14 +256,7 @@ mod tests {
 
     #[test]
     fn refresh_rewrites_stale_copies_and_installs_nothing_new() {
-        let root = std::env::temp_dir().join(format!(
-            "sidekar-skill-refresh-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let root = crate::ScratchDir::new("skill-refresh");
         let (stale, current, absent) = (root.join("a"), root.join("b"), root.join("c"));
         for (dir, text) in [(&stale, "old doc"), (&current, "new doc")] {
             fs::create_dir_all(dir.join("sidekar")).unwrap();
@@ -284,7 +277,6 @@ mod tests {
             0,
             "nothing left to do"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

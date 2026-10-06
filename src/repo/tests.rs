@@ -1,28 +1,20 @@
 use super::*;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let mut bytes = [0u8; 8];
-    rand::rng().fill_bytes(&mut bytes);
-    env::temp_dir().join(format!(
-        "sidekar-repo-{name}-{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ))
-}
-
 #[test]
 fn finds_repo_root_from_subdir() -> Result<()> {
-    let root = temp_dir("root");
+    let dir = crate::ScratchDir::new("repo-root");
+    let root = dir.path();
     fs::create_dir_all(root.join(".git"))?;
     fs::create_dir_all(root.join("nested/deeper"))?;
     let found = find_repo_root(&root.join("nested/deeper")).context("missing root")?;
     assert_eq!(found, root);
-    let _ = fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[test]
 fn collects_files_respecting_sidekarignore() -> Result<()> {
-    let root = temp_dir("collect");
+    let dir = crate::ScratchDir::new("repo-collect");
+    let root = dir.path();
     fs::create_dir_all(root.join(".git"))?;
     fs::write(root.join(".gitignore"), "ignored.txt\n")?;
     fs::write(root.join(".sidekarignore"), "private/**\n")?;
@@ -42,7 +34,6 @@ fn collects_files_respecting_sidekarignore() -> Result<()> {
     assert!(!paths.contains(&"ignored.txt"));
     assert!(!paths.contains(&"private/secret.md"));
 
-    let _ = fs::remove_dir_all(&root);
     Ok(())
 }
 

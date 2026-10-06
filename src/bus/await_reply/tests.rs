@@ -1,34 +1,12 @@
 use super::*;
 use crate::message::AgentId;
-use std::env;
 
 /// Run `f` against a throwaway broker database. Everything here reaches the
 /// broker through `open()`, which re-reads HOME on each call.
 fn with_test_db(f: impl FnOnce()) {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let old_home = env::var_os("HOME");
-    let home = env::temp_dir().join(format!(
-        "sidekar-await-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&home).unwrap();
-    // SAFETY: serialized by test_home_lock and restored before returning.
-    unsafe { env::set_var("HOME", &home) };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-    match old_home {
-        Some(h) => unsafe { env::set_var("HOME", h) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-    let _ = std::fs::remove_dir_all(&home);
-    if let Err(p) = result {
-        std::panic::resume_unwind(p);
-    }
+    // Restores HOME and removes the directory even if `f` panics.
+    let _home = crate::ScratchHome::new();
+    f();
 }
 
 fn block_on<T>(f: impl std::future::Future<Output = T>) -> T {

@@ -104,99 +104,100 @@ async fn ws_control_frames_classified() {
 /// through the MITM proxy. Validates that our frame reader forwards raw
 /// bytes unchanged and that the 101 response is parsed without corrupting
 /// the upstream stream.
-#[tokio::test]
-async fn mitm_websocket_echo_roundtrip() {
-    let _home = crate::ScratchHome::new();
-    use base64::Engine as _;
-    use futures_util::{SinkExt as _, StreamExt as _};
-    use rustls::pki_types::CertificateDer;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio_tungstenite::{
-        Connector, client_async_tls_with_config, tungstenite::protocol::Message,
-    };
+#[test]
+fn mitm_websocket_echo_roundtrip() {
+    with_proxy_home(async {
+        use base64::Engine as _;
+        use futures_util::{SinkExt as _, StreamExt as _};
+        use rustls::pki_types::CertificateDer;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio_tungstenite::{
+            Connector, client_async_tls_with_config, tungstenite::protocol::Message,
+        };
 
-    let (port, ca_path) = start(true).await.expect("proxy start");
+        let (port, ca_path) = start(true).await.expect("proxy start");
 
-    // Open a raw TCP connection to the proxy and speak CONNECT ourselves —
-    // tokio-tungstenite doesn't honor HTTPS_PROXY, and we want to exercise
-    // the MITM CONNECT path under test.
-    let mut tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
-        .await
-        .expect("connect to proxy");
-    tcp.write_all(
-        b"CONNECT ws.postman-echo.com:443 HTTP/1.1\r\nHost: ws.postman-echo.com:443\r\n\r\n",
-    )
-    .await
-    .expect("write CONNECT");
-    tcp.flush().await.unwrap();
-
-    // Read CONNECT response until CRLFCRLF.
-    let mut resp: Vec<u8> = Vec::new();
-    let mut byte = [0u8; 1];
-    while !resp.ends_with(b"\r\n\r\n") {
-        match tcp.read(&mut byte).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => resp.push(byte[0]),
-        }
-    }
-    assert!(
-        resp.starts_with(b"HTTP/1.1 200"),
-        "CONNECT failed: {}",
-        String::from_utf8_lossy(&resp)
-    );
-
-    // Build a rustls ClientConfig that trusts only the proxy's MITM CA.
-    // Parse the PEM manually (rustls-pemfile isn't a direct dep).
-    let pem = std::fs::read_to_string(&ca_path).expect("read CA pem");
-    let b64: String = pem
-        .lines()
-        .filter(|l| !l.starts_with("-----"))
-        .collect::<Vec<_>>()
-        .join("");
-    let der = base64::prelude::BASE64_STANDARD
-        .decode(b64.as_bytes())
-        .expect("decode CA base64");
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(CertificateDer::from(der)).expect("add CA");
-    let client_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    let connector = Some(Connector::Rustls(std::sync::Arc::new(client_config)));
-
-    // Do the WebSocket handshake over the MITM'd TLS. The proxy should
-    // present a leaf cert signed by its own CA, which we trust above.
-    let (mut ws, response) =
-        client_async_tls_with_config("wss://ws.postman-echo.com/raw", tcp, None, connector)
+        // Open a raw TCP connection to the proxy and speak CONNECT ourselves —
+        // tokio-tungstenite doesn't honor HTTPS_PROXY, and we want to exercise
+        // the MITM CONNECT path under test.
+        let mut tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
             .await
-            .expect("WebSocket handshake through MITM proxy");
-    assert_eq!(response.status().as_u16(), 101);
-
-    // ws.postman-echo.com sends a welcome message before echoing. Send
-    // a tagged payload and drain until we see it returned.
-    let payload = "hello-from-sidekar-mitm-test";
-    ws.send(Message::Text(payload.to_string().into()))
+            .expect("connect to proxy");
+        tcp.write_all(
+            b"CONNECT ws.postman-echo.com:443 HTTP/1.1\r\nHost: ws.postman-echo.com:443\r\n\r\n",
+        )
         .await
-        .expect("send text");
+        .expect("write CONNECT");
+        tcp.flush().await.unwrap();
 
-    let mut saw_echo = false;
-    for _ in 0..8 {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), ws.next()).await {
-            Ok(Some(Ok(Message::Text(t)))) => {
-                if t == payload {
-                    saw_echo = true;
-                    break;
-                }
+        // Read CONNECT response until CRLFCRLF.
+        let mut resp: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
+        while !resp.ends_with(b"\r\n\r\n") {
+            match tcp.read(&mut byte).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => resp.push(byte[0]),
             }
-            Ok(Some(Ok(_))) => {}
-            Ok(Some(Err(e))) => panic!("ws error: {e}"),
-            Ok(None) => break,
-            Err(_) => panic!("timed out waiting for echo"),
         }
-    }
-    assert!(saw_echo, "echo server did not return our payload");
-    let _ = ws.close(None).await;
+        assert!(
+            resp.starts_with(b"HTTP/1.1 200"),
+            "CONNECT failed: {}",
+            String::from_utf8_lossy(&resp)
+        );
 
-    cleanup_ca_file(&ca_path);
+        // Build a rustls ClientConfig that trusts only the proxy's MITM CA.
+        // Parse the PEM manually (rustls-pemfile isn't a direct dep).
+        let pem = std::fs::read_to_string(&ca_path).expect("read CA pem");
+        let b64: String = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("");
+        let der = base64::prelude::BASE64_STANDARD
+            .decode(b64.as_bytes())
+            .expect("decode CA base64");
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(CertificateDer::from(der)).expect("add CA");
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = Some(Connector::Rustls(std::sync::Arc::new(client_config)));
+
+        // Do the WebSocket handshake over the MITM'd TLS. The proxy should
+        // present a leaf cert signed by its own CA, which we trust above.
+        let (mut ws, response) =
+            client_async_tls_with_config("wss://ws.postman-echo.com/raw", tcp, None, connector)
+                .await
+                .expect("WebSocket handshake through MITM proxy");
+        assert_eq!(response.status().as_u16(), 101);
+
+        // ws.postman-echo.com sends a welcome message before echoing. Send
+        // a tagged payload and drain until we see it returned.
+        let payload = "hello-from-sidekar-mitm-test";
+        ws.send(Message::Text(payload.to_string().into()))
+            .await
+            .expect("send text");
+
+        let mut saw_echo = false;
+        for _ in 0..8 {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), ws.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    if t == payload {
+                        saw_echo = true;
+                        break;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => panic!("ws error: {e}"),
+                Ok(None) => break,
+                Err(_) => panic!("timed out waiting for echo"),
+            }
+        }
+        assert!(saw_echo, "echo server did not return our payload");
+        let _ = ws.close(None).await;
+
+        cleanup_ca_file(&ca_path);
+    });
 }
 
 #[tokio::test]
@@ -383,25 +384,63 @@ async fn ws_permessage_deflate_large_context_takeover() {
 
 #[test]
 fn proxy_dir_does_not_depend_on_home() {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .unwrap_or_else(|_| panic!("failed to lock test HOME mutex"));
-    let old_home = std::env::var_os("HOME");
-    let fake_home =
-        std::env::temp_dir().join(format!("sidekar-proxy-home-test-{}", std::process::id()));
-    std::fs::create_dir_all(&fake_home).expect("create fake home");
-    unsafe { std::env::set_var("HOME", &fake_home) };
-
+    let home = crate::ScratchHome::new();
     let dir = proxy_dir();
-
-    match old_home {
-        Some(home) => unsafe { std::env::set_var("HOME", home) },
-        None => unsafe { std::env::remove_var("HOME") },
-    }
-    let _ = std::fs::remove_dir_all(&fake_home);
-
     assert!(dir.starts_with(std::env::temp_dir()));
-    assert!(!dir.starts_with(&fake_home));
+    assert!(!dir.starts_with(home.path()));
+}
+
+#[test]
+fn the_last_pem_takes_the_process_directory_with_it() {
+    // Serializes with the tests that start a proxy, which hold one too, so
+    // none of their PEMs is in the directory.
+    let _home = crate::ScratchHome::new();
+    let dir = proxy_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = (dir.join("ca-test-a.pem"), dir.join("ca-test-b.pem"));
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
+
+    cleanup_ca_file(&a);
+    assert!(dir.exists(), "another proxy's PEM is still in it");
+    cleanup_ca_file(&b);
+    assert!(
+        !dir.exists(),
+        "a sidekar-proxy-<pid> directory was left behind"
+    );
+}
+
+#[test]
+fn a_dead_process_proxy_directory_is_pruned() {
+    let _home = crate::ScratchHome::new();
+    // Far above any pid the system hands out, so no process has it.
+    let dead = std::env::temp_dir().join(format!("{PROXY_DIR_PREFIX}2147483646"));
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::write(dead.join("ca-1-0.pem"), "stale").unwrap();
+    let alive = proxy_dir();
+    std::fs::create_dir_all(&alive).unwrap();
+
+    prune_dead_proxy_dirs();
+
+    assert!(!dead.exists(), "the dead process's directory goes");
+    assert!(alive.exists(), "this process's stays");
+    let _ = std::fs::remove_dir(&alive);
+}
+
+/// Run a test that starts a proxy, with HOME at a scratch directory.
+///
+/// The proxy logs each request from a blocking task that can outlive the test
+/// body. `#[tokio::test]` would drop the scratch HOME inside the body, before
+/// the runtime, and a late log write recreated the database under it as the
+/// directory was being removed, leaving it behind. Dropping the runtime first
+/// waits those writes out.
+fn with_proxy_home(test: impl std::future::Future<Output = ()>) {
+    let _home = crate::ScratchHome::new();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+        .block_on(test);
 }
 
 /// Build a client that uses CONNECT proxy (MITM mode).
@@ -421,82 +460,86 @@ fn reverse_client() -> reqwest::Client {
     reqwest::Client::builder().build().expect("build client")
 }
 
-#[tokio::test]
-async fn mitm_passthrough() {
-    let _home = crate::ScratchHome::new();
-    let (port, ca_path) = start(true).await.expect("proxy start");
-    let client = mitm_client(port, &ca_path).await;
+#[test]
+fn mitm_passthrough() {
+    with_proxy_home(async {
+        let (port, ca_path) = start(true).await.expect("proxy start");
+        let client = mitm_client(port, &ca_path).await;
 
-    let resp = client
-        // httpbin intermittently returns 503 from CI/local networks; this test
-        // only needs a small HTTPS origin that should return 2xx through MITM.
-        .get("https://example.com/")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .expect("request through MITM proxy");
+        let resp = client
+            // httpbin intermittently returns 503 from CI/local networks; this test
+            // only needs a small HTTPS origin that should return 2xx through MITM.
+            .get("https://example.com/")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .expect("request through MITM proxy");
 
-    assert!(resp.status().is_success());
-    cleanup_ca_file(&ca_path);
+        assert!(resp.status().is_success());
+        cleanup_ca_file(&ca_path);
+    });
 }
 
-#[tokio::test]
-async fn mitm_anthropic() {
-    let _home = crate::ScratchHome::new();
-    let (port, ca_path) = start(true).await.expect("proxy start");
-    let client = mitm_client(port, &ca_path).await;
+#[test]
+fn mitm_anthropic() {
+    with_proxy_home(async {
+        let (port, ca_path) = start(true).await.expect("proxy start");
+        let client = mitm_client(port, &ca_path).await;
 
-    let resp = client
-        .get("https://api.anthropic.com/v1/models")
-        .header("x-api-key", "test-invalid")
-        .header("anthropic-version", "2023-06-01")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .expect("request through MITM proxy to anthropic");
+        let resp = client
+            .get("https://api.anthropic.com/v1/models")
+            .header("x-api-key", "test-invalid")
+            .header("anthropic-version", "2023-06-01")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .expect("request through MITM proxy to anthropic");
 
-    assert_eq!(resp.status().as_u16(), 401);
-    cleanup_ca_file(&ca_path);
+        assert_eq!(resp.status().as_u16(), 401);
+        cleanup_ca_file(&ca_path);
+    });
 }
 
-#[tokio::test]
-async fn reverse_proxy_anthropic() {
-    let _home = crate::ScratchHome::new();
-    let (port, ca_path) = start(true).await.expect("proxy start");
-    let client = reverse_client();
+#[test]
+fn reverse_proxy_anthropic() {
+    with_proxy_home(async {
+        let (port, ca_path) = start(true).await.expect("proxy start");
+        let client = reverse_client();
 
-    // Simulate ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
-    let resp = client
-        .get(format!("http://127.0.0.1:{port}/v1/models"))
-        .header("x-api-key", "test-invalid")
-        .header("anthropic-version", "2023-06-01")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .expect("request through reverse proxy");
+        // Simulate ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/v1/models"))
+            .header("x-api-key", "test-invalid")
+            .header("anthropic-version", "2023-06-01")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .expect("request through reverse proxy");
 
-    // 401/403 = request reached upstream (403 if CDN rejects Host mismatch)
-    let s = resp.status().as_u16();
-    assert!(s == 401 || s == 403, "unexpected status: {s}");
-    cleanup_ca_file(&ca_path);
+        // 401/403 = request reached upstream (403 if CDN rejects Host mismatch)
+        let s = resp.status().as_u16();
+        assert!(s == 401 || s == 403, "unexpected status: {s}");
+        cleanup_ca_file(&ca_path);
+    });
 }
 
-#[tokio::test]
-async fn reverse_proxy_openai() {
-    let _home = crate::ScratchHome::new();
-    let (port, ca_path) = start(true).await.expect("proxy start");
-    let client = reverse_client();
+#[test]
+fn reverse_proxy_openai() {
+    with_proxy_home(async {
+        let (port, ca_path) = start(true).await.expect("proxy start");
+        let client = reverse_client();
 
-    // Simulate OPENAI_BASE_URL=http://127.0.0.1:<port>/v1
-    let resp = client
-        .get(format!("http://127.0.0.1:{port}/v1/models"))
-        .header("authorization", "Bearer test-invalid")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .expect("request through reverse proxy to openai");
+        // Simulate OPENAI_BASE_URL=http://127.0.0.1:<port>/v1
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/v1/models"))
+            .header("authorization", "Bearer test-invalid")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .expect("request through reverse proxy to openai");
 
-    let s = resp.status().as_u16();
-    assert!(s == 401 || s == 403, "unexpected status: {s}");
-    cleanup_ca_file(&ca_path);
+        let s = resp.status().as_u16();
+        assert!(s == 401 || s == 403, "unexpected status: {s}");
+        cleanup_ca_file(&ca_path);
+    });
 }

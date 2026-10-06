@@ -322,13 +322,13 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn write_tmp(name: &str, body: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("sidekar-transcript-test-{}", std::process::id()));
-        let _ = fs::create_dir_all(&dir);
+    /// `body` in a file called `name`, in a directory removed when the
+    /// returned guard drops.
+    fn write_tmp(name: &str, body: &str) -> (crate::ScratchDir, PathBuf) {
+        let dir = crate::ScratchDir::new("transcript-test");
         let path = dir.join(name);
         fs::write(&path, body).expect("write fixture");
-        path
+        (dir, path)
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use"}]}}"#,
             "\n",
         );
-        let path = write_tmp("claude.jsonl", body);
+        let (_dir, path) = write_tmp("claude.jsonl", body);
         let t = parse_claude_jsonl(&path).unwrap();
         assert_eq!(t.cwd.as_deref(), Some(Path::new("/p")));
         assert_eq!(t.turns.len(), 2);
@@ -360,7 +360,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"ok"}}"#,
             "\n",
         );
-        let path = write_tmp("claude-bad.jsonl", body);
+        let (_dir, path) = write_tmp("claude-bad.jsonl", body);
         let t = parse_claude_jsonl(&path).unwrap();
         assert_eq!(t.turns.len(), 1);
     }
@@ -377,7 +377,7 @@ mod tests {
             r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
             "\n",
         );
-        let path = write_tmp("codex.jsonl", body);
+        let (_dir, path) = write_tmp("codex.jsonl", body);
         let t = parse_codex_jsonl(&path).unwrap();
         assert_eq!(t.cwd.as_deref(), Some(Path::new("/Users/me/demo")));
         assert_eq!(t.turns.len(), 2);
@@ -397,7 +397,7 @@ mod tests {
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"real user turn"}}"#,
             "\n",
         );
-        let path = write_tmp("codex-dev.jsonl", body);
+        let (_dir, path) = write_tmp("codex-dev.jsonl", body);
         let t = parse_codex_jsonl(&path).unwrap();
         assert_eq!(t.turns.len(), 1);
         assert_eq!(t.turns[0].role, "user");
@@ -414,7 +414,7 @@ mod tests {
                 {"type":"tool","content":"skip"}
             ]
         }"#;
-        let path = write_tmp("gemini.json", body);
+        let (_dir, path) = write_tmp("gemini.json", body);
         let t = parse_gemini_json(&path).unwrap();
         assert_eq!(t.turns.len(), 2);
         assert_eq!(t.turns[0].role, "user");

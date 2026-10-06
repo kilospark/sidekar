@@ -1,20 +1,10 @@
 use super::*;
 
+/// Run `f` with HOME at a scratch directory, restored and removed afterwards
+/// even if `f` panics.
 fn with_test_home<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _guard = crate::test_home_lock()
-        .lock()
-        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
-    let old_home = env::var_os("HOME");
-    let temp_home = env::temp_dir().join(format!("sidekar-tasks-test-{}", now_epoch_ms()));
-    fs::create_dir_all(&temp_home)?;
-    unsafe { env::set_var("HOME", &temp_home) };
-    let result = f();
-    match old_home {
-        Some(home) => unsafe { env::set_var("HOME", home) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-    let _ = fs::remove_dir_all(&temp_home);
-    result
+    let _home = crate::ScratchHome::new();
+    f()
 }
 
 #[test]

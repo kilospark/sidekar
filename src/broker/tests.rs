@@ -1,40 +1,10 @@
 use super::*;
 
-fn fresh_test_db_path() -> PathBuf {
-    let mut bytes = [0u8; 8];
-    rand::rng().fill_bytes(&mut bytes);
-    env::temp_dir().join(format!(
-        "sidekar-broker-test-{}.sqlite3",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ))
-}
-
+/// Run `f` with HOME at a scratch directory, restored and removed afterwards
+/// even if `f` panics.
 fn with_test_db<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    // A test that panics while holding this poisons it. Refusing a poisoned lock
-    // turned one real failure into dozens — every later test here failed to
-    // acquire it — which hides the one that matters. The data it guards is
-    // HOME, which this function resets every time, so a poisoned lock is safe.
-    let _guard = crate::test_home_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let old_home = env::var_os("HOME");
-    let temp_home = env::temp_dir().join(format!(
-        "sidekar-broker-home-{}",
-        fresh_test_db_path()
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("tmp")
-    ));
-    fs::create_dir_all(&temp_home)?;
-    // Safety: tests run in-process and this helper restores HOME before returning.
-    unsafe { env::set_var("HOME", &temp_home) };
-    let result = f();
-    match old_home {
-        Some(home) => unsafe { env::set_var("HOME", home) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-    let _ = fs::remove_dir_all(&temp_home);
-    result
+    let _home = crate::ScratchHome::new();
+    f()
 }
 
 #[test]

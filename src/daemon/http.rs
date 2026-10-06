@@ -682,7 +682,7 @@ async fn handle_ext_websocket(
 #[cfg(test)]
 mod admin_socket_tests {
     use super::serve_admin_request;
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use rand::RngCore;
     use std::{env, ffi::OsString, fs, path::PathBuf, sync::MutexGuard};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -697,7 +697,7 @@ mod admin_socket_tests {
         fn new() -> Result<Self> {
             let lock = crate::test_home_lock()
                 .lock()
-                .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+                .unwrap_or_else(|p| p.into_inner());
             let old_home = env::var_os("HOME");
             let mut bytes = [0u8; 8];
             rand::rng().fill_bytes(&mut bytes);

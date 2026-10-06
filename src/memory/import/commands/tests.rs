@@ -101,15 +101,16 @@ fn resolve_project_for_path_honors_override() {
 // without the short-circuit that is one LLM call per transcript per exit, all
 // of it deduped away on write.
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("sidekar-import-log-test-{}", std::process::id()));
-    let _ = fs::create_dir_all(&dir);
-    dir.join(name)
+/// A path called `name`, in a directory removed when the returned guard drops.
+fn scratch(name: &str) -> (crate::ScratchDir, std::path::PathBuf) {
+    let dir = crate::ScratchDir::new("import-log-test");
+    let path = dir.join(name);
+    (dir, path)
 }
 
 #[test]
 fn a_file_unchanged_since_its_last_import_is_not_read_again() {
-    let path = scratch("unchanged.jsonl");
+    let (_dir, path) = scratch("unchanged.jsonl");
     fs::write(&path, "one session's worth of turns").unwrap();
     let hash = file_hash(&path).unwrap();
 
@@ -125,12 +126,11 @@ fn a_file_unchanged_since_its_last_import_is_not_read_again() {
         "a skipped file must not be logged as examined, or the log would be \
          rewritten on every run for files nobody read"
     );
-    let _ = fs::remove_file(&path);
 }
 
 #[test]
 fn a_file_that_changed_since_its_last_import_is_read_again() {
-    let path = scratch("changed.jsonl");
+    let (_dir, path) = scratch("changed.jsonl");
     fs::write(&path, "turns, plus the ones added since").unwrap();
 
     let mut report = SourceReport::new("claude");
@@ -143,12 +143,11 @@ fn a_file_that_changed_since_its_last_import_is_read_again() {
     assert_eq!(report.examined.len(), 1);
     assert_eq!(report.examined[0].source_kind, "import:claude:session");
     assert_eq!(report.examined[0].content_hash, file_hash(&path).unwrap());
-    let _ = fs::remove_file(&path);
 }
 
 #[test]
 fn a_file_never_imported_before_is_read() {
-    let path = scratch("fresh.jsonl");
+    let (_dir, path) = scratch("fresh.jsonl");
     fs::write(&path, "a session sidekar has not seen").unwrap();
 
     let mut report = SourceReport::new("codex");
@@ -156,7 +155,6 @@ fn a_file_never_imported_before_is_read() {
 
     assert!(read);
     assert_eq!(report.examined.len(), 1);
-    let _ = fs::remove_file(&path);
 }
 
 #[test]
@@ -164,13 +162,11 @@ fn a_file_that_cannot_be_hashed_fails_open() {
     // Deleted between detection and extraction, or unreadable. Reading it costs
     // one wasted open; skipping it could drop a session permanently, so the
     // cheap mistake is the right one.
+    let (_dir, missing) = scratch("not-here.jsonl");
     let mut report = SourceReport::new("claude");
-    let read = should_read_with(
-        &mut report,
-        "import:claude:session",
-        &scratch("not-here.jsonl"),
-        |_, _| panic!("must not consult the log for a file it cannot hash"),
-    );
+    let read = should_read_with(&mut report, "import:claude:session", &missing, |_, _| {
+        panic!("must not consult the log for a file it cannot hash")
+    });
 
     assert!(read);
     assert!(
@@ -183,7 +179,7 @@ fn a_file_that_cannot_be_hashed_fails_open() {
 fn the_examined_list_carries_what_the_log_is_keyed_on() {
     // record_import upserts on (source_kind, file_path); an ExaminedFile that
     // did not carry both would log against the wrong row.
-    let path = scratch("keys.jsonl");
+    let (_dir, path) = scratch("keys.jsonl");
     fs::write(&path, "x").unwrap();
 
     let mut report = SourceReport::new("cursor");
@@ -193,5 +189,4 @@ fn the_examined_list_carries_what_the_log_is_keyed_on() {
     assert_eq!(e.source_kind, "import:cursor:session");
     assert_eq!(e.path, path);
     assert!(!e.content_hash.is_empty());
-    let _ = fs::remove_file(&path);
 }

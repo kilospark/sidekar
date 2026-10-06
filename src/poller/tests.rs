@@ -566,14 +566,7 @@ fn frame(id: i64, body: &str, created_at: u64) -> String {
 fn client_loop_pastes_a_backlog_once_and_acks_every_message() {
     use std::io::{BufRead, BufReader, Write};
 
-    let _guard = crate::test_home_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let home = std::env::temp_dir().join(format!("sidekar-poller-e2e-{}", std::process::id()));
-    std::fs::create_dir_all(&home).expect("temp home");
-    let old_home = std::env::var_os("HOME");
-    // Safety: single-threaded section, HOME restored before returning.
-    unsafe { std::env::set_var("HOME", &home) };
+    let _home = crate::ScratchHome::new();
 
     let pty = PtyPair::open();
     let (mut daemon_side, client_side) =
@@ -657,12 +650,6 @@ fn client_loop_pastes_a_backlog_once_and_acks_every_message() {
     POLLER_SHUTDOWN.store(true, Ordering::Relaxed);
     let _ = worker.join();
     POLLER_SHUTDOWN.store(false, Ordering::Relaxed);
-
-    match old_home {
-        Some(h) => unsafe { std::env::set_var("HOME", h) },
-        None => unsafe { std::env::remove_var("HOME") },
-    }
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]

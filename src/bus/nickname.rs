@@ -218,24 +218,12 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::anyhow;
 
+    /// Run `f` with HOME at a scratch directory, restored and removed
+    /// afterwards even if `f` panics.
     fn with_temp_home<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let _guard = crate::test_home_lock()
-            .lock()
-            .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
-        let old_home = env::var_os("HOME");
-        let temp_home =
-            env::temp_dir().join(format!("sidekar-nick-test-{}", rand::random::<u64>()));
-        fs::create_dir_all(&temp_home)?;
-        unsafe { env::set_var("HOME", &temp_home) };
-        let result = f();
-        match old_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        let _ = fs::remove_dir_all(&temp_home);
-        result
+        let _home = crate::ScratchHome::new();
+        f()
     }
 
     fn register_test_agent(name: &str, nick: &str, pane: &str) -> Result<()> {

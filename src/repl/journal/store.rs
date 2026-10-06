@@ -393,25 +393,10 @@ mod tests {
     /// Test fixture: isolate HOME and run init_db so schema v2 is
     /// in place. Mirrors src/broker/tests.rs `with_test_db`.
     fn with_test_db<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let _guard = crate::test_home_lock()
-            .lock()
-            .map_err(|_| anyhow::anyhow!("home lock poisoned"))?;
-        let old_home = std::env::var_os("HOME");
-        let temp =
-            std::env::temp_dir().join(format!("sidekar-journal-test-{}", std::process::id()));
-        std::fs::create_dir_all(&temp)?;
-        // Safety: in-process test, HOME restored before return.
-        unsafe {
-            std::env::set_var("HOME", &temp);
-        }
+        // Restores HOME and removes the directory even if `f` panics.
+        let _home = crate::ScratchHome::new();
         broker::init_db()?;
-        let result = f();
-        match old_home {
-            Some(h) => unsafe { std::env::set_var("HOME", h) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&temp);
-        result
+        f()
     }
 
     /// Seed a repl_sessions row so FK inserts work.
