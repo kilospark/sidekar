@@ -1008,3 +1008,142 @@ fn a_server_without_memory_sync_does_not_hold_up_kv() -> Result<()> {
         Ok(())
     })
 }
+
+// ---------------------------------------------------------------------------
+// Per-device keys and refused pushes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn per_device_kv_keys_never_queue_for_sync() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+        set_encryption_key(vec![19u8; 32]);
+        set_current_user_id("u".to_string());
+        kv_set("internal:device_id", "abc", None)?;
+        kv_set("shared", "v", None)?;
+        let conn = open()?;
+        seed_sync_state(&conn, "u")?;
+        let queued: Vec<String> = conn
+            .prepare("SELECT record_id FROM sync_state WHERE kind = 'kv' ORDER BY record_id")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        assert_eq!(queued, vec!["shared"], "neither a write nor seeding queues it");
+        Ok(())
+    })
+}
+
+#[test]
+fn a_pulled_per_device_key_is_left_out() -> Result<()> {
+    with_test_db(|| {
+        reset_encryption_state();
+        let uid = "u";
+        set_encryption_key(vec![19u8; 32]);
+        set_current_user_id(uid.to_string());
+        kv_set("internal:device_id", "mine", None)?;
+        let key = get_encryption_key().unwrap();
+        let theirs = super::super::encryption::sync_encrypt(
+            &key,
+            &serde_json::json!({ "value": "theirs", "tags": [] }).to_string(),
+        )?;
+        let conn = open()?;
+        assert!(!apply_remote_record(&conn, uid, "kv", "internal:device_id", &theirs, 99, false)?);
+        assert_eq!(kv_get("internal:device_id")?.unwrap().value, "mine");
+        Ok(())
+    })
+}
+
+#[test]
+fn leftover_sync_rows_for_per_device_keys_are_dropped_on_open() -> Result<()> {
+    with_test_db(|| {
+        let conn = open()?;
+        conn.execute_batch(
+            "INSERT INTO sync_state (user_id, kind, record_id, version, deleted, dirty, updated_at)
+             VALUES ('u', 'kv', 'internal:device_id', 5, 0, 1, 0),
+                    ('u', 'kv', 'shared', 1, 0, 1, 0);",
+        )?;
+        drop(conn);
+        let conn = open()?;
+        let left: Vec<String> = conn
+            .prepare("SELECT record_id FROM sync_state ORDER BY record_id")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        assert_eq!(left, vec!["shared"], "the stuck per-device row goes, nothing else");
+        Ok(())
+    })
+}
+
+#[test]
+fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<()> {
+    let _guard = crate::test_home_lock()
+        .lock()
+        .map_err(|_| anyhow!("failed to lock test HOME mutex"))?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
+        let server = FakeSyncServer::start(store).await?;
+        let old_api_url = env::var_os("SIDEKAR_API_URL");
+        let old_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr));
+        }
+
+        let uid = "conflict-account";
+        let account_key = vec![23u8; 32];
+        let home_a = env::temp_dir().join(format!("sidekar-conflict-a-{}", unique_suffix()));
+        let home_b = env::temp_dir().join(format!("sidekar-conflict-b-{}", unique_suffix()));
+        fs::create_dir_all(&home_a)?;
+        fs::create_dir_all(&home_b)?;
+        let switch_to = |home: &std::path::Path| {
+            unsafe { env::set_var("HOME", home) };
+            reset_encryption_state();
+            set_encryption_key(account_key.clone());
+            set_current_user_id(uid.to_string());
+            auth_set("token", uid).expect("auth_set should persist the fake device token");
+        };
+
+        // Each device sets the same key on its own, so both reach version 1.
+        switch_to(&home_a);
+        kv_set("shared", "from-a", None)?;
+        switch_to(&home_b);
+        kv_set("shared", "from-b", None)?;
+
+        switch_to(&home_a);
+        assert_eq!(push_dirty(uid, Duration::from_secs(5)).await?.pushed, 1);
+
+        // B's version-1 push is refused. B moves past the server's version and
+        // re-pushes in the same call, instead of staying refused forever.
+        switch_to(&home_b);
+        let pushed = push_dirty(uid, Duration::from_secs(5)).await?;
+        assert_eq!((pushed.pushed, pushed.failed, pushed.bumped), (1, 0, 1));
+        let conn = open()?;
+        let state: (i64, i64) = conn.query_row(
+            "SELECT version, dirty FROM sync_state
+              WHERE user_id = ?1 AND kind = 'kv' AND record_id = 'shared'",
+            [uid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(state, (2, 0), "settled, not stuck dirty");
+        drop(conn);
+
+        // A adopts B's value and keeps its own in history.
+        switch_to(&home_a);
+        assert_eq!(pull_merge(uid).await?.applied, 1);
+        assert_eq!(kv_get("shared")?.unwrap().value, "from-b");
+        assert!(kv_history("shared")?.iter().any(|h| h.value == "from-a"));
+
+        server.stop();
+        reset_encryption_state();
+        match old_api_url {
+            Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
+            None => unsafe { env::remove_var("SIDEKAR_API_URL") },
+        }
+        match old_home {
+            Some(v) => unsafe { env::set_var("HOME", v) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+        let _ = fs::remove_dir_all(&home_a);
+        let _ = fs::remove_dir_all(&home_b);
+        Ok(())
+    })
+}

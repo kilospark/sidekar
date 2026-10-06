@@ -190,6 +190,26 @@ fn ensure_added_columns(conn: &Connection) -> Result<()> {
         ensure_column(conn, table, column, ddl)?;
     }
     ensure_memory_sync_columns(conn)?;
+    drop_unsynced_kv_state(conn)?;
+    Ok(())
+}
+
+/// Per-device kv keys no longer sync (see `kv_store::kv_key_syncs`). Drop the
+/// sync rows they left behind: one stuck dirty retried a refused push every
+/// ten minutes, forever. A read guards the write, since this runs on every
+/// open.
+fn drop_unsynced_kv_state(conn: &Connection) -> Result<()> {
+    let any: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE kind = 'kv' AND record_id GLOB 'internal:*')",
+        [],
+        |r| r.get(0),
+    )?;
+    if any {
+        conn.execute(
+            "DELETE FROM sync_state WHERE kind = 'kv' AND record_id GLOB 'internal:*'",
+            [],
+        )?;
+    }
     Ok(())
 }
 

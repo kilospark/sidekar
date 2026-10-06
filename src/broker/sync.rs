@@ -132,6 +132,8 @@ pub fn resolve(local: Option<LocalState>, remote: RemoteState) -> MergeAction {
 pub struct PushSummary {
     pub pushed: usize,
     pub failed: usize,
+    /// Refused records moved past the server's version, to win on a re-push.
+    pub bumped: usize,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -154,6 +156,10 @@ struct PushResultItem {
     kind: String,
     record_id: String,
     accepted: bool,
+    /// The version the server holds, sent with a refusal so the client can
+    /// re-merge from it.
+    #[serde(default)]
+    current_version: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -306,9 +312,23 @@ fn sync_api_base() -> String {
 /// just the key that was just touched -- that's the retry mechanism for a
 /// push that failed earlier while offline.
 pub async fn push_dirty(uid: &str, budget: Duration) -> Result<PushSummary> {
-    tokio::time::timeout(budget, push_dirty_inner(uid, budget))
-        .await
-        .context("sync push timed out")?
+    tokio::time::timeout(budget, async {
+        let first = push_dirty_inner(uid, budget).await?;
+        if first.bumped == 0 {
+            return Ok::<_, anyhow::Error>(first);
+        }
+        // A refused record was moved past the version the server holds. Push
+        // again now, so the conflict settles in this call rather than at the
+        // next retry ten minutes on.
+        let second = push_dirty_inner(uid, budget).await?;
+        Ok(PushSummary {
+            pushed: first.pushed + second.pushed,
+            failed: second.failed,
+            bumped: first.bumped + second.bumped,
+        })
+    })
+    .await
+    .context("sync push timed out")?
 }
 
 async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
@@ -434,6 +454,25 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
                 summary.pushed += 1;
             } else {
                 summary.failed += 1;
+                // Refused: the server already holds this version or a newer
+                // one, from another device. If the row is still the change we
+                // just sent, move it past the server's version so the next push
+                // supersedes it, and the last writer wins. Left alone, two
+                // devices that reach the same version deadlock: the push is
+                // refused forever, and a pull keeps the unsent local change
+                // because the versions are equal.
+                if let (Some(&version), Some(current)) = (
+                    version_by_id.get(&(item.kind.clone(), item.record_id.clone())),
+                    item.current_version,
+                ) && current >= version
+                {
+                    summary.bumped += conn.execute(
+                        "UPDATE sync_state SET version = ?5 + 1 \
+                         WHERE user_id = ?1 AND kind = ?2 AND record_id = ?3 \
+                           AND version = ?4 AND dirty = 1",
+                        params![uid, item.kind, item.record_id, version, current],
+                    )?;
+                }
             }
         }
     }
@@ -632,6 +671,11 @@ fn apply_remote_record(
     remote_version: i64,
     remote_deleted: bool,
 ) -> Result<bool> {
+    // Per-device kv keys don't sync (see `kv_store::kv_key_syncs`). One pulled
+    // from a device still on an older build is left out, not adopted.
+    if kind == "kv" && !super::kv_store::kv_key_syncs(record_id) {
+        return Ok(false);
+    }
     let local = local_sync_state(conn, uid, kind, record_id)?;
     let remote = RemoteState {
         version: remote_version,
@@ -828,8 +872,8 @@ fn seed_sync_state(conn: &Connection, uid: &str) -> Result<()> {
         }
         out
     };
-    for key in kv_keys {
-        seed_one(conn, uid, "kv", &key, now)?;
+    for key in kv_keys.iter().filter(|k| super::kv_store::kv_key_syncs(k)) {
+        seed_one(conn, uid, "kv", key, now)?;
     }
 
     let totp_pairs: Vec<(String, String, String)> = {

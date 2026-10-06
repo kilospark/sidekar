@@ -85,6 +85,24 @@ pub(crate) fn kv_archive(conn: &Connection, uid: &str, key: &str) -> Result<()> 
 }
 
 /// Set a KV value, scoped to current user. Archives previous value.
+/// Whether a kv key syncs across devices. `internal:` keys hold per-device
+/// state, today the Anthropic provider's device id, which each device creates
+/// for itself. Synced, every device pushed its own value under the same key:
+/// devices adopted each other's id, and the losers' pushes were refused for
+/// good.
+pub(crate) fn kv_key_syncs(key: &str) -> bool {
+    !key.starts_with("internal:")
+}
+
+/// Record a kv change for the next sync push, unless the key stays on this
+/// device.
+fn mark_kv_dirty(conn: &Connection, uid: &str, key: &str, deleted: bool) -> Result<()> {
+    if kv_key_syncs(key) {
+        super::sync::mark_dirty(conn, uid, "kv", key, deleted)?;
+    }
+    Ok(())
+}
+
 pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;
@@ -120,7 +138,7 @@ pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
          ON CONFLICT(user_id, key) DO UPDATE SET value = ?3, tags = ?4, updated_at = ?6",
         params![uid, key, value_to_store, tags_json, now, now],
     )?;
-    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
+    mark_kv_dirty(&conn, &uid, key, false)?;
     Ok(())
 }
 
@@ -173,7 +191,7 @@ pub fn kv_delete(key: &str) -> Result<()> {
         "DELETE FROM kv_history WHERE user_id = ?1 AND key = ?2",
         params![uid, key],
     )?;
-    super::sync::mark_dirty(&conn, &uid, "kv", key, true)?;
+    mark_kv_dirty(&conn, &uid, key, true)?;
     Ok(())
 }
 
@@ -199,7 +217,7 @@ pub fn kv_tag_add(key: &str, new_tags: &[String]) -> Result<()> {
         "UPDATE kv_store SET tags = ?1 WHERE user_id = ?2 AND key = ?3",
         params![tags_to_json(&tags), uid, key],
     )?;
-    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
+    mark_kv_dirty(&conn, &uid, key, false)?;
     Ok(())
 }
 
@@ -223,7 +241,7 @@ pub fn kv_tag_remove(key: &str, rm_tags: &[String]) -> Result<()> {
         "UPDATE kv_store SET tags = ?1 WHERE user_id = ?2 AND key = ?3",
         params![tags_to_json(&tags), uid, key],
     )?;
-    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
+    mark_kv_dirty(&conn, &uid, key, false)?;
     Ok(())
 }
 
@@ -282,7 +300,7 @@ pub fn kv_rollback(key: &str, target_version: i64) -> Result<()> {
          WHERE user_id = ?4 AND key = ?5",
         params![target_value, target_tags, now, uid, key],
     )?;
-    super::sync::mark_dirty(&conn, &uid, "kv", key, false)?;
+    mark_kv_dirty(&conn, &uid, key, false)?;
     Ok(())
 }
 
