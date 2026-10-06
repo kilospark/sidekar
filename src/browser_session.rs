@@ -67,6 +67,23 @@ impl AppContext {
             }
         };
         self.current_session_id = Some(sid);
+        if self.profile_explicit {
+            // A command that named --profile reuses only that profile's own
+            // session. The pointer can name another profile's: the default
+            // profile's pointer is the one plain commands share, and it follows
+            // whatever ran last.
+            let state = self.load_session_state()?;
+            let session_profile = state.profile.as_deref().unwrap_or("default");
+            if crate::app_context::base_profile(session_profile)
+                != crate::app_context::base_profile(&self.current_profile)
+            {
+                self.current_session_id = None;
+                bail!(
+                    "the last session is profile '{session_profile}', not '{}'",
+                    self.current_profile
+                );
+            }
+        }
         self.hydrate_connection_from_state()
     }
 

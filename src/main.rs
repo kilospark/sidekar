@@ -111,6 +111,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         None
     };
 
+    // Sidekar's browser flags, taken before the passthrough args after `--`
+    // are added back, so a `--profile` there (for an agent or a script) is
+    // never mistaken for sidekar's. See `take_browser_flags`.
+    let browser_flags = take_browser_flags(&mut args, |name| {
+        sidekar::is_known_command(sidekar::canonical_command_name(name).unwrap_or(name))
+    })?;
+
     // Append passthrough args after sidekar flags have been consumed
     if let Some(mut pt) = passthrough {
         args.append(&mut pt);
@@ -135,19 +142,15 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         .unwrap_or(raw_command.as_str())
         .to_string();
 
-    // Global --host flag: route session-requiring commands through the
-    // extension daemon (which talks to your already-running Chrome) instead
-    // of launching/attaching to a managed Chrome via CDP.
-    let host_mode = if let Some(pos) = args.iter().position(|a| a == "--host") {
-        args.remove(pos);
-        true
-    } else {
-        false
-    };
+    // --host routes session-requiring commands through the extension daemon
+    // (which talks to your already-running Chrome) instead of launching or
+    // attaching to a managed Chrome over CDP.
+    let host_mode = browser_flags.host;
 
-    // Global --profile <name>: select which managed Chrome profile to use.
-    // Stripped from args here EXCEPT when the command consumes --profile
-    // itself (browser launch / browser network / browser ext), so per-command parsing keeps working.
+    // --profile picks the managed Chrome profile. `browser launch`, `browser
+    // network`, `browser ext` and `network` read it from their own args, so it
+    // goes back to them as `--profile <name>`, the form they parse. For every
+    // other command it selects the profile here.
     let consumes_own_profile = match command.as_str() {
         "network" => true,
         "browser" => matches!(
@@ -156,21 +159,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         ),
         _ => false,
     };
-    let global_profile: Option<String> = if !consumes_own_profile {
-        if let Some(pos) = args.iter().position(|a| a == "--profile") {
-            if pos + 1 < args.len() {
-                let val = args[pos + 1].clone();
-                args.remove(pos);
-                args.remove(pos);
-                Some(val)
-            } else {
-                bail!("--profile requires a name argument");
-            }
-        } else {
+    let global_profile = match browser_flags.profile {
+        Some(profile) if consumes_own_profile => {
+            args.push("--profile".to_string());
+            args.push(profile);
             None
         }
-    } else {
-        None
+        profile => profile,
     };
 
     if matches!(command.as_str(), "-v" | "-V" | "--version") {
@@ -281,6 +276,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     // PTY wrapper: if the command resolves to an external binary or shell alias, launch it.
     // Only check for unknown commands — known sidekar commands must not be hijacked.
     if !sidekar::is_known_command(&command) && sidekar::pty::is_agent_command(&command) {
+        if global_profile.is_some() || host_mode {
+            bail!(
+                "--profile and --host pick the browser for `sidekar browser` commands; they do \
+                 nothing for `sidekar {command}`. To pass one to {command}, put it after the \
+                 agent name."
+            );
+        }
         return sidekar::pty::run_agent(&command, &args, relay_override, proxy_override, yolo)
             .await;
     }
@@ -294,6 +296,13 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     }
 
     let mut ctx = AppContext::new()?;
+    if let Some(profile) = &global_profile {
+        // The managed Chrome this command drives. It scopes the last-session
+        // pointer (`AppContext::last_session_file`), so the command reuses this
+        // profile's session and never another profile's.
+        ctx.current_profile = profile.clone();
+        ctx.profile_explicit = true;
+    }
 
     // Fetch encryption key from server if logged in
     if !matches!(
@@ -389,6 +398,18 @@ async fn run(mut args: Vec<String>) -> Result<()> {
             let path = ctx.session_state_file(&sid);
             let content = fs::read_to_string(&path)?;
             let state: serde_json::Value = serde_json::from_str(&content)?;
+            if ctx.profile_explicit {
+                // Only this profile's own session (see `auto_discover_last_session`).
+                let profile = state
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                if sidekar::app_context::base_profile(profile)
+                    != sidekar::app_context::base_profile(&ctx.current_profile)
+                {
+                    bail!("the last session belongs to another profile");
+                }
+            }
             state
                 .get("port")
                 .and_then(|v| v.as_u64())
@@ -397,8 +418,8 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         })() {
             state_port
         } else {
-            // No session — try reading port from default profile
-            let port_file = ctx.chrome_port_file_for("default");
+            // No session: try the selected profile's port (default unless --profile).
+            let port_file = ctx.chrome_port_file_for(&ctx.current_profile);
             let port_str = fs::read_to_string(&port_file)
                 .context("No running browser found. Run: sidekar browser launch")?;
             port_str
@@ -465,6 +486,73 @@ fn is_sessionless_subcommand(command: &str, args: &[String]) -> bool {
             ),
             (Some("network"), Some("passive")) | (Some("network"), Some("sse"))
         )
+}
+
+/// Sidekar's own browser flags, taken out of argv before the command runs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct BrowserFlags {
+    /// `--profile <name>` or `--profile=<name>`: the managed Chrome profile.
+    profile: Option<String>,
+    /// `--host`: drive your own Chrome through the extension instead.
+    host: bool,
+}
+
+/// Take `--profile <name>`, `--profile=<name>` and `--host` out of `args`
+/// (argv before any `--`).
+///
+/// Before the command they are always sidekar's, which is where the help puts
+/// them. They used to be read only after the command was taken, so a leading
+/// `--profile` became the command ("Unknown command: --profile"), and
+/// `--profile=<name>` was never recognised at all: it quietly fell back to the
+/// default profile, cookies and all. After the command they are sidekar's only
+/// for a sidekar command; an agent run through the PTY wrapper (`sidekar codex
+/// --profile work`) owns the rest of its argv.
+fn take_browser_flags(
+    args: &mut Vec<String>,
+    is_sidekar_command: impl Fn(&str) -> bool,
+) -> Result<BrowserFlags> {
+    // Where the command is: past any leading browser flags, and the name a
+    // leading `--profile` takes.
+    let mut command_at = 0;
+    while let Some(arg) = args.get(command_at) {
+        command_at += match arg.as_str() {
+            "--profile" => 2,
+            "--host" => 1,
+            a if a.starts_with("--profile=") => 1,
+            _ => break,
+        };
+    }
+    let mut end = match args.get(command_at) {
+        Some(command) if !is_sidekar_command(command) => command_at,
+        _ => args.len(),
+    };
+
+    let mut flags = BrowserFlags::default();
+    let mut i = 0;
+    while i < end {
+        if args[i] == "--host" {
+            args.remove(i);
+            end -= 1;
+            flags.host = true;
+        } else if args[i] == "--profile" {
+            if i + 1 >= end {
+                bail!("--profile requires a name, e.g. --profile work");
+            }
+            flags.profile = Some(args.remove(i + 1));
+            args.remove(i);
+            end -= 2;
+        } else if let Some(name) = args[i].strip_prefix("--profile=") {
+            if name.is_empty() {
+                bail!("--profile requires a name, e.g. --profile=work");
+            }
+            flags.profile = Some(name.to_string());
+            args.remove(i);
+            end -= 1;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(flags)
 }
 
 fn should_handle_sidekar_help_flag(raw_command: &str, command: &str) -> bool {
@@ -565,6 +653,84 @@ fn format_age(timestamp: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn sidekar_command(name: &str) -> bool {
+        matches!(name, "browser" | "network" | "kv")
+    }
+
+    fn take(items: &[&str]) -> (BrowserFlags, Vec<String>) {
+        let mut args = strings(items);
+        let flags = take_browser_flags(&mut args, sidekar_command).unwrap();
+        (flags, args)
+    }
+
+    #[test]
+    fn a_profile_before_the_command_is_sidekars_in_either_form() {
+        for given in [&["--profile", "work", "browser", "tabs"][..], &["--profile=work", "browser", "tabs"]] {
+            let (flags, rest) = take(given);
+            assert_eq!(flags.profile.as_deref(), Some("work"), "{given:?}");
+            assert_eq!(rest, strings(&["browser", "tabs"]), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_profile_after_a_sidekar_command_is_sidekars_in_either_form() {
+        for given in [&["browser", "--profile", "work", "tabs"][..], &["browser", "tabs", "--profile=work"]] {
+            let (flags, rest) = take(given);
+            assert_eq!(flags.profile.as_deref(), Some("work"), "{given:?}");
+            assert_eq!(rest, strings(&["browser", "tabs"]), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn host_is_taken_before_or_after_a_sidekar_command() {
+        for given in [&["--host", "browser", "tabs"][..], &["browser", "tabs", "--host"]] {
+            let (flags, rest) = take(given);
+            assert!(flags.host, "{given:?}");
+            assert_eq!(rest, strings(&["browser", "tabs"]), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn an_agent_keeps_its_own_flags() {
+        // `sidekar codex --profile work` is Codex's own --profile.
+        let (flags, rest) = take(&["codex", "--profile", "work", "--host"]);
+        assert_eq!(flags, BrowserFlags::default());
+        assert_eq!(rest, strings(&["codex", "--profile", "work", "--host"]));
+    }
+
+    #[test]
+    fn a_flag_placed_before_an_agent_is_taken_so_it_can_be_refused() {
+        let (flags, rest) = take(&["--profile", "work", "codex", "--profile", "theirs"]);
+        assert_eq!(flags.profile.as_deref(), Some("work"));
+        assert_eq!(rest, strings(&["codex", "--profile", "theirs"]));
+    }
+
+    #[test]
+    fn the_last_profile_given_wins() {
+        let (flags, rest) = take(&["--profile", "a", "browser", "--profile=b", "tabs"]);
+        assert_eq!(flags.profile.as_deref(), Some("b"));
+        assert_eq!(rest, strings(&["browser", "tabs"]));
+    }
+
+    #[test]
+    fn a_profile_needs_a_name() {
+        for given in [&["browser", "tabs", "--profile"][..], &["--profile"], &["--profile=", "browser"]] {
+            let mut args = strings(given);
+            assert!(take_browser_flags(&mut args, sidekar_command).is_err(), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn no_browser_flags_leaves_argv_alone() {
+        let (flags, rest) = take(&["kv", "get", "--profiles"]);
+        assert_eq!(flags, BrowserFlags::default());
+        assert_eq!(rest, strings(&["kv", "get", "--profiles"]));
+    }
 
     #[test]
     fn help_flag_is_not_intercepted_for_unknown_agent_commands() {

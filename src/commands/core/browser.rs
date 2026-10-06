@@ -525,8 +525,14 @@ async fn connect_inner(ctx: &mut AppContext) -> Result<(bool, String)> {
         ..SessionState::default()
     };
     ctx.save_session_state(&state)?;
-    fs::write(ctx.last_session_file(), &session_id)
-        .context("failed writing last session pointer")?;
+    // Plain commands follow the session used last, whatever its profile; a
+    // command naming --profile follows that profile's own pointer.
+    let sticky = ctx.sticky_session_file();
+    fs::write(&sticky, &session_id).context("failed writing last session pointer")?;
+    let own = ctx.last_session_file();
+    if own != sticky {
+        fs::write(&own, &session_id).context("failed writing profile session pointer")?;
+    }
 
     Ok((has_own_window, session_id))
 }

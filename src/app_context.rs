@@ -1,6 +1,12 @@
 use crate::*;
 
 /// Sanitize a string for use in filenames (replace /, \, : with -; collapse -- to -).
+/// A profile without its `.headless` suffix. `browser launch --headless` runs
+/// a profile under that suffix; for picking a session it is the same profile.
+pub fn base_profile(profile: &str) -> &str {
+    profile.strip_suffix(".headless").unwrap_or(profile)
+}
+
 pub fn sanitize_for_filename(s: &str) -> String {
     let replaced: String = s
         .chars()
@@ -34,6 +40,9 @@ pub struct AppContext {
     pub session_start: std::time::Instant,
     pub isolated: bool,
     pub current_profile: String,
+    /// Set when the command named `--profile`: it may reuse only that
+    /// profile's own browser session (see `auto_discover_last_session`).
+    pub profile_explicit: bool,
     /// Override active tab — connects directly to this tab ID, bypassing session ownership.
     pub override_tab_id: Option<String>,
     /// Browser launched in headless mode — skip window management operations.
@@ -64,6 +73,7 @@ impl AppContext {
             session_start: std::time::Instant::now(),
             isolated: false,
             current_profile: "default".to_string(),
+            profile_explicit: false,
             override_tab_id: None,
             headless: false,
             agent_name: crate::runtime::agent_name(),
@@ -96,12 +106,33 @@ impl AppContext {
         env::temp_dir()
     }
 
-    pub fn last_session_file(&self) -> PathBuf {
-        if let Some(agent_name) = self.agent_name.as_deref() {
-            let safe_name = sanitize_for_filename(agent_name);
-            return self.data_dir().join(format!("last-session-{safe_name}"));
+    fn session_pointer_name(&self) -> String {
+        match self.agent_name.as_deref() {
+            Some(agent_name) => format!("last-session-{}", sanitize_for_filename(agent_name)),
+            None => "last-session".to_string(),
         }
-        self.data_dir().join("last-session")
+    }
+
+    /// The pointer plain browser commands follow: the session this agent used
+    /// last, whatever its profile.
+    pub fn sticky_session_file(&self) -> PathBuf {
+        self.data_dir().join(self.session_pointer_name())
+    }
+
+    /// The pointer for the current profile. `--profile X` follows X's own
+    /// pointer, so it never picks up another profile's Chrome, and its cookies,
+    /// just because that one ran last. The default profile's pointer is the
+    /// sticky one, so plain commands, and sessions from before pointers were per
+    /// profile, carry on as before. A `.headless` variant shares its profile's
+    /// pointer.
+    pub fn last_session_file(&self) -> PathBuf {
+        let profile = base_profile(&self.current_profile);
+        let mut name = self.session_pointer_name();
+        if profile != "default" {
+            name.push_str("-profile-");
+            name.push_str(&sanitize_for_filename(profile));
+        }
+        self.data_dir().join(name)
     }
 
     pub fn is_named_agent(&self) -> bool {
@@ -182,3 +213,6 @@ pub(crate) fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> 
         .with_context(|| format!("failed renaming {} → {}", tmp.display(), path.display()))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
