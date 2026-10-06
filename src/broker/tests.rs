@@ -1370,6 +1370,21 @@ fn cancelling_a_request_withdraws_it_from_the_queue() -> Result<()> {
     })
 }
 
+#[test]
+fn a_machine_that_never_logged_in_has_no_device_token() -> Result<()> {
+    with_test_db(|| {
+        assert_eq!(auth_get("token"), None, "no row is no token, not an empty one");
+        assert!(crate::auth::auth_token().is_none());
+
+        auth_set("token", "tok-123")?;
+        assert_eq!(crate::auth::auth_token().as_deref(), Some("tok-123"));
+
+        auth_clear()?;
+        assert!(crate::auth::auth_token().is_none(), "logged out again");
+        Ok(())
+    })
+}
+
 /// Reset the process-wide encryption statics so one test's key/uid can't
 /// leak into the next. Callers still go through `with_test_db` for the
 /// HOME-swap + serialization; this only resets the separate in-memory
