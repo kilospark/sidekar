@@ -109,6 +109,16 @@ fn format_session_age(secs: f64) -> String {
     }
 }
 
+/// How long ago a session's state last changed: the time elapsed since
+/// `updated_at`. It used to format the time since the Unix epoch instead, so
+/// every session read as about 20,700 days old. A time in the future (clock
+/// skew) reads as just now.
+fn session_age(updated_at: Option<std::time::SystemTime>) -> String {
+    updated_at
+        .map(|ts| format_session_age(ts.elapsed().map(|d| d.as_secs_f64()).unwrap_or(0.0)))
+        .unwrap_or_else(|| "-".to_string())
+}
+
 pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
     let ctx = AppContext::new()?;
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
@@ -123,11 +133,7 @@ pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
                     profile: s.profile.unwrap_or_else(|| "default".into()),
                     tab_count: s.tabs.len(),
                     active_tab: s.active_tab_id.unwrap_or_else(|| "-".into()),
-                    updated: s
-                        .updated_at
-                        .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| format_session_age(d.as_secs_f64()))
-                        .unwrap_or_else(|| "-".to_string()),
+                    updated: session_age(s.updated_at),
                 })
                 .collect();
             crate::output::emit(&BrowserSessionsOutput { items })?;
@@ -148,11 +154,7 @@ pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
                 tabs: session.tabs,
                 window_id: session.window_id,
                 state_file: session.state_path.display().to_string(),
-                updated: session
-                    .updated_at
-                    .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| format_session_age(d.as_secs_f64()))
-                    .unwrap_or_else(|| "-".to_string()),
+                updated: session_age(session.updated_at),
             };
             crate::output::emit(&detail)?;
             Ok(())
@@ -160,3 +162,6 @@ pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
         _ => bail!("Usage: sidekar browser sessions <list|show>"),
     }
 }
+
+#[cfg(test)]
+mod tests;
