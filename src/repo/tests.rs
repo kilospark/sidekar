@@ -23,8 +23,8 @@ fn collects_files_respecting_sidekarignore() -> Result<()> {
     fs::create_dir_all(root.join("private"))?;
     fs::write(root.join("private/secret.md"), "secret\n")?;
 
-    let matcher = MatcherSet::new(&root, &[], &[])?;
-    let snapshot = collect_repo_files(&root, &matcher, &[], DEFAULT_MAX_FILE_BYTES)?;
+    let matcher = MatcherSet::new(root, &[], &[])?;
+    let snapshot = collect_repo_files(root, &matcher, &[], DEFAULT_MAX_FILE_BYTES)?;
     let paths = snapshot
         .files
         .iter()
