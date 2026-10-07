@@ -18,14 +18,10 @@ pub(super) async fn ws_connect_and_register(params: &ConnectParams) -> Result<(W
             .context("invalid auth header value")?,
     );
 
-    let (mut ws, _response) = tokio_tungstenite::connect_async_tls_with_config(
-        request,
-        None,
-        false,
-        Some(crate::http_client::ws_connector()),
-    )
-    .await
-    .with_context(|| format!("failed to connect to relay at {url}"))?;
+    let (mut ws, _response) =
+        crate::http_client::ws_connect(request, crate::http_client::ws_connector())
+            .await
+            .map_err(|e| relay_dial_error(e, &url))?;
 
     // Send register message
     let register = RegisterMsg {
@@ -75,6 +71,20 @@ pub(super) async fn ws_connect_and_register(params: &ConnectParams) -> Result<(W
     .context("registration failed")?;
 
     Ok((ws, session_id))
+}
+
+/// `err` from dialing the relay at `url`, led by its usual cause when it has
+/// one: the raw TLS error alone does not say a proxy is in the way.
+pub(super) fn relay_dial_error(err: anyhow::Error, url: &str) -> anyhow::Error {
+    let err = err.context(format!("failed to connect to relay at {url}"));
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from))
+        .unwrap_or_else(|| url.to_string());
+    match crate::http_client::explain_tls_failure(&err, &host) {
+        Some(why) => err.context(why),
+        None => err,
+    }
 }
 
 pub(super) async fn tunnel_task(

@@ -75,16 +75,12 @@ async fn attach_unix(device_token: &str, session_id: &str) -> Result<()> {
             .context("invalid Authorization header value for viewer WS")?,
     );
 
-    let (mut ws_write, mut ws_read) = tokio_tungstenite::connect_async_tls_with_config(
-        request,
-        None,
-        false,
-        Some(crate::http_client::ws_connector()),
-    )
-    .await
-    .with_context(|| format!("WebSocket viewer connect failed: {ws_url}"))?
-    .0
-    .split();
+    let (mut ws_write, mut ws_read) =
+        crate::http_client::ws_connect(request, crate::http_client::ws_connector())
+            .await
+            .map_err(|e| super::transport::relay_dial_error(e, &ws_url))?
+            .0
+            .split();
 
     // Claim the session size for this viewer. The relay replays its own
     // scrollback right after the connect, so no replay is requested here —

@@ -329,7 +329,13 @@ pub async fn run_with_options(opts: ReplOptions) -> Result<()> {
         None => crate::config::relay_mode(),
     };
     let (mut tunnel_tx, mut tunnel_input_bridge) = if relay_policy == crate::config::RelayMode::On {
-        start_relay(&bus_name, &cwd, &nick).await
+        match start_relay(&bus_name, &cwd, &nick).await {
+            Ok((tx, bridge)) => (Some(tx), bridge),
+            Err(e) => {
+                crate::tunnel::tunnel_println(&format!("\x1b[33mRelay not started: {e:#}\x1b[0m"));
+                (None, None)
+            }
+        }
     } else {
         (None, None)
     };

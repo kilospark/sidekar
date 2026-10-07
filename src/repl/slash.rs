@@ -1285,15 +1285,15 @@ pub(super) async fn apply_slash_result(
             if tunnel_tx.is_some() {
                 tunnel_println("Relay is already on.");
             } else {
-                let (tx, bridge) = start_relay(bus_name, cwd, nick).await;
-                if tx.is_some() {
-                    *tunnel_tx = tx;
-                    *tunnel_input_bridge = bridge;
-                    tunnel_println("Relay: \x1b[32mon\x1b[0m");
-                } else {
-                    tunnel_println(
-                        "\x1b[31mFailed to start relay. Are you logged in? (sidekar device login)\x1b[0m",
-                    );
+                match start_relay(bus_name, cwd, nick).await {
+                    Ok((tx, bridge)) => {
+                        *tunnel_tx = Some(tx);
+                        *tunnel_input_bridge = bridge;
+                        tunnel_println("Relay: \x1b[32mon\x1b[0m");
+                    }
+                    Err(e) => {
+                        tunnel_println(&format!("\x1b[31mFailed to start relay: {e:#}\x1b[0m"));
+                    }
                 }
             }
         }

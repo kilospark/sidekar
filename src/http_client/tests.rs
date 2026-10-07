@@ -182,3 +182,163 @@ fn remote_connections_are_only_built_in_http_client() {
         offenders.join("\n  ")
     );
 }
+
+// ---- WebSockets through an HTTP proxy -----------------------------------------
+
+fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    let map: std::collections::HashMap<String, String> = pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    move |k| map.get(k).cloned()
+}
+
+#[test]
+fn https_proxy_names_the_proxy_to_connect_through() {
+    let proxy = connect_proxy_for(
+        "relay.sidekar.dev",
+        env_of(&[("HTTPS_PROXY", "http://proxy.corp:3128")]),
+    )
+    .unwrap()
+    .expect("a proxy");
+    assert_eq!(proxy.addr, "proxy.corp:3128");
+    assert_eq!(proxy.auth, None);
+
+    // Lowercase, no scheme, and ALL_PROXY when nothing more specific is set.
+    for env in [
+        env_of(&[("https_proxy", "proxy.corp:3128")]),
+        env_of(&[("ALL_PROXY", "http://proxy.corp:3128")]),
+    ] {
+        let proxy = connect_proxy_for("relay.sidekar.dev", env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(proxy.addr, "proxy.corp:3128");
+    }
+    assert_eq!(
+        connect_proxy_for("relay.sidekar.dev", env_of(&[])).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_proxy_url_with_credentials_authenticates() {
+    let proxy = connect_proxy_for(
+        "relay.sidekar.dev",
+        env_of(&[("HTTPS_PROXY", "http://me:p%40ss@proxy.corp:8080")]),
+    )
+    .unwrap()
+    .unwrap();
+    use base64::Engine;
+    let expected = base64::engine::general_purpose::STANDARD.encode("me:p@ss");
+    assert_eq!(proxy.auth, Some(format!("Basic {expected}")));
+}
+
+#[test]
+fn no_proxy_exempts_a_host_and_its_subdomains() {
+    let proxied = |host: &str, no_proxy: &str| {
+        connect_proxy_for(
+            host,
+            env_of(&[("HTTPS_PROXY", "http://proxy:3128"), ("NO_PROXY", no_proxy)]),
+        )
+        .unwrap()
+        .is_some()
+    };
+    assert!(!proxied("relay.sidekar.dev", "localhost,sidekar.dev"));
+    assert!(!proxied("relay.sidekar.dev", ".sidekar.dev"));
+    assert!(!proxied("relay.sidekar.dev", "*"));
+    assert!(proxied("relay.sidekar.dev", "notsidekar.dev"));
+    assert!(proxied("relay.sidekar.dev", "localhost"));
+}
+
+#[test]
+fn a_proxy_sidekar_cannot_speak_to_is_an_error_not_a_direct_dial() {
+    let err = connect_proxy_for(
+        "relay.sidekar.dev",
+        env_of(&[("HTTPS_PROXY", "socks5://proxy:1080")]),
+    )
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("socks5"), "{err:#}");
+}
+
+/// A proxy on a local port that answers one CONNECT with `status`, and
+/// reports the request it received.
+async fn fake_proxy(status: &'static str) -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let handle = tokio::spawn(async move {
+        let (mut conn, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut b = [0u8; 1];
+            if conn.read(&mut b).await.unwrap() == 0 {
+                break;
+            }
+            head.push(b[0]);
+        }
+        conn.write_all(format!("HTTP/1.1 {status}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        // Echo what follows, standing in for the far end of the tunnel.
+        let mut buf = [0u8; 64];
+        if let Ok(n) = conn.read(&mut buf).await {
+            let _ = conn.write_all(&buf[..n]).await;
+        }
+        String::from_utf8_lossy(&head).to_string()
+    });
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn connect_asks_the_proxy_for_the_host_and_hands_back_the_tunnel() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (addr, proxy) = fake_proxy("200 Connection established").await;
+    let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let mut tunnel = connect_through(tcp, "relay.sidekar.dev", 443, Some("Basic eA=="))
+        .await
+        .unwrap();
+    tunnel.write_all(b"hello").await.unwrap();
+    let mut echoed = [0u8; 5];
+    tunnel.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(
+        &echoed, b"hello",
+        "the stream is the tunnel, nothing consumed"
+    );
+
+    let request = proxy.await.unwrap();
+    assert!(
+        request.starts_with("CONNECT relay.sidekar.dev:443 HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert!(
+        request.contains("Proxy-Authorization: Basic eA==\r\n"),
+        "{request}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_connect_says_what_the_proxy_answered() {
+    let (addr, _proxy) = fake_proxy("407 Proxy Authentication Required").await;
+    let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let err = connect_through(tcp, "relay.sidekar.dev", 443, None)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("407 Proxy Authentication Required"),
+        "{err:#}"
+    );
+}
+
+#[test]
+fn the_usual_tls_failures_are_explained() {
+    let plain = anyhow::anyhow!("IO error: received corrupt message of type InvalidContentType");
+    let why = explain_tls_failure(&plain, "relay.sidekar.dev").unwrap();
+    assert!(why.contains("HTTPS_PROXY"), "{why}");
+
+    let issuer = anyhow::anyhow!("invalid peer certificate: UnknownIssuer");
+    let why = explain_tls_failure(&issuer, "relay.sidekar.dev").unwrap();
+    assert!(why.contains("SSL_CERT_FILE"), "{why}");
+
+    let other = anyhow::anyhow!("connection refused");
+    assert_eq!(explain_tls_failure(&other, "relay.sidekar.dev"), None);
+}

@@ -121,6 +121,186 @@ pub(crate) fn ws_connector_trusting(roots: rustls::RootCertStore) -> tokio_tungs
     tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config))
 }
 
+/// A WebSocket over TLS, as `ws_connect` opens it.
+pub type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Open a WebSocket to `request`'s URL with `connector`, through the HTTP
+/// proxy `HTTPS_PROXY` names when one is set, as reqwest does for sidekar's
+/// HTTP requests.
+///
+/// A direct dial on a network that only lets traffic out through its proxy
+/// reaches something that is not the relay: the proxy itself, or a firewall,
+/// answering in plain HTTP. rustls reads that as "received corrupt message
+/// of type InvalidContentType", which is all the relay tunnel used to say.
+pub async fn ws_connect(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    connector: tokio_tungstenite::Connector,
+) -> Result<(
+    WsStream,
+    tokio_tungstenite::tungstenite::handshake::client::Response,
+)> {
+    let uri = request.uri();
+    let host = uri.host().context("WebSocket URL has no host")?.to_string();
+    let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("ws") {
+        80
+    } else {
+        443
+    });
+    let Some(proxy) = connect_proxy_for(&host, |k| std::env::var(k).ok())? else {
+        return Ok(tokio_tungstenite::connect_async_tls_with_config(
+            request,
+            None,
+            false,
+            Some(connector),
+        )
+        .await?);
+    };
+    let tcp = tokio::net::TcpStream::connect(&proxy.addr)
+        .await
+        .with_context(|| format!("could not reach the proxy at {} (HTTPS_PROXY)", proxy.addr))?;
+    let tcp = connect_through(tcp, &host, port, proxy.auth.as_deref()).await?;
+    Ok(
+        tokio_tungstenite::client_async_tls_with_config(request, tcp, None, Some(connector))
+            .await?,
+    )
+}
+
+/// An HTTP proxy to tunnel through with CONNECT.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ConnectProxy {
+    /// The proxy's `host:port`.
+    addr: String,
+    /// `Proxy-Authorization`, from the user and password in the proxy URL.
+    auth: Option<String>,
+}
+
+/// The proxy that `HTTPS_PROXY` (or `ALL_PROXY`) names for `host`, unless
+/// `NO_PROXY` exempts it. `var` reads the environment, so tests need none.
+pub(crate) fn connect_proxy_for(
+    host: &str,
+    var: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ConnectProxy>> {
+    let first = |names: &[&str]| {
+        names.iter().find_map(|n| {
+            var(n)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+    };
+    let Some(raw) = first(&["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) else {
+        return Ok(None);
+    };
+    if let Some(no_proxy) = first(&["NO_PROXY", "no_proxy"]) {
+        let host = host.to_ascii_lowercase();
+        let exempt = no_proxy.split(',').map(str::trim).any(|entry| {
+            let entry = entry.trim_start_matches('.').to_ascii_lowercase();
+            entry == "*"
+                || (!entry.is_empty() && (host == entry || host.ends_with(&format!(".{entry}"))))
+        });
+        if exempt {
+            return Ok(None);
+        }
+    }
+    let with_scheme = if raw.contains("://") {
+        raw.clone()
+    } else {
+        format!("http://{raw}")
+    };
+    let url = url::Url::parse(&with_scheme).with_context(|| format!("HTTPS_PROXY {raw:?}"))?;
+    if url.scheme() != "http" {
+        anyhow::bail!(
+            "HTTPS_PROXY {raw:?}: sidekar's WebSockets reach a proxy over plain http://, not {}://",
+            url.scheme()
+        );
+    }
+    let proxy_host = url
+        .host_str()
+        .with_context(|| format!("HTTPS_PROXY {raw:?} has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(80);
+    let auth = (!url.username().is_empty()).then(|| {
+        let decode = |s: &str| {
+            urlencoding::decode(s)
+                .map(|d| d.into_owned())
+                .unwrap_or_default()
+        };
+        let pair = format!(
+            "{}:{}",
+            decode(url.username()),
+            decode(url.password().unwrap_or_default())
+        );
+        use base64::Engine;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(pair)
+        )
+    });
+    Ok(Some(ConnectProxy {
+        addr: format!("{proxy_host}:{port}"),
+        auth,
+    }))
+}
+
+/// Ask the proxy on `tcp` for a tunnel to `host:port`, and hand the stream
+/// back once it is open.
+async fn connect_through(
+    mut tcp: tokio::net::TcpStream,
+    host: &str,
+    port: u16,
+    auth: Option<&str>,
+) -> Result<tokio::net::TcpStream> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut request = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n");
+    if let Some(auth) = auth {
+        request.push_str(&format!("Proxy-Authorization: {auth}\r\n"));
+    }
+    request.push_str("\r\n");
+    tcp.write_all(request.as_bytes()).await?;
+    // A byte at a time, so nothing past the response head is read: after it
+    // the stream belongs to TLS.
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() > 16 * 1024 {
+            anyhow::bail!("the proxy's answer to CONNECT {host}:{port} never ended");
+        }
+        let mut byte = [0u8; 1];
+        if tcp.read(&mut byte).await? == 0 {
+            anyhow::bail!("the proxy closed the connection when asked to CONNECT {host}:{port}");
+        }
+        head.push(byte[0]);
+    }
+    let status_line = String::from_utf8_lossy(&head)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if status_line.split_whitespace().nth(1) != Some("200") {
+        anyhow::bail!("the proxy refused CONNECT {host}:{port}: {status_line}");
+    }
+    Ok(tcp)
+}
+
+/// What usually causes a TLS failure reaching `host`, when `err` is one of
+/// the failures with a usual cause.
+pub fn explain_tls_failure(err: &anyhow::Error, host: &str) -> Option<String> {
+    let chain = format!("{err:#}");
+    if chain.contains("InvalidContentType") || chain.contains("corrupt message") {
+        return Some(format!(
+            "{host} was answered by something that does not speak TLS, as an HTTP proxy \
+             or a filtering firewall does. If this network reaches the internet through a \
+             proxy, set HTTPS_PROXY to it"
+        ));
+    }
+    if chain.contains("UnknownIssuer") || chain.contains("invalid peer certificate") {
+        return Some(format!(
+            "{host} presented a certificate from an issuer sidekar does not trust, as a \
+             proxy that intercepts TLS does. Point SSL_CERT_FILE at the proxy's CA \
+             certificate (PEM)"
+        ));
+    }
+    None
+}
+
 /// A [`reqwest::ClientBuilder`] that also trusts `SSL_CERT_FILE`'s
 /// certificates, if the environment variable is set, in addition to the
 /// built-in roots.

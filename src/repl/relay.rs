@@ -49,25 +49,17 @@ impl Drop for TunnelInputBridge {
     }
 }
 
-/// Start the relay tunnel. Returns `(TunnelSender, input bridge)` on success.
+/// Start the relay tunnel: its sender and the input bridge, or why it could
+/// not start, which is logged too.
 pub(super) async fn start_relay(
     bus_name: &str,
     cwd: &str,
     nick: &str,
-) -> (
-    Option<crate::tunnel::TunnelSender>,
-    Option<TunnelInputBridge>,
-) {
-    let token = match crate::auth::auth_token() {
-        Some(t) => t,
-        None => {
-            broker::try_log_error(
-                "relay",
-                "skipped: no device token; run: sidekar device login",
-                None,
-            );
-            return (None, None);
-        }
+) -> Result<(crate::tunnel::TunnelSender, Option<TunnelInputBridge>)> {
+    let Some(token) = crate::auth::auth_token() else {
+        let why = "no device token; run: sidekar device login";
+        broker::try_log_error("relay", &format!("skipped: {why}"), None);
+        anyhow::bail!("{why}");
     };
     broker::try_log_event("debug", "relay", "connecting", None);
     let (cols, rows) = terminal_size().unwrap_or((80, 24));
@@ -77,7 +69,7 @@ pub(super) async fn start_relay(
             Ok(pair) => pair,
             Err(e) => {
                 broker::try_log_error("relay", &format!("{e:#}"), None);
-                return (None, None);
+                return Err(e);
             }
         };
     broker::try_log_event("debug", "relay", "connected", None);
@@ -86,7 +78,7 @@ pub(super) async fn start_relay(
     // Bridge tunnel input (web terminal keystrokes) into a pipe fd so the
     // synchronous poll loop in read_input_or_bus can multiplex it with stdin.
     let bridge = bridge_tunnel_input(rx, bus_name);
-    (Some(tx), bridge)
+    Ok((tx, bridge))
 }
 
 /// Stop the relay tunnel, drop the input bridge, clear the global output tunnel.

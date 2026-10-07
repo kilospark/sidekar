@@ -1238,14 +1238,9 @@ async fn connect_ws(
             );
         }
         let connector = tokio_tungstenite::Connector::Rustls(tls_config);
-        let (ws, resp) = tokio_tungstenite::connect_async_tls_with_config(
-            ws_request,
-            None,
-            false,
-            Some(connector),
-        )
-        .await
-        .context("failed to connect WebSocket to Codex API")?;
+        let (ws, resp) = crate::http_client::ws_connect(ws_request, connector)
+            .await
+            .context("failed to connect WebSocket to Codex API")?;
         (ws, ws_handshake_rate_limit(&resp))
     };
     if verbose {

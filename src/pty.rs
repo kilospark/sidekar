@@ -543,6 +543,8 @@ pub async fn run_agent(
             }
             None
         }
+        // Said on the terminal as well as logged: the relay was asked for, and
+        // a failure seen only in `sidekar event list` looked like no session.
         crate::config::RelayMode::On => {
             if let Some(token) = crate::auth::auth_token() {
                 match connect_relay_tunnel(&token, presence.name(), agent, &cwd, &nick).await {
@@ -553,15 +555,18 @@ pub async fn run_agent(
                             &format!("{e:#}"),
                             Some(&relay_policy_text),
                         );
+                        eprintln!("\x1b[33m[sidekar]\x1b[0m relay tunnel not started: {e:#}");
                         None
                     }
                 }
             } else {
+                let why = "no device token; run: sidekar device login";
                 crate::broker::try_log_error(
                     "relay",
-                    "skipped: no device token; run: sidekar device login",
+                    &format!("skipped: {why}"),
                     Some(&relay_policy_text),
                 );
+                eprintln!("\x1b[33m[sidekar]\x1b[0m relay tunnel not started: {why}");
                 None
             }
         }

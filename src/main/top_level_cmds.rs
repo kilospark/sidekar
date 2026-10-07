@@ -111,12 +111,22 @@ struct RelaySessionOut {
 #[derive(serde::Serialize)]
 struct RelaySessionsOutput {
     items: Vec<RelaySessionOut>,
+    /// The last tunnel failure on this machine, shown with an empty list: a
+    /// tunnel that never connected looks the same as no session at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_failure: Option<String>,
 }
 
 impl sidekar::output::CommandOutput for RelaySessionsOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         if self.items.is_empty() {
             writeln!(w, "No active sessions.")?;
+            if let Some(failure) = &self.last_failure {
+                writeln!(
+                    w,
+                    "The last relay tunnel from this machine failed {failure}"
+                )?;
+            }
             return Ok(());
         }
         writeln!(w, "{:<20} {:<15} {:<12} CWD", "NAME", "AGENT", "HOSTNAME")?;
@@ -131,13 +141,29 @@ impl sidekar::output::CommandOutput for RelaySessionsOutput {
     }
 }
 
+/// The last relay failure logged in the past day, as "<when>: <why>".
+fn recent_relay_failure() -> Option<String> {
+    let now = sidekar::message::epoch_secs() as i64;
+    let event = sidekar::broker::events_recent(100, Some("error"))
+        .ok()?
+        .into_iter()
+        .find(|e| e.source == "relay" && now - e.created_at < 24 * 3600)?;
+    let ago = (now - event.created_at).max(0) as u64;
+    let when = match ago {
+        s if s < 60 => format!("{s}s ago"),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s => format!("{}h ago", s / 3600),
+    };
+    Some(format!("{when}: {}", event.message))
+}
+
 /// Handle `sidekar relay list`.
 pub async fn handle_relay(args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
             let data = sidekar::api_client::list_sessions().await?;
-            let items = data
+            let items: Vec<RelaySessionOut> = data
                 .get("sessions")
                 .and_then(|v| v.as_array())
                 .map(|sessions| {
@@ -168,7 +194,15 @@ pub async fn handle_relay(args: &[String]) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default();
-            sidekar::output::emit(&RelaySessionsOutput { items })?;
+            let last_failure = if items.is_empty() {
+                recent_relay_failure()
+            } else {
+                None
+            };
+            sidekar::output::emit(&RelaySessionsOutput {
+                items,
+                last_failure,
+            })?;
             Ok(())
         }
         _ => {
