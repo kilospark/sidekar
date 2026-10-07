@@ -1,0 +1,4 @@
+# The image is built from Cargo.toml, Cargo.lock and src/ alone (see
+# Dockerfile). A local target/ is gigabytes that flyctl would otherwise
+# upload as build context on every deploy.
+target/
