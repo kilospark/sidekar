@@ -307,7 +307,8 @@ async fn run_viewer(
                         flush_buf(&bot, chat_id, &pacing, &mut buf).await;
                         flush_deadline = None;
                     }
-                    Ok(None) => break,
+                    // Revoked: nothing more of the session is posted.
+                    Ok(None) | Ok(Some(ViewerMsg::Revoked)) => break,
                     Ok(Some(ViewerMsg::Data(data))) => {
                         // In Structured mode the raw byte stream is ignored:
                         // the events channel is authoritative and bytes

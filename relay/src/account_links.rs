@@ -44,6 +44,29 @@ pub async fn expand_linked_user_hex_ids_for_scope(
     set.into_iter().collect()
 }
 
+/// Whether `grantee_hex` holds a grant from `grantor_hex` that carries
+/// `scope`, or `None` when the database can't say.
+pub async fn grant_exists(
+    db: &Database,
+    grantor_hex: &str,
+    grantee_hex: &str,
+    scope: &str,
+) -> Option<bool> {
+    let (Ok(grantor), Ok(grantee)) = (
+        ObjectId::parse_str(grantor_hex.trim()),
+        ObjectId::parse_str(grantee_hex.trim()),
+    ) else {
+        // Not account ids, so no grant can name them.
+        return Some(false);
+    };
+    let link = db
+        .collection::<Document>("account_links")
+        .find_one(doc! { "grantor_id": grantor, "grantee_id": grantee })
+        .await
+        .ok()?;
+    Some(link.is_some_and(|d| link_has_scope(&d, scope)))
+}
+
 fn link_has_scope(doc: &Document, scope: &str) -> bool {
     let wanted = scope.trim().to_ascii_lowercase();
     if wanted.is_empty() {

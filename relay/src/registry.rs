@@ -35,13 +35,21 @@ pub enum TunnelMsg {
 /// A connected viewer.
 pub struct ViewerHandle {
     pub id: String,
+    /// The account watching: the session's owner, or one the owner granted
+    /// access to.
+    pub user_id: String,
     pub tx: mpsc::UnboundedSender<ViewerMsg>,
 }
 
 pub enum ViewerMsg {
     Data(Vec<u8>),
     Control(String),
+    /// The viewer's access was revoked; it is being detached.
+    Revoked,
 }
+
+/// How often attached viewers' grants are checked again.
+const GRANT_RECHECK_SECS: u64 = 30;
 
 /// Live connection state for a session (in-memory only).
 pub struct LiveSession {
@@ -188,6 +196,25 @@ impl Registry {
                         },
                     )
                     .await;
+            }
+        });
+    }
+
+    /// Start the task that detaches viewers whose access has been revoked.
+    ///
+    /// Access is checked when a viewer attaches. A grant revoked after that
+    /// left its holder watching until they disconnected, since the API that
+    /// deletes the grant has no line to the relay. Every viewer that is not
+    /// the session's owner is checked again on a timer.
+    pub fn start_grant_sweep(&self) {
+        let db = self.db.clone();
+        let live = self.live.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(GRANT_RECHECK_SECS));
+            loop {
+                interval.tick().await;
+                detach_revoked_viewers(&db, &live).await;
             }
         });
     }
@@ -704,6 +731,7 @@ impl Registry {
         scrollback.extend_from_slice(&scrollback_guard.snapshot());
         viewers.push(ViewerHandle {
             id: viewer_id.clone(),
+            user_id: user_id.to_string(),
             tx,
         });
         drop(viewers);
@@ -1012,9 +1040,102 @@ pub enum ViewerRoute {
     Remote { owner_origin: String },
 }
 
+/// Detach every viewer whose grant from the session's owner is gone. A grant
+/// the database can't confirm either way is left alone: a blip must not cut
+/// off someone still entitled to watch.
+async fn detach_revoked_viewers(
+    db: &mongodb::Database,
+    live: &RwLock<HashMap<String, LiveSession>>,
+) {
+    let sessions: Vec<(String, Arc<RwLock<Vec<ViewerHandle>>>)> = live
+        .read()
+        .await
+        .values()
+        .map(|s| (s.user_id.clone(), s.viewers.clone()))
+        .collect();
+    for (owner, viewers) in sessions {
+        let guests = guests_of(&owner, &viewers.read().await);
+        let mut revoked = std::collections::HashSet::new();
+        for guest in guests {
+            if crate::account_links::grant_exists(db, &owner, &guest, "sessions").await
+                == Some(false)
+            {
+                revoked.insert(guest);
+            }
+        }
+        if !revoked.is_empty() {
+            detach(&mut *viewers.write().await, &revoked);
+        }
+    }
+}
+
+/// The accounts other than `owner` watching, each once.
+fn guests_of(owner: &str, viewers: &[ViewerHandle]) -> Vec<String> {
+    let mut guests: Vec<String> = viewers
+        .iter()
+        .filter(|v| !v.user_id.eq_ignore_ascii_case(owner))
+        .map(|v| v.user_id.clone())
+        .collect();
+    guests.sort();
+    guests.dedup();
+    guests
+}
+
+/// Tell each viewer of a `revoked` account why it is going, and drop it.
+fn detach(viewers: &mut Vec<ViewerHandle>, revoked: &std::collections::HashSet<String>) {
+    viewers.retain(|v| {
+        if !revoked.contains(&v.user_id) {
+            return true;
+        }
+        let _ = v.tx.send(ViewerMsg::Revoked);
+        false
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn viewer(user_id: &str) -> (ViewerHandle, mpsc::UnboundedReceiver<ViewerMsg>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = ViewerHandle {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user_id.to_string(),
+            tx,
+        };
+        (handle, rx)
+    }
+
+    #[test]
+    fn only_viewers_other_than_the_owner_are_rechecked() {
+        let (a, _) = viewer("owner");
+        let (b, _) = viewer("guest");
+        let (c, _) = viewer("guest");
+        assert_eq!(guests_of("OWNER", &[a, b, c]), ["guest"]);
+    }
+
+    #[test]
+    fn a_revoked_viewer_is_told_and_detached_and_the_rest_stay() {
+        let (owner, mut owner_rx) = viewer("owner");
+        let (kept, mut kept_rx) = viewer("still-granted");
+        let (gone, mut gone_rx) = viewer("revoked");
+        let mut viewers = vec![owner, kept, gone];
+
+        detach(&mut viewers, &["revoked".to_string()].into_iter().collect());
+
+        let left: Vec<&str> = viewers.iter().map(|v| v.user_id.as_str()).collect();
+        assert_eq!(left, ["owner", "still-granted"]);
+        assert!(matches!(gone_rx.try_recv(), Ok(ViewerMsg::Revoked)));
+        assert!(
+            matches!(
+                gone_rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Disconnected)
+            ),
+            "its channel is closed, so its loop ends"
+        );
+        assert!(owner_rx.try_recv().is_err() && kept_rx.try_recv().is_err());
+        assert!(!owner_rx.is_closed() && !kept_rx.is_closed());
+    }
 
     #[test]
     fn scrollback_retains_everything_under_capacity() {

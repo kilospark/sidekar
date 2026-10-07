@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify } from "jose";
 import { ObjectId } from "mongodb";
+import { normalizeLinkScopes } from "./_linkedAccounts.js";
 
 // Align with relay (`relay/src/auth.rs`): HS256 over UTF-8 bytes of this string.
 // If Production omits JWT_SECRET, tokens would be signed with the dev fallback below
@@ -132,8 +133,12 @@ export function clearSessionCookie(res) {
 }
 
 /**
- * Merge sourceUser into targetUser: move devices, copy provider IDs, delete source.
- * Returns the updated target user document.
+ * Merge sourceUser into targetUser: move what the source owns, copy provider
+ * IDs, delete the source. Returns the updated target user document.
+ *
+ * Not moved: `encryption_keys` and `secret_sync`. Each account's synced
+ * secrets are encrypted under its own key, so the source's records cannot
+ * simply become the target's; that needs re-encryption, not a new owner.
  */
 export async function mergeUsers(db, targetUser, sourceUser) {
   const targetId = targetUser._id instanceof ObjectId ? targetUser._id : new ObjectId(targetUser._id);
@@ -141,21 +146,31 @@ export async function mergeUsers(db, targetUser, sourceUser) {
 
   if (targetId.equals(sourceId)) return targetUser;
 
-  // Move devices, sessions, and ext_tokens in parallel (independent collections)
+  const byHex = (name) =>
+    db.collection(name).updateMany(
+      { user_id: sourceId.toString() },
+      { $set: { user_id: targetId.toString() } }
+    );
+  // Independent collections, moved in parallel.
   await Promise.all([
     db.collection("devices").updateMany(
       { user_id: sourceId },
       { $set: { user_id: targetId } }
     ),
-    db.collection("sessions").updateMany(
-      { user_id: sourceId.toString() },
-      { $set: { user_id: targetId.toString() } }
-    ),
-    db.collection("ext_tokens").updateMany(
-      { user_id: sourceId.toString() },
-      { $set: { user_id: targetId.toString() } }
+    byHex("sessions"),
+    byHex("ext_tokens"),
+    // Chat bindings are unique per channel or chat, never per user, so a new
+    // owner cannot collide with one the target already has.
+    byHex("slack_channels"),
+    byHex("telegram_chats"),
+    byHex("slack_link_codes"),
+    byHex("telegram_link_codes"),
+    db.collection("account_link_invites").updateMany(
+      { from_user_id: sourceId },
+      { $set: { from_user_id: targetId } }
     ),
   ]);
+  await mergeAccountLinks(db, targetId, sourceId);
 
   // Copy provider IDs and fields from source to target
   const updates = {};
@@ -174,6 +189,45 @@ export async function mergeUsers(db, targetUser, sourceUser) {
 
   // Return updated target
   return db.collection("users").findOne({ _id: targetId });
+}
+
+/**
+ * Re-point the source's collaborator grants at the target, both those it gave
+ * and those it holds. Deleting the source left them naming an account that no
+ * longer exists, so merging two logins cut off everyone the source shared
+ * with, and everything shared with it.
+ *
+ * At most one grant links two accounts in each direction. So where the target
+ * already has the grant, it keeps the union of both scopes. A grant between
+ * the two accounts being merged would become one from the target to itself,
+ * and is dropped.
+ */
+export async function mergeAccountLinks(db, targetId, sourceId) {
+  const links = db.collection("account_links");
+  for (const [field, other] of [
+    ["grantor_id", "grantee_id"],
+    ["grantee_id", "grantor_id"],
+  ]) {
+    const moving = await links.find({ [field]: sourceId }).toArray();
+    for (const link of moving) {
+      const counterpart = link[other];
+      if (!counterpart || counterpart.equals(targetId) || counterpart.equals(sourceId)) {
+        await links.deleteOne({ _id: link._id });
+        continue;
+      }
+      const existing = await links.findOne({ [field]: targetId, [other]: counterpart });
+      if (existing) {
+        const scopes = normalizeLinkScopes([
+          ...normalizeLinkScopes(existing.scopes),
+          ...normalizeLinkScopes(link.scopes),
+        ]);
+        await links.updateOne({ _id: existing._id }, { $set: { scopes } });
+        await links.deleteOne({ _id: link._id });
+      } else {
+        await links.updateOne({ _id: link._id }, { $set: { [field]: targetId } });
+      }
+    }
+  }
 }
 
 /**

@@ -795,18 +795,31 @@ async fn handle_viewer_socket(
     loop {
         tokio::select! {
             // Data from tunnel → viewer
-            Some(msg) = viewer_rx.recv() => {
+            msg = viewer_rx.recv() => {
                 match msg {
-                    crate::registry::ViewerMsg::Data(data) => {
+                    Some(crate::registry::ViewerMsg::Data(data)) => {
                         if ws_tx.send(Message::Binary(Bytes::from(data))).await.is_err() {
                             break;
                         }
                     }
-                    crate::registry::ViewerMsg::Control(text) => {
+                    Some(crate::registry::ViewerMsg::Control(text)) => {
                         if ws_tx.send(Message::Text(text.into())).await.is_err() {
                             break;
                         }
                     }
+                    Some(crate::registry::ViewerMsg::Revoked) => {
+                        let _ = ws_tx
+                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                code: 4403,
+                                reason: "access to this session was revoked".into(),
+                            })))
+                            .await;
+                        break;
+                    }
+                    // Nothing more will come: the session ended, or its
+                    // tunnel reconnected as a new one. Staying attached left
+                    // a viewer watching a screen that would never change.
+                    None => break,
                 }
             }
             // Data from viewer → tunnel

@@ -80,6 +80,7 @@ async fn main() {
     let registry = Registry::new(db.clone(), instance_id, public_origin);
     registry.start_heartbeat();
     registry.start_bus_dispatcher();
+    registry.start_grant_sweep();
 
     // Optional Telegram integration.
     let telegram = match telegram::TelegramConfig::from_env() {

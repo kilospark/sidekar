@@ -298,3 +298,6 @@ fn filter_detach(mut chunk: Vec<u8>) -> (Vec<u8>, bool) {
         (chunk, false)
     }
 }
+
+#[cfg(test)]
+mod tests;

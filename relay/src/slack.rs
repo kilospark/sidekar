@@ -340,7 +340,8 @@ async fn run_viewer(
                         flush_buf(&client, channel, &pacing, &mut buf).await;
                         flush_deadline = None;
                     }
-                    Ok(None) => break,
+                    // Revoked: nothing more of the session is posted.
+                    Ok(None) | Ok(Some(ViewerMsg::Revoked)) => break,
                     Ok(Some(ViewerMsg::Data(data))) => {
                         if matches!(mode, ViewerMode::Structured) {
                             continue;

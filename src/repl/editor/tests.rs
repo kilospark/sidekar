@@ -188,6 +188,27 @@ fn drain_pending_followups_as_submit_renumbers_image_labels() {
 }
 
 #[test]
+fn a_relay_viewer_can_answer_a_menu() {
+    // `/model`, `/credential` and the rest read their answer here while the
+    // relay is on, from the local terminal or from a viewer, whichever types.
+    let mut fds = [0i32; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+    unsafe { libc::fcntl(read_fd, libc::F_SETFL, libc::O_NONBLOCK) };
+    let answer = b"2\n";
+    assert_eq!(
+        unsafe { libc::write(write_fd, answer.as_ptr().cast(), answer.len()) },
+        answer.len() as isize
+    );
+
+    assert_eq!(read_line_stdio_or_tunnel(Some(read_fd)).unwrap(), "2\n");
+    unsafe {
+        libc::close(write_fd);
+        libc::close(read_fd);
+    }
+}
+
+#[test]
 fn active_prompt_pollfds_compact_tunnel_only_fd() {
     let fds = build_input_pollfds(None, Some(42));
     assert_eq!(fds.len(), 1);
