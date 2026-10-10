@@ -153,6 +153,12 @@ pub(crate) fn explain_error(code: &str, v: &Value) -> String {
         "not_allowed_token_type" => "not_allowed_token_type — this method needs the other kind \
              of token. Search, for one, only works with a user token (`slack login` without --bot)."
             .into(),
+        "attached_draft_exists" => "attached_draft_exists — that conversation's composer already \
+             holds a draft. Send or discard it in Slack first; a draft cannot be replaced from here."
+            .into(),
+        "unknown_method" => "unknown_method — Slack no longer offers this method (drafts.create is \
+             undocumented and can disappear without notice)."
+            .into(),
         "ratelimited" => "ratelimited — Slack is throttling this method; wait a minute.".into(),
         other => other.to_string(),
     }

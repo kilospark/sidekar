@@ -237,3 +237,79 @@ async fn search_reads_matches() {
     assert_eq!(q["query"], "deploy in:#eng");
     assert_eq!(q["count"], "5");
 }
+
+#[test]
+fn draft_text_becomes_one_rich_text_block_with_links() {
+    let b = text_to_blocks("see https://x.dev/a?b=1 and http://y.io now");
+    let els = &b[0]["elements"][0]["elements"];
+    assert_eq!(b[0]["type"], "rich_text");
+    assert_eq!(els[0], json!({"type": "text", "text": "see "}));
+    assert_eq!(
+        els[1],
+        json!({"type": "link", "url": "https://x.dev/a?b=1"})
+    );
+    assert_eq!(els[2], json!({"type": "text", "text": " and "}));
+    assert_eq!(els[3], json!({"type": "link", "url": "http://y.io"}));
+    assert_eq!(els[4], json!({"type": "text", "text": " now"}));
+    let plain = text_to_blocks("multi\nline");
+    assert_eq!(
+        plain[0]["elements"][0]["elements"][0]["text"],
+        "multi\nline"
+    );
+}
+
+#[test]
+fn client_msg_ids_are_v4_uuids() {
+    let a = uuid_v4();
+    assert_eq!(a.len(), 36);
+    assert_eq!(&a[14..15], "4");
+    assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
+    assert_ne!(a, uuid_v4());
+}
+
+#[tokio::test]
+async fn a_draft_goes_to_drafts_create_and_is_not_posted() {
+    let server = MockServer::sequence(vec![
+        json!({"ok": true, "draft": {"id": "Dr01", "team_id": "T1"}}),
+    ]);
+    let id = draft_create(&slack_at(&server), "C0000000A", "hi", Some("1.5"))
+        .await
+        .unwrap();
+    assert_eq!(id, "Dr01");
+    let reqs = server.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].path(), "/drafts.create", "never chat.postMessage");
+    let body = reqs[0].json();
+    assert_eq!(
+        body["destinations"],
+        json!([{"channel_id": "C0000000A", "thread_ts": "1.5"}])
+    );
+    assert_eq!(body["file_ids"], json!([]));
+    assert_eq!(
+        body["blocks"][0]["elements"][0]["elements"][0]["text"],
+        "hi"
+    );
+}
+
+#[tokio::test]
+async fn a_composer_that_already_has_a_draft_says_so() {
+    let server = MockServer::sequence(vec![json!({"ok": false, "error": "attached_draft_exists"})]);
+    let err = draft_create(&slack_at(&server), "C0000000A", "hi", None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already holds a draft"), "{err}");
+}
+
+#[tokio::test]
+async fn bookmarks_are_read_for_a_channel() {
+    let server = MockServer::sequence(vec![json!({"ok": true, "bookmarks": [
+        {"id": "Bk1", "title": "Runbook", "link": "https://wiki/run", "type": "link", "emoji": ":book:"}
+    ]})]);
+    let found = bookmarks(&slack_at(&server), "C0000000A").await.unwrap();
+    assert_eq!(found[0].title, "Runbook");
+    assert_eq!(found[0].link, "https://wiki/run");
+    let req = &server.requests()[0];
+    assert_eq!(req.path(), "/bookmarks.list");
+    assert_eq!(req.query()["channel_id"], "C0000000A");
+}

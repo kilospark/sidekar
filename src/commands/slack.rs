@@ -35,10 +35,12 @@ const USAGE: &str = "Usage: sidekar slack <command> …\n\
   read <channel> [--limit N] [--thread <ts>]   history, oldest first; --thread for replies\n  \
   search <query> [--limit N]                Slack syntax: from:@x in:#y after:2026-01-01\n  \
   users [filter] [--all] [--limit N]\n  \
-  user <person>\n\
+  user <person>\n  \
+  bookmarks <channel>                       the channel's bookmarks bar\n\
   Write:\n  \
   send <channel> TEXT [--thread <ts>] [--broadcast]\n  \
   dm <person> TEXT\n  \
+  draft <channel|person|link> TEXT [--thread <ts>]   into your Slack Drafts; NOT sent\n  \
   TEXT is --text <t> or --text-file <path>\n\n\
   <channel> is an id, #name, a message link, or a person (@handle, email, U…) for their DM.\n\
   <person> is a user id, an email, or a handle / display name / real name.\n\
@@ -202,7 +204,7 @@ pub async fn cmd_slack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         "channels" | "read" | "history" | "thread" | "search" | "send" | "post" | "reply"
-        | "dm" | "users" | "user" => {
+        | "dm" | "users" | "user" | "draft" | "bookmarks" => {
             let token = auth::resolve_token(flag(rest, "--token").as_deref())?;
             let slack = Slack::connect(&token).await?;
             api_command(ctx, &slack, &token, sub, rest, &pos).await
@@ -431,6 +433,72 @@ async fn api_command(
             }
             Ok(())
         }
+        "draft" => {
+            reject_unknown_flags(rest, &["--text", "--text-file", "--thread"])?;
+            if token.kind == auth::Kind::Bot {
+                bail!(
+                    "a draft lives in a person's own composer, so it needs a user token; {} is a \
+                     bot token. Run `sidekar slack login` without --bot.",
+                    token.key
+                );
+            }
+            let target = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Usage: sidekar slack draft <channel|person|message-link> --text <t>|--text-file <path> [--thread <ts>]"
+                )
+            })?;
+            let text = one_of(rest, "--text", "--text-file")?
+                .filter(|t| !t.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("slack draft needs --text <t> or --text-file <path>")
+                })?;
+            let channel = api::resolve_channel(slack, &target).await?;
+            let thread = flag(rest, "--thread")
+                .or_else(|| api::parse_permalink(&target).map(|(_, ts, t)| t.unwrap_or(ts)));
+            let id = api::draft_create(slack, &channel, &text, thread.as_deref()).await?;
+            out!(
+                ctx,
+                "Drafted in {channel}{} (draft {}). Nothing has been sent: it is in Slack under \
+                 Drafts & Sent for you to edit, send or discard.",
+                if thread.is_some() { ", in thread" } else { "" },
+                if id.is_empty() { "?" } else { &id }
+            );
+            if !token.team_id.is_empty() {
+                out!(
+                    ctx,
+                    "https://app.slack.com/client/{}/{channel}",
+                    token.team_id
+                );
+            }
+            Ok(())
+        }
+        "bookmarks" => {
+            reject_unknown_flags(rest, &[])?;
+            let target = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar slack bookmarks <channel>"))?;
+            let channel = api::resolve_channel(slack, &target).await?;
+            let found = api::bookmarks(slack, &channel).await?;
+            if found.is_empty() {
+                out!(ctx, "No bookmarks in {target}.");
+            }
+            for b in found {
+                out!(
+                    ctx,
+                    "{}\t{}{}\t{}",
+                    b.kind,
+                    if b.emoji.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} ", b.emoji)
+                    },
+                    b.title,
+                    b.link
+                );
+            }
+            Ok(())
+        }
         "users" => {
             reject_unknown_flags(rest, &["--all", "--limit"])?;
             let all = rest.iter().any(|a| a == "--all");
@@ -599,7 +667,7 @@ pub(crate) fn setup_walkthrough(
          1. Create the app from a manifest:\n   \
             https://api.slack.com/apps?new_app=1  →  From an app manifest  →  pick the workspace\n   \
             Paste this (JSON tab):\n\n{manifest}\n\n   \
-            It requests user scopes (act as you: read, post, DM, search) and bot scopes\n   \
+            It requests user scopes (act as you: read, post, DM, search, bookmarks) and bot scopes\n   \
             (act as the app, no search), registers {redirect} as the redirect,\n   \
             and leaves token rotation off so a token does not expire under you.\n\n\
          2. Basic Information → App Credentials. Store the Client ID and Client Secret:\n   \
