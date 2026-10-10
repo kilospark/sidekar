@@ -556,3 +556,220 @@ fn teams_and_projects_carry_the_useful_fields() {
         ("2026-09-01", "onTrack")
     );
 }
+
+fn routed(
+    route: impl Fn(&crate::test_http::Request) -> (u16, String, Vec<u8>) + Send + Sync + 'static,
+) -> MockServer {
+    MockServer::start_raw(route)
+}
+
+fn gql(v: Value) -> (u16, String, Vec<u8>) {
+    (200, "application/json".into(), v.to_string().into_bytes())
+}
+
+#[test]
+fn uploads_are_found_in_markdown_with_their_names() {
+    let md = "See ![shot.png](https://uploads.linear.app/o/a/b) and [log](https://uploads.linear.app/o/c/d).\n\
+              Bare: https://uploads.linear.app/o/e/report%20v2.pdf and again ![x](https://uploads.linear.app/o/a/b)\n\
+              Not ours: https://example.com/uploads.linear.app/x";
+    assert_eq!(
+        uploads_in(md),
+        vec![
+            (
+                "shot.png".to_string(),
+                "https://uploads.linear.app/o/a/b".to_string()
+            ),
+            (
+                "log".to_string(),
+                "https://uploads.linear.app/o/c/d".to_string()
+            ),
+            (
+                "report v2.pdf".to_string(),
+                "https://uploads.linear.app/o/e/report%20v2.pdf".to_string()
+            ),
+        ]
+    );
+    assert!(uploads_in("nothing here").is_empty());
+}
+
+fn detail_with_files() -> IssueDetail {
+    issue_detail_from(&json!({
+        "identifier": "ENG-1", "title": "T",
+        "description": "Repro: ![a.png](https://uploads.linear.app/o/1/2)",
+        "comments": {"nodes": [{"body": "log [b.txt](https://uploads.linear.app/o/3/4)",
+            "createdAt": "2026-10-10T10:00:00Z", "user": {"name": "Ann"}}]},
+        "attachments": {"nodes": [
+            {"id": "at1", "title": "PR #5", "url": "https://github.com/o/r/pull/5", "sourceType": "github"},
+            {"id": "at2", "title": "spec.pdf", "subtitle": "spec.pdf · 1.0M", "url": "https://uploads.linear.app/o/5/6"}
+        ]}
+    }))
+}
+
+#[test]
+fn issues_list_attachments_and_embedded_files() {
+    let i = detail_with_files();
+    assert_eq!(i.attachments.len(), 2);
+    assert!(!i.attachments[0].is_upload() && i.attachments[1].is_upload());
+    assert_eq!(
+        i.attachments[0].line(),
+        "PR #5\tgithub\thttps://github.com/o/r/pull/5"
+    );
+    let files = embedded_files(&i);
+    assert_eq!(files[0].place, "description");
+    assert_eq!(files[1].place, "comment by Ann 2026-10-10");
+    let all = downloadable_files(&i);
+    assert_eq!(
+        all.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        ["a.png", "b.txt", "spec.pdf"],
+        "uploaded attachments are downloadable, links are not"
+    );
+    let shown = render_issue(&i);
+    assert!(shown.contains("Attachments (2):"), "{shown}");
+    assert!(shown.contains("Uploaded files in the text (2)"), "{shown}");
+}
+
+#[test]
+fn embedded_markdown_matches_linears_editor() {
+    assert_eq!(markdown_for("a.png", "image/png", "U"), "![a.png](U)");
+    assert_eq!(
+        markdown_for("[x].pdf", "application/pdf", "U"),
+        "[x.pdf](U)"
+    );
+    assert_eq!(with_files(Some("hi\n"), "[f](U)"), "hi\n\n[f](U)");
+    assert_eq!(with_files(None, "[f](U)"), "[f](U)");
+    assert_eq!(with_files(Some("hi"), ""), "hi");
+}
+
+#[tokio::test]
+async fn downloads_send_the_key_only_to_linear_uploads() {
+    let server = routed(|_| (200, "image/png".into(), vec![1, 2, 3]));
+    let linear = linear_at(&server);
+    let (bytes, ct) = linear
+        .download(&format!("{}/o/1/2", server.base))
+        .await
+        .unwrap();
+    assert_eq!((bytes, ct.as_str()), (vec![1, 2, 3], "image/png"));
+    assert_eq!(
+        server.requests()[0].headers["authorization"],
+        "lin_api_test"
+    );
+    let err = linear
+        .download("https://github.com/o/r/pull/5")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a Linear upload"), "{err}");
+    assert!(
+        linear
+            .download("https://uploads.linear.app.evil.dev/x")
+            .await
+            .is_err()
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+fn upload_server() -> MockServer {
+    let base = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let b2 = base.clone();
+    let server = routed(move |req| {
+        if req.method == "PUT" {
+            return (200, "text/plain".into(), Vec::new());
+        }
+        let q = req.json()["query"].as_str().unwrap_or("").to_string();
+        if q.contains("fileUpload") {
+            gql(
+                json!({"data": {"fileUpload": {"success": true, "uploadFile": {
+                "uploadUrl": format!("{}/signed", b2.lock().unwrap()),
+                "assetUrl": "https://uploads.linear.app/o/new/file",
+                "headers": [{"key": "x-goog-meta-k", "value": "v"}]}}}}),
+            )
+        } else if q.contains("attachmentCreate") {
+            gql(json!({"data": {"attachmentCreate": {"success": true,
+                "attachment": {"id": "at", "title": "t", "url": "https://uploads.linear.app/o/new/file"}}}}))
+        } else if q.contains("attachmentLinkURL") {
+            gql(json!({"data": {"attachmentLinkURL": {"success": true,
+                "attachment": {"id": "at", "title": "PR", "url": "https://github.com/o/r/pull/9", "sourceType": "github"}}}}))
+        } else {
+            gql(
+                json!({"data": {"issue": {"id": "uuid-1", "identifier": "ENG-1",
+                "team": {"id": "t", "key": "ENG"}, "labels": {"nodes": []}}}}),
+            )
+        }
+    });
+    *base.lock().unwrap() = server.base.clone();
+    server
+}
+
+#[tokio::test]
+async fn uploads_put_to_the_signed_url_without_the_key() {
+    let server = upload_server();
+    let url = upload_file(
+        &linear_at(&server),
+        "a.txt",
+        "text/plain",
+        b"hello".to_vec(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(url, "https://uploads.linear.app/o/new/file");
+    let reqs = server.requests();
+    let vars = &reqs[0].json()["variables"];
+    assert_eq!(
+        (vars["filename"].as_str(), vars["size"].as_i64()),
+        (Some("a.txt"), Some(5))
+    );
+    let put = &reqs[1];
+    assert_eq!((put.method.as_str(), put.path()), ("PUT", "/signed"));
+    assert_eq!(put.body, "hello");
+    assert_eq!(put.headers["x-goog-meta-k"], "v");
+    assert_eq!(put.headers["content-type"], "text/plain");
+    assert!(!put.headers.contains_key("authorization"));
+}
+
+#[tokio::test]
+async fn attaching_a_file_uploads_then_creates_the_attachment() {
+    let server = upload_server();
+    let dir = std::env::temp_dir().join(format!("sidekar-lin-att-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("spec.pdf");
+    std::fs::write(&path, b"%PDF").unwrap();
+    attach_file(&linear_at(&server), "ENG-1", path.to_str().unwrap(), None)
+        .await
+        .unwrap();
+    let reqs = server.requests();
+    let last = reqs.last().unwrap().json();
+    let input = &last["variables"]["input"];
+    assert_eq!(input["issueId"], "uuid-1");
+    assert_eq!(input["title"], "spec.pdf");
+    assert_eq!(input["url"], "https://uploads.linear.app/o/new/file");
+    assert_eq!(input["subtitle"], "spec.pdf · 4B");
+    assert_eq!(
+        reqs[1].json()["variables"]["contentType"],
+        "application/pdf"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn linking_a_url_uses_attachment_link_url() {
+    let server = upload_server();
+    let a = link_url(
+        &linear_at(&server),
+        "ENG-1",
+        "https://github.com/o/r/pull/9",
+        Some("PR"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(a.source, "github");
+    let vars = &server.requests()[1].json()["variables"];
+    assert_eq!(
+        (vars["issueId"].as_str(), vars["title"].as_str()),
+        (Some("uuid-1"), Some("PR"))
+    );
+    assert!(
+        link_url(&linear_at(&server), "ENG-1", "ftp://x", None)
+            .await
+            .is_err()
+    );
+}

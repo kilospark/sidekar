@@ -45,7 +45,9 @@ pub const Q_ISSUE: &str = "query($id: String!) { issue(id: $id) { \
     team { id key name } project { name } cycle { number name } \
     labels { nodes { id name } } parent { identifier title } \
     children(first: 50) { nodes { identifier title state { name } } } \
-    comments(first: 100) { nodes { id body createdAt user { name displayName } } } } }";
+    comments(first: 100) { nodes { id body createdAt user { name displayName } } } \
+    attachments(first: 50) { nodes { id title subtitle url sourceType createdAt \
+    creator { name displayName } } } } }";
 
 /// Just what an update needs to resolve names: the team and current labels.
 pub const Q_ISSUE_CONTEXT: &str = "query($id: String!) { issue(id: $id) { \
@@ -86,6 +88,17 @@ pub const M_UPDATE: &str = "mutation($id: String!, $input: IssueUpdateInput!) { 
 
 pub const M_COMMENT: &str = "mutation($input: CommentCreateInput!) { \
     commentCreate(input: $input) { success comment { id url } } }";
+
+pub const M_FILE_UPLOAD: &str = "mutation($contentType: String!, $filename: String!, $size: Int!) { \
+    fileUpload(contentType: $contentType, filename: $filename, size: $size) { success \
+    uploadFile { uploadUrl assetUrl headers { key value } } } }";
+
+pub const M_ATTACHMENT_CREATE: &str = "mutation($input: AttachmentCreateInput!) { \
+    attachmentCreate(input: $input) { success attachment { id title url } } }";
+
+pub const M_ATTACHMENT_LINK: &str = "mutation($issueId: String!, $url: String!, $title: String) { \
+    attachmentLinkURL(issueId: $issueId, url: $url, title: $title) { success \
+    attachment { id title url sourceType } } }";
 
 pub const Q_ORGANIZATION: &str = "query { organization { id name urlKey userCount } \
     viewer { name displayName email } }";
@@ -144,6 +157,9 @@ pub const ALL_DOCUMENTS: &[&str] = &[
     M_NOTIFICATION_ARCHIVE,
     Q_COMMENTS,
     Q_HISTORY,
+    M_FILE_UPLOAD,
+    M_ATTACHMENT_CREATE,
+    M_ATTACHMENT_LINK,
 ];
 
 fn s(v: &Value, ptr: &str) -> String {
@@ -493,6 +509,7 @@ pub struct IssueDetail {
     pub parent: Option<(String, String)>,
     pub children: Vec<(String, String, String)>,
     pub comments: Vec<Comment>,
+    pub attachments: Vec<IssueAttachment>,
 }
 
 pub(crate) fn issue_detail_from(v: &Value) -> IssueDetail {
@@ -547,6 +564,10 @@ pub(crate) fn issue_detail_from(v: &Value) -> IssueDetail {
             .map(|c| (s(c, "/identifier"), s(c, "/state/name"), s(c, "/title")))
             .collect(),
         comments,
+        attachments: nodes(v, "/attachments/nodes")
+            .into_iter()
+            .map(attachment_from)
+            .collect(),
     }
 }
 
@@ -610,6 +631,23 @@ pub fn render_issue(i: &IssueDetail) -> String {
         out.push_str(&format!("\nSub-issues ({}):\n", i.children.len()));
         for (id, state, title) in &i.children {
             out.push_str(&format!("  {id}\t{state}\t{title}\n"));
+        }
+    }
+    if !i.attachments.is_empty() {
+        out.push_str(&format!("\nAttachments ({}):\n", i.attachments.len()));
+        for a in &i.attachments {
+            out.push_str(&format!("  {}\n", a.line()));
+        }
+    }
+    let files = embedded_files(i);
+    if !files.is_empty() {
+        out.push_str(&format!(
+            "\nUploaded files in the text ({}) — `sidekar linear download {}`:\n",
+            files.len(),
+            i.row.identifier
+        ));
+        for f in &files {
+            out.push_str(&format!("  {}\t{}\t{}\n", f.name, f.place, f.url));
         }
     }
     out.push_str(&format!("\nComments ({}):\n", i.comments.len()));
@@ -1527,4 +1565,282 @@ pub async fn history(
         .collect();
     entries.sort_by(|a, b| a.at.cmp(&b.at));
     Ok((title, entries))
+}
+
+// ---------------------------------------------------------------------------
+// Attachments and uploaded files
+// ---------------------------------------------------------------------------
+
+/// Where Linear keeps uploaded files. Fetching one needs the API credential.
+pub const UPLOADS_HOST: &str = "uploads.linear.app";
+
+/// An entry in an issue's attachments list: an uploaded file, or a link
+/// (GitHub PR, Slack thread, any URL).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IssueAttachment {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub url: String,
+    pub source: String,
+    pub created: String,
+    pub creator: String,
+}
+
+impl IssueAttachment {
+    pub fn is_upload(&self) -> bool {
+        crate::attachments::host_of(&self.url).as_deref() == Some(UPLOADS_HOST)
+    }
+
+    pub fn line(&self) -> String {
+        let mut parts = vec![if self.title.is_empty() {
+            "(untitled)".to_string()
+        } else {
+            self.title.clone()
+        }];
+        if !self.subtitle.is_empty() {
+            parts.push(self.subtitle.clone());
+        }
+        parts.push(if self.is_upload() {
+            "file".into()
+        } else if self.source.is_empty() {
+            "link".into()
+        } else {
+            self.source.clone()
+        });
+        parts.push(self.url.clone());
+        parts.join("\t")
+    }
+}
+
+pub(crate) fn attachment_from(v: &Value) -> IssueAttachment {
+    IssueAttachment {
+        id: s(v, "/id"),
+        title: s(v, "/title"),
+        subtitle: s(v, "/subtitle"),
+        url: s(v, "/url"),
+        source: s(v, "/sourceType"),
+        created: s(v, "/createdAt"),
+        creator: person(v, "/creator"),
+    }
+}
+
+/// A file uploaded into an issue's description or a comment, found by its
+/// `uploads.linear.app` link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedFile {
+    pub name: String,
+    pub url: String,
+    /// `description`, `comment by ann 2026-10-10`, or `attachment`.
+    pub place: String,
+}
+
+/// Every `https://uploads.linear.app/…` link in markdown, with the link text
+/// as its name (`![shot.png](url)` → `shot.png`), else the URL's last
+/// segment. In order, without repeats.
+pub(crate) fn uploads_in(markdown: &str) -> Vec<(String, String)> {
+    let prefix = format!("https://{UPLOADS_HOST}/");
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut from = 0;
+    while let Some(i) = markdown[from..].find(&prefix) {
+        let start = from + i;
+        let end = markdown[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\'' | '<'))
+            .map(|e| start + e)
+            .unwrap_or(markdown.len());
+        let url = &markdown[start..end];
+        let before = &markdown[..start];
+        let label = before
+            .strip_suffix("](")
+            .and_then(|b| b.rfind('[').map(|o| b[o + 1..].to_string()))
+            .filter(|l| !l.trim().is_empty() && !l.contains('\n'));
+        let name = label.unwrap_or_else(|| {
+            let last = url
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or("file");
+            urlencoding::decode(last)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| last.to_string())
+        });
+        if !out.iter().any(|(_, u)| u == url) {
+            out.push((name, url.to_string()));
+        }
+        from = end.max(start + prefix.len());
+    }
+    out
+}
+
+/// Files uploaded into the description and comments of an issue.
+pub fn embedded_files(i: &IssueDetail) -> Vec<EmbeddedFile> {
+    let mut out: Vec<EmbeddedFile> = Vec::new();
+    let mut push = |text: &str, place: String| {
+        for (name, url) in uploads_in(text) {
+            if !out.iter().any(|f| f.url == url) {
+                out.push(EmbeddedFile {
+                    name,
+                    url,
+                    place: place.clone(),
+                });
+            }
+        }
+    };
+    push(&i.description, "description".into());
+    for c in &i.comments {
+        push(
+            &c.body,
+            format!(
+                "comment by {} {}",
+                c.author,
+                c.created.get(..10).unwrap_or(&c.created)
+            ),
+        );
+    }
+    out
+}
+
+/// Every file on an issue that can be downloaded: uploads in the text, and
+/// attachments that are Linear uploads.
+pub fn downloadable_files(i: &IssueDetail) -> Vec<EmbeddedFile> {
+    let mut out = embedded_files(i);
+    for a in i.attachments.iter().filter(|a| a.is_upload()) {
+        if !out.iter().any(|f| f.url == a.url) {
+            out.push(EmbeddedFile {
+                name: if a.title.is_empty() {
+                    a.url.rsplit('/').next().unwrap_or("file").to_string()
+                } else {
+                    a.title.clone()
+                },
+                url: a.url.clone(),
+                place: "attachment".into(),
+            });
+        }
+    }
+    out
+}
+
+/// Upload a file to Linear's storage and return its asset URL: `fileUpload`
+/// for a signed URL, then the bytes PUT to it.
+pub async fn upload_file(
+    linear: &Linear,
+    name: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> Result<String> {
+    let size = i64::try_from(bytes.len())
+        .ok()
+        .filter(|n| *n <= i64::from(i32::MAX))
+        .ok_or_else(|| anyhow::anyhow!("{name} is too large for Linear (2GB limit)"))?;
+    let d = linear
+        .query(
+            M_FILE_UPLOAD,
+            json!({"contentType": content_type, "filename": name, "size": size}),
+        )
+        .await?;
+    if d.pointer("/fileUpload/success") != Some(&json!(true)) {
+        bail!("Linear refused to start the upload of {name}");
+    }
+    let upload_url = s(&d, "/fileUpload/uploadFile/uploadUrl");
+    let asset_url = s(&d, "/fileUpload/uploadFile/assetUrl");
+    if upload_url.is_empty() || asset_url.is_empty() {
+        bail!("Linear gave no upload URL for {name}");
+    }
+    let headers: Vec<(String, String)> = nodes(&d, "/fileUpload/uploadFile/headers")
+        .into_iter()
+        .map(|h| (s(h, "/key"), s(h, "/value")))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    linear
+        .put_signed(&upload_url, &headers, content_type, bytes)
+        .await?;
+    Ok(asset_url)
+}
+
+/// Markdown that shows an uploaded file the way Linear's editor does: images
+/// inline, everything else as a link.
+pub(crate) fn markdown_for(name: &str, content_type: &str, url: &str) -> String {
+    let label = name.replace(['[', ']'], "");
+    if content_type.starts_with("image/") {
+        format!("![{label}]({url})")
+    } else {
+        format!("[{label}]({url})")
+    }
+}
+
+/// Upload a local file and attach it to an issue (it shows under the
+/// issue's attachments). Returns the attachment's URL.
+pub async fn attach_file(
+    linear: &Linear,
+    issue: &str,
+    path: &str,
+    title: Option<&str>,
+) -> Result<String> {
+    let ctx = issue_context(linear, issue).await?;
+    let (bytes, name, mime) = crate::attachments::read_upload(path)?;
+    let size = crate::attachments::human_bytes(bytes.len() as u64);
+    let asset = upload_file(linear, &name, &mime, bytes).await?;
+    let d = linear
+        .query(
+            M_ATTACHMENT_CREATE,
+            json!({"input": {
+                "issueId": ctx.id,
+                "title": title.unwrap_or(&name),
+                "subtitle": format!("{name} · {size}"),
+                "url": asset,
+            }}),
+        )
+        .await?;
+    if d.pointer("/attachmentCreate/success") != Some(&json!(true)) {
+        bail!("Linear reported attachmentCreate as unsuccessful");
+    }
+    Ok(s(&d, "/attachmentCreate/attachment/url"))
+}
+
+/// Attach a URL to an issue. Linear recognizes GitHub, Slack, Figma and the
+/// like and shows them richly; anything else is a plain link.
+pub async fn link_url(
+    linear: &Linear,
+    issue: &str,
+    url: &str,
+    title: Option<&str>,
+) -> Result<IssueAttachment> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        bail!("{url} is not an http(s) URL");
+    }
+    let ctx = issue_context(linear, issue).await?;
+    let d = linear
+        .query(
+            M_ATTACHMENT_LINK,
+            json!({"issueId": ctx.id, "url": url, "title": title}),
+        )
+        .await?;
+    if d.pointer("/attachmentLinkURL/success") != Some(&json!(true)) {
+        bail!("Linear reported attachmentLinkURL as unsuccessful");
+    }
+    Ok(attachment_from(
+        d.pointer("/attachmentLinkURL/attachment")
+            .unwrap_or(&Value::Null),
+    ))
+}
+
+/// Upload local files and return the markdown to embed them in a description
+/// or comment, one per line.
+pub async fn upload_for_markdown(linear: &Linear, paths: &[String]) -> Result<String> {
+    let mut lines = Vec::new();
+    for p in paths {
+        let (bytes, name, mime) = crate::attachments::read_upload(p)?;
+        let url = upload_file(linear, &name, &mime, bytes).await?;
+        lines.push(markdown_for(&name, &mime, &url));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Text plus embedded files, separated by a blank line.
+pub(crate) fn with_files(text: Option<&str>, files_md: &str) -> String {
+    match text.map(str::trim_end).filter(|t| !t.is_empty()) {
+        Some(t) if files_md.is_empty() => t.to_string(),
+        Some(t) => format!("{t}\n\n{files_md}"),
+        None => files_md.to_string(),
+    }
 }
