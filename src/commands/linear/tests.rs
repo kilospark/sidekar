@@ -133,3 +133,48 @@ fn attach_values_are_not_positionals() {
     );
     assert_eq!(pos, ["ENG-1"]);
 }
+
+#[tokio::test]
+async fn an_inbox_action_goes_on_past_a_failure_and_counts_both() {
+    use crate::test_http::MockServer;
+    let server = MockServer::start(|req| {
+        let id = req.json()["variables"]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let body = if id == "gone" {
+            serde_json::json!({"errors": [{"message": "Entity not found"}]})
+        } else {
+            serde_json::json!({"data": {"notificationArchive": {"success": true}}})
+        };
+        (200, body.to_string())
+    });
+    let linear = Linear::with_url(MockServer::client(), &server.base, "lin_api_test".into());
+    let report = inbox_apply(&linear, "archive", &v(&["a", "gone", "b"])).await;
+    assert_eq!(report.done, 2);
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].0, "gone");
+    assert_eq!(
+        server.requests().len(),
+        3,
+        "the one after the failure was still tried"
+    );
+    let line = report.summary("archive");
+    assert!(
+        line.starts_with("Archived: 2 notification(s). Failed: 1."),
+        "{line}"
+    );
+    assert!(
+        line.contains("gone\t") && line.contains("Entity not found"),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_cut_list_says_how_to_see_the_rest() {
+    let note = more_note(25, "issues");
+    assert!(
+        note.contains("first 25 issues") && note.contains("--limit"),
+        "{note}"
+    );
+}

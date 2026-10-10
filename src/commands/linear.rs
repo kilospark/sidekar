@@ -312,10 +312,11 @@ async fn api_command(
                 limit: flag_usize(rest, "--limit").unwrap_or(25),
             };
             let found = api::issues(linear, &q).await?;
-            if found.is_empty() {
+            if found.items.is_empty() {
                 out!(ctx, "No issues match.");
             }
-            for i in found {
+            let more = found.more;
+            for i in found.items {
                 out!(
                     ctx,
                     "{}\t{}\t{}\t{}\t{}",
@@ -329,6 +330,9 @@ async fn api_command(
                     },
                     i.title
                 );
+            }
+            if more {
+                out!(ctx, "{}", more_note(q.limit, "issues"));
             }
             Ok(())
         }
@@ -472,37 +476,38 @@ async fn api_command(
             reject_unknown_flags(rest, &["--limit", "--all"])?;
             let filter = pos.join(" ").to_lowercase();
             let limit = flag_usize(rest, "--limit").unwrap_or(250);
-            let mut shown = 0;
-            for u in api::users(linear, 250).await? {
-                if !has("--all") && !u.active {
-                    continue;
-                }
-                let hay = format!("{} {} {}", u.name, u.display_name, u.email).to_lowercase();
-                if !filter.is_empty() && !hay.contains(&filter) {
-                    continue;
-                }
-                if shown >= limit {
-                    break;
-                }
-                shown += 1;
+            let all = has("--all");
+            let keep = |u: &api::Person| {
+                (all || u.active)
+                    && (filter.is_empty()
+                        || format!("{} {} {}", u.name, u.display_name, u.email)
+                            .to_lowercase()
+                            .contains(&filter))
+            };
+            let found = api::users(linear, limit, Some(&keep)).await?;
+            if found.items.is_empty() {
+                out!(ctx, "No users match.");
+            }
+            for u in &found.items {
                 out!(ctx, "{}\t{}\t{}", u.display_name, u.name, u.email);
             }
-            if shown == 0 {
-                out!(ctx, "No users match.");
+            if found.more {
+                out!(ctx, "{}", more_note(limit, "users"));
             }
             Ok(())
         }
         "projects" => {
             reject_unknown_flags(rest, &["--team", "--limit"])?;
             let name = Some(pos.join(" ")).filter(|n| !n.trim().is_empty());
+            let limit = flag_usize(rest, "--limit").unwrap_or(50);
             let found = api::projects(
                 linear,
                 flag(rest, "--team").as_deref(),
                 name.as_deref(),
-                flag_usize(rest, "--limit").unwrap_or(50),
+                limit,
             )
             .await?;
-            if found.is_empty() {
+            if found.items.is_empty() {
                 out!(ctx, "No projects match.");
             }
             let dash = |x: &str| {
@@ -512,7 +517,7 @@ async fn api_command(
                     x.to_string()
                 }
             };
-            for p in found {
+            for p in &found.items {
                 out!(
                     ctx,
                     "{}\t{}\t{:.0}%\t{} → {}\t{}\tlead {}\tteams {}\t{}",
@@ -526,6 +531,9 @@ async fn api_command(
                     dash(&p.teams.join(",")),
                     p.url
                 );
+            }
+            if found.more {
+                out!(ctx, "{}", more_note(limit, "projects"));
             }
             Ok(())
         }
@@ -560,12 +568,13 @@ async fn api_command(
             reject_unknown_flags(rest, &["--team", "--project", "--since", "--limit"])?;
             let since_text = flag(rest, "--since").unwrap_or_else(|| "7d".into());
             let since = api::since(&since_text)?;
+            let limit = flag_usize(rest, "--limit").unwrap_or(25);
             let a = api::activity(
                 linear,
                 flag(rest, "--team").as_deref(),
                 flag(rest, "--project").as_deref(),
                 &since,
-                flag_usize(rest, "--limit").unwrap_or(25),
+                limit,
             )
             .await?;
             // One timeline, newest first.
@@ -609,6 +618,9 @@ async fn api_command(
             for (_, l) in lines {
                 out!(ctx, "{l}");
             }
+            if a.more {
+                out!(ctx, "{}", more_note(limit, "issues or comments"));
+            }
             Ok(())
         }
         "inbox" | "notifications" => {
@@ -622,41 +634,43 @@ async fn api_command(
                         if verb != "read" {
                             bail!("--all goes with `inbox read` only");
                         }
-                        let (_, unread) = api::notifications(linear, true, false, 250).await?;
-                        ids.extend(unread.into_iter().map(|n| n.id));
+                        let (_, unread) =
+                            api::notifications(linear, true, false, usize::MAX).await?;
+                        ids.extend(unread.items.into_iter().map(|n| n.id));
                     } else if ids.is_empty() {
                         bail!(
                             "Usage: sidekar linear inbox {verb} <NOTIFICATION_ID>…  \
                              (ids are the first column of `sidekar linear inbox`)"
                         );
                     }
-                    for id in &ids {
-                        match verb {
-                            "archive" => api::archive_notification(linear, id).await?,
-                            _ => api::mark_notification(linear, id, verb == "read").await?,
-                        }
+                    if ids.is_empty() {
+                        out!(ctx, "No unread notifications.");
+                        return Ok(());
                     }
-                    let done = match verb {
-                        "read" => "Marked read",
-                        "unread" => "Marked unread",
-                        _ => "Archived",
-                    };
-                    out!(ctx, "{done}: {} notification(s).", ids.len());
+                    let report = inbox_apply(linear, verb, &ids).await;
+                    out!(ctx, "{}", report.summary(verb));
+                    if !report.failed.is_empty() {
+                        bail!(
+                            "{} of {} notification(s) failed",
+                            report.failed.len(),
+                            ids.len()
+                        );
+                    }
                     Ok(())
                 }
                 Some(other) => bail!("unknown inbox action {other}; use read, unread or archive"),
                 None => {
                     reject_unknown_flags(rest, &["--unread", "--archived", "--limit"])?;
-                    let (unread, found) = api::notifications(
-                        linear,
-                        has("--unread"),
-                        has("--archived"),
-                        flag_usize(rest, "--limit").unwrap_or(25),
-                    )
-                    .await?;
+                    let limit = flag_usize(rest, "--limit").unwrap_or(25);
+                    let (unread, found) =
+                        api::notifications(linear, has("--unread"), has("--archived"), limit)
+                            .await?;
                     out!(ctx, "{unread} unread.");
-                    for n in found {
-                        out!(ctx, "{}", api_inbox_line(&n));
+                    for n in &found.items {
+                        out!(ctx, "{}", api_inbox_line(n));
+                    }
+                    if found.more {
+                        out!(ctx, "{}", more_note(limit, "notifications"));
                     }
                     Ok(())
                 }
@@ -774,17 +788,14 @@ async fn api_command(
         }
         "cycles" => {
             reject_unknown_flags(rest, &["--team", "--all", "--limit"])?;
-            let found = api::cycles(
-                linear,
-                flag(rest, "--team").as_deref(),
-                has("--all"),
-                flag_usize(rest, "--limit").unwrap_or(25),
-            )
-            .await?;
-            if found.is_empty() {
+            let limit = flag_usize(rest, "--limit").unwrap_or(25);
+            let found =
+                api::cycles(linear, flag(rest, "--team").as_deref(), has("--all"), limit).await?;
+            if found.items.is_empty() {
                 out!(ctx, "No cycles.");
             }
-            for c in found {
+            let more = found.more;
+            for c in found.items {
                 out!(
                     ctx,
                     "{}\t{}\t{}\t{} → {}\t{:.0}%{}",
@@ -801,10 +812,65 @@ async fn api_command(
                     }
                 );
             }
+            if more {
+                out!(ctx, "{}", more_note(limit, "cycles"));
+            }
             Ok(())
         }
         _ => bail!("{USAGE}"),
     }
+}
+
+/// What an inbox action did to each notification.
+#[derive(Debug, Default)]
+pub(crate) struct InboxReport {
+    pub done: usize,
+    /// Id and why, for each that failed.
+    pub failed: Vec<(String, String)>,
+}
+
+impl InboxReport {
+    pub(crate) fn summary(&self, verb: &str) -> String {
+        let done = match verb {
+            "read" => "Marked read",
+            "unread" => "Marked unread",
+            _ => "Archived",
+        };
+        let mut out = format!("{done}: {} notification(s).", self.done);
+        if !self.failed.is_empty() {
+            out.push_str(&format!(" Failed: {}.", self.failed.len()));
+            for (id, why) in &self.failed {
+                out.push_str(&format!("\n  {id}\t{why}"));
+            }
+        }
+        out
+    }
+}
+
+/// Apply `read`, `unread` or `archive` to every id, going on past a failure
+/// (one deleted notification must not leave the rest of the inbox as it was),
+/// and say which failed.
+pub(crate) async fn inbox_apply(linear: &Linear, verb: &str, ids: &[String]) -> InboxReport {
+    let mut report = InboxReport::default();
+    for id in ids {
+        let r = match verb {
+            "archive" => api::archive_notification(linear, id).await,
+            _ => api::mark_notification(linear, id, verb == "read").await,
+        };
+        match r {
+            Ok(()) => report.done += 1,
+            Err(e) => report.failed.push((
+                id.clone(),
+                e.to_string().lines().next().unwrap_or_default().to_string(),
+            )),
+        }
+    }
+    report
+}
+
+/// The line under a list cut at `--limit`, so a page is never taken for all.
+pub(crate) fn more_note(limit: usize, what: &str) -> String {
+    format!("(showing the first {limit} {what}; there are more. Raise --limit to see them.)")
 }
 
 /// `2026-10-10T14:03:05.123Z` → `2026-10-10 14:03` (UTC, as Linear stores it).
