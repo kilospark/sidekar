@@ -43,8 +43,14 @@ for at least one full slot. This machine's own claims are kept under
 `internal:lease:<id>`, so it can claim again while holding the lease.
 
 This assumes machines' clocks agree to within a slot, which NTP gives. A clock
-far ahead can claim early; the worst case is the old race, which step 5 then
-recovers from. A server from before leases answers 400. That reads as
+far ahead claims a slot far ahead, and the server then refuses every slot up to
+it, for as long as the skew (or until the bus collection's TTL drops the
+record). So a lease more than `LEASE_MAX_AHEAD_SLOTS` (3) slots past this
+machine's own slot is not taken for a live holder's: the claim reads as
+"unavailable" and the refresh goes ahead, with the old race as the worst case,
+which step 5 recovers from. Without that cut-off every other machine would wait
+out the full lease wait on each refresh. A hold this machine recorded that far
+ahead (its own clock ran fast) is likewise ignored. A server from before leases answers 400. That reads as
 "unavailable", and the refresh goes ahead without a lease, still with steps
 1, 2, 4 and 5.
 
