@@ -68,6 +68,67 @@ impl Slack {
         .await
     }
 
+    /// A method that only takes form fields (`files.getUploadURLExternal`
+    /// and `files.completeUploadExternal` do not read JSON bodies).
+    pub async fn post_form(&self, method: &str, fields: &[(&str, String)]) -> Result<Value> {
+        let url = format!("{}/{method}", self.base);
+        self.call(method, || self.http.post(&url).form(fields))
+            .await
+    }
+
+    /// Fetch a private file (`url_private_download`) with the token.
+    ///
+    /// The token goes only to Slack's own hosts over https (or the test
+    /// mock's host). Without `files:read` Slack answers a file URL with its
+    /// sign-in page rather than an error, so an HTML reply to a non-HTML file
+    /// is reported as the scope problem it is.
+    pub async fn download(&self, url: &str, expect_html: bool) -> Result<Vec<u8>> {
+        let test_host = crate::attachments::host_of(&self.base);
+        let test_host = test_host.filter(|h| h != "slack.com");
+        if !crate::attachments::token_may_go_to(url, "slack.com", test_host.as_deref()) {
+            bail!("refusing to send the Slack token to {url}: not a Slack file URL");
+        }
+        let res = self.http.get(url).bearer_auth(&self.token).send().await?;
+        let status = res.status();
+        let html = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|c| c.starts_with("text/html"));
+        if !status.is_success() {
+            bail!("{status} downloading {url}");
+        }
+        if html && !expect_html {
+            bail!(
+                "Slack sent a web page instead of the file, which is what it does when the token \
+                 lacks files:read. Add files:read to the app (`sidekar slack setup` has the \
+                 manifest), reinstall, and run `sidekar slack login` again."
+            );
+        }
+        Ok(res.bytes().await?.to_vec())
+    }
+
+    /// Send bytes to a pre-signed upload URL. The URL carries its own
+    /// authorization, so the token is not sent.
+    pub async fn put_upload(&self, upload_url: &str, bytes: Vec<u8>) -> Result<()> {
+        let res = self
+            .http
+            .post(upload_url)
+            .header("Content-Type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            let text = res.text().await.unwrap_or_default();
+            bail!(
+                "{status} uploading to Slack: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+        Ok(())
+    }
+
     async fn call(
         &self,
         method: &str,
