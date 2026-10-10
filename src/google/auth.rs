@@ -184,15 +184,19 @@ pub async fn login(
     let listener = TcpListener::bind("127.0.0.1:0").context("could not open a loopback port")?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
-    let state = crate::message::gen_msg_id();
+    let state = crate::oauth_loopback::random_state();
+    // Google supports PKCE for Desktop clients; the verifier never leaves
+    // this process except to the token endpoint.
+    let pkce = crate::oauth_loopback::Pkce::new();
 
     let mut auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code\
-         &scope={}&access_type=offline&prompt=consent&state={}",
+         &scope={}&access_type=offline&prompt=consent&state={}{}",
         urlencoding::encode(&client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(&SCOPES.join(" ")),
         urlencoding::encode(&state),
+        pkce.query(),
     );
     if let Some(a) = account_hint {
         // Skips the chooser, so a login cannot quietly land on whichever account
@@ -217,7 +221,14 @@ pub async fn login(
 
     let code =
         crate::oauth_loopback::wait_for_code(vec![listener], &state, "Google", CONSENT_TIMEOUT)?;
-    let tokens = exchange_code(&client_id, &client_secret, &code, &redirect_uri).await?;
+    let tokens = exchange_code(
+        &client_id,
+        &client_secret,
+        &code,
+        &redirect_uri,
+        &pkce.verifier,
+    )
+    .await?;
 
     let refresh = tokens
         .get("refresh_token")
@@ -253,6 +264,7 @@ async fn exchange_code(
     client_secret: &str,
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<serde_json::Value> {
     let res = crate::http_client::client()
         .post("https://oauth2.googleapis.com/token")
@@ -261,6 +273,7 @@ async fn exchange_code(
             ("client_id", client_id),
             ("client_secret", client_secret),
             ("redirect_uri", redirect_uri),
+            ("code_verifier", code_verifier),
             ("grant_type", "authorization_code"),
         ])
         .send()

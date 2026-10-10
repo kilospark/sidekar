@@ -188,14 +188,22 @@ pub fn redirect_uri(port: u16) -> String {
     format!("http://localhost:{port}/callback")
 }
 
-pub(crate) fn authorize_url(client_id: &str, redirect: &str, state: &str) -> String {
+/// The consent URL, with a PKCE S256 challenge: Linear supports PKCE, so a
+/// code intercepted on this machine is useless without the verifier.
+pub(crate) fn authorize_url(
+    client_id: &str,
+    redirect: &str,
+    state: &str,
+    pkce: &crate::oauth_loopback::Pkce,
+) -> String {
     format!(
         "{AUTHORIZE_URL}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}\
-         &prompt=consent",
+         &prompt=consent{}",
         urlencoding::encode(client_id),
         urlencoding::encode(redirect),
         urlencoding::encode(SCOPES),
         urlencoding::encode(state),
+        pkce.query(),
     )
 }
 
@@ -227,8 +235,9 @@ pub async fn login(opts: LoginOptions<'_>) -> Result<super::api::Viewer> {
 
     let listeners = crate::oauth_loopback::bind_localhost(opts.port)?;
     let redirect = redirect_uri(opts.port);
-    let state = crate::message::gen_msg_id();
-    let url = authorize_url(&client_id, &redirect, &state);
+    let state = crate::oauth_loopback::random_state();
+    let pkce = crate::oauth_loopback::Pkce::new();
+    let url = authorize_url(&client_id, &redirect, &state, &pkce);
 
     println!("Open this URL to authorize:\n  {url}\n");
     println!(
@@ -250,6 +259,7 @@ pub async fn login(opts: LoginOptions<'_>) -> Result<super::api::Viewer> {
             ("redirect_uri", redirect.as_str()),
             ("client_id", client_id.as_str()),
             ("client_secret", client_secret.as_str()),
+            ("code_verifier", pkce.verifier.as_str()),
             ("grant_type", "authorization_code"),
         ],
     )
@@ -334,13 +344,30 @@ pub(crate) async fn token_request(
 /// The `Authorization` header to call with, refreshing an OAuth token first
 /// when it is near expiry.
 pub async fn authorization_for(token: &TokenRef) -> Result<String> {
-    let stored = kv(&token.key)?
-        .ok_or_else(|| anyhow::anyhow!("no Linear token stored under {}", token.key))?;
-    let current = ExpiringToken::parse(&stored);
-    let now = crate::oauth_loopback::now_secs();
-    if !current.needs_refresh(now) {
-        return Ok(header_for(&current.access_token));
-    }
+    authorization_for_at(token, &crate::http_client::client(), TOKEN_URL).await
+}
+
+/// [`authorization_for`] against a given token endpoint (tests aim it at a
+/// mock). The refresh runs under [`crate::oauth_loopback::refresh_stored`]'s
+/// lock, because Linear's refresh tokens are single-use.
+pub(crate) async fn authorization_for_at(
+    token: &TokenRef,
+    http: &reqwest::Client,
+    token_url: &str,
+) -> Result<String> {
+    let next = crate::oauth_loopback::refresh_stored(&token.key, "Linear", |current| {
+        refresh_once(token, http, token_url, current)
+    })
+    .await?;
+    Ok(header_for(&next.access_token))
+}
+
+async fn refresh_once(
+    token: &TokenRef,
+    http: &reqwest::Client,
+    token_url: &str,
+    current: ExpiringToken,
+) -> Result<ExpiringToken> {
     let (Some(id_key), Some(secret_key)) = (&token.client_id_key, &token.client_secret_key) else {
         bail!(
             "the Linear token in {} has expired and was not minted by `linear login`, so there is \
@@ -352,9 +379,10 @@ pub async fn authorization_for(token: &TokenRef) -> Result<String> {
     let client_secret =
         kv(secret_key)?.ok_or_else(|| anyhow::anyhow!("{secret_key} is not in sidekar kv"))?;
     let refresh = current.refresh_token.clone().unwrap_or_default();
+    let now = crate::oauth_loopback::now_secs();
     let res = token_request(
-        &crate::http_client::client(),
-        TOKEN_URL,
+        http,
+        token_url,
         &[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh.as_str()),
@@ -371,12 +399,7 @@ pub async fn authorization_for(token: &TokenRef) -> Result<String> {
             token.key
         )
     })?;
-    let next = refreshed(&res, &current, now)?;
-    // Linear rotates the refresh token on every use, so the new one has to be
-    // written back before anything else can fail: losing it means logging in
-    // again.
-    crate::broker::kv_set(&token.key, &next.to_value(), None)?;
-    Ok(header_for(&next.access_token))
+    refreshed(&res, &current, now)
 }
 
 pub(crate) fn refreshed(v: &Value, previous: &ExpiringToken, now: u64) -> Result<ExpiringToken> {

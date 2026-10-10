@@ -27,13 +27,70 @@ pub struct Slack {
     http: reqwest::Client,
     base: String,
     token: String,
+    /// Where resolved names are remembered, per workspace. `None` (tests,
+    /// unknown workspace) means no caching.
+    cache: Option<std::path::PathBuf>,
 }
+
+/// How long a resolved name → id stays trusted. Long enough that a burst of
+/// commands looks a channel up once; short enough that a rename or a new
+/// person shows up within minutes.
+pub(crate) const NAME_CACHE_TTL_SECS: u64 = 15 * 60;
 
 impl Slack {
     /// A client for the stored token, refreshing it first if it rotates.
     pub async fn connect(token: &auth::TokenRef) -> Result<Self> {
         let access = auth::access_token_for(token).await?;
-        Ok(Self::new(access))
+        let scope = if token.team_id.is_empty() {
+            &token.key
+        } else {
+            &token.team_id
+        };
+        Ok(Self::new(access).with_cache(Some(name_cache_path(scope))))
+    }
+
+    /// Use (or stop using) a name cache file.
+    pub fn with_cache(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.cache = path;
+        self
+    }
+
+    /// A remembered id for `key`, if fresh.
+    pub(crate) fn cache_get(&self, key: &str) -> Option<String> {
+        let path = self.cache.as_ref()?;
+        let map: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        let e = map.get(key)?;
+        let at = e.get("at")?.as_u64()?;
+        if crate::oauth_loopback::now_secs().saturating_sub(at) > NAME_CACHE_TTL_SECS {
+            return None;
+        }
+        e.get("id")?.as_str().map(String::from)
+    }
+
+    /// Remember `key` → `id`. Best effort: a cache that cannot be written
+    /// only costs a lookup next time.
+    pub(crate) fn cache_put(&self, key: &str, id: &str) {
+        let Some(path) = self.cache.as_ref() else {
+            return;
+        };
+        let now = crate::oauth_loopback::now_secs();
+        let mut map: serde_json::Map<String, Value> = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        map.retain(|_, e| {
+            e.get("at")
+                .and_then(|a| a.as_u64())
+                .is_some_and(|at| now.saturating_sub(at) <= NAME_CACHE_TTL_SECS)
+        });
+        map.insert(key.to_string(), serde_json::json!({"id": id, "at": now}));
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, Value::Object(map).to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 
     pub fn new(access_token: String) -> Self {
@@ -46,6 +103,7 @@ impl Slack {
             http,
             base: base.trim_end_matches('/').to_string(),
             token: access_token,
+            cache: None,
         }
     }
 
@@ -157,6 +215,25 @@ impl Slack {
             return check(method, status, &text);
         }
     }
+}
+
+/// The name cache for one workspace: `~/.sidekar/cache/slack-names-<team>.json`.
+pub(crate) fn name_cache_path(scope: &str) -> std::path::PathBuf {
+    let safe: String = scope
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".sidekar")
+        .join("cache")
+        .join(format!("slack-names-{safe}.json"))
 }
 
 /// Read a Web API response, turning `ok: false` into an error that says what

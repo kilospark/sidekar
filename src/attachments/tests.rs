@@ -97,3 +97,27 @@ fn hosts_parse() {
     assert_eq!(host_of("https://u:p@h.io/x").as_deref(), Some("h.io"));
     assert_eq!(host_of("ftp://h.io"), None);
 }
+
+#[test]
+fn sentence_punctuation_is_not_part_of_a_link() {
+    for (found, link) in [
+        ("https://x.dev/a.", "https://x.dev/a"),
+        ("https://x.dev/a,", "https://x.dev/a"),
+        ("https://x.dev/a?!", "https://x.dev/a"),
+        ("https://x.dev/a).", "https://x.dev/a"),
+        ("https://x.dev/a\"", "https://x.dev/a"),
+        ("https://x.dev/a?b=1", "https://x.dev/a?b=1"),
+        ("https://x.dev/a.png", "https://x.dev/a.png"),
+        (
+            "https://en.wikipedia.org/wiki/Rust_(language)",
+            "https://en.wikipedia.org/wiki/Rust_(language)",
+        ),
+        (
+            "https://en.wikipedia.org/wiki/Rust_(language)).",
+            "https://en.wikipedia.org/wiki/Rust_(language)",
+        ),
+        ("https://x.dev/a/", "https://x.dev/a/"),
+    ] {
+        assert_eq!(trim_link_end(found), link, "{found}");
+    }
+}

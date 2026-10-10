@@ -45,15 +45,121 @@ fn the_listener_ignores_favicon_requests_and_returns_the_code() {
 }
 
 #[test]
-fn the_listener_refuses_a_code_with_the_wrong_state() {
+fn a_wrong_state_is_a_404_and_the_listener_keeps_waiting() {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
     let h = std::thread::spawn(move || {
         wait_for_code(vec![l], "expected", "Test", Duration::from_secs(10))
     });
-    redirect(port, "/callback?code=abc&state=forged");
+    let forged = redirect(port, "/callback?code=evil&state=forged");
+    assert!(forged.starts_with("HTTP/1.1 404"), "{forged}");
+    let missing = redirect(port, "/callback?code=evil");
+    assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+    redirect(port, "/callback?code=good&state=expected");
+    assert_eq!(h.join().unwrap().unwrap(), "good");
+}
+
+#[test]
+fn a_forged_error_cannot_cancel_the_login() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h =
+        std::thread::spawn(move || wait_for_code(vec![l], "real", "Test", Duration::from_secs(10)));
+    let forged = redirect(port, "/callback?error=access_denied&state=guess");
+    assert!(forged.starts_with("HTTP/1.1 404"), "{forged}");
+    let no_state = redirect(port, "/callback?error=access_denied");
+    assert!(no_state.starts_with("HTTP/1.1 404"), "{no_state}");
+    redirect(port, "/callback?code=c&state=real");
+    assert_eq!(h.join().unwrap().unwrap(), "c");
+}
+
+#[test]
+fn an_idle_connection_does_not_block_the_redirect() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let started = Instant::now();
+    let h =
+        std::thread::spawn(move || wait_for_code(vec![l], "s1", "Test", Duration::from_secs(30)));
+    // Connects first and never sends a byte, like a browser preconnect.
+    let _idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let ok = redirect(port, "/callback?code=abc&state=s1");
+    assert!(ok.contains("Signed in"), "{ok}");
+    assert_eq!(h.join().unwrap().unwrap(), "abc");
+    assert!(
+        started.elapsed() < REQUEST_READ_TIMEOUT + Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn the_overall_timeout_holds_even_with_a_connection_open() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let started = Instant::now();
+    let h = std::thread::spawn(move || wait_for_code(vec![l], "s", "Test", Duration::from_secs(1)));
+    let _idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     let err = h.join().unwrap().unwrap_err().to_string();
-    assert!(err.contains("wrong state"), "{err}");
+    assert!(err.contains("timed out"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_request_line_split_across_packets_is_read_whole() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h =
+        std::thread::spawn(move || wait_for_code(vec![l], "s", "Test", Duration::from_secs(10)));
+    let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.write_all(b"GET /callback?code=x").unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    c.write_all(b"y&state=s HTTP/1.1\r\n\r\n").unwrap();
+    assert_eq!(h.join().unwrap().unwrap(), "xy");
+}
+
+#[test]
+fn states_are_128_random_bits() {
+    let a = random_state();
+    assert_eq!(a.len(), 32);
+    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(a, random_state());
+}
+
+#[test]
+fn pkce_matches_the_rfc_7636_example() {
+    // RFC 7636 appendix B.
+    let p = Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".into());
+    assert_eq!(p.challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    assert_eq!(
+        p.query(),
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+    );
+    let fresh = Pkce::new();
+    assert!(fresh.verifier.len() >= 43, "RFC 7636 minimum length");
+}
+
+#[test]
+fn a_taken_ipv6_port_is_an_error_not_a_silent_skip() {
+    let busy = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+    assert!(!ipv6_absent(&busy));
+    assert!(ipv6_absent(&std::io::Error::from(
+        std::io::ErrorKind::AddrNotAvailable
+    )));
+    // Hold [::1]:<port> elsewhere, then ask for it: refuse rather than let
+    // that process receive the code.
+    if let Ok(squatter) = TcpListener::bind(("::1", 0)) {
+        let port = squatter.local_addr().unwrap().port();
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            // (the v4 probe above is dropped again before bind_localhost)
+            let err = bind_localhost(port).unwrap_err();
+            assert!(format!("{err:#}").contains("[::1]"), "{err:#}");
+        }
+    }
 }
 
 #[test]
