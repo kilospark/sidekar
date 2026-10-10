@@ -64,11 +64,11 @@ pub fn render_help(version: &str) -> String {
             ("docs", "Google Docs: read, append, replace"),
             (
                 "slack",
-                "Slack: channels, read, search, send, DMs, drafts, bookmarks",
+                "Slack: channels, read, search, send, DMs, drafts, files",
             ),
             (
                 "linear",
-                "Linear: issues, inbox, activity, projects, cycles",
+                "Linear: issues, inbox, activity, attachments, projects",
             ),
         ],
         CYAN,

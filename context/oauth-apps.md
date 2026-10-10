@@ -111,10 +111,13 @@ kv, and `sidekar linear add` adopts a personal API key (`lin_api_…`, sent bare
 
 Slack scopes (user): `channels:read groups:read im:read mpim:read channels:history
 groups:history im:history mpim:history chat:write im:write users:read
-users:read.email search:read bookmarks:read`. Bot: the same minus `search:read`,
+users:read.email search:read bookmarks:read files:read files:write`. Bot: the same minus `search:read`,
 which Slack does not offer bots. `sidekar slack setup` prints a ready app manifest.
-Tokens issued before `bookmarks:read` was added need the app reinstalled (or
-`slack login` again) before `slack bookmarks` works.
+Tokens issued before `bookmarks:read` and `files:read`/`files:write` were added
+need the app reinstalled (or `slack login` again) before `slack bookmarks`,
+`file`, `download`, `upload` and `--attach` work. Without `files:read` Slack
+answers a file URL with its sign-in page; `slack download` reports that as the
+missing scope.
 
 `slack draft` calls `drafts.create`, which is not in Slack's published API. It
 takes an OAuth user token with no extra scope (`im:write` covers drafting to a
@@ -123,7 +126,9 @@ errors for OAuth tokens, and Saved for later (`saved.list`) needs a browser
 session token (`xoxc`), so neither is offered. `stars.list` is legacy and
 reflects the retired Stars feature, not Saved for later.
 
-Linear scopes: `read,write`. Linear rotates the refresh token on every use, so
+Linear scopes: `read,write` (enough for `fileUpload`, `attachmentCreate` and
+`attachmentLinkURL`; files on `uploads.linear.app` are fetched with the same
+`Authorization` header, sent to that host only). Linear rotates the refresh token on every use, so
 the access token is cached in the blob and only refreshed within five minutes of
 expiry; each refresh rewrites the kv entry (which syncs).
 
