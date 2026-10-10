@@ -57,8 +57,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "slack",
-        "<channels|read|search|send|dm|draft|bookmarks|users|user|login|add|accounts|use|status|doctor|setup|logout> [args...]",
-        "Slack over the Web API: read, search, post; sign-in included",
+        "<channels|read|search|send|dm|draft|bookmarks|file|download|upload|users|user|login|add|accounts|use|status|doctor|setup|logout> [args...]",
+        "Slack over the Web API: read, search, post, files; sign-in included",
         CommandGroup::Agent,
         false,
         false,
@@ -66,8 +66,8 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     spec(
         "linear",
-        "<issues|mine|issue|history|activity|inbox|create|update|comment|teams|states|labels|projects|cycles|users|workspaces|login|add|accounts|use|status|doctor|setup|logout> [args...]",
-        "Linear over the GraphQL API: issues, inbox, activity, projects; sign-in included",
+        "<issues|mine|issue|history|activity|inbox|attachments|download|create|update|comment|upload|link|teams|states|labels|projects|cycles|users|workspaces|login|add|accounts|use|status|doctor|setup|logout> [args...]",
+        "Linear over the GraphQL API: issues, inbox, activity, attachments; sign-in included",
         CommandGroup::Agent,
         false,
         false,
