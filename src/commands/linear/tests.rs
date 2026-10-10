@@ -69,6 +69,10 @@ fn every_usage_line_names_a_real_subcommand() {
         "activity",
         "inbox",
         "workspaces",
+        "attachments",
+        "download",
+        "upload",
+        "link",
     ] {
         let tokens: Vec<&str> = USAGE
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
@@ -119,4 +123,13 @@ fn inbox_lines_lead_with_the_id_and_unread_marker() {
 fn inbox_switches_do_not_swallow_ids() {
     let pos = positional_with_switches(&v(&["read", "--unread", "id1", "id2"]), SWITCHES);
     assert_eq!(pos, ["read", "id1", "id2"]);
+}
+
+#[test]
+fn attach_values_are_not_positionals() {
+    let pos = positional_with_switches(
+        &v(&["ENG-1", "--attach", "a.png", "--body", "hi", "--print"]),
+        SWITCHES,
+    );
+    assert_eq!(pos, ["ENG-1"]);
 }

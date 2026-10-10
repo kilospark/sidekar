@@ -18,6 +18,7 @@ const SWITCHES: &[&str] = &[
     "--print-url",
     "--unread",
     "--archived",
+    "--print",
 ];
 
 const USAGE: &str = "Usage: sidekar linear <command> …\n\
@@ -36,15 +37,19 @@ const USAGE: &str = "Usage: sidekar linear <command> …\n\
   mine [--state S] [--team K] [--all] [--limit N]   assigned to you\n  \
   issue <ID>                                description, sub-issues, comments\n  \
   history <ID> [--limit N]                  who changed what, oldest first\n  \
+  attachments <ID>                          linked attachments + files uploaded into the text\n  \
+  download <ID> [name] [--out <path|dir/>] [--print] | <ID> --all [--out dir] | <upload-url>\n  \
   activity [--team K] [--project P] [--since 7d] [--limit N]   issues updated + comments made\n  \
   inbox [--unread] [--archived] [--limit N] your notifications, newest first\n  \
   teams | states [--team K] | labels [--team K] | users [filter]\n  \
   projects [filter] [--team K] [--limit N]\n  \
   cycles [--team K] [--all] [--limit N]     current, upcoming and previous unless --all\n\
   Write:\n  \
-  create --title T [--team K] [FIELDS]\n  \
+  create --title T [--team K] [FIELDS] [--attach <path>]…   files go in the description\n  \
   update <ID> [FIELDS] [--unassign] [--add-label L] [--remove-label L]\n  \
-  comment <ID> --body <text>|--body-file <path>\n  \
+  comment <ID> --body <text>|--body-file <path> [--attach <path>]…\n  \
+  upload <ID> <path>… [--title T]           attach files to the issue\n  \
+  link <ID> <url> [--title T]               attach a URL (GitHub, Slack, Figma… shown richly)\n  \
   inbox read|unread|archive <NOTIFICATION_ID>… | inbox read --all\n  \
   FIELDS: --title T  --description D|--description-file P  --state S  --assignee A\n          \
           --priority urgent|high|medium|low|none|0-4  --labels a,b (replaces)\n          \
@@ -255,7 +260,8 @@ pub async fn cmd_linear(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         }
         "issues" | "search" | "mine" | "issue" | "show" | "read" | "view" | "create" | "update"
         | "edit" | "comment" | "teams" | "states" | "labels" | "users" | "projects" | "cycles"
-        | "history" | "activity" | "inbox" | "notifications" => {
+        | "history" | "activity" | "inbox" | "notifications" | "attachments" | "files"
+        | "download" | "upload" | "attach" | "link" => {
             let token = auth::resolve_token(flag(rest, "--token").as_deref())?;
             let linear = Linear::connect(&token).await?;
             api_command(ctx, &linear, sub, rest, &pos).await
@@ -341,9 +347,20 @@ async fn api_command(
         }
         "create" => {
             let mut known = FIELD_FLAGS.to_vec();
-            known.push("--team");
+            known.extend(["--team", "--attach"]);
             reject_unknown_flags(rest, &known)?;
-            let changes = changes_from(rest)?;
+            let mut changes = changes_from(rest)?;
+            if changes.title.as_deref().is_none_or(|t| t.trim().is_empty()) {
+                bail!("an issue needs --title");
+            }
+            let attach = flags_all(rest, "--attach");
+            if !attach.is_empty() {
+                for p in &attach {
+                    crate::attachments::read_upload(p)?;
+                }
+                let md = api::upload_for_markdown(linear, &attach).await?;
+                changes.description = Some(api::with_files(changes.description.as_deref(), &md));
+            }
             let team = api::resolve_team(linear, flag(rest, "--team").as_deref()).await?;
             let (id, url) = api::create(linear, &team, &changes).await?;
             out!(ctx, "Created {id}.\n{url}");
@@ -370,17 +387,26 @@ async fn api_command(
             Ok(())
         }
         "comment" => {
-            reject_unknown_flags(rest, &["--body", "--body-file"])?;
+            reject_unknown_flags(rest, &["--body", "--body-file", "--attach"])?;
             let id = pos.first().cloned().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Usage: sidekar linear comment <ENG-123> --body <text>|--body-file <path>"
+                    "Usage: sidekar linear comment <ENG-123> --body <text>|--body-file <path> [--attach <path>]…"
                 )
             })?;
-            let body = one_of(rest, "--body", "--body-file")?
-                .filter(|b| !b.trim().is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("linear comment needs --body <text> or --body-file <path>")
-                })?;
+            let text = one_of(rest, "--body", "--body-file")?.filter(|b| !b.trim().is_empty());
+            let attach = flags_all(rest, "--attach");
+            if text.is_none() && attach.is_empty() {
+                bail!("linear comment needs --body <text>, --body-file <path>, or --attach <path>");
+            }
+            for p in &attach {
+                crate::attachments::read_upload(p)?;
+            }
+            let md = if attach.is_empty() {
+                String::new()
+            } else {
+                api::upload_for_markdown(linear, &attach).await?
+            };
+            let body = api::with_files(text.as_deref(), &md);
             let url = api::comment(linear, &id, &body).await?;
             out!(ctx, "Commented on {id}.\n{url}");
             Ok(())
@@ -636,6 +662,116 @@ async fn api_command(
                 }
             }
         }
+        "attachments" | "files" => {
+            reject_unknown_flags(rest, &[])?;
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar linear attachments <ENG-123>"))?;
+            let issue = api::issue(linear, &id).await?;
+            let files = api::embedded_files(&issue);
+            if issue.attachments.is_empty() && files.is_empty() {
+                out!(ctx, "No attachments or uploaded files on {id}.");
+            }
+            for a in &issue.attachments {
+                out!(ctx, "attachment\t{}", a.line());
+            }
+            for f in &files {
+                out!(ctx, "file\t{}\t{}\t{}", f.name, f.place, f.url);
+            }
+            Ok(())
+        }
+        "download" => {
+            reject_unknown_flags(rest, &["--out", "--all", "--print"])?;
+            let target = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Usage: sidekar linear download <ENG-123> [name] [--out <path|dir/>] [--print]\n  \
+                     or: sidekar linear download <ENG-123> --all [--out <dir>]\n  \
+                     or: sidekar linear download <https://uploads.linear.app/…> [--out <path>]"
+                )
+            })?;
+            let out_flag = flag(rest, "--out");
+            let print = has("--print");
+            if target.starts_with("http") {
+                let name = target.rsplit('/').next().unwrap_or("file").to_string();
+                return fetch_one(ctx, linear, &target, &name, out_flag.as_deref(), print).await;
+            }
+            let issue = api::issue(linear, &target).await?;
+            let files = api::downloadable_files(&issue);
+            if files.is_empty() {
+                bail!(
+                    "{target} has no uploaded files; `sidekar linear attachments {target}` lists \
+                     its links"
+                );
+            }
+            if has("--all") {
+                if print {
+                    bail!("--print shows one file; name it instead of --all");
+                }
+                let dir = out_flag.unwrap_or_else(|| ".".into());
+                let dir = if dir.ends_with('/') {
+                    dir
+                } else {
+                    format!("{dir}/")
+                };
+                for f in &files {
+                    fetch_one(ctx, linear, &f.url, &f.name, Some(&dir), false).await?;
+                }
+                return Ok(());
+            }
+            let f = match pos.get(1) {
+                Some(wanted) => files
+                    .iter()
+                    .find(|f| f.name == *wanted || f.url == *wanted)
+                    .or_else(|| files.iter().find(|f| f.url.contains(wanted.as_str()))),
+                None if files.len() == 1 => files.first(),
+                None => None,
+            }
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "which file? Name one, or pass --all. Available: {}",
+                    files
+                        .iter()
+                        .map(|f| f.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            fetch_one(ctx, linear, &f.url, &f.name, out_flag.as_deref(), print).await
+        }
+        "upload" | "attach" => {
+            reject_unknown_flags(rest, &["--title"])?;
+            let id = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!("Usage: sidekar linear upload <ENG-123> <path>… [--title T]")
+            })?;
+            let paths = &pos[1..];
+            if paths.is_empty() {
+                bail!("linear upload needs at least one file path after the issue");
+            }
+            let title = flag(rest, "--title");
+            if title.is_some() && paths.len() > 1 {
+                bail!("--title names one file; upload several without it");
+            }
+            // Fail on a bad path before anything is uploaded.
+            for p in paths {
+                crate::attachments::read_upload(p)?;
+            }
+            for p in paths {
+                let url = api::attach_file(linear, &id, p, title.as_deref()).await?;
+                out!(ctx, "Attached {p} to {id}.\n{url}");
+            }
+            Ok(())
+        }
+        "link" => {
+            reject_unknown_flags(rest, &["--title"])?;
+            let (id, url) = match (pos.first(), pos.get(1)) {
+                (Some(i), Some(u)) => (i.clone(), u.clone()),
+                _ => bail!("Usage: sidekar linear link <ENG-123> <url> [--title T]"),
+            };
+            let a = api::link_url(linear, &id, &url, flag(rest, "--title").as_deref()).await?;
+            out!(ctx, "Linked to {id}: {}", a.line());
+            Ok(())
+        }
         "cycles" => {
             reject_unknown_flags(rest, &["--team", "--all", "--limit"])?;
             let found = api::cycles(
@@ -709,6 +845,25 @@ pub(crate) fn api_inbox_line(n: &api::Notification) -> String {
         line.push_str(&format!("\t{}", n.subtitle));
     }
     line
+}
+
+/// Download one Linear-hosted file to disk, or print it if it is text.
+async fn fetch_one(
+    ctx: &mut AppContext,
+    linear: &Linear,
+    url: &str,
+    name: &str,
+    out: Option<&str>,
+    print: bool,
+) -> Result<()> {
+    let (bytes, _) = linear.download(url).await?;
+    if print {
+        out!(ctx, "{}", crate::attachments::printable(name, &bytes)?);
+    } else {
+        let path = crate::attachments::save(out, name, &bytes)?;
+        out!(ctx, "Wrote {} ({} bytes).", path.display(), bytes.len());
+    }
+    Ok(())
 }
 
 /// Read the create/update field flags into a [`api::Changes`].
