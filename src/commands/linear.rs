@@ -11,7 +11,14 @@ use crate::AppContext;
 use crate::linear::{Linear, api, auth};
 use anyhow::{Result, bail};
 
-const SWITCHES: &[&str] = &["--all", "--unassign", "--no-browser", "--print-url"];
+const SWITCHES: &[&str] = &[
+    "--all",
+    "--unassign",
+    "--no-browser",
+    "--print-url",
+    "--unread",
+    "--archived",
+];
 
 const USAGE: &str = "Usage: sidekar linear <command> …\n\
   Account:\n  \
@@ -19,6 +26,7 @@ const USAGE: &str = "Usage: sidekar linear <command> …\n\
   add --token <KV_KEY>                      adopt a personal API key already in kv\n  \
   login --token <KV_KEY> --client-id <KV_KEY> --client-secret <KV_KEY> [--port N] [--no-browser]\n  \
   accounts                                  stored tokens; * marks the default\n  \
+  workspaces                                each stored token's workspace, checked live\n  \
   use <KV_KEY>                              make it the default\n  \
   status | doctor [--token <KV_KEY>]\n  \
   logout [--token <KV_KEY>]\n\
@@ -27,6 +35,9 @@ const USAGE: &str = "Usage: sidekar linear <command> …\n\
          [--priority P] [--all] [--limit N]   open issues unless --all or --state\n  \
   mine [--state S] [--team K] [--all] [--limit N]   assigned to you\n  \
   issue <ID>                                description, sub-issues, comments\n  \
+  history <ID> [--limit N]                  who changed what, oldest first\n  \
+  activity [--team K] [--project P] [--since 7d] [--limit N]   issues updated + comments made\n  \
+  inbox [--unread] [--archived] [--limit N] your notifications, newest first\n  \
   teams | states [--team K] | labels [--team K] | users [filter]\n  \
   projects [filter] [--team K] [--limit N]\n  \
   cycles [--team K] [--all] [--limit N]     current, upcoming and previous unless --all\n\
@@ -34,6 +45,7 @@ const USAGE: &str = "Usage: sidekar linear <command> …\n\
   create --title T [--team K] [FIELDS]\n  \
   update <ID> [FIELDS] [--unassign] [--add-label L] [--remove-label L]\n  \
   comment <ID> --body <text>|--body-file <path>\n  \
+  inbox read|unread|archive <NOTIFICATION_ID>… | inbox read --all\n  \
   FIELDS: --title T  --description D|--description-file P  --state S  --assignee A\n          \
           --priority urgent|high|medium|low|none|0-4  --labels a,b (replaces)\n          \
           --project P  --cycle current|next|N  --parent ID  --due YYYY-MM-DD  --estimate N\n          \
@@ -182,6 +194,49 @@ pub async fn cmd_linear(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             out!(ctx, "Stored: {}", auth::tokens()?.len());
             Ok(())
         }
+        "workspaces" | "orgs" => {
+            reject_unknown_flags(rest, &[])?;
+            let tokens = auth::tokens()?;
+            if tokens.is_empty() {
+                out!(
+                    ctx,
+                    "No Linear tokens stored. `sidekar linear setup` shows how."
+                );
+                return Ok(());
+            }
+            let default = auth::default_token_key()?;
+            for t in tokens {
+                let marker = if Some(&t.key) == default.as_ref() {
+                    "*"
+                } else {
+                    " "
+                };
+                let live = match Linear::connect(&t).await {
+                    Ok(l) => api::organization(&l).await,
+                    Err(e) => Err(e),
+                };
+                match live {
+                    Ok(o) => out!(
+                        ctx,
+                        "{marker} {}\t{}\thttps://linear.app/{}\t{} users\tas {} <{}>",
+                        t.key,
+                        o.name,
+                        o.url_key,
+                        o.users,
+                        o.viewer,
+                        o.viewer_email
+                    ),
+                    Err(e) => out!(
+                        ctx,
+                        "{marker} {}\t{}\tunreachable: {}",
+                        t.key,
+                        or_unknown(&t.org),
+                        e.to_string().lines().next().unwrap_or("")
+                    ),
+                }
+            }
+            Ok(())
+        }
         "doctor" | "check" => {
             reject_unknown_flags(rest, &[])?;
             doctor(ctx, flag(rest, "--token").as_deref()).await
@@ -199,7 +254,8 @@ pub async fn cmd_linear(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         "issues" | "search" | "mine" | "issue" | "show" | "read" | "view" | "create" | "update"
-        | "edit" | "comment" | "teams" | "states" | "labels" | "users" | "projects" | "cycles" => {
+        | "edit" | "comment" | "teams" | "states" | "labels" | "users" | "projects" | "cycles"
+        | "history" | "activity" | "inbox" | "notifications" => {
             let token = auth::resolve_token(flag(rest, "--token").as_deref())?;
             let linear = Linear::connect(&token).await?;
             api_command(ctx, &linear, sub, rest, &pos).await
@@ -246,6 +302,7 @@ async fn api_command(
                     .map(|p| api::parse_priority(&p))
                     .transpose()?,
                 include_closed: has("--all"),
+                updated_since: None,
                 limit: flag_usize(rest, "--limit").unwrap_or(25),
             };
             let found = api::issues(linear, &q).await?;
@@ -331,7 +388,26 @@ async fn api_command(
         "teams" => {
             reject_unknown_flags(rest, &[])?;
             for t in api::teams(linear).await? {
-                out!(ctx, "{}\t{}\t{}", t.key, t.name, t.id);
+                let mut tags = vec![format!("{} issues", t.issue_count)];
+                if t.private {
+                    tags.push("private".into());
+                }
+                if t.cycles_enabled {
+                    tags.push("cycles".into());
+                }
+                out!(
+                    ctx,
+                    "{}\t{}\t{}\t{}{}",
+                    t.key,
+                    t.name,
+                    tags.join(", "),
+                    t.id,
+                    if t.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\t{}", api::first_line(&t.description, 100))
+                    }
+                );
             }
             Ok(())
         }
@@ -403,19 +479,162 @@ async fn api_command(
             if found.is_empty() {
                 out!(ctx, "No projects match.");
             }
+            let dash = |x: &str| {
+                if x.is_empty() {
+                    "-".to_string()
+                } else {
+                    x.to_string()
+                }
+            };
             for p in found {
                 out!(
                     ctx,
-                    "{}\t{}\t{:.0}%\t{}\t{}",
+                    "{}\t{}\t{:.0}%\t{} → {}\t{}\tlead {}\tteams {}\t{}",
                     p.name,
-                    if p.status.is_empty() { "-" } else { &p.status },
+                    dash(&p.status),
                     p.progress * 100.0,
-                    if p.target.is_empty() { "-" } else { &p.target },
-                    if p.lead.is_empty() { "-" } else { &p.lead }
+                    dash(&p.start),
+                    dash(&p.target),
+                    dash(&p.health),
+                    dash(&p.lead),
+                    dash(&p.teams.join(",")),
+                    p.url
                 );
-                let _ = (&p.id, &p.url);
             }
             Ok(())
+        }
+        "history" => {
+            reject_unknown_flags(rest, &["--limit"])?;
+            let id = pos
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: sidekar linear history <ENG-123>"))?;
+            let (title, entries) =
+                api::history(linear, &id, flag_usize(rest, "--limit").unwrap_or(50)).await?;
+            out!(ctx, "{title}");
+            if entries.is_empty() {
+                out!(ctx, "No history.");
+            }
+            for h in entries {
+                out!(
+                    ctx,
+                    "{}\t{}\t{}",
+                    short_time(&h.at),
+                    if h.actor.is_empty() {
+                        "Linear"
+                    } else {
+                        &h.actor
+                    },
+                    h.change
+                );
+            }
+            Ok(())
+        }
+        "activity" => {
+            reject_unknown_flags(rest, &["--team", "--project", "--since", "--limit"])?;
+            let since_text = flag(rest, "--since").unwrap_or_else(|| "7d".into());
+            let since = api::since(&since_text)?;
+            let a = api::activity(
+                linear,
+                flag(rest, "--team").as_deref(),
+                flag(rest, "--project").as_deref(),
+                &since,
+                flag_usize(rest, "--limit").unwrap_or(25),
+            )
+            .await?;
+            // One timeline, newest first.
+            let mut lines: Vec<(String, String)> = a
+                .issues
+                .iter()
+                .map(|i| {
+                    (
+                        i.updated.clone(),
+                        format!(
+                            "{}\tupdated\t{}\t{}\t{}\t{}",
+                            short_time(&i.updated),
+                            i.identifier,
+                            i.state,
+                            if i.assignee.is_empty() {
+                                "-"
+                            } else {
+                                &i.assignee
+                            },
+                            i.title
+                        ),
+                    )
+                })
+                .collect();
+            lines.extend(a.comments.iter().map(|c| {
+                (
+                    c.created.clone(),
+                    format!(
+                        "{}\tcomment\t{}\t{}\t{}",
+                        short_time(&c.created),
+                        c.issue,
+                        if c.author.is_empty() { "-" } else { &c.author },
+                        c.body
+                    ),
+                )
+            }));
+            lines.sort_by(|x, y| y.0.cmp(&x.0));
+            if lines.is_empty() {
+                out!(ctx, "Nothing changed since {since_text}.");
+            }
+            for (_, l) in lines {
+                out!(ctx, "{l}");
+            }
+            Ok(())
+        }
+        "inbox" | "notifications" => {
+            let verb = pos.first().map(String::as_str);
+            match verb {
+                Some("read" | "unread" | "archive") => {
+                    reject_unknown_flags(rest, &["--all"])?;
+                    let verb = verb.unwrap_or_default();
+                    let mut ids: Vec<String> = pos[1..].to_vec();
+                    if has("--all") {
+                        if verb != "read" {
+                            bail!("--all goes with `inbox read` only");
+                        }
+                        let (_, unread) = api::notifications(linear, true, false, 250).await?;
+                        ids.extend(unread.into_iter().map(|n| n.id));
+                    } else if ids.is_empty() {
+                        bail!(
+                            "Usage: sidekar linear inbox {verb} <NOTIFICATION_ID>…  \
+                             (ids are the first column of `sidekar linear inbox`)"
+                        );
+                    }
+                    for id in &ids {
+                        match verb {
+                            "archive" => api::archive_notification(linear, id).await?,
+                            _ => api::mark_notification(linear, id, verb == "read").await?,
+                        }
+                    }
+                    let done = match verb {
+                        "read" => "Marked read",
+                        "unread" => "Marked unread",
+                        _ => "Archived",
+                    };
+                    out!(ctx, "{done}: {} notification(s).", ids.len());
+                    Ok(())
+                }
+                Some(other) => bail!("unknown inbox action {other}; use read, unread or archive"),
+                None => {
+                    reject_unknown_flags(rest, &["--unread", "--archived", "--limit"])?;
+                    let (unread, found) = api::notifications(
+                        linear,
+                        has("--unread"),
+                        has("--archived"),
+                        flag_usize(rest, "--limit").unwrap_or(25),
+                    )
+                    .await?;
+                    out!(ctx, "{unread} unread.");
+                    for n in found {
+                        out!(ctx, "{}", api_inbox_line(&n));
+                    }
+                    Ok(())
+                }
+            }
         }
         "cycles" => {
             reject_unknown_flags(rest, &["--team", "--all", "--limit"])?;
@@ -450,6 +669,46 @@ async fn api_command(
         }
         _ => bail!("{USAGE}"),
     }
+}
+
+/// `2026-10-10T14:03:05.123Z` → `2026-10-10 14:03` (UTC, as Linear stores it).
+pub(crate) fn short_time(iso: &str) -> String {
+    match (iso.get(..10), iso.get(11..16)) {
+        (Some(d), Some(t)) => format!("{d} {t}"),
+        _ => iso.to_string(),
+    }
+}
+
+/// One inbox row: id, unread marker, when, type, who, what it is about.
+pub(crate) fn api_inbox_line(n: &api::Notification) -> String {
+    let about = if !n.issue.is_empty() {
+        format!("{} {}", n.issue, n.issue_title)
+    } else if !n.project.is_empty() {
+        format!("project {}", n.project)
+    } else {
+        n.title.clone()
+    };
+    let mut line = format!(
+        "{}\t{}\t{}\t{}\t{}\t{}",
+        n.id,
+        if n.archived {
+            "archived"
+        } else if n.read {
+            "read"
+        } else {
+            "UNREAD"
+        },
+        short_time(&n.created),
+        n.kind,
+        if n.actor.is_empty() { "-" } else { &n.actor },
+        about
+    );
+    if !n.comment.is_empty() {
+        line.push_str(&format!("\t“{}”", n.comment));
+    } else if !n.subtitle.is_empty() && n.issue.is_empty() {
+        line.push_str(&format!("\t{}", n.subtitle));
+    }
+    line
 }
 
 /// Read the create/update field flags into a [`api::Changes`].

@@ -298,6 +298,7 @@ async fn a_title_only_create_costs_one_mutation() {
         id: "t1".into(),
         key: "ENG".into(),
         name: "Eng".into(),
+        ..Default::default()
     };
     let c = Changes {
         title: Some("New".into()),
@@ -320,6 +321,7 @@ async fn a_create_without_a_title_is_refused_before_any_call() {
         id: "t".into(),
         key: "K".into(),
         name: "".into(),
+        ..Default::default()
     };
     assert!(
         create(&linear_at(&server), &team, &Changes::default())
@@ -337,4 +339,220 @@ async fn a_missing_issue_is_named() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("ENG-404"), "{err}");
+}
+
+#[test]
+fn since_reads_short_durations_and_passes_dates_through() {
+    assert_eq!(since("7d").unwrap(), "-P7D");
+    assert_eq!(since("2w").unwrap(), "-P2W");
+    assert_eq!(since("12h").unwrap(), "-PT12H");
+    assert_eq!(since("30m").unwrap(), "-PT30M");
+    assert_eq!(since("2026-10-01").unwrap(), "2026-10-01");
+    assert_eq!(since("-P3D").unwrap(), "-P3D");
+    assert!(since("soon").is_err());
+    assert!(since("5y").is_err());
+}
+
+#[test]
+fn issue_activity_filters_on_updated_at_including_closed() {
+    let f = issue_filter(&IssueQuery {
+        team: Some("ENG".into()),
+        include_closed: true,
+        updated_since: Some("-P7D".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(f["updatedAt"], json!({"gt": "-P7D"}));
+    assert!(f.get("state").is_none(), "closed issues count as activity");
+}
+
+#[test]
+fn comment_activity_is_scoped_through_the_issue() {
+    let all = comment_filter(None, None, "-P1D");
+    assert_eq!(all["createdAt"], json!({"gt": "-P1D"}));
+    assert_eq!(all["issue"], json!({"null": false}), "issue comments only");
+    let scoped = comment_filter(Some("ENG"), Some("Web"), "-P1D");
+    assert_eq!(scoped["issue"]["team"]["key"]["eqIgnoreCase"], "ENG");
+    assert_eq!(
+        scoped["issue"]["project"]["name"]["containsIgnoreCase"],
+        "Web"
+    );
+}
+
+#[test]
+fn notifications_parse_issue_and_project_kinds() {
+    let issue = notification_from(&json!({
+        "id": "n1", "type": "issueComment", "title": "t", "createdAt": "2026-10-10T10:00:00.000Z",
+        "readAt": null, "archivedAt": null, "actor": {"name": "Ann Lee", "displayName": "ann"},
+        "issue": {"identifier": "ENG-1", "title": "Bug"}, "comment": {"body": "\n  first line\nsecond"}
+    }));
+    assert!(!issue.read && !issue.archived);
+    assert_eq!(issue.actor, "ann");
+    assert_eq!(issue.issue, "ENG-1");
+    assert_eq!(issue.comment, "first line");
+    let project = notification_from(&json!({
+        "id": "n2", "type": "projectUpdateCreated", "readAt": "2026-10-09T00:00:00Z",
+        "project": {"name": "Web"}
+    }));
+    assert!(project.read);
+    assert_eq!(project.project, "Web");
+    assert_eq!(project.issue, "");
+}
+
+#[test]
+fn first_line_skips_blanks_and_truncates() {
+    assert_eq!(first_line("\n\n  hi there \nmore", 50), "hi there");
+    assert_eq!(first_line("abcdef", 3), "abc…");
+    assert_eq!(first_line("", 3), "");
+}
+
+#[tokio::test]
+async fn the_inbox_is_newest_first_and_can_show_only_unread() {
+    let page = json!({"data": {"notificationsUnreadCount": 1, "notifications": {"nodes": [
+        {"id": "old", "type": "issueAssignedToYou", "createdAt": "2026-10-01T00:00:00Z", "readAt": null},
+        {"id": "new", "type": "issueComment", "createdAt": "2026-10-09T00:00:00Z", "readAt": "2026-10-09T01:00:00Z"}
+    ]}}});
+    let server = MockServer::sequence(vec![page.clone(), page]);
+    let (unread, all) = notifications(&linear_at(&server), false, false, 10)
+        .await
+        .unwrap();
+    assert_eq!(unread, 1);
+    assert_eq!(
+        all.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        ["new", "old"]
+    );
+    let (_, only) = notifications(&linear_at(&server), true, false, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        only.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        ["old"]
+    );
+    let vars = &server.requests()[0].json()["variables"];
+    assert_eq!(vars["includeArchived"], false);
+}
+
+#[tokio::test]
+async fn marking_read_sets_read_at_and_unread_clears_it() {
+    let ok = json!({"data": {"notificationUpdate": {"success": true}}});
+    let server = MockServer::sequence(vec![ok.clone(), ok]);
+    mark_notification(&linear_at(&server), "n1", true)
+        .await
+        .unwrap();
+    mark_notification(&linear_at(&server), "n1", false)
+        .await
+        .unwrap();
+    let reqs = server.requests();
+    let read_at = reqs[0].json()["variables"]["input"]["readAt"].clone();
+    let at = read_at.as_str().unwrap();
+    assert!(
+        at.ends_with('Z') && at.contains('T') && at.len() == 20,
+        "{at}"
+    );
+    assert_eq!(reqs[1].json()["variables"]["input"]["readAt"], Value::Null);
+}
+
+#[tokio::test]
+async fn archiving_reports_failure() {
+    let server = MockServer::sequence(vec![
+        json!({"data": {"notificationArchive": {"success": false}}}),
+    ]);
+    assert!(
+        archive_notification(&linear_at(&server), "n1")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn organization_names_the_workspace_and_viewer() {
+    let server = MockServer::sequence(vec![json!({"data": {
+        "organization": {"id": "o", "name": "Acme", "urlKey": "acme", "userCount": 12},
+        "viewer": {"name": "Kay B", "displayName": "kay", "email": "k@acme.dev"}}})]);
+    let o = organization(&linear_at(&server)).await.unwrap();
+    assert_eq!(
+        (o.name.as_str(), o.url_key.as_str(), o.users),
+        ("Acme", "acme", 12)
+    );
+    assert_eq!(
+        (o.viewer.as_str(), o.viewer_email.as_str()),
+        ("kay", "k@acme.dev")
+    );
+}
+
+#[tokio::test]
+async fn activity_asks_for_issues_then_comments() {
+    let server = MockServer::sequence(vec![
+        json!({"data": {"issues": {"nodes": [{"identifier": "ENG-2", "updatedAt": "2026-10-09T00:00:00Z"}]}}}),
+        json!({"data": {"comments": {"nodes": [{"body": "done", "createdAt": "2026-10-10T00:00:00Z",
+            "user": {"name": "Ann"}, "issue": {"identifier": "ENG-2", "title": "x"}}]}}}),
+    ]);
+    let a = activity(&linear_at(&server), Some("ENG"), None, "-P7D", 5)
+        .await
+        .unwrap();
+    assert_eq!(a.issues[0].identifier, "ENG-2");
+    assert_eq!(a.comments[0].author, "Ann");
+    let reqs = server.requests();
+    assert_eq!(
+        reqs[0].json()["variables"]["filter"]["updatedAt"]["gt"],
+        "-P7D"
+    );
+    assert_eq!(
+        reqs[1].json()["variables"]["filter"]["issue"]["team"]["key"]["eqIgnoreCase"],
+        "ENG"
+    );
+}
+
+#[test]
+fn history_entries_read_as_changes() {
+    let h = json!({
+        "fromState": {"name": "Todo"}, "toState": {"name": "In Progress"},
+        "fromAssignee": null, "toAssignee": {"name": "Bob B", "displayName": "bob"},
+        "fromPriority": 0.0, "toPriority": 2.0,
+        "addedLabels": [{"name": "bug"}], "removedLabels": [],
+        "updatedDescription": true
+    });
+    assert_eq!(
+        describe_history(&h),
+        "state Todo → In Progress; assignee none → bob; priority none → high; +labels bug; edited description"
+    );
+    assert_eq!(describe_history(&json!({})), "updated");
+    assert_eq!(
+        describe_history(&json!({"archived": true, "autoArchived": true})),
+        "auto-archived"
+    );
+}
+
+#[tokio::test]
+async fn history_is_oldest_first() {
+    let server = MockServer::sequence(vec![
+        json!({"data": {"issue": {"identifier": "ENG-1", "title": "T",
+        "history": {"nodes": [
+            {"createdAt": "2026-10-02T00:00:00Z", "toTitle": "T", "fromTitle": "t"},
+            {"createdAt": "2026-10-01T00:00:00Z", "actor": {"name": "Ann"}}
+        ]}}}}),
+    ]);
+    let (title, h) = history(&linear_at(&server), "ENG-1", 10).await.unwrap();
+    assert_eq!(title, "ENG-1 T");
+    assert_eq!(h[0].actor, "Ann");
+    assert_eq!(h[1].change, "title t → T");
+}
+
+#[test]
+fn teams_and_projects_carry_the_useful_fields() {
+    let t = team_from(
+        &json!({"id": "1", "key": "ENG", "name": "Eng", "private": true,
+        "issueCount": 42, "cyclesEnabled": true, "description": "d"}),
+    );
+    assert!(t.private && t.cycles_enabled);
+    assert_eq!(t.issue_count, 42);
+    let p = project_from(
+        &json!({"name": "Web", "startDate": "2026-09-01", "health": "onTrack",
+        "teams": {"nodes": [{"key": "ENG"}, {"key": "DES"}]}, "url": "u"}),
+    );
+    assert_eq!(p.teams, ["ENG", "DES"]);
+    assert_eq!(
+        (p.start.as_str(), p.health.as_str()),
+        ("2026-09-01", "onTrack")
+    );
 }
