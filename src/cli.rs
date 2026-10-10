@@ -62,8 +62,14 @@ pub fn render_help(version: &str) -> String {
             ("calendar", "Google Calendar: list, create"),
             ("sheets", "Google Sheets: read and write ranges"),
             ("docs", "Google Docs: read, append, replace"),
-            ("slack", "Slack: channels, read, search, send, DMs"),
-            ("linear", "Linear: issues, comments, projects, cycles"),
+            (
+                "slack",
+                "Slack: channels, read, search, send, DMs, drafts, bookmarks",
+            ),
+            (
+                "linear",
+                "Linear: issues, inbox, activity, projects, cycles",
+            ),
         ],
         CYAN,
         YELLOW,
