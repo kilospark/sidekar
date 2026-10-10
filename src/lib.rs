@@ -187,6 +187,7 @@ pub mod scripts;
 pub mod secrets;
 pub mod session;
 pub mod skill;
+pub mod slack;
 pub mod tasks;
 #[cfg(test)]
 pub(crate) mod test_http;
