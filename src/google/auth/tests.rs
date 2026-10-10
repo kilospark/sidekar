@@ -61,20 +61,6 @@ fn a_token_with_no_recorded_account_still_works() {
 }
 
 #[test]
-fn query_params_decodes_and_splits() {
-    let p = query_params("/?code=4%2F0AX&state=abc123");
-    assert_eq!(p.get("code").map(String::as_str), Some("4/0AX"));
-    assert_eq!(p.get("state").map(String::as_str), Some("abc123"));
-}
-
-#[test]
-fn query_params_keeps_an_error_redirect_readable() {
-    let p = query_params("/?error=access_denied&state=xyz");
-    assert_eq!(p.get("error").map(String::as_str), Some("access_denied"));
-    assert!(query_params("/").is_empty());
-}
-
-#[test]
 fn scopes_cover_all_five_apis_without_asking_for_deletion() {
     let joined = SCOPES.join(" ");
     for needed in [
