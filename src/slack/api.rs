@@ -284,7 +284,16 @@ pub async fn resolve_channel(slack: &Slack, input: &str) -> Result<String> {
     }
     let name = t.trim_start_matches('#').to_lowercase();
     let cache_key = format!("channel:{name}");
-    if let Some(id) = slack.cache_get(&cache_key) {
+    // A cached id is checked before it is trusted: if the channel was
+    // renamed and another took the name, a send must not go to the old one.
+    // One conversations.info call, against a scan of every channel.
+    if let Some(id) = slack.cache_get(&cache_key)
+        && let Ok(v) = slack
+            .get("conversations.info", &[("channel", id.clone())])
+            .await
+        && s(&v["channel"], "name") == name
+        && v["channel"]["is_archived"] != json!(true)
+    {
         return Ok(id);
     }
     let is_it = |v: &Value| s(v, "name") == name;
@@ -958,8 +967,12 @@ pub async fn resolve_user(slack: &Slack, input: &str) -> Result<User> {
     }
     let q = t.trim_start_matches('@').to_lowercase();
     let cache_key = format!("user:{q}");
+    // Only handles are cached (they are unique), and a hit is checked: a
+    // handle someone gave up and someone else took must not get the DM.
     if let Some(id) = slack.cache_get(&cache_key)
         && let Ok(u) = user_info(slack, &id).await
+        && !u.deleted
+        && u.name.to_lowercase() == q
     {
         return Ok(u);
     }
@@ -986,7 +999,11 @@ pub async fn resolve_user(slack: &Slack, input: &str) -> Result<User> {
     .await?;
     match found.as_slice() {
         [one] => {
-            slack.cache_put(&cache_key, &one.id);
+            // A display or real name is not unique: someone may share it
+            // tomorrow, so it is resolved afresh each time.
+            if one.name.to_lowercase() == q {
+                slack.cache_put(&cache_key, &one.id);
+            }
             Ok(one.clone())
         }
         [] => bail!(

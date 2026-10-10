@@ -220,3 +220,29 @@ fn a_response_without_an_access_token_is_rejected() {
     assert!(ExpiringToken::from_response(&json!({"error": "invalid_grant"}), 0).is_none());
     assert!(ExpiringToken::from_response(&json!({"access_token": ""}), 0).is_none());
 }
+
+#[test]
+fn a_login_over_an_old_token_does_not_archive_it_but_keeps_other_history() {
+    let _home = crate::ScratchHome::new();
+    let tags = vec!["linear-token".to_string()];
+    store_login("LIN_T", "old-token", &tags, "linear-token").unwrap();
+    store_login("LIN_T", "new-token", &tags, "linear-token").unwrap();
+    assert_eq!(
+        crate::broker::kv_get("LIN_T").unwrap().unwrap().value,
+        "new-token"
+    );
+    assert!(
+        crate::broker::kv_history("LIN_T").unwrap().is_empty(),
+        "the replaced credential is not kept"
+    );
+
+    // A key that held something else keeps its history, so a login over the
+    // wrong key can be rolled back.
+    crate::broker::kv_set("NOTES", "keep me", None).unwrap();
+    store_login("NOTES", "tok", &tags, "linear-token").unwrap();
+    let h = crate::broker::kv_history("NOTES").unwrap();
+    assert!(
+        h.iter().any(|e| e.value.as_deref() == Ok("keep me")),
+        "{h:?}"
+    );
+}

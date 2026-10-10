@@ -883,10 +883,16 @@ fn file_arg(pos: &[String], sub: &str) -> Result<String> {
 
 /// Read local files for upload; `title` applies to a single file.
 pub(crate) fn uploads_from(paths: &[String], title: Option<String>) -> Result<Vec<api::Upload>> {
+    // Every path from metadata first, so a bad last path or an oversized
+    // file is reported before gigabytes of the others are read.
+    for p in paths {
+        crate::attachments::check_upload(p, crate::attachments::SLACK_UPLOAD)?;
+    }
     paths
         .iter()
         .map(|p| {
-            let (bytes, name, _) = crate::attachments::read_upload(p)?;
+            let (bytes, name, _) =
+                crate::attachments::read_upload(p, crate::attachments::SLACK_UPLOAD)?;
             Ok(api::Upload {
                 name,
                 title: title.clone(),

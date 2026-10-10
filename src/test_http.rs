@@ -173,3 +173,19 @@ fn answer(mut stream: std::net::TcpStream, respond: &Responder, record: &Mutex<V
     let _ = stream.write_all(&body);
     let _ = stream.flush();
 }
+
+/// A listener standing in for evil.example: it counts connections, so a test
+/// can show the download never reached it (not just that it failed).
+pub fn decoy() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let h = hits.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(s);
+        }
+    });
+    (port, hits)
+}

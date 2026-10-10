@@ -58,16 +58,18 @@ impl Linear {
     /// host only (or a test mock's): a URL out of an issue body is
     /// user-written, and a link elsewhere must not receive the key.
     pub async fn download(&self, url: &str) -> Result<(Vec<u8>, String)> {
-        let test_host = crate::attachments::host_of(&self.url).filter(|h| h != "api.linear.app");
-        if !crate::attachments::token_may_go_to(url, api::UPLOADS_HOST, test_host.as_deref()) {
+        // The API's own origin already gets the key, so allowing it costs
+        // nothing in production and lets a test point both at its mock.
+        let Some(target) = crate::attachments::token_url(url, api::UPLOADS_HOST, Some(&self.url))
+        else {
             bail!(
                 "{url} is not a Linear upload (https://{}/…); open it directly",
                 api::UPLOADS_HOST
             );
-        }
+        };
         let res = self
             .http
-            .get(url)
+            .get(target)
             .header("Authorization", &self.authorization)
             .send()
             .await?;

@@ -435,14 +435,15 @@ pub async fn login(opts: LoginOptions<'_>) -> Result<Identity> {
             who.team_id
         );
     }
-    crate::broker::kv_set(
+    crate::oauth_loopback::store_login(
         opts.token_key,
         &token.to_value(),
-        Some(&tags_for(
+        &tags_for(
             opts.kind,
             &who,
             Some((opts.client_id_key, opts.client_secret_key)),
-        )),
+        ),
+        MARKER_TAG,
     )?;
     if default_token_key()?.is_none() {
         set_default_token_key(opts.token_key)?;

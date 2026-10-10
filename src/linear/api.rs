@@ -1731,7 +1731,7 @@ pub struct IssueAttachment {
 
 impl IssueAttachment {
     pub fn is_upload(&self) -> bool {
-        crate::attachments::host_of(&self.url).as_deref() == Some(UPLOADS_HOST)
+        crate::attachments::is_https_on(&self.url, UPLOADS_HOST)
     }
 
     pub fn line(&self) -> String {
@@ -1920,7 +1920,8 @@ pub async fn attach_file(
     title: Option<&str>,
 ) -> Result<String> {
     let ctx = issue_context(linear, issue).await?;
-    let (bytes, name, mime) = crate::attachments::read_upload(path)?;
+    let (bytes, name, mime) =
+        crate::attachments::read_upload(path, crate::attachments::LINEAR_UPLOAD)?;
     let size = crate::attachments::human_bytes(bytes.len() as u64);
     let asset = upload_file(linear, &name, &mime, bytes).await?;
     let d = linear
@@ -1972,7 +1973,8 @@ pub async fn link_url(
 pub async fn upload_for_markdown(linear: &Linear, paths: &[String]) -> Result<String> {
     let mut lines = Vec::new();
     for p in paths {
-        let (bytes, name, mime) = crate::attachments::read_upload(p)?;
+        let (bytes, name, mime) =
+            crate::attachments::read_upload(p, crate::attachments::LINEAR_UPLOAD)?;
         let url = upload_file(linear, &name, &mime, bytes).await?;
         lines.push(markdown_for(&name, &mime, &url));
     }

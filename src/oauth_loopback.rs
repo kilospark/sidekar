@@ -488,6 +488,19 @@ where
     }
 }
 
+/// Store a token minted by a login under `key`. When the value it replaces
+/// was a token too (tagged `marker`), that old credential is dropped from kv
+/// history rather than archived; anything else the key held keeps its
+/// history, so `kv rollback` can still undo a login over the wrong key.
+pub(crate) fn store_login(key: &str, value: &str, tags: &[String], marker: &str) -> Result<()> {
+    let was_token = crate::broker::kv_get(key)?.is_some_and(|e| e.tags.iter().any(|t| t == marker));
+    crate::broker::kv_set(key, value, Some(tags))?;
+    if was_token {
+        crate::broker::kv_clear_history(key)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
