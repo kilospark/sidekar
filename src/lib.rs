@@ -191,6 +191,7 @@ pub mod session;
 pub mod skill;
 pub mod slack;
 pub mod tasks;
+pub mod timefmt;
 #[cfg(test)]
 pub(crate) mod test_http;
 pub mod transport;

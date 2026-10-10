@@ -10,6 +10,7 @@ use super::google::{
 };
 use crate::AppContext;
 use crate::slack::{self, Slack, api, auth};
+use crate::timefmt::{self, Zone};
 use anyhow::{Result, bail};
 
 /// Flags that take no value, anywhere under `slack`.
@@ -55,9 +56,15 @@ const USAGE: &str = "Usage: sidekar slack <command> …\n\
   Messages list their files as [file F… name (type, size)].\n\n\
   <channel> is an id, #name, a message link, or a person (@handle, email, U…) for their DM.\n\
   <person> is a user id, an email, or a handle / display name / real name.\n\
-  Every command takes --token <KV_KEY> to pick a workspace.";
+  Every command takes --token <KV_KEY> to pick a workspace.\n\
+  Times are ISO 8601 UTC (2026-09-14T03:36:49Z); --local shows this machine's zone\n\
+  with its offset (2026-09-13T23:36:49-04:00). Message ts ids are printed as is.";
 
 pub async fn cmd_slack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    // `--local` goes with every command, like `--token`: it only changes how
+    // times are shown.
+    let (zone, args) = Zone::from_args(args);
+    let args = args.as_slice();
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let pos = positional_with_switches(rest, SWITCHES);
@@ -220,7 +227,7 @@ pub async fn cmd_slack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         | "dm" | "users" | "user" | "draft" | "bookmarks" | "file" | "download" | "upload" => {
             let token = auth::resolve_token(flag(rest, "--token").as_deref())?;
             let slack = Slack::connect(&token).await?;
-            api_command(ctx, &slack, &token, sub, rest, &pos).await
+            api_command(ctx, &slack, &token, sub, rest, &pos, zone).await
         }
         _ => bail!("{USAGE}"),
     }
@@ -233,6 +240,7 @@ async fn api_command(
     sub: &str,
     rest: &[String],
     pos: &[String],
+    zone: Zone,
 ) -> Result<()> {
     match sub {
         "channels" => {
@@ -319,7 +327,7 @@ async fn api_command(
                     ctx,
                     "{}\t{}\t{}\t{}",
                     m.ts,
-                    api::ts_to_date(&m.ts),
+                    timefmt::from_slack_ts(&m.ts, zone),
                     author,
                     lines.next().unwrap_or("")
                 );
@@ -389,7 +397,7 @@ async fn api_command(
                 out!(
                     ctx,
                     "{}\t{}\t{}\t{}",
-                    api::ts_to_date(&m.ts),
+                    timefmt::from_slack_ts(&m.ts, zone),
                     where_,
                     author,
                     api::render_text(&m.text, &names).replace('\n', " ")
@@ -508,7 +516,7 @@ async fn api_command(
                 );
             }
             if f.created > 0 {
-                out!(ctx, "created:  {}", api::ts_to_date(&f.created.to_string()));
+                out!(ctx, "created:  {}", timefmt::from_epoch(f.created, zone));
             }
             if !f.channels.is_empty() {
                 out!(ctx, "shared in: {}", f.channels.join(", "));

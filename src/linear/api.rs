@@ -669,7 +669,7 @@ pub async fn issue(linear: &Linear, id: &str) -> Result<IssueDetail> {
 }
 
 /// An issue rendered for reading in a terminal.
-pub fn render_issue(i: &IssueDetail) -> String {
+pub fn render_issue(i: &IssueDetail, zone: crate::timefmt::Zone) -> String {
     let mut out = format!("{}: {}\n", i.row.identifier, i.row.title);
     let mut meta = vec![
         format!("State: {}", i.row.state),
@@ -702,7 +702,17 @@ pub fn render_issue(i: &IssueDetail) -> String {
     out.push_str(&meta.join(" · "));
     out.push('\n');
     if !i.creator.is_empty() {
-        out.push_str(&format!("Created by {} at {}\n", i.creator, i.created));
+        out.push_str(&format!(
+            "Created by {} at {}\n",
+            i.creator,
+            crate::timefmt::from_iso(&i.created, zone)
+        ));
+    }
+    if !i.row.updated.is_empty() {
+        out.push_str(&format!(
+            "Updated at {}\n",
+            crate::timefmt::from_iso(&i.row.updated, zone)
+        ));
     }
     out.push_str(&format!("{}\n", i.row.url));
     if let Some((pid, ptitle)) = &i.parent {
@@ -727,7 +737,7 @@ pub fn render_issue(i: &IssueDetail) -> String {
             out.push_str(&format!("  {}\n", a.line()));
         }
     }
-    let files = embedded_files(i);
+    let files = embedded_files(i, zone);
     if !files.is_empty() {
         out.push_str(&format!(
             "\nUploaded files in the text ({}) — `sidekar linear download {}`:\n",
@@ -743,7 +753,7 @@ pub fn render_issue(i: &IssueDetail) -> String {
         out.push_str(&format!(
             "--- {} · {}\n{}\n",
             c.author,
-            c.created,
+            crate::timefmt::from_iso(&c.created, zone),
             c.body.trim_end()
         ));
     }
@@ -1432,13 +1442,7 @@ pub async fn notifications(
 
 /// Now as the ISO-8601 instant Linear's `DateTime` takes.
 pub(crate) fn iso_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    crate::utils::epoch_to_date(secs)
-        .replace(" UTC", "Z")
-        .replacen(' ', "T", 1)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Mark a notification read (or unread again).
@@ -1816,7 +1820,7 @@ pub(crate) fn uploads_in(markdown: &str) -> Vec<(String, String)> {
 }
 
 /// Files uploaded into the description and comments of an issue.
-pub fn embedded_files(i: &IssueDetail) -> Vec<EmbeddedFile> {
+pub fn embedded_files(i: &IssueDetail, zone: crate::timefmt::Zone) -> Vec<EmbeddedFile> {
     let mut out: Vec<EmbeddedFile> = Vec::new();
     let mut push = |text: &str, place: String| {
         for (name, url) in uploads_in(text) {
@@ -1836,7 +1840,7 @@ pub fn embedded_files(i: &IssueDetail) -> Vec<EmbeddedFile> {
             format!(
                 "comment by {} {}",
                 c.author,
-                c.created.get(..10).unwrap_or(&c.created)
+                crate::timefmt::from_iso(&c.created, zone)
             ),
         );
     }
@@ -1845,8 +1849,8 @@ pub fn embedded_files(i: &IssueDetail) -> Vec<EmbeddedFile> {
 
 /// Every file on an issue that can be downloaded: uploads in the text, and
 /// attachments that are Linear uploads.
-pub fn downloadable_files(i: &IssueDetail) -> Vec<EmbeddedFile> {
-    let mut out = embedded_files(i);
+pub fn downloadable_files(i: &IssueDetail, zone: crate::timefmt::Zone) -> Vec<EmbeddedFile> {
+    let mut out = embedded_files(i, zone);
     for a in i.attachments.iter().filter(|a| a.is_upload()) {
         if !out.iter().any(|f| f.url == a.url) {
             out.push(EmbeddedFile {

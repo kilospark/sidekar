@@ -1129,14 +1129,5 @@ pub fn render_text(text: &str, names: &HashMap<String, String>) -> String {
         .replace("&amp;", "&")
 }
 
-/// A message ts (`1700000000.123456`) as a UTC date.
-pub fn ts_to_date(ts: &str) -> String {
-    ts.split('.')
-        .next()
-        .and_then(|secs| secs.parse::<i64>().ok())
-        .map(crate::utils::epoch_to_date)
-        .unwrap_or_else(|| ts.to_string())
-}
-
 #[cfg(test)]
 mod tests;

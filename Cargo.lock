@@ -3395,6 +3395,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "base64",
  "bytes",
+ "chrono",
  "core-foundation",
  "core-foundation-sys",
  "csv",

@@ -124,12 +124,6 @@ fn users_answer_to_handle_display_or_real_name() {
     assert_eq!(u.email, "k@b.co");
 }
 
-#[test]
-fn a_ts_reads_as_a_date() {
-    assert_eq!(ts_to_date("86400.000100"), "1970-01-02 00:00:00 UTC");
-    assert_eq!(ts_to_date("garbage"), "garbage");
-}
-
 #[tokio::test]
 async fn history_pages_until_the_limit_and_reads_oldest_first() {
     let server = MockServer::sequence(vec![

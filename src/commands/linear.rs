@@ -9,6 +9,7 @@ use super::google::{
 };
 use crate::AppContext;
 use crate::linear::{Linear, api, auth};
+use crate::timefmt::{self, Zone};
 use anyhow::{Result, bail};
 
 const SWITCHES: &[&str] = &[
@@ -56,7 +57,9 @@ const USAGE: &str = "Usage: sidekar linear <command> …\n\
           --project P  --cycle current|next|N  --parent ID  --due YYYY-MM-DD  --estimate N\n          \
           (update: --project/--cycle/--parent none clears)\n\n\
   <ID> is an identifier (ENG-123) or a uuid. A (assignee) is me, none, an email, or a name.\n\
-  S (state) is a state name (\"In Review\") or type (backlog, unstarted, started, completed, canceled).";
+  S (state) is a state name (\"In Review\") or type (backlog, unstarted, started, completed, canceled).\n\
+  Times are ISO 8601 UTC (2026-09-14T03:36:49Z); --local shows this machine's zone\n\
+  with its offset (2026-09-13T23:36:49-04:00). Dates (--due, project dates) stay dates.";
 
 /// Flags every create/update accepts.
 const FIELD_FLAGS: &[&str] = &[
@@ -75,6 +78,10 @@ const FIELD_FLAGS: &[&str] = &[
 ];
 
 pub async fn cmd_linear(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    // `--local` goes with every command, like `--token`: it only changes how
+    // times are shown.
+    let (zone, args) = Zone::from_args(args);
+    let args = args.as_slice();
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let pos = positional_with_switches(rest, SWITCHES);
@@ -264,7 +271,7 @@ pub async fn cmd_linear(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         | "download" | "upload" | "attach" | "link" => {
             let token = auth::resolve_token(flag(rest, "--token").as_deref())?;
             let linear = Linear::connect(&token).await?;
-            api_command(ctx, &linear, sub, rest, &pos).await
+            api_command(ctx, &linear, sub, rest, &pos, zone).await
         }
         _ => bail!("{USAGE}"),
     }
@@ -276,6 +283,7 @@ async fn api_command(
     sub: &str,
     rest: &[String],
     pos: &[String],
+    zone: Zone,
 ) -> Result<()> {
     let has = |s: &str| rest.iter().any(|a| a == s);
     match sub {
@@ -345,7 +353,7 @@ async fn api_command(
             out!(
                 ctx,
                 "{}",
-                api::render_issue(&api::issue(linear, &id).await?)
+                api::render_issue(&api::issue(linear, &id).await?, zone)
             );
             Ok(())
         }
@@ -553,7 +561,7 @@ async fn api_command(
                 out!(
                     ctx,
                     "{}\t{}\t{}",
-                    short_time(&h.at),
+                    timefmt::from_iso(&h.at, zone),
                     if h.actor.is_empty() {
                         "Linear"
                     } else {
@@ -586,7 +594,7 @@ async fn api_command(
                         i.updated.clone(),
                         format!(
                             "{}\tupdated\t{}\t{}\t{}\t{}",
-                            short_time(&i.updated),
+                            timefmt::from_iso(&i.updated, zone),
                             i.identifier,
                             i.state,
                             if i.assignee.is_empty() {
@@ -604,7 +612,7 @@ async fn api_command(
                     c.created.clone(),
                     format!(
                         "{}\tcomment\t{}\t{}\t{}",
-                        short_time(&c.created),
+                        timefmt::from_iso(&c.created, zone),
                         c.issue,
                         if c.author.is_empty() { "-" } else { &c.author },
                         c.body
@@ -667,7 +675,7 @@ async fn api_command(
                             .await?;
                     out!(ctx, "{unread} unread.");
                     for n in &found.items {
-                        out!(ctx, "{}", api_inbox_line(n));
+                        out!(ctx, "{}", api_inbox_line(n, zone));
                     }
                     if found.more {
                         out!(ctx, "{}", more_note(limit, "notifications"));
@@ -683,7 +691,7 @@ async fn api_command(
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Usage: sidekar linear attachments <ENG-123>"))?;
             let issue = api::issue(linear, &id).await?;
-            let files = api::embedded_files(&issue);
+            let files = api::embedded_files(&issue, zone);
             if issue.attachments.is_empty() && files.is_empty() {
                 out!(ctx, "No attachments or uploaded files on {id}.");
             }
@@ -711,7 +719,7 @@ async fn api_command(
                 return fetch_one(ctx, linear, &target, &name, out_flag.as_deref(), print).await;
             }
             let issue = api::issue(linear, &target).await?;
-            let files = api::downloadable_files(&issue);
+            let files = api::downloadable_files(&issue, zone);
             if files.is_empty() {
                 bail!(
                     "{target} has no uploaded files; `sidekar linear attachments {target}` lists \
@@ -804,8 +812,8 @@ async fn api_command(
                     c.team,
                     c.number,
                     c.status,
-                    c.starts.get(..10).unwrap_or(&c.starts),
-                    c.ends.get(..10).unwrap_or(&c.ends),
+                    timefmt::from_iso(&c.starts, zone),
+                    timefmt::from_iso(&c.ends, zone),
                     c.progress * 100.0,
                     if c.name.is_empty() {
                         String::new()
@@ -875,16 +883,8 @@ pub(crate) fn more_note(limit: usize, what: &str) -> String {
     format!("(showing the first {limit} {what}; there are more. Raise --limit to see them.)")
 }
 
-/// `2026-10-10T14:03:05.123Z` → `2026-10-10 14:03` (UTC, as Linear stores it).
-pub(crate) fn short_time(iso: &str) -> String {
-    match (iso.get(..10), iso.get(11..16)) {
-        (Some(d), Some(t)) => format!("{d} {t}"),
-        _ => iso.to_string(),
-    }
-}
-
 /// One inbox row: id, unread marker, when, type, who, what it is about.
-pub(crate) fn api_inbox_line(n: &api::Notification) -> String {
+pub(crate) fn api_inbox_line(n: &api::Notification, zone: Zone) -> String {
     let about = if !n.issue.is_empty() {
         format!("{} {}", n.issue, n.issue_title)
     } else if !n.project.is_empty() {
@@ -902,7 +902,7 @@ pub(crate) fn api_inbox_line(n: &api::Notification) -> String {
         } else {
             "UNREAD"
         },
-        short_time(&n.created),
+        timefmt::from_iso(&n.created, zone),
         n.kind,
         if n.actor.is_empty() { "-" } else { &n.actor },
         about
