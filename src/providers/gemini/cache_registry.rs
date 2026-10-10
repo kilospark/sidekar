@@ -2,7 +2,8 @@
 //! fingerprint.
 //!
 //! Backed by sidekar's KV store (`sidekar kv`) under the
-//! `gemini_cache:<fingerprint_hex>` key, so cache associations
+//! `internal:gemini_cache:<fingerprint_hex>` key (per device: a cache
+//! handle is short-lived server state, not worth syncing), so cache associations
 //! persist across REPL restarts; list keys with `sidekar kv list --tag=gemini_cache`
 //! and read entries with `sidekar kv get <key>`.
 //!
@@ -47,7 +48,7 @@ pub struct CacheEntry {
 }
 
 fn kv_key(fingerprint: &str) -> String {
-    format!("gemini_cache:{fingerprint}")
+    format!("internal:gemini_cache:{fingerprint}")
 }
 
 fn now_unix() -> i64 {

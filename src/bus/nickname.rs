@@ -196,7 +196,9 @@ pub fn pick_nickname_for_project(project: Option<&str>) -> String {
     let used = live_used_nicknames();
 
     if let Some(proj) = project {
-        let nick_key = format!("_nick:{}", proj);
+        // Per device (`internal:`): synced, the same project on two machines
+        // took the same nick, and a nick names one agent only on its machine.
+        let nick_key = format!("internal:nick:{}", proj);
         let stored = broker::kv_get(&nick_key).ok().flatten().map(|e| e.value);
 
         if let Some(nick) = stored {
@@ -241,7 +243,7 @@ mod tests {
     fn reuses_stored_project_nickname() -> Result<()> {
         with_temp_home(|| {
             broker::init_db()?;
-            broker::kv_set("_nick:/tmp/project", "borzoi", None)?;
+            broker::kv_set("internal:nick:/tmp/project", "borzoi", None)?;
 
             assert_eq!(pick_nickname_for_project(Some("/tmp/project")), "borzoi");
             Ok(())
@@ -252,12 +254,12 @@ mod tests {
     fn stale_local_agent_does_not_block_stored_project_nickname() -> Result<()> {
         with_temp_home(|| {
             broker::init_db()?;
-            broker::kv_set("_nick:/tmp/project", "borzoi", None)?;
+            broker::kv_set("internal:nick:/tmp/project", "borzoi", None)?;
             register_test_agent("old-agent", "borzoi", "pty-99999999")?;
 
             assert_eq!(pick_nickname_for_project(Some("/tmp/project")), "borzoi");
             assert_eq!(
-                broker::kv_get("_nick:/tmp/project")?.map(|entry| entry.value),
+                broker::kv_get("internal:nick:/tmp/project")?.map(|entry| entry.value),
                 Some("borzoi".to_string())
             );
             Ok(())
@@ -268,7 +270,7 @@ mod tests {
     fn live_conflict_gets_temporary_nickname_without_overwriting_project_mapping() -> Result<()> {
         with_temp_home(|| {
             broker::init_db()?;
-            broker::kv_set("_nick:/tmp/project", "borzoi", None)?;
+            broker::kv_set("internal:nick:/tmp/project", "borzoi", None)?;
             let pane = format!("pty-{}", std::process::id());
             register_test_agent("live-agent", "borzoi", &pane)?;
 
@@ -276,7 +278,7 @@ mod tests {
 
             assert_ne!(picked, "borzoi");
             assert_eq!(
-                broker::kv_get("_nick:/tmp/project")?.map(|entry| entry.value),
+                broker::kv_get("internal:nick:/tmp/project")?.map(|entry| entry.value),
                 Some("borzoi".to_string())
             );
             Ok(())

@@ -168,14 +168,30 @@ pub(crate) fn kv_archive(conn: &Connection, uid: &str, key: &str) -> Result<()> 
     Ok(())
 }
 
-/// Set a KV value, scoped to current user. Archives previous value.
-/// Whether a kv key syncs across devices. `internal:` keys hold per-device
-/// state, today the Anthropic provider's device id, which each device creates
-/// for itself. Synced, every device pushed its own value under the same key:
-/// devices adopted each other's id, and the losers' pushes were refused for
+/// Prefix of kv keys that hold per-device state and never sync: the
+/// Anthropic provider's device id, a project's bus nickname, Gemini context
+/// cache handles, and the refresh lease bookkeeping. Synced, every device
+/// pushed its own value under the same key: devices adopted each other's
+/// value (two machines' agents in one project took the same nick, which bus
+/// sync then could not tell apart), and the losers' pushes were refused for
 /// good.
+pub(crate) const DEVICE_LOCAL_PREFIX: &str = "internal:";
+
+/// Per-device keys from before they moved under [`DEVICE_LOCAL_PREFIX`], with
+/// the prefix each moved to. `broker::migrate_device_local_kv_keys` renames
+/// the local rows and tombstones the copies the server holds; a pulled one,
+/// from a device still on an older build, is left out.
+pub(crate) const LEGACY_DEVICE_LOCAL_PREFIXES: &[(&str, &str)] = &[
+    ("_nick:", "internal:nick:"),
+    ("gemini_cache:", "internal:gemini_cache:"),
+];
+
+/// Whether a kv key syncs across devices. See [`DEVICE_LOCAL_PREFIX`].
 pub(crate) fn kv_key_syncs(key: &str) -> bool {
-    !key.starts_with("internal:")
+    !key.starts_with(DEVICE_LOCAL_PREFIX)
+        && !LEGACY_DEVICE_LOCAL_PREFIXES
+            .iter()
+            .any(|(old, _)| key.starts_with(old))
 }
 
 /// Record a kv change for the next sync push, unless the key stays on this
@@ -187,6 +203,7 @@ fn mark_kv_dirty(conn: &Connection, uid: &str, key: &str, deleted: bool) -> Resu
     Ok(())
 }
 
+/// Set a KV value, scoped to current user. Archives previous value.
 pub fn kv_set(key: &str, value: &str, tags: Option<&[String]>) -> Result<()> {
     let conn = open()?;
     let now = crate::message::epoch_secs() as i64;

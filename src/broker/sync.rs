@@ -832,7 +832,8 @@ pub async fn pull_bus(uid: &str) -> Result<PullSummary> {
     let device = device_id(&open()?)?;
     pull_channel(uid, SyncChannel::Bus, |conn, rec| {
         if !super::bus_sync::is_bus_kind(&rec.kind) {
-            // A server from before bus sync answers from the secrets store.
+            // A server from before bus sync answers from the secrets store;
+            // a lease (see `claim_lease`) is read only by the server's swap.
             return Ok(false);
         }
         super::bus_sync::apply_record(
@@ -961,6 +962,139 @@ async fn pull_channel(
     )?;
 
     Ok(summary)
+}
+
+// ---------------------------------------------------------------------------
+// Refresh leases (context/oauth-refresh-sync.md)
+// ---------------------------------------------------------------------------
+
+/// Sync kind of a refresh lease, on the bus channel: short-lived, and kept out
+/// of the secret store and of releases that predate it.
+pub(crate) const KIND_LEASE: &str = "lease";
+
+/// A lease is held in slots of this many seconds of wall-clock time.
+pub(crate) const LEASE_SLOT_SECS: u64 = 20;
+
+/// What claiming a refresh lease found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseClaim {
+    /// This machine holds it until the given unix second.
+    Held { until: u64 },
+    /// Another machine holds it until the given unix second.
+    HeldElsewhere { until: u64 },
+    /// The server takes no leases (from before them) or could not be reached;
+    /// go ahead without one.
+    Unavailable,
+}
+
+fn lease_local_key(lease_id: &str) -> String {
+    format!("{}lease:{lease_id}", super::kv_store::DEVICE_LOCAL_PREFIX)
+}
+
+/// Claim the account-wide lease `lease_id`, so one machine at a time does what
+/// it guards (refreshing an OAuth token whose refresh token rotates).
+///
+/// The server's compare-and-swap accepts a record only above the version it
+/// holds, so the version is a slot of wall-clock time, `now / LEASE_SLOT_SECS`:
+/// one machine wins a slot, any other is refused it. The winner also claims the
+/// next slot at once, so it holds the lease for at least one full slot however
+/// late in the first it claimed. Another machine gets it from the slot after,
+/// whether or not the holder finished. This assumes clocks agree to within
+/// a slot, which NTP gives. The slots this machine won are kept locally, so
+/// it can claim again while it holds the lease.
+pub async fn claim_lease(lease_id: &str) -> Result<LeaseClaim> {
+    let now = crate::message::epoch_secs();
+    let slot = (now / LEASE_SLOT_SECS) as i64;
+    let held_through: Option<i64> = super::kv_store::kv_get(&lease_local_key(lease_id))
+        .ok()
+        .flatten()
+        .and_then(|e| e.value.parse().ok());
+    if held_through.is_some_and(|h| h >= slot) {
+        let h = held_through.unwrap_or(slot);
+        return Ok(LeaseClaim::Held {
+            until: (h as u64 + 1) * LEASE_SLOT_SECS,
+        });
+    }
+    match put_lease(lease_id, slot).await? {
+        None => Ok(LeaseClaim::Unavailable),
+        Some(Err(current)) => Ok(LeaseClaim::HeldElsewhere {
+            until: (current.max(slot) as u64 + 1) * LEASE_SLOT_SECS,
+        }),
+        Some(Ok(())) => {
+            // The next slot too. Refused means a clock ahead of ours claimed
+            // it: this machine still holds the rest of the current one.
+            let through = match put_lease(lease_id, slot + 1).await {
+                Ok(Some(Ok(()))) => slot + 1,
+                _ => slot,
+            };
+            super::kv_store::kv_set(&lease_local_key(lease_id), &through.to_string(), None)?;
+            Ok(LeaseClaim::Held {
+                until: (through as u64 + 1) * LEASE_SLOT_SECS,
+            })
+        }
+    }
+}
+
+/// Put one lease record. `None`: the server takes no leases, or isn't there.
+/// `Some(Err(v))`: refused, the server holds slot `v`.
+async fn put_lease(lease_id: &str, slot: i64) -> Result<Option<Result<(), i64>>> {
+    let Some(token) = crate::auth::auth_token() else {
+        return Ok(None);
+    };
+    let key = get_encryption_key().context("no account key loaded to claim a lease")?;
+    let conn = open()?;
+    let payload = serde_json::json!({
+        "device_id": device_id(&conn)?,
+        "hostname": super::bus_sync::hostname(),
+        "slot": slot,
+    });
+    drop(conn);
+    let record = PushRecord {
+        kind: KIND_LEASE.to_string(),
+        record_id: lease_id.to_string(),
+        ciphertext: super::encryption::sync_encrypt(&key, &payload.to_string())?,
+        version: slot,
+        device_id: String::new(),
+        deleted: false,
+    };
+    let client = crate::http_client::client_builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let url = SyncChannel::Bus
+        .url(&sync_api_base())
+        .trim_end_matches(['?', '&'])
+        .to_string();
+    let resp = match client
+        .put(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&PushBody {
+            records: std::slice::from_ref(&record),
+        })
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            try_log_event("warn", "sync", "refresh lease unreachable", Some(&format!("{e:#}")));
+            return Ok(None);
+        }
+    };
+    if !resp.status().is_success() {
+        // A server from before leases refuses the kind with a 400.
+        return Ok(None);
+    }
+    let parsed: PushResponse = resp.json().await.context("failed to parse lease response")?;
+    Ok(parsed
+        .results
+        .into_iter()
+        .find(|r| r.kind == KIND_LEASE && r.record_id == lease_id)
+        .map(|r| {
+            if r.accepted {
+                Ok(())
+            } else {
+                Err(r.current_version.unwrap_or(slot))
+            }
+        }))
 }
 
 // ---------------------------------------------------------------------------

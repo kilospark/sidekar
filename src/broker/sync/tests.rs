@@ -413,6 +413,15 @@ async fn handle_conn(
         };
 
     let (status, response_body) = match method.as_str() {
+        "PUT" if bus_channel
+            && FAKE_REJECTS_LEASE.load(Ordering::SeqCst)
+            && body_str.contains("\"kind\":\"lease\"") =>
+        {
+            (
+                "400 Bad Request",
+                json!({ "error": "kind must be one of: agent, bus" }),
+            )
+        }
         "PUT" if wrong_kind => (
             "400 Bad Request",
             json!({ "error": "kind not on this channel" }),
@@ -516,6 +525,9 @@ fn handle_put(store: &Arc<Mutex<Vec<ServerDoc>>>, user_id: &str, body: &str) -> 
 /// Records per page when a client asks for pages (`paged=1`). The default, no
 /// limit, answers in one page, like the server before it paged.
 static FAKE_PAGE_SIZE: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Act like a server from before refresh leases, which refuses the kind.
+static FAKE_REJECTS_LEASE: AtomicBool = AtomicBool::new(false);
 
 /// Act like a server from before memory sync, which rejects any batch holding
 /// a memory record.
@@ -1285,6 +1297,147 @@ fn two_machines_see_each_others_agents_and_exchange_a_request_and_answer() -> Re
         switch_to(home_b.path());
         pull_bus(uid).await?;
         assert!(crate::broker::bus_sync::live_remote_agents(&open()?, uid)?.is_empty());
+
+        server.stop();
+        reset_encryption_state();
+        match old_api_url {
+            Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
+            None => unsafe { env::remove_var("SIDEKAR_API_URL") },
+        }
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Per-device kv keys that used to sync (`_nick:`, `gemini_cache:`)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn legacy_per_device_keys_move_under_internal_and_their_synced_copies_are_tombstoned() -> Result<()> {
+    with_test_db(|| {
+        kv_set("_nick:/tmp/p", "borzoi", None)?;
+        kv_set("gemini_cache:abc", "{}", Some(&["gemini_cache".to_string()]))?;
+        // Already set under the new name: kept, the legacy value dropped.
+        kv_set("internal:nick:/tmp/q", "corgi", None)?;
+        kv_set("_nick:/tmp/q", "stale", None)?;
+        kv_set("shared", "v", None)?;
+        let conn = open()?;
+        let uid = current_user_id().unwrap_or_default();
+        // As a build from before the move left them: synced, and one
+        // tombstone already pushed.
+        conn.execute_batch(&format!(
+            "DELETE FROM sync_state;
+             INSERT INTO sync_state (user_id, kind, record_id, version, deleted, dirty, updated_at) VALUES
+               ('{uid}', 'kv', '_nick:/tmp/p', 3, 0, 0, 0),
+               ('{uid}', 'kv', 'gemini_cache:abc', 1, 0, 1, 0),
+               ('{uid}', 'kv', 'gemini_cache:old', 2, 1, 0, 0),
+               ('{uid}', 'kv', 'shared', 1, 0, 0, 0);"
+        ))?;
+        drop(conn);
+
+        let conn = open()?;
+        assert_eq!(kv_get("internal:nick:/tmp/p")?.unwrap().value, "borzoi");
+        assert_eq!(kv_get("internal:nick:/tmp/q")?.unwrap().value, "corgi");
+        let cache = kv_get("internal:gemini_cache:abc")?.unwrap();
+        assert_eq!(cache.tags, vec!["gemini_cache".to_string()], "tags move with it");
+        for gone in ["_nick:/tmp/p", "_nick:/tmp/q", "gemini_cache:abc"] {
+            assert!(kv_get(gone)?.is_none(), "{gone} should be renamed");
+        }
+        let rows: Vec<(String, i64, bool, bool)> = conn
+            .prepare("SELECT record_id, version, deleted, dirty FROM sync_state ORDER BY record_id")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        assert_eq!(
+            rows,
+            vec![
+                ("_nick:/tmp/p".to_string(), 4, true, true),
+                ("gemini_cache:abc".to_string(), 2, true, true),
+                ("shared".to_string(), 1, false, false),
+            ],
+            "synced copies get a tombstone to push; a pushed tombstone and new keys leave no row"
+        );
+
+        // Once the tombstones are pushed, the rows go on the next open.
+        conn.execute("UPDATE sync_state SET dirty = 0", [])?;
+        drop(conn);
+        let conn = open()?;
+        let left: Vec<String> = conn
+            .prepare("SELECT record_id FROM sync_state ORDER BY record_id")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        assert_eq!(left, vec!["shared"]);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_legacy_per_device_key_from_an_older_build_is_not_adopted() -> Result<()> {
+    with_test_db(|| {
+        let conn = open()?;
+        let uid = current_user_id().unwrap_or_default();
+        for key in ["_nick:/tmp/p", "gemini_cache:abc"] {
+            assert!(!super::super::kv_store::kv_key_syncs(key));
+            assert!(!apply_remote_record(&conn, &uid, "kv", key, "x", 99, false)?);
+        }
+        assert!(kv_get("_nick:/tmp/p")?.is_none());
+        assert!(kv_get("internal:nick:/tmp/p")?.is_none());
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Refresh leases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_machine_at_a_time_holds_a_refresh_lease() -> Result<()> {
+    let _home = crate::ScratchHome::new();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
+        let server = FakeSyncServer::start(store).await?;
+        let old_api_url = env::var_os("SIDEKAR_API_URL");
+        unsafe { env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr)) };
+
+        let uid = "shared-account";
+        let account_key = vec![11u8; 32];
+        let home_a = crate::ScratchDir::new("lease-a");
+        let home_b = crate::ScratchDir::new("lease-b");
+        let switch_to = |home: &std::path::Path| {
+            unsafe { env::set_var("HOME", home) };
+            reset_encryption_state();
+            set_encryption_key(account_key.clone());
+            set_current_user_id(uid.to_string());
+            auth_set("token", uid).expect("auth_set should persist the fake device token");
+        };
+
+        switch_to(home_a.path());
+        let a = claim_lease("oauth:anthropic").await?;
+        assert!(matches!(a, LeaseClaim::Held { .. }), "first claim wins: {a:?}");
+        let LeaseClaim::Held { until } = a else { unreachable!() };
+        let now = crate::message::epoch_secs();
+        assert!(until >= now + LEASE_SLOT_SECS, "held for at least one full slot");
+
+        switch_to(home_b.path());
+        let b = claim_lease("oauth:anthropic").await?;
+        assert!(matches!(b, LeaseClaim::HeldElsewhere { .. }), "second machine is refused: {b:?}");
+        // A different credential has its own lease.
+        assert!(matches!(claim_lease("oauth:codex").await?, LeaseClaim::Held { .. }));
+
+        // The holder can claim again while it holds it.
+        switch_to(home_a.path());
+        assert!(matches!(claim_lease("oauth:anthropic").await?, LeaseClaim::Held { .. }));
+
+        // A server from before leases: go ahead without one.
+        FAKE_REJECTS_LEASE.store(true, Ordering::SeqCst);
+        switch_to(home_b.path());
+        let old = claim_lease("oauth:grok").await;
+        FAKE_REJECTS_LEASE.store(false, Ordering::SeqCst);
+        assert_eq!(old?, LeaseClaim::Unavailable);
+
+        // Leases stay out of the bus pull.
+        let pulled = pull_bus(uid).await?;
+        assert_eq!(pulled.applied, 0);
 
         server.stop();
         reset_encryption_state();

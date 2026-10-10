@@ -307,6 +307,8 @@ pub fn list_credentials() -> Vec<(String, String)> {
         .collect()
 }
 
+mod refresh_sync;
+
 // ---------------------------------------------------------------------------
 // Stored credentials
 // ---------------------------------------------------------------------------
@@ -396,8 +398,17 @@ pub async fn force_refresh_token(cred_name: &str) -> Result<String> {
             "credential '{cred_name}' has no refresh token — re-authenticate via `sidekar repl credential add <provider> [nickname]`"
         );
     }
-    let new_creds = refresh_fn(&creds).await?;
-    save_credentials(&kv_key, &new_creds)?;
+    // The provider turned down the stored access token: replace it, from
+    // another machine's refresh if there is one (refresh_sync).
+    let sync = refresh_sync::AccountSync::current().await;
+    let new_creds = refresh_sync::refresh_shared(
+        &sync,
+        &kv_key,
+        Some(&creds.access_token),
+        refresh_sync::Timing::default(),
+        |c| refresh_fn(&c),
+    )
+    .await?;
     Ok(new_creds.access_token)
 }
 
@@ -796,9 +807,19 @@ async fn get_token(
     let mut refresh_failed: Option<anyhow::Error> = None;
     if let Some(creds) = load_credentials(kv_key)? {
         if creds.is_expired() {
-            match refresh_fn(&creds).await {
+            // Shared with the account's other machines, which may have
+            // refreshed already (refresh_sync).
+            let sync = refresh_sync::AccountSync::current().await;
+            match refresh_sync::refresh_shared(
+                &sync,
+                kv_key,
+                None,
+                refresh_sync::Timing::default(),
+                |c| refresh_fn(&c),
+            )
+            .await
+            {
                 Ok(new_creds) => {
-                    save_credentials(kv_key, &new_creds)?;
                     return Ok(new_creds.access_token);
                 }
                 Err(e) => {

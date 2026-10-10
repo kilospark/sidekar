@@ -19,10 +19,11 @@ const MAX_BATCH = 500;
 // deployment has all 12. `?channel=bus` carries agent presence and bus
 // messages (context/bus-sync.md); they live in their own collection so the
 // frequent bus pulls never read the secret store, and clients from before
-// bus sync never receive them.
+// bus sync never receive them. `lease` is an OAuth refresh lease, held by
+// winning this collection's version swap (context/oauth-refresh-sync.md).
 export const CHANNELS = {
   secrets: { collection: "secret_sync", kinds: new Set(["kv", "totp", "hotp", "memory"]) },
-  bus: { collection: "bus_sync", kinds: new Set(["agent", "bus"]) },
+  bus: { collection: "bus_sync", kinds: new Set(["agent", "bus", "lease"]) },
 };
 
 export function channelFor(query) {
