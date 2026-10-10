@@ -1,6 +1,6 @@
 # OAuth Apps
 
-Sidekar uses OAuth in two distinct contexts: **user authentication** (GitHub/Google sign-in for sidekar.dev accounts) and **provider credentials** (Anthropic/Codex PKCE flows for LLM access in the REPL).
+Sidekar uses OAuth in three distinct contexts: **user authentication** (GitHub/Google sign-in for sidekar.dev accounts), **provider credentials** (Anthropic/Codex PKCE flows for LLM access in the REPL), and **workspace tools** (Google, Slack and Linear API access for `sidekar gmail|drive|…|slack|linear`, with apps the user registers).
 
 ## 1. User Authentication (sidekar.dev)
 
@@ -90,6 +90,33 @@ The REPL's `sidekar cred` command uses PKCE OAuth to obtain API tokens from LLM 
 6. Auto-refreshes expired tokens before use
 
 Handler: `src/providers/oauth.rs`
+
+## 3. Workspace tools (Google, Slack, Linear)
+
+No sidekar-owned app and no relay involvement: the user creates their own OAuth
+app in each service, stores its client id/secret in kv under keys they name,
+and `sidekar <svc> login` runs the consent flow against a loopback listener on
+this machine (`src/oauth_loopback.rs`). Tokens are stored in kv under a key the
+user names, tagged with what minted them, so several accounts can coexist.
+
+| Service | Redirect | How it matches | Token stored | Handler |
+|---|---|---|---|---|
+| Google | `http://127.0.0.1:<random>` | Desktop client accepts any loopback port | refresh token | `src/google/auth.rs` |
+| Slack | `http://localhost:53694/callback` (`--port`) | host+port must match a registered Redirect URL | user (`xoxp-`) or bot (`xoxb-`) token; JSON blob with refresh token if rotation is on | `src/slack/auth.rs` |
+| Linear | `http://localhost:53695/callback` (`--port`) | exact match against the app's Callback URLs | JSON blob: 24h access token + rotating refresh token + expiry | `src/linear/auth.rs` |
+
+Without an app: `sidekar slack add` adopts an `xoxp-`/`xoxb-` token already in
+kv, and `sidekar linear add` adopts a personal API key (`lin_api_…`, sent bare in
+`Authorization`; OAuth tokens go as `Bearer`).
+
+Slack scopes (user): `channels:read groups:read im:read mpim:read channels:history
+groups:history im:history mpim:history chat:write im:write users:read
+users:read.email search:read`. Bot: the same minus `search:read`, which Slack does
+not offer bots. `sidekar slack setup` prints a ready app manifest.
+
+Linear scopes: `read,write`. Linear rotates the refresh token on every use, so
+the access token is cached in the blob and only refreshed within five minutes of
+expiry; each refresh rewrites the kv entry (which syncs).
 
 ## Database Collections
 
