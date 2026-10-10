@@ -1453,6 +1453,72 @@ fn one_machine_at_a_time_holds_a_refresh_lease() -> Result<()> {
     })
 }
 
+/// A machine whose clock ran fast claimed a slot far ahead. The server refuses
+/// every slot up to it, so honouring it would stall each refresh elsewhere for
+/// the whole lease wait for as long as the skew; it is passed over instead. A
+/// lease just ahead (a live holder, or a clock a little fast) is still honoured.
+#[test]
+fn a_lease_claimed_far_ahead_by_a_fast_clock_is_passed_over() -> Result<()> {
+    let _home = crate::ScratchHome::new();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
+        let server = FakeSyncServer::start(store).await?;
+        let old_api_url = env::var_os("SIDEKAR_API_URL");
+        unsafe { env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr)) };
+
+        let uid = "shared-account";
+        reset_encryption_state();
+        set_encryption_key(vec![12u8; 32]);
+        set_current_user_id(uid.to_string());
+        auth_set("token", uid).expect("auth_set should persist the fake device token");
+
+        let slot = (crate::message::epoch_secs() / LEASE_SLOT_SECS) as i64;
+        let put = |record_id: &str, version: i64| {
+            server.bus.lock().unwrap().push(ServerDoc {
+                user_id: uid.to_string(),
+                kind: KIND_LEASE.to_string(),
+                record_id: record_id.to_string(),
+                ciphertext: String::new(),
+                version,
+                deleted: false,
+                updated_at: next_tick(),
+            });
+        };
+        // An hour ahead.
+        put("oauth:grok", slot + 180);
+        // Two slots ahead: within what a live holder can hold.
+        put("oauth:codex", slot + 2);
+
+        assert_eq!(claim_lease("oauth:grok").await?, LeaseClaim::Unavailable);
+        assert!(matches!(
+            claim_lease("oauth:codex").await?,
+            LeaseClaim::HeldElsewhere { .. }
+        ));
+
+        // This machine's own clock ran fast once and left a hold far ahead:
+        // it is not taken as holding the lease now.
+        crate::broker::kv_store::kv_set(
+            &lease_local_key("oauth:anthropic"),
+            &(slot + 180).to_string(),
+            None,
+        )?;
+        put("oauth:anthropic", slot + 1);
+        assert!(matches!(
+            claim_lease("oauth:anthropic").await?,
+            LeaseClaim::HeldElsewhere { .. }
+        ));
+
+        server.stop();
+        reset_encryption_state();
+        match old_api_url {
+            Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
+            None => unsafe { env::remove_var("SIDEKAR_API_URL") },
+        }
+        Ok(())
+    })
+}
+
 #[test]
 fn another_machines_agent_activity_is_seen_and_a_message_it_missed_bounces_back() -> Result<()> {
     let _home = crate::ScratchHome::new();

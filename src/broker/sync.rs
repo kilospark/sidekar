@@ -975,6 +975,16 @@ pub(crate) const KIND_LEASE: &str = "lease";
 /// A lease is held in slots of this many seconds of wall-clock time.
 pub(crate) const LEASE_SLOT_SECS: u64 = 20;
 
+/// How many slots past this machine's current one a lease can be held and
+/// still be taken for a live holder's. A holder claims its current slot and
+/// the next, and clocks are assumed to agree within a slot, so a live lease is
+/// at most two ahead; one more is margin. A lease further ahead was claimed by
+/// a clock running fast (or set wrong once). The server's swap refuses every
+/// slot up to it, so honouring it would make each refresh on every other
+/// machine wait out the full lease wait, for as long as the skew (up to the
+/// bus collection's week-long expiry). Go ahead without it instead.
+pub(crate) const LEASE_MAX_AHEAD_SLOTS: i64 = 3;
+
 /// What claiming a refresh lease found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaseClaim {
@@ -1009,7 +1019,9 @@ pub async fn claim_lease(lease_id: &str) -> Result<LeaseClaim> {
         .ok()
         .flatten()
         .and_then(|e| e.value.parse().ok());
-    if held_through.is_some_and(|h| h >= slot) {
+    // A hold recorded far ahead came from this machine's own clock running
+    // fast; it says nothing about the lease now.
+    if held_through.is_some_and(|h| h >= slot && h <= slot + LEASE_MAX_AHEAD_SLOTS) {
         let h = held_through.unwrap_or(slot);
         return Ok(LeaseClaim::Held {
             until: (h as u64 + 1) * LEASE_SLOT_SECS,
@@ -1017,6 +1029,17 @@ pub async fn claim_lease(lease_id: &str) -> Result<LeaseClaim> {
     }
     match put_lease(lease_id, slot).await? {
         None => Ok(LeaseClaim::Unavailable),
+        Some(Err(current)) if current > slot + LEASE_MAX_AHEAD_SLOTS => {
+            try_log_event(
+                "warn",
+                "sync",
+                "refresh lease held far ahead of this clock; going ahead without it",
+                Some(&format!(
+                    "{lease_id}: server slot {current}, this machine's slot {slot}"
+                )),
+            );
+            Ok(LeaseClaim::Unavailable)
+        }
         Some(Err(current)) => Ok(LeaseClaim::HeldElsewhere {
             until: (current.max(slot) as u64 + 1) * LEASE_SLOT_SECS,
         }),
