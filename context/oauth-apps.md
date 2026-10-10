@@ -153,8 +153,26 @@ the same moment can still race, and the loser's error says to log in again.
 Slack name lookups (`#name`, a handle or display name, user ids shown as names)
 search the person's own channels (`users.conversations`) before the whole
 workspace, stop at the first exact match, and cache name → id for 15 minutes in
-`~/.sidekar/cache/slack-names-<team>.json`. Names for user ids are fetched eight
-at a time.
+`~/.sidekar/cache/slack-names-<team>.json`. A cached channel is checked with one
+`conversations.info` (same name, not archived) and a cached user with one
+`users.info` (same handle) before use, so a rename cannot redirect a send. Only
+handles are cached for people; a display name is resolved afresh each time, so
+a newly shared one is still reported as ambiguous. Names for user ids are
+fetched eight at a time.
+
+File tokens (`src/attachments.rs` `token_url`): a download URL is parsed once
+with the same WHATWG parser reqwest uses, and that parsed URL is what is
+requested. The token goes only over https, with no userinfo and the default
+port, to `slack.com` / its subdomains (Slack) or exactly `uploads.linear.app`
+(Linear), or to the API base the client already talks to. Uploads send no token
+(signed URLs). Downloads saved under the remote name never overwrite an existing
+file (`name-2.ext` instead, created exclusively) and never land as a dotfile
+(`.bashrc` → `_bashrc`); only an explicit `--out <file>` overwrites. Uploads are
+size-checked from metadata before reading: Slack 1 GB, Linear 2 GB (the 32-bit
+`size` of `fileUpload`).
+
+A login that replaces an earlier sidekar token under the same key drops that
+token from kv history too; a key that held something else keeps its history.
 
 `slack draft` calls `drafts.create`, which is not in Slack's published API. It
 takes an OAuth user token with no extra scope; bot tokens are refused. Drafting
