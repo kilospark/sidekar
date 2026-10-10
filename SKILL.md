@@ -216,7 +216,10 @@ command for it.
 
 `slack read` lists each message's files as `[file F… name (type, size)]`.
 Downloads fetch `url_private` with the token, which only ever goes to Slack's own
-hosts. Uploads use `files.getUploadURLExternal` + `files.completeUploadExternal`
+hosts (checked on the parsed URL that is then requested). A download saved under
+the file's own name never overwrites an existing file (it becomes `name-2.ext`)
+and never lands as a dotfile; `--out <path>` writes exactly there. Uploads over
+Slack's 1 GB or Linear's 2 GB are refused before the file is read. Uploads use `files.getUploadURLExternal` + `files.completeUploadExternal`
 (not the retired `files.upload`) and post at once, so treat them like `send`.
 `slack draft` cannot carry files; draft the text and attach in Slack.
 
