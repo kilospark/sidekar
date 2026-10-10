@@ -1,20 +1,33 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "../../_db.js";
 import { getUserOrDevice } from "../../_auth.js";
-import { ensureSecretSyncIndexes } from "../../_sync-indexes.js";
+import { ensureBusSyncIndexes, ensureSecretSyncIndexes } from "../../_sync-indexes.js";
 
 // Production MONGODB_URI is only reachable from inside Vercel, so init-db.js
 // can't be run against it from outside. Bootstrap the indexes here instead,
 // once per function instance. A failure here must not break sync traffic;
 // it just means the endpoint runs without the index until the next cold start.
 const indexesReady = getDb()
-  .then((db) => ensureSecretSyncIndexes(db))
+  .then((db) => Promise.all([ensureSecretSyncIndexes(db), ensureBusSyncIndexes(db)]))
   .catch((err) => {
-    console.error("secret_sync index bootstrap failed:", err.message);
+    console.error("sync index bootstrap failed:", err.message);
   });
 
 const MAX_BATCH = 500;
-const VALID_KINDS = new Set(["kv", "totp", "hotp", "memory"]);
+
+// Two channels share this function: Vercel Hobby allows 12, and this
+// deployment has all 12. `?channel=bus` carries agent presence and bus
+// messages (context/bus-sync.md); they live in their own collection so the
+// frequent bus pulls never read the secret store, and clients from before
+// bus sync never receive them.
+export const CHANNELS = {
+  secrets: { collection: "secret_sync", kinds: new Set(["kv", "totp", "hotp", "memory"]) },
+  bus: { collection: "bus_sync", kinds: new Set(["agent", "bus"]) },
+};
+
+export function channelFor(query) {
+  return query && query.channel === "bus" ? CHANNELS.bus : CHANNELS.secrets;
+}
 
 // A page of a paged pull. A Vercel function's response body is capped at
 // 4.5 MB; once memory archives synced, an account's whole history could pass
@@ -24,10 +37,10 @@ const VALID_KINDS = new Set(["kv", "totp", "hotp", "memory"]);
 const PAGE_BYTES = 3_000_000;
 const PAGE_RECORDS = 1000;
 
-function validateRecord(record) {
+export function validateRecord(record, kinds = CHANNELS.secrets.kinds) {
   if (!record || typeof record !== "object") return "record must be an object";
   const { kind, record_id, ciphertext, version } = record;
-  if (!VALID_KINDS.has(kind)) return "kind must be 'kv', 'totp', 'hotp' or 'memory'";
+  if (!kinds.has(kind)) return `kind must be one of: ${[...kinds].join(", ")}`;
   if (typeof record_id !== "string" || !record_id) return "record_id required";
   if (typeof ciphertext !== "string") return "ciphertext must be a string";
   if (!Number.isInteger(version) || version < 1) return "version must be a positive integer";
@@ -151,7 +164,8 @@ export default async function handler(req, res) {
 
   await indexesReady;
   const db = await getDb();
-  const collection = db.collection("secret_sync");
+  const channel = channelFor(req.query);
+  const collection = db.collection(channel.collection);
 
   if (req.method === "PUT") {
     const { records } = req.body || {};
@@ -162,7 +176,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: `records must not exceed ${MAX_BATCH} per batch` });
     }
     for (const record of records) {
-      const error = validateRecord(record);
+      const error = validateRecord(record, channel.kinds);
       if (error) {
         return res.status(400).json({ error });
       }

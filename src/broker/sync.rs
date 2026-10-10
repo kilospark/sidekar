@@ -32,7 +32,7 @@ const DEVICE_ID_META_KEY: &str = "sync_device_id";
 
 /// Opaque per-install id, persisted once. Diagnostics only (shows up in the
 /// server's `device_id` column) -- never load-bearing for merge decisions.
-fn device_id(conn: &Connection) -> Result<String> {
+pub(crate) fn device_id(conn: &Connection) -> Result<String> {
     let stored: Option<String> = conn
         .query_row(
             "SELECT value FROM encryption_meta WHERE key = ?1",
@@ -299,7 +299,45 @@ fn build_ciphertext(
                 .ok_or_else(|| anyhow!("memory record '{record_id}' vanished before push"))?;
             super::encryption::sync_encrypt(key, &payload)
         }
+        kind if super::bus_sync::is_bus_kind(kind) => {
+            let payload = super::bus_sync::sync_payload(conn, kind, record_id)?;
+            super::encryption::sync_encrypt(key, &payload)
+        }
         other => bail!("unknown sync kind: {other}"),
+    }
+}
+
+/// The two record channels the sync endpoint serves: secrets (kv, totp, hotp,
+/// memory) and the bus (agent presence and messages, `context/bus-sync.md`).
+/// Each has its own server collection and its own pull watermark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncChannel {
+    Secrets,
+    Bus,
+}
+
+impl SyncChannel {
+    pub(crate) fn of_kind(kind: &str) -> Self {
+        if super::bus_sync::is_bus_kind(kind) {
+            Self::Bus
+        } else {
+            Self::Secrets
+        }
+    }
+
+    /// The endpoint, with the query that selects this channel.
+    fn url(self, base: &str) -> String {
+        match self {
+            Self::Secrets => format!("{base}/api/v1/sync/secrets?"),
+            Self::Bus => format!("{base}/api/v1/sync/secrets?channel=bus&"),
+        }
+    }
+
+    fn watermark_column(self) -> &'static str {
+        match self {
+            Self::Secrets => "last_pull_at",
+            Self::Bus => "last_bus_pull_at",
+        }
     }
 }
 
@@ -312,15 +350,29 @@ fn sync_api_base() -> String {
 /// just the key that was just touched -- that's the retry mechanism for a
 /// push that failed earlier while offline.
 pub async fn push_dirty(uid: &str, budget: Duration) -> Result<PushSummary> {
+    push_channels(uid, budget, None).await
+}
+
+/// Push only the bus channel's dirty records: a message to another machine,
+/// or this machine's presence. Quick, since it skips any secrets backlog.
+pub async fn push_bus(uid: &str, budget: Duration) -> Result<PushSummary> {
+    push_channels(uid, budget, Some(SyncChannel::Bus)).await
+}
+
+async fn push_channels(
+    uid: &str,
+    budget: Duration,
+    only: Option<SyncChannel>,
+) -> Result<PushSummary> {
     tokio::time::timeout(budget, async {
-        let first = push_dirty_inner(uid, budget).await?;
+        let first = push_dirty_inner(uid, budget, only).await?;
         if first.bumped == 0 {
             return Ok::<_, anyhow::Error>(first);
         }
         // A refused record was moved past the version the server holds. Push
         // again now, so the conflict settles in this call rather than at the
         // next retry ten minutes on.
-        let second = push_dirty_inner(uid, budget).await?;
+        let second = push_dirty_inner(uid, budget, only).await?;
         Ok(PushSummary {
             pushed: first.pushed + second.pushed,
             failed: second.failed,
@@ -331,7 +383,11 @@ pub async fn push_dirty(uid: &str, budget: Duration) -> Result<PushSummary> {
     .context("sync push timed out")?
 }
 
-async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
+async fn push_dirty_inner(
+    uid: &str,
+    budget: Duration,
+    only: Option<SyncChannel>,
+) -> Result<PushSummary> {
     let conn = open()?;
     let key = get_encryption_key().context("no active encryption key to push sync records")?;
     let dev_id = device_id(&conn)?;
@@ -360,6 +416,9 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
 
     let mut records = Vec::with_capacity(dirty.len());
     for (kind, record_id, version, deleted) in &dirty {
+        if only.is_some_and(|c| c != SyncChannel::of_kind(kind)) {
+            continue;
+        }
         let ciphertext = if *deleted {
             String::new()
         } else {
@@ -413,21 +472,37 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
     // and kv and totp must not wait on that: mid-release, the new binary can
     // be downloaded a few minutes before the server that accepts memory is
     // live.
+    // The bus channel goes to its own collection, so it never shares a
+    // request with either.
+    let (bus, records): (Vec<PushRecord>, Vec<PushRecord>) = records
+        .into_iter()
+        .partition(|r| SyncChannel::of_kind(&r.kind) == SyncChannel::Bus);
     let (memory, secrets): (Vec<PushRecord>, Vec<PushRecord>) =
         records.into_iter().partition(|r| r.kind == "memory");
     let batches = push_batches(&secrets, MAX_BATCH_RECORDS, MAX_BATCH_BYTES)
         .into_iter()
-        .chain(push_batches(&memory, MAX_BATCH_RECORDS, MAX_BATCH_BYTES));
+        .chain(push_batches(&memory, MAX_BATCH_RECORDS, MAX_BATCH_BYTES))
+        .map(|b| (SyncChannel::Secrets, b))
+        .chain(
+            push_batches(&bus, MAX_BATCH_RECORDS, MAX_BATCH_BYTES)
+                .into_iter()
+                .map(|b| (SyncChannel::Bus, b)),
+        );
 
     let mut summary = PushSummary::default();
-    for batch in batches {
+    for (channel, batch) in batches {
         let version_by_id: HashMap<(String, String), i64> = batch
             .iter()
             .map(|r| ((r.kind.clone(), r.record_id.clone()), r.version))
             .collect();
+        let deleted_ids: std::collections::HashSet<(String, String)> = batch
+            .iter()
+            .filter(|r| r.deleted)
+            .map(|r| (r.kind.clone(), r.record_id.clone()))
+            .collect();
 
         let resp = client
-            .put(format!("{base}/api/v1/sync/secrets"))
+            .put(channel.url(&base).trim_end_matches(['?', '&']).to_string())
             .header("Authorization", format!("Bearer {token}"))
             .json(&PushBody { records: batch })
             .send()
@@ -450,6 +525,9 @@ async fn push_dirty_inner(uid: &str, budget: Duration) -> Result<PushSummary> {
                          WHERE user_id = ?1 AND kind = ?2 AND record_id = ?3 AND version = ?4",
                         params![uid, item.kind, item.record_id, version],
                     )?;
+                }
+                if !deleted_ids.contains(&(item.kind.clone(), item.record_id.clone())) {
+                    super::bus_sync::pushed(&conn, &item.kind, &item.record_id)?;
                 }
                 summary.pushed += 1;
             } else {
@@ -523,7 +601,7 @@ struct PullCursor {
 /// a page it is far beyond any real account.
 const MAX_PULL_PAGES: usize = 10_000;
 
-fn local_sync_state(
+pub(super) fn local_sync_state(
     conn: &Connection,
     uid: &str,
     kind: &str,
@@ -542,7 +620,7 @@ fn local_sync_state(
     .map_err(Into::into)
 }
 
-fn upsert_sync_state(
+pub(super) fn upsert_sync_state(
     conn: &Connection,
     uid: &str,
     kind: &str,
@@ -734,10 +812,53 @@ fn apply_remote_record(
 /// the max row `updated_at` in the batch, so a row written mid-response
 /// isn't skipped on the next pull.
 pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
+    pull_channel(uid, SyncChannel::Secrets, |conn, rec| {
+        apply_remote_record(
+            conn,
+            uid,
+            &rec.kind,
+            &rec.record_id,
+            &rec.ciphertext,
+            rec.version,
+            rec.deleted,
+        )
+    })
+    .await
+}
+
+/// Pull the bus channel: other machines' agents, and messages for this one
+/// (`context/bus-sync.md`).
+pub async fn pull_bus(uid: &str) -> Result<PullSummary> {
+    let device = device_id(&open()?)?;
+    pull_channel(uid, SyncChannel::Bus, |conn, rec| {
+        if !super::bus_sync::is_bus_kind(&rec.kind) {
+            // A server from before bus sync answers from the secrets store.
+            return Ok(false);
+        }
+        super::bus_sync::apply_record(
+            conn,
+            uid,
+            &device,
+            &rec.kind,
+            &rec.record_id,
+            &rec.ciphertext,
+            rec.version,
+            rec.deleted,
+        )
+    })
+    .await
+}
+
+async fn pull_channel(
+    uid: &str,
+    channel: SyncChannel,
+    mut apply: impl FnMut(&Connection, &RemoteRecord) -> Result<bool>,
+) -> Result<PullSummary> {
     let conn = open()?;
+    let watermark = channel.watermark_column();
     let since: i64 = conn
         .query_row(
-            "SELECT last_pull_at FROM sync_meta WHERE user_id = ?1",
+            &format!("SELECT {watermark} FROM sync_meta WHERE user_id = ?1"),
             params![uid],
             |r| r.get(0),
         )
@@ -758,11 +879,12 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
     let mut cursor: Option<PullCursor> = None;
     let mut server_time = since;
     let mut finished = false;
+    let endpoint = channel.url(&base);
     for _ in 0..MAX_PULL_PAGES {
         let url = match &cursor {
-            None => format!("{base}/api/v1/sync/secrets?paged=1&since={since}"),
+            None => format!("{endpoint}paged=1&since={since}"),
             Some(c) => format!(
-                "{base}/api/v1/sync/secrets?paged=1&since={}&after_id={}",
+                "{endpoint}paged=1&since={}&after_id={}",
                 c.since, c.after_id
             ),
         };
@@ -778,22 +900,9 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
         let body: PullResponse = resp.json().await.context("failed to parse pull response")?;
 
         for rec in &body.records {
-            match apply_remote_record(
-                &conn,
-                uid,
-                &rec.kind,
-                &rec.record_id,
-                &rec.ciphertext,
-                rec.version,
-                rec.deleted,
-            ) {
-                Ok(applied) => {
-                    if applied {
-                        summary.applied += 1;
-                    } else {
-                        summary.skipped += 1;
-                    }
-                }
+            match apply(&conn, rec) {
+                Ok(true) => summary.applied += 1,
+                Ok(false) => summary.skipped += 1,
                 Err(e) => {
                     try_log_event(
                         "warn",
@@ -831,12 +940,93 @@ pub async fn pull_merge(uid: &str) -> Result<PullSummary> {
     }
 
     conn.execute(
-        "INSERT INTO sync_meta (user_id, last_pull_at) VALUES (?1, ?2) \
-         ON CONFLICT(user_id) DO UPDATE SET last_pull_at = ?2",
+        &format!(
+            "INSERT INTO sync_meta (user_id, {watermark}) VALUES (?1, ?2) \
+             ON CONFLICT(user_id) DO UPDATE SET {watermark} = ?2"
+        ),
         params![uid, server_time],
     )?;
 
     Ok(summary)
+}
+
+// ---------------------------------------------------------------------------
+// Bus channel rounds (context/bus-sync.md)
+// ---------------------------------------------------------------------------
+
+/// Whether bus sync runs on this machine: logged in, and not turned off with
+/// `bus_sync_interval_secs = 0`. The account, when it does.
+pub fn bus_sync_account() -> Option<String> {
+    if crate::config::get_usize("bus_sync_interval_secs") == 0 {
+        return None;
+    }
+    crate::auth::auth_token()?;
+    crate::broker::current_user_id().filter(|u| !u.is_empty())
+}
+
+/// One round for the daemon: publish this machine's agents, pull when
+/// something here can be messaged, then push what is pending, which includes
+/// the tombstones of messages the pull just delivered.
+pub async fn bus_sync_round(uid: &str) -> Result<()> {
+    let has_agents = {
+        let conn = open()?;
+        let device = device_id(&conn)?;
+        super::bus_sync::reconcile_presence(&conn, uid, &device)?;
+        super::bus_sync::has_published_agents(&conn)?
+    };
+    if has_agents {
+        pull_bus(uid).await?;
+    }
+    let pending: bool = open()?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state WHERE user_id = ?1 AND dirty = 1 AND kind IN ('agent', 'bus'))",
+        params![uid],
+        |r| r.get(0),
+    )?;
+    if pending {
+        push_bus(uid, Duration::from_secs(20)).await?;
+    }
+    Ok(())
+}
+
+/// The body of `sidekar _bus_sync`: one round, the same the daemon runs every
+/// `bus_sync_interval_secs`. For diagnosing bus sync without waiting on the
+/// daemon, and for driving it in tests.
+pub async fn run_bus_sync_once() -> Result<()> {
+    let uid = bus_sync_ready()
+        .await?
+        .context("bus sync is off (bus_sync_interval_secs = 0) or this machine is not logged in")?;
+    bus_sync_round(&uid).await
+}
+
+/// [`bus_sync_account`] for a long-lived or early caller: loads the account
+/// key first, which is also what sets the account id. A daemon started before
+/// login, or a command routed before the usual key fetch, has neither yet.
+pub async fn bus_sync_ready() -> Result<Option<String>> {
+    if crate::config::get_usize("bus_sync_interval_secs") == 0
+        || crate::auth::auth_token().is_none()
+    {
+        return Ok(None);
+    }
+    super::ensure_account_key().await?;
+    Ok(bus_sync_account())
+}
+
+/// Run a sync future to completion from synchronous code, which in sidekar
+/// often runs inside a runtime already: on a thread of its own, with a
+/// runtime of its own. `None` if that could not be set up.
+pub(crate) fn run_blocking<T: Send + 'static>(
+    fut: impl std::future::Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()
+            .map(|rt| rt.block_on(fut))
+    })
+    .join()
+    .ok()
+    .flatten()
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,12 +1286,12 @@ pub fn sync_status(uid: &str) -> Result<SyncStatus> {
         .optional()?
         .unwrap_or(0);
     let dirty_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sync_state WHERE user_id = ?1 AND dirty = 1",
+        "SELECT COUNT(*) FROM sync_state WHERE user_id = ?1 AND dirty = 1 AND kind NOT IN ('agent', 'bus')",
         params![uid],
         |r| r.get(0),
     )?;
     let tombstone_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sync_state WHERE user_id = ?1 AND deleted = 1",
+        "SELECT COUNT(*) FROM sync_state WHERE user_id = ?1 AND deleted = 1 AND kind NOT IN ('agent', 'bus')",
         params![uid],
         |r| r.get(0),
     )?;

@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 /// so this is a poll; a few queries a second is cheap and feels immediate.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How often a wait for an answer from another machine pulls for it.
+const SYNC_PULL_INTERVAL: Duration = Duration::from_secs(3);
+
 /// Default ceiling: long enough for a real piece of delegated work.
 pub(crate) const DEFAULT_AWAIT: Duration = Duration::from_secs(600);
 
@@ -92,8 +95,26 @@ pub(crate) async fn await_reply(
     timeout: Duration,
 ) -> Result<AwaitOutcome> {
     let recipient = recipient.or_else(|| Recipient::of_request(msg_id));
+    // An answer from another machine comes by bus sync. Pull for it here
+    // rather than wait on the daemon's round: a machine that only asks may
+    // have no daemon pulling at all.
+    let synced = broker::outbound_request(msg_id)
+        .ok()
+        .flatten()
+        .filter(|r| r.transport_name == crate::bus::BUS_SYNC_TRANSPORT)
+        .and_then(|_| broker::bus_sync_account());
+    let mut last_pull: Option<Instant> = None;
     let deadline = Instant::now() + timeout;
     loop {
+        if let Some(uid) = &synced
+            && last_pull.is_none_or(|t| t.elapsed() >= SYNC_PULL_INTERVAL)
+        {
+            last_pull = Some(Instant::now());
+            if broker::pull_bus(uid).await.is_ok() {
+                // The tombstones of whatever the pull delivered.
+                let _ = broker::push_bus(uid, Duration::from_secs(5)).await;
+            }
+        }
         if let Some(reply) = first_reply(msg_id)? {
             return Ok(AwaitOutcome::Answered(reply));
         }

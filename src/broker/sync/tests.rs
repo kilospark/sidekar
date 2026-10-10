@@ -314,10 +314,15 @@ fn next_tick() -> i64 {
 struct FakeSyncServer {
     addr: std::net::SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    /// The `?channel=bus` collection, apart from the secrets one as on the
+    /// real server.
+    bus: Arc<Mutex<Vec<ServerDoc>>>,
 }
 
 impl FakeSyncServer {
     async fn start(store: Arc<Mutex<Vec<ServerDoc>>>) -> Result<Self> {
+        let bus: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
+        let bus_for_server = bus.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
@@ -329,8 +334,9 @@ impl FakeSyncServer {
                     accepted = listener.accept() => {
                         if let Ok((stream, _)) = accepted {
                             let store = store.clone();
+                            let bus = bus_for_server.clone();
                             tokio::spawn(async move {
-                                let _ = handle_conn(stream, store).await;
+                                let _ = handle_conn(stream, store, bus).await;
                             });
                         }
                     }
@@ -341,6 +347,7 @@ impl FakeSyncServer {
         Ok(Self {
             addr,
             shutdown: Some(tx),
+            bus,
         })
     }
 
@@ -353,7 +360,8 @@ impl FakeSyncServer {
 
 async fn handle_conn(
     mut stream: tokio::net::TcpStream,
-    store: Arc<Mutex<Vec<ServerDoc>>>,
+    secrets: Arc<Mutex<Vec<ServerDoc>>>,
+    bus: Arc<Mutex<Vec<ServerDoc>>>,
 ) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
@@ -394,8 +402,21 @@ async fn handle_conn(
         .trim()
         .to_string();
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    let bus_channel = query_param(query, "channel").as_deref() == Some("bus");
+    let store = if bus_channel { bus } else { secrets };
+    // Each channel takes only its own kinds, as `validateRecord` does.
+    let wrong_kind = method == "PUT"
+        && if bus_channel {
+            body_str.contains("\"kind\":\"kv\"") || body_str.contains("\"kind\":\"memory\"")
+        } else {
+            body_str.contains("\"kind\":\"agent\"") || body_str.contains("\"kind\":\"bus\"")
+        };
 
     let (status, response_body) = match method.as_str() {
+        "PUT" if wrong_kind => (
+            "400 Bad Request",
+            json!({ "error": "kind not on this channel" }),
+        ),
         // A server from before memory sync: one memory record fails the batch.
         "PUT" if path == "/api/v1/sync/secrets"
             && FAKE_REJECTS_MEMORY.load(Ordering::SeqCst)
@@ -1085,6 +1106,142 @@ fn two_devices_at_the_same_version_converge_instead_of_deadlocking() -> Result<(
                 .iter()
                 .any(|h| h.value.as_deref() == Ok("from-a"))
         );
+
+        server.stop();
+        reset_encryption_state();
+        match old_api_url {
+            Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
+            None => unsafe { env::remove_var("SIDEKAR_API_URL") },
+        }
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Bus across machines (context/bus-sync.md)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_machines_see_each_others_agents_and_exchange_a_request_and_answer() -> Result<()> {
+    let _home = crate::ScratchHome::new();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
+        let server = FakeSyncServer::start(store.clone()).await?;
+        let old_api_url = env::var_os("SIDEKAR_API_URL");
+        unsafe { env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr)) };
+
+        let uid = "shared-account";
+        let home_a = crate::ScratchDir::new("bus-sync-a");
+        let home_b = crate::ScratchDir::new("bus-sync-b");
+        let switch_to = |home: &std::path::Path| {
+            unsafe { env::set_var("HOME", home) };
+            reset_encryption_state();
+            set_encryption_key(vec![21u8; 32]);
+            set_current_user_id(uid.to_string());
+            auth_set("token", uid).expect("auth_set should persist the fake device token");
+        };
+
+        // Machine A runs an agent; its round publishes it.
+        switch_to(home_a.path());
+        let agent = crate::message::AgentId {
+            name: "claude-app-1".into(),
+            nick: Some("otter".into()),
+            session: Some("/src/app".into()),
+            pane: Some("pty-424242".into()),
+            agent_type: Some("claude".into()),
+        };
+        register_agent(&agent, Some("pty-424242"))?;
+        bus_sync_round(uid).await?;
+        assert!(
+            store.lock().unwrap().is_empty(),
+            "nothing on the secrets channel"
+        );
+        assert_eq!(server.bus.lock().unwrap().len(), 1);
+        let device_a = device_id(&open()?)?;
+
+        // Machine B sees it, by name or nick.
+        switch_to(home_b.path());
+        pull_bus(uid).await?;
+        let conn = open()?;
+        let found = crate::broker::bus_sync::find_remote_agent(&conn, uid, "otter")?
+            .expect("machine A's agent is visible on B");
+        assert_eq!(found.device_id, device_a);
+
+        // B's one-shot shell asks it something.
+        let asker = crate::message::AgentId::new("cli-app-7");
+        let request =
+            crate::message::Envelope::new_request(asker, "claude-app-1", "review the diff");
+        set_outbound_request(&request, "cli-app-7", "bus_sync", "x", None, None)?;
+        let device_b = device_id(&conn)?;
+        crate::broker::bus_sync::queue_remote_message(
+            &conn,
+            uid,
+            &device_b,
+            &device_a,
+            "claude-app-1",
+            "cli-app-7",
+            "[from cli-app-7] review the diff",
+            Some(&request),
+        )?;
+        drop(conn);
+        push_bus(uid, Duration::from_secs(5)).await?;
+
+        // A's next round delivers it into the agent's queue.
+        switch_to(home_a.path());
+        bus_sync_round(uid).await?;
+        let queued = list_queued_messages("claude-app-1")?;
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].body.contains("review the diff"));
+        assert_eq!(
+            crate::broker::bus_sync::origin_device(&open()?, &request.id)?.as_deref(),
+            Some(device_b.as_str())
+        );
+
+        // The agent answers; the asker has left, so it goes to the machine that asked.
+        let answer = crate::message::Envelope::new_response(
+            agent.clone(),
+            "cli-app-7",
+            "looks fine",
+            request.id.clone(),
+        );
+        crate::broker::bus_sync::queue_remote_message(
+            &open()?,
+            uid,
+            &device_a,
+            &device_b,
+            "cli-app-7",
+            "claude-app-1",
+            "looks fine",
+            Some(&answer),
+        )?;
+        push_bus(uid, Duration::from_secs(5)).await?;
+
+        // B pulls (as `bus await` does) and has the answer for the request.
+        switch_to(home_b.path());
+        pull_bus(uid).await?;
+        let replies = replies_for_request(&request.id)?;
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].message, "looks fine");
+
+        // Delivered messages were tombstoned on the server.
+        push_bus(uid, Duration::from_secs(5)).await?;
+        let live_messages = server
+            .bus
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| d.kind == "bus" && !d.deleted)
+            .count();
+        assert_eq!(live_messages, 0, "both messages delivered and let go");
+
+        // A's agent leaves: B stops listing it after A's next round.
+        switch_to(home_a.path());
+        unregister_agent("claude-app-1")?;
+        bus_sync_round(uid).await?;
+        switch_to(home_b.path());
+        pull_bus(uid).await?;
+        assert!(crate::broker::bus_sync::live_remote_agents(&open()?, uid)?.is_empty());
 
         server.stop();
         reset_encryption_state();

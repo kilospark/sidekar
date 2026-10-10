@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 14;
+const SCHEMA_VERSION: u32 = 15;
 
 mod activity;
 mod agent_registry;
@@ -26,6 +26,7 @@ mod agent_sessions;
 mod auth_store;
 mod bounce;
 mod bus_queue;
+pub(crate) mod bus_sync;
 mod cron;
 mod encryption;
 mod event_log;
@@ -180,6 +181,12 @@ fn ensure_added_columns(conn: &Connection) -> Result<()> {
         (
             "sync_meta",
             "last_push_attempt_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        // The bus channel's own pull watermark (context/bus-sync.md).
+        (
+            "sync_meta",
+            "last_bus_pull_at",
             "INTEGER NOT NULL DEFAULT 0",
         ),
         // HOTP lives beside TOTP: `kind` says which, and `counter` is the
@@ -809,6 +816,41 @@ fn init_schema(conn: &Connection) -> Result<()> {
             user_id TEXT PRIMARY KEY,
             last_pull_at INTEGER NOT NULL DEFAULT 0,
             last_push_attempt_at INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )?;
+
+    // Cross-machine bus (context/bus-sync.md). `remote_agents` is the agents
+    // other machines on the account publish; `bus_outbox` holds a message to
+    // another machine until it is pushed; `bus_remote_origin` remembers which
+    // machine sent a request, so the answer goes back there even when the
+    // asker has left the bus.
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS remote_agents (
+            record_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            hostname TEXT NOT NULL,
+            name TEXT NOT NULL,
+            nick TEXT,
+            channel TEXT,
+            cwd TEXT,
+            agent_type TEXT,
+            published_at INTEGER NOT NULL,
+            version INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_remote_agents_name ON remote_agents(name);
+        CREATE TABLE IF NOT EXISTS bus_outbox (
+            msg_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bus_remote_origin (
+            msg_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL
         );
         ",
     )?;

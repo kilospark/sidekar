@@ -89,6 +89,14 @@ pub static CONFIG_KEYS: &[ConfigKey] = &[
         description: "Most agents one agent or shell can have spawned and running at once (0: no limit)",
     },
     ConfigKey {
+        // context/bus-sync.md. Each round is one request to sidekar.dev, made
+        // only while this machine has an agent another could message.
+        key: "bus_sync_interval_secs",
+        kind: ConfigKind::Int,
+        default: "15",
+        description: "Seconds between bus sync rounds with your other machines (0: no cross-machine bus)",
+    },
+    ConfigKey {
         key: "max_spawned",
         kind: ConfigKind::Int,
         default: "15",
