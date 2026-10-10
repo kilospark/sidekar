@@ -849,6 +849,9 @@ pub async fn pull_bus(uid: &str) -> Result<PullSummary> {
     .await
 }
 
+/// How far behind its watermark a bus pull starts (server milliseconds).
+const BUS_PULL_OVERLAP_MS: i64 = 60_000;
+
 async fn pull_channel(
     uid: &str,
     channel: SyncChannel,
@@ -875,6 +878,16 @@ async fn pull_channel(
     // ask for pages and follow them. A server that doesn't page ignores
     // `paged` and answers in one response with no `has_more`, which ends the
     // loop after the first page.
+    // The watermark is one server instance's clock, and a record's
+    // `updated_at` another's, stamped before its write committed. Skew between
+    // them, or a commit landing after a concurrent pull read, can leave a
+    // record at or below the watermark. kv heals on its next edit; a bus
+    // message is written once, so the bus re-reads an overlap. What it pulls
+    // twice is harmless: messages are claimed once, agents version-guarded.
+    let since = match channel {
+        SyncChannel::Bus => (since - BUS_PULL_OVERLAP_MS).max(0),
+        SyncChannel::Secrets => since,
+    };
     let mut summary = PullSummary::default();
     let mut cursor: Option<PullCursor> = None;
     let mut server_time = since;

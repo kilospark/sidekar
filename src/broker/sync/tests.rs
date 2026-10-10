@@ -1198,6 +1198,49 @@ fn two_machines_see_each_others_agents_and_exchange_a_request_and_answer() -> Re
             Some(device_b.as_str())
         );
 
+        // Pulling the same window again, as the overlap and other pullers do,
+        // delivers nothing twice.
+        pull_bus(uid).await?;
+        bus_sync_round(uid).await?;
+        assert_eq!(list_queued_messages("claude-app-1")?.len(), 1);
+
+        // A message the server stamped at or below A's watermark (another
+        // instance's clock, or a commit after A's read) still arrives.
+        let watermark: i64 = open()?.query_row(
+            "SELECT last_bus_pull_at FROM sync_meta WHERE user_id = ?1",
+            params![uid],
+            |r| r.get(0),
+        )?;
+        switch_to(home_b.path());
+        let late = crate::message::Envelope::new_fyi(
+            crate::message::AgentId::new("cli-app-7"),
+            "claude-app-1",
+            "one more thing".to_string(),
+        );
+        crate::broker::bus_sync::queue_remote_message(
+            &open()?,
+            uid,
+            &device_b,
+            &device_a,
+            "claude-app-1",
+            "cli-app-7",
+            "one more thing",
+            Some(&late),
+        )?;
+        push_bus(uid, Duration::from_secs(5)).await?;
+        for doc in server.bus.lock().unwrap().iter_mut() {
+            if doc.record_id == late.id {
+                doc.updated_at = watermark;
+            }
+        }
+        switch_to(home_a.path());
+        pull_bus(uid).await?;
+        assert_eq!(
+            list_queued_messages("claude-app-1")?.len(),
+            2,
+            "the late-stamped one arrived"
+        );
+
         // The agent answers; the asker has left, so it goes to the machine that asked.
         let answer = crate::message::Envelope::new_response(
             agent.clone(),
