@@ -149,6 +149,9 @@ pub(super) async fn housekeeping_loop(http_port: u16, ext_state: crate::ext::Sha
                 // "running" meta behind; mark it ended.
                 let _ = crate::hosted::reap_all();
                 cleanup_stale_messages();
+                if let Ok(conn) = crate::broker::open_db() {
+                    let _ = crate::broker::bus_sync::prune(&conn);
+                }
                 crate::ext::sweep_stale_watches(&ext_state, STALE_WATCH_AGE_SECS).await;
                 crate::ext::sweep_stale_tab_monitors(&ext_state, STALE_WATCH_AGE_SECS).await;
                 if http_port > 0 {

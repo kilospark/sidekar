@@ -243,6 +243,13 @@ sidekar bus <who|requests|replies|show|send|done|wait|await|explain|cancel|dismi
   you, or delivered via relay) append a short note to the pasted body so the
   recipient knows which terminal or machine should run `bus send` / `bus done`.
 
+  Your other machines: when logged in, agents on every machine on the account
+  are reachable by name or nick, and `who --all` lists them under their host.
+  If two machines have an agent of the same name, add the host: name@host.
+  Messages between machines travel through sidekar.dev, encrypted with your
+  account key like kv, and arrive within bus_sync_interval_secs (default 15;
+  0 keeps the bus on this machine).
+
   `--interrupt` asks a receiving `sidekar repl` or known Sidekar PTY-wrapped
   agent CLI (claude, codex, cursor-agent, gemini, grok, opencode, etc.) to
   cancel its active turn before delivering the message.
@@ -262,6 +269,7 @@ sidekar bus <who|requests|replies|show|send|done|wait|await|explain|cancel|dismi
     sidekar bus replies --msg-id=msg_123
     sidekar bus show msg_123
     sidekar bus send claude-2 \"Please review the PR\"
+    sidekar bus send claude-2@studio \"Same name on two machines: pick one\"
     sidekar bus send claude-2 --file=/tmp/sidekar-msg.txt
     sidekar bus done claude-2 \"Done\" --file=/tmp/sidekar-handoff.txt
     sidekar bus cancel msg_123 msg_456

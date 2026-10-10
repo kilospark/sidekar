@@ -185,6 +185,11 @@ fn nudge_once() {
         {
             continue;
         }
+        if request.transport_name == crate::bus::BUS_SYNC_TRANSPORT
+            && !remote_agent_present(&request.transport_target)
+        {
+            continue;
+        }
         if recipient_should_defer_nudge(&request) {
             continue;
         }
@@ -268,7 +273,83 @@ fn deliver_nudge(request: &crate::broker::OutboundRequestRecord, body: &str) -> 
                 crate::message::DeliveryResult::Failed(reason) => anyhow::bail!(reason),
             }
         }
+        // Queued for the other machine; the next bus sync round pushes it.
+        crate::bus::BUS_SYNC_TRANSPORT => {
+            let uid = crate::broker::bus_sync_account()
+                .ok_or_else(|| anyhow::anyhow!("bus sync is off or logged out"))?;
+            let (device, name) = request
+                .transport_target
+                .split_once('\u{0}')
+                .ok_or_else(|| anyhow::anyhow!("malformed bus sync target"))?;
+            let conn = crate::broker::open_db()?;
+            let from_device = crate::broker::device_id(&conn)?;
+            crate::broker::bus_sync::queue_remote_message(
+                &conn,
+                &uid,
+                &from_device,
+                device,
+                name,
+                "sidekar",
+                body,
+                None,
+            )?;
+            Ok(())
+        }
         other => anyhow::bail!("unsupported transport {other}"),
+    }
+}
+
+/// Whether the other machine's agent a request went to is still present.
+fn remote_agent_present(record_id: &str) -> bool {
+    let Some(uid) = crate::broker::bus_sync_account() else {
+        return false;
+    };
+    let Ok(conn) = crate::broker::open_db() else {
+        return true;
+    };
+    crate::broker::bus_sync::live_remote_agents(&conn, &uid)
+        .map(|agents| {
+            agents.iter().any(|a| {
+                crate::broker::bus_sync::agent_record_id(&a.device_id, &a.name) == record_id
+            })
+        })
+        .unwrap_or(true)
+}
+
+/// Bus sync with the account's other machines (context/bus-sync.md): a round
+/// every `bus_sync_interval_secs`, read each time so a change applies without
+/// a restart. A failure is logged when it starts and when it changes, not
+/// every round, so an offline machine does not fill the event log.
+pub(super) async fn bus_sync_loop() {
+    let mut last_error: Option<String> = None;
+    loop {
+        let secs = crate::config::get_usize("bus_sync_interval_secs");
+        let wait = if secs == 0 { 60 } else { secs.max(2) as u64 };
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        let result = match crate::broker::bus_sync_ready().await {
+            Ok(Some(uid)) => crate::broker::bus_sync_round(&uid).await,
+            Ok(None) => continue,
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(()) => {
+                if last_error.take().is_some() {
+                    crate::broker::try_log_event("info", "bus-sync", "bus sync recovered", None);
+                }
+            }
+            Err(e) => {
+                let message = format!("{e:#}");
+                if last_error.as_deref() != Some(message.as_str()) {
+                    crate::broker::try_log_event(
+                        "warn",
+                        "bus-sync",
+                        "bus sync round failed",
+                        Some(&message),
+                    );
+                    last_error = Some(message);
+                }
+            }
+        }
     }
 }
 

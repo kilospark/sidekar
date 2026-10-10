@@ -18,7 +18,7 @@ sidekar config [list|get|set|reset] [key] [value]
     config reset <key>       Revert to default
 
   Keys: browser, auto_update, relay, max_tabs, cdp_timeout_secs, max_cron_jobs,
-        max_spawned_per_agent, max_spawned, credential, model
+        max_spawned_per_agent, max_spawned, bus_sync_interval_secs, credential, model
 
   Examples:
     sidekar config list

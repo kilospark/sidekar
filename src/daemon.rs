@@ -431,6 +431,7 @@ pub async fn start() -> Result<()> {
     let bus_state_for_delivery = state.lock().await.bus_state.clone();
     tokio::spawn(bus::bus_delivery_loop(bus_state_for_delivery));
     tokio::spawn(bus::bus_nudge_loop());
+    tokio::spawn(bus::bus_sync_loop());
 
     loop {
         match listener.accept().await {

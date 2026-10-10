@@ -7,6 +7,11 @@ enum BusDeliveryRoute {
     SameChannel,
     CrossChannelBroker { recipient_session: Option<String> },
     Relay { hostname: String },
+    /// Another of the account's machines, through bus sync. `from_host` is
+    /// the sender's machine, which the recipient's note names.
+    Synced {
+        from_host: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -136,7 +141,88 @@ fn relay_session_for_target(to: &str) -> Option<crate::transport::RelaySessionIn
     })
 }
 
-fn find_delivery_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
+/// An agent on another of the account's machines, from the synced registry.
+/// Refreshed from the server once when nothing matches, so an agent started
+/// over there a moment ago is found without waiting for the daemon's round.
+fn find_synced_target(to: &str) -> Result<Option<DeliveryTarget>> {
+    let Some(uid) = crate::broker::bus_sync_account() else {
+        return Ok(None);
+    };
+    let lookup = |uid: &str| -> Result<Option<crate::broker::bus_sync::RemoteAgent>> {
+        crate::broker::bus_sync::find_remote_agent(&broker::open_db()?, uid, to)
+    };
+    let found = match lookup(&uid)? {
+        Some(a) => Some(a),
+        None => {
+            let pull_uid = uid.clone();
+            let _ = crate::broker::run_blocking(
+                async move { crate::broker::pull_bus(&pull_uid).await },
+            );
+            lookup(&uid)?
+        }
+    };
+    Ok(found.map(|a| DeliveryTarget {
+        transport_name: crate::bus::BUS_SYNC_TRANSPORT,
+        transport_target: crate::broker::bus_sync::agent_record_id(&a.device_id, &a.name),
+        output_label: format!("via sync ({})", a.hostname),
+        route: BusDeliveryRoute::Synced {
+            from_host: crate::broker::bus_sync::hostname(),
+        },
+    }))
+}
+
+/// Queue `body` for the agent on another machine that `record_id` names, and
+/// push it now. A push that fails leaves it queued for the daemon's next
+/// round, so the send still succeeds.
+fn send_synced(
+    record_id: &str,
+    sender: &str,
+    body: &str,
+    envelope: Option<&Envelope>,
+) -> Result<()> {
+    let uid = crate::broker::bus_sync_account()
+        .ok_or_else(|| anyhow!("bus sync needs a logged-in account (sidekar device login)"))?;
+    let (to_device, recipient) = record_id
+        .split_once('\u{0}')
+        .ok_or_else(|| anyhow!("malformed bus sync target"))?;
+    let conn = broker::open_db()?;
+    let from_device = crate::broker::device_id(&conn)?;
+    crate::broker::bus_sync::queue_remote_message(
+        &conn,
+        &uid,
+        &from_device,
+        to_device,
+        recipient,
+        sender,
+        body,
+        envelope,
+    )?;
+    drop(conn);
+    let pushed = crate::broker::run_blocking(async move {
+        crate::broker::push_bus(&uid, std::time::Duration::from_secs(10)).await
+    });
+    if !matches!(pushed, Some(Ok(_))) {
+        broker::try_log_event(
+            "warn",
+            "bus-sync",
+            "message queued for another machine; the push failed and will be retried",
+            pushed
+                .and_then(|r| r.err())
+                .map(|e| format!("{e:#}"))
+                .as_deref(),
+        );
+    }
+    Ok(())
+}
+
+fn find_delivery_target(to: &str, channel: &str) -> Result<Option<DeliveryTarget>> {
+    if let Some(found) = find_local_or_relay_target(to, channel) {
+        return Ok(Some(found));
+    }
+    find_synced_target(to)
+}
+
+fn find_local_or_relay_target(to: &str, channel: &str) -> Option<DeliveryTarget> {
     // Try same-channel first, then any agent
     if let Some(agent) = find_agent_on_channel(to, channel) {
         return Some(DeliveryTarget {
@@ -184,9 +270,9 @@ fn format_delivered_bus_body(
 ) -> String {
     let reply_target = match route {
         BusDeliveryRoute::SameChannel => envelope.from.address(),
-        BusDeliveryRoute::CrossChannelBroker { .. } | BusDeliveryRoute::Relay { .. } => {
-            envelope.from.name.as_str()
-        }
+        BusDeliveryRoute::CrossChannelBroker { .. }
+        | BusDeliveryRoute::Relay { .. }
+        | BusDeliveryRoute::Synced { .. } => envelope.from.name.as_str(),
     };
     let mut body = envelope.format_for_paste_with_reply_target(reply_target);
     match route {
@@ -203,6 +289,11 @@ fn format_delivered_bus_body(
         BusDeliveryRoute::Relay { hostname } => {
             body.push_str(&format!(
                 "\n[relay: delivered through Sidekar relay (peer host \"{hostname}\"). Run the reply command from Sidekar on that machine.]"
+            ));
+        }
+        BusDeliveryRoute::Synced { from_host } => {
+            body.push_str(&format!(
+                "\n[from another of your machines (\"{from_host}\"): the reply command above reaches it from here.]"
             ));
         }
     }
@@ -259,6 +350,23 @@ mod tests {
         assert!(!body.contains("sidekar bus send bison \"<your response>\""));
         assert!(body.contains("[relay: delivered through Sidekar relay"));
     }
+
+    #[test]
+    fn a_message_from_another_machine_names_that_machine_and_a_stable_reply_address() {
+        let env = request_from_nick();
+        let body = format_delivered_bus_body(
+            &env,
+            "/tmp/project",
+            &BusDeliveryRoute::Synced {
+                from_host: "studio".into(),
+            },
+        );
+        // A nick is only unique on its own machine.
+        assert!(
+            body.contains("sidekar bus send codex-/tmp/project-1 \"<your response>\" --reply-to=")
+        );
+        assert!(body.contains("from another of your machines (\"studio\")"));
+    }
 }
 
 fn send_directed_envelope(
@@ -279,7 +387,27 @@ fn send_directed_envelope(
         );
     }
 
-    let Some(delivery) = find_delivery_target(&envelope.to, &channel) else {
+    let Some(delivery) = find_delivery_target(&envelope.to, &channel)? else {
+        // An answer to a request another machine sent. Its asker may be a
+        // one-shot command that has left the bus, but the machine is still
+        // there to record the answer for `sidekar bus await`.
+        if let Some(id) = reply_to
+            && let Some(device) = crate::broker::bus_sync::origin_device(&broker::open_db()?, id)?
+        {
+            let record_id = crate::broker::bus_sync::agent_record_id(&device, &envelope.to);
+            let body = envelope.format_for_paste_with_reply_target(envelope.from.name.as_str());
+            send_synced(&record_id, &envelope.from.name, &body, Some(&envelope))?;
+            resolve_reply(&envelope, reply_to);
+            if let Some(self_name) = state.name() {
+                cleanup_completed_exchange(self_name, &envelope.to, state.channel(), Some(id));
+            }
+            out!(
+                ctx,
+                "{verb} to {} (via sync, the machine that asked).",
+                envelope.to
+            );
+            return Ok(());
+        }
         // An answer to someone who has left: typically a one-shot `bus send`
         // from a shell, gone as soon as it sent. The answer is kept against
         // the request for `sidekar bus await <id>`, which is how that sender
@@ -316,6 +444,13 @@ fn send_directed_envelope(
             &full_message,
         )
         .map(|_| ())
+    } else if delivery.transport_name == crate::bus::BUS_SYNC_TRANSPORT {
+        send_synced(
+            &delivery.transport_target,
+            &envelope.from.name,
+            &full_message,
+            Some(&envelope),
+        )
     } else if delivery.transport_name == BROKER_TRANSPORT {
         broker::enqueue_bus_message(
             &delivery.transport_target,
@@ -389,6 +524,12 @@ struct WhoOutput {
     show_all: bool,
     my_name: String,
     agents: Vec<WhoAgent>,
+    /// Agents on the account's other machines (context/bus-sync.md), listed
+    /// with `--all`; counted otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    other_machines: Vec<crate::broker::bus_sync::RemoteAgent>,
+    #[serde(skip)]
+    other_machines_count: usize,
 }
 
 /// Compact relative time for inline use in a `who` line.
@@ -403,6 +544,48 @@ fn brief_ago(secs: u64) -> String {
 
 impl crate::output::CommandOutput for WhoOutput {
     fn render_text(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        self.render_local(w)?;
+        if !self.other_machines.is_empty() {
+            let now = crate::message::epoch_secs();
+            let mut by_host: std::collections::BTreeMap<&str, Vec<String>> =
+                std::collections::BTreeMap::new();
+            for a in &self.other_machines {
+                let nick = a
+                    .nick
+                    .as_deref()
+                    .map(|n| format!(" \"{n}\""))
+                    .unwrap_or_default();
+                let channel = a
+                    .channel
+                    .as_deref()
+                    .map(|c| format!(", channel: {c}"))
+                    .unwrap_or_default();
+                let seen = now.saturating_sub(a.published_at.max(0) as u64);
+                by_host.entry(&a.hostname).or_default().push(format!(
+                    "- {}{nick}{channel} (seen {})",
+                    a.name,
+                    brief_ago(seen)
+                ));
+            }
+            for (host, lines) in by_host {
+                writeln!(w, "On \"{host}\" (another of your machines):")?;
+                for l in lines {
+                    writeln!(w, "{l}")?;
+                }
+            }
+        } else if !self.show_all && self.other_machines_count > 0 {
+            writeln!(
+                w,
+                "{} more on your other machines: sidekar bus who --all",
+                self.other_machines_count
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl WhoOutput {
+    fn render_local(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
         if self.agents.is_empty() {
             if self.show_all {
                 writeln!(w, "0 agents on any channel.")?;
@@ -475,6 +658,27 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
         state.channel().unwrap_or("all").to_string()
     };
 
+    // The account's other machines. `--all` asks the server first, so an
+    // agent started over there a moment ago is listed; the plain view only
+    // counts what this machine already knows.
+    let others = match crate::broker::bus_sync_account() {
+        Some(uid) => {
+            if show_all {
+                let pull_uid = uid.clone();
+                let _ =
+                    crate::broker::run_blocking(
+                        async move { crate::broker::pull_bus(&pull_uid).await },
+                    );
+            }
+            broker::open_db()
+                .and_then(|c| crate::broker::bus_sync::live_remote_agents(&c, &uid))
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let other_machines_count = others.len();
+    let other_machines = if show_all { others } else { Vec::new() };
+
     let output = WhoOutput {
         scope,
         show_all,
@@ -501,6 +705,8 @@ pub fn cmd_who(state: &SidekarBusState, ctx: &mut AppContext, show_all: bool) ->
                 }
             })
             .collect(),
+        other_machines,
+        other_machines_count,
     };
     out!(ctx, "{}", crate::output::to_string(&output)?);
     Ok(())

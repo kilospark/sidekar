@@ -27,6 +27,9 @@ const PENDING_GRACE_SECS: u64 = 30;
 const TIMEOUT_SECS: u64 = 300;
 const BROKER_TRANSPORT: &str = "broker";
 const RELAY_HTTP_TRANSPORT: &str = "relay_http";
+/// An agent on another of the account's machines, reached through bus sync
+/// (context/bus-sync.md). The target is its sync record id.
+pub(crate) const BUS_SYNC_TRANSPORT: &str = "bus_sync";
 const DEFAULT_BUS_LIST_LIMIT: usize = 20;
 
 // --- Terminal title helper ---

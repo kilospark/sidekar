@@ -268,6 +268,10 @@ async fn run(mut args: Vec<String>) -> Result<()> {
     if command == "_sync_push" {
         return sidekar::broker::run_sync_push_worker().await;
     }
+    // Hidden: one bus sync round, as the daemon runs them (context/bus-sync.md).
+    if command == "_bus_sync" {
+        return sidekar::broker::run_bus_sync_once().await;
+    }
 
     if let Some(replacement) = sidekar::removed_command_replacement(&raw_command) {
         bail!("Command '{raw_command}' was removed. Use: sidekar {replacement}");
