@@ -201,6 +201,9 @@ fn sync_decrypt_wrong_key_fails_cleanly() -> Result<()> {
 
 #[test]
 fn sync_decrypt_rejects_local_encrypted_prefix() -> Result<()> {
+    // The key is process-wide: hold the test lock, or this clears another
+    // test's key mid-run.
+    let _home = crate::ScratchHome::new();
     let key = vec![3u8; 32];
     let local_blob = encrypt_with_key_for_test(&key, "hello local")?;
     assert!(local_blob.starts_with("$encrypted$"));
@@ -210,6 +213,7 @@ fn sync_decrypt_rejects_local_encrypted_prefix() -> Result<()> {
 
 #[test]
 fn local_decrypt_rejects_sync_prefix() -> Result<()> {
+    let _home = crate::ScratchHome::new();
     let key = vec![4u8; 32];
     let sync_blob = super::super::encryption::sync_encrypt(&key, "hello sync")?;
     set_encryption_key(key);
