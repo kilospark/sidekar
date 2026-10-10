@@ -193,7 +193,7 @@ async fn wait_remote(
     let label = agent.label();
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut last_pull: Option<std::time::Instant> = None;
-    let mut last = ActivitySnapshot::unknown();
+    let mut last: ActivitySnapshot;
     let mut ever_fresh = false;
 
     loop {
