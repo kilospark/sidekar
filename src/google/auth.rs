@@ -20,10 +20,9 @@
 //! Only the refresh token is stored. Access tokens last an hour and are cheap to
 //! mint, so keeping them would add a second thing to leak for no benefit.
 
+use crate::oauth_loopback::CONSENT_TIMEOUT;
 use anyhow::{Context, Result, bail};
-use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::time::{Duration, Instant};
 
 /// Key holding the token key to use when none is named.
 const DEFAULT_TOKEN_KEY: &str = "GOOGLE_DEFAULT_TOKEN";
@@ -32,9 +31,6 @@ const DEFAULT_TOKEN_KEY: &str = "GOOGLE_DEFAULT_TOKEN";
 const CLIENT_ID_TAG: &str = "client-id:";
 const CLIENT_SECRET_TAG: &str = "client-secret:";
 const ACCOUNT_TAG: &str = "acct:";
-
-/// How long to wait for the human to finish consenting in the browser.
-const CONSENT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Everything the Gmail, Drive, Calendar, Sheets and Docs commands need.
 ///
@@ -219,7 +215,8 @@ pub async fn login(
         }
     }
 
-    let code = wait_for_code(listener, &state)?;
+    let code =
+        crate::oauth_loopback::wait_for_code(vec![listener], &state, "Google", CONSENT_TIMEOUT)?;
     let tokens = exchange_code(&client_id, &client_secret, &code, &redirect_uri).await?;
 
     let refresh = tokens
@@ -249,85 +246,6 @@ pub async fn login(
         set_default_token_key(token_key)?;
     }
     Ok(account)
-}
-
-/// Block until Google redirects back, then hand the browser something readable.
-fn wait_for_code(listener: TcpListener, expect_state: &str) -> Result<String> {
-    listener.set_nonblocking(true)?;
-    let started = Instant::now();
-    loop {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                stream.set_nonblocking(false)?;
-                let mut reader = BufReader::new(stream.try_clone()?);
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line)?;
-
-                let target = request_line.split_whitespace().nth(1).unwrap_or("/");
-                let params = query_params(target);
-                // Browsers open speculative connections and ask for /favicon.ico; neither
-                // carries the redirect, so keep waiting for the one that does.
-                if !params.contains_key("state") && !params.contains_key("error") {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    );
-                    continue;
-                }
-                let body = if params.contains_key("code") {
-                    "Signed in. You can close this tab and return to the terminal."
-                } else {
-                    "Sign-in failed. Check the terminal."
-                };
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
-                         Connection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    )
-                    .as_bytes(),
-                );
-                let _ = stream.flush();
-
-                if let Some(err) = params.get("error") {
-                    bail!("Google refused the sign-in: {err}");
-                }
-                // The state check is what stops another page on this machine from
-                // feeding us a code for an account nobody asked to connect.
-                match params.get("state") {
-                    Some(s) if s == expect_state => {}
-                    _ => bail!("the redirect carried the wrong state; sign-in abandoned"),
-                }
-                return params
-                    .get("code")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("the redirect carried no authorization code"));
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if started.elapsed() >= CONSENT_TIMEOUT {
-                    bail!("timed out waiting for the browser to come back");
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-}
-
-fn query_params(target: &str) -> std::collections::HashMap<String, String> {
-    let mut out = std::collections::HashMap::new();
-    let Some(q) = target.split_once('?').map(|(_, q)| q) else {
-        return out;
-    };
-    for pair in q.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            let decoded = urlencoding::decode(v)
-                .map(|c| c.into_owned())
-                .unwrap_or_default();
-            out.insert(k.to_string(), decoded);
-        }
-    }
-    out
 }
 
 async fn exchange_code(

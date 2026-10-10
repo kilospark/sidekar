@@ -170,6 +170,7 @@ pub mod mcp;
 pub mod md;
 pub mod memory;
 pub mod message;
+pub mod oauth_loopback;
 pub mod output;
 pub mod pakt;
 pub mod poller;
@@ -187,6 +188,8 @@ pub mod secrets;
 pub mod session;
 pub mod skill;
 pub mod tasks;
+#[cfg(test)]
+pub(crate) mod test_http;
 pub mod transport;
 pub mod tunnel;
 pub mod types;
