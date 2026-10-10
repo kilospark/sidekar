@@ -367,3 +367,120 @@ fn a_pushed_message_leaves_the_outbox_and_old_bookkeeping_is_pruned() -> Result<
         Ok(())
     })
 }
+
+#[test]
+fn two_pulls_racing_on_one_message_deliver_it_once() -> Result<()> {
+    with_db(|conn| {
+        register("claude-app-1", "pty-111");
+        let request = Envelope::new_request(AgentId::new("codex-1"), "claude-app-1", "hi");
+        let id = queue_remote_message(
+            conn,
+            UID,
+            "devB",
+            "devA",
+            "claude-app-1",
+            "codex-1",
+            "hi",
+            Some(&request),
+        )?;
+        let ciphertext = sealed(conn, KIND_BUS, &id);
+        conn.execute("DELETE FROM sync_state", [])?;
+        conn.execute("DELETE FROM bus_outbox", [])?;
+
+        // As the daemon's round and a `bus await` would: separate connections,
+        // at the same moment.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let racers: Vec<_> = (0..4)
+            .map(|_| {
+                let (id, ciphertext, barrier) = (id.clone(), ciphertext.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    let conn = open().unwrap();
+                    barrier.wait();
+                    apply_record(&conn, UID, "devA", KIND_BUS, &id, &ciphertext, 1, false).unwrap()
+                })
+            })
+            .collect();
+        let delivered = racers
+            .into_iter()
+            .map(|r| r.join().unwrap_or(false))
+            .filter(|d| *d)
+            .count();
+        assert_eq!(delivered, 1, "exactly one puller claims it");
+        assert_eq!(list_queued_messages("claude-app-1")?.len(), 1);
+        assert_eq!(dirty_rows(conn, KIND_BUS), [(id, true)]);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_message_that_fails_to_deliver_is_released_for_a_later_pull() -> Result<()> {
+    with_db(|conn| {
+        let mut payload: MessagePayload = serde_json::from_str(&{
+            queue_remote_message(conn, UID, "devB", "devA", "x", "y", "hi", None)?;
+            conn.query_row("SELECT payload FROM bus_outbox", [], |r| {
+                r.get::<_, String>(0)
+            })?
+        })?;
+        payload.envelope_json = Some("not an envelope".into());
+        let ciphertext =
+            crate::broker::encryption::sync_encrypt(&KEY, &serde_json::to_string(&payload)?)?;
+        conn.execute("DELETE FROM sync_state", [])?;
+
+        assert!(apply_record(conn, UID, "devA", KIND_BUS, "m1", &ciphertext, 1, false).is_err());
+        assert!(
+            dirty_rows(conn, KIND_BUS).is_empty(),
+            "the claim is let go, not kept"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn a_sender_clock_running_ahead_does_not_keep_its_agents_listed() -> Result<()> {
+    with_db(|conn| {
+        register("claude-app-1", "pty-111");
+        let rid = agent_record_id("devA", "claude-app-1");
+        let mut a: AgentPayload = serde_json::from_str(&sync_payload(conn, KIND_AGENT, &rid)?)?;
+        a.published_at += 3600; // an hour fast
+        let ciphertext =
+            crate::broker::encryption::sync_encrypt(&KEY, &serde_json::to_string(&a)?)?;
+        apply_record(conn, UID, "devB", KIND_AGENT, &rid, &ciphertext, 1, false)?;
+        let stored: i64 =
+            conn.query_row("SELECT published_at FROM remote_agents", [], |r| r.get(0))?;
+        assert!(
+            stored <= crate::message::epoch_secs() as i64,
+            "taken as now, not an hour ahead"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn machines_sharing_a_host_name_are_told_apart_by_device_id() -> Result<()> {
+    with_db(|conn| {
+        insert_remote(
+            conn,
+            "Qx7kPa2m+/abc",
+            "MacBook-Pro.local",
+            "claude-app-1",
+            "a",
+        );
+        insert_remote(
+            conn,
+            "Zr4tLm9w+/def",
+            "MacBook-Pro.local",
+            "claude-app-1",
+            "b",
+        );
+        let err = find_remote_agent(conn, UID, "claude-app-1@MacBook-Pro")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("claude-app-1@Qx7kPa2m") && err.contains("claude-app-1@Zr4tLm9w"),
+            "{err}"
+        );
+        let found = find_remote_agent(conn, UID, "claude-app-1@Zr4tLm9w")?.unwrap();
+        assert_eq!(found.device_id, "Zr4tLm9w+/def");
+        Ok(())
+    })
+}

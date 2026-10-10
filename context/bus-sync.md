@@ -19,6 +19,12 @@ messages over the same mechanism the secrets use.
   delivered message is tombstoned, and presence is republished, so nothing
   older is worth keeping.
 - **Watermark.** `sync_meta.last_bus_pull_at`, apart from the secrets one.
+  A bus pull starts 60 seconds behind it. The watermark is one server
+  instance's clock and a record's `updated_at` another's, stamped before its
+  write commits, so skew or a late commit can leave a record at or below the
+  watermark. kv heals on its next edit; a message is written once and would
+  be lost. Re-pulling the overlap is harmless: messages are claimed once and
+  agents are version-guarded.
 
 ## Presence (`agent` records)
 
@@ -32,7 +38,10 @@ agents removed by the dead-agent sweep and by older binaries.
 
 Other machines keep these in `remote_agents`. One counts as present until 5
 minutes pass without a heartbeat, so a machine that sleeps or crashes drops
-out without anyone tombstoning its agents.
+out without anyone tombstoning its agents. A `published_at` ahead of the
+receiver's clock is taken as now, so a fast sender clock cannot keep its
+agents listed. `name@host` picks one machine; machines that share a host name
+take a device-id prefix instead (`name@<first 8 chars>`, offered in the error).
 
 ## Messages (`bus` records)
 
@@ -42,12 +51,17 @@ relay session, then another machine's published agent. The last queues a
 `bus_outbox`, and pushes it at once. The push failing leaves it queued;
 the daemon's next round retries.
 
-The recipient's daemon delivers it as the relay delivers a tunnelled message:
+Several processes pull this channel on one machine (the daemon's round, `bus
+await`, `bus send`, `bus who --all`), so delivery starts with a claim: one
+write transaction inserts the record's `sync_state` row, already tombstoned
+for push, and only the caller whose insert created it delivers. A delivery
+that fails releases the claim for a later pull.
+
+The claimant delivers it as the relay delivers a tunnelled message:
 a request is set pending, an answer is recorded against its request, and the
 text goes into the local queue (only if the recipient is registered there;
 otherwise it would reach the next agent to take the name). It then
-tombstones the record. A pulled message already in `sync_state` is never
-delivered twice.
+tombstones the record.
 
 A request's origin device is kept in `bus_remote_origin`. An answer whose
 addressee is no longer anywhere (a one-shot `bus send` from a shell) goes
@@ -72,3 +86,13 @@ relay is immediate. The relay is still tried first.
 - `bus wait` and `bus explain` read activity from the local registry only.
 - A message for an agent that left before it arrived is logged and dropped,
   not bounced back to its sender.
+
+## Release order
+
+The server (`www/api/v1/sync/secrets.js`, `_sync-indexes.js`) deploys before
+the binaries. A binary ahead of it gets 400s on bus pushes and leaves them
+dirty, which is harmless; they go out once the server is live.
+
+A sender whose push response is lost retries, is refused, bumps past the
+server's version and re-uploads over the receiver's tombstone. The claim
+still stops a second delivery; the record just stays until the TTL.

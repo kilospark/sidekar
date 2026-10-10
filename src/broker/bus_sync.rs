@@ -305,12 +305,16 @@ pub(crate) fn find_remote_agent(
         Some((n, h)) if !n.is_empty() && !h.is_empty() => (n, Some(h)),
         _ => (target.as_str(), None),
     };
+    // A host name, its first label, or a prefix of the machine's device id
+    // (at least 4 characters) for two machines that share a host name.
     let host_matches = |a: &RemoteAgent| match host {
         None => true,
         Some(h) => {
-            let h = h.to_ascii_lowercase();
+            let lower = h.to_ascii_lowercase();
             let mine = a.hostname.to_ascii_lowercase();
-            mine == h || mine.split('.').next() == Some(h.as_str())
+            mine == lower
+                || mine.split('.').next() == Some(lower.as_str())
+                || (h.len() >= 4 && a.device_id.starts_with(h))
         }
     };
     let matches: Vec<RemoteAgent> = live_remote_agents(conn, uid)?
@@ -322,15 +326,37 @@ pub(crate) fn find_remote_agent(
         0 => Ok(None),
         1 => Ok(matches.into_iter().next()),
         _ => {
+            let shared_host =
+                |a: &RemoteAgent| matches.iter().filter(|b| b.hostname == a.hostname).count() > 1;
             let options: Vec<String> = matches
                 .iter()
-                .map(|a| format!("{}@{}", a.name, a.hostname))
+                .map(|a| {
+                    if shared_host(a) {
+                        format!("{}@{}", a.name, device_prefix(&a.device_id))
+                    } else {
+                        format!("{}@{}", a.name, a.hostname)
+                    }
+                })
                 .collect();
             bail!(
                 "\"{target}\" names agents on more than one machine; pick one: {}",
                 options.join(", ")
             )
         }
+    }
+}
+
+/// Enough of a device id to tell machines apart, without characters a shell
+/// would need quoted.
+fn device_prefix(device_id: &str) -> String {
+    let clean: String = device_id
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    if clean.len() >= 8 {
+        clean[..8].to_string()
+    } else {
+        device_id.chars().take(8).collect()
     }
 }
 
@@ -393,7 +419,10 @@ pub(crate) fn apply_record(
                     a.channel,
                     a.cwd,
                     a.agent_type,
-                    a.published_at,
+                    // A sender clock running ahead would keep its agents
+                    // listed past the TTL; one running behind only drops them
+                    // a little early.
+                    a.published_at.min(crate::message::epoch_secs() as i64),
                     version
                 ],
             )?;
@@ -408,18 +437,54 @@ pub(crate) fn apply_record(
             if msg.to_device != device_id {
                 return Ok(false);
             }
-            // Delivered already, from an earlier pull.
-            if super::sync::local_sync_state(conn, uid, KIND_BUS, record_id)?.is_some() {
+            // Several processes pull this channel: the daemon's round, `bus
+            // await`, `bus send` and `bus who --all`. Whichever claims the
+            // record delivers it; any other pull, now or a re-pull of the
+            // overlap window later, finds the claim and skips it.
+            if !claim_message(conn, uid, record_id, version)? {
                 return Ok(false);
             }
-            deliver(conn, &msg)?;
-            // Tombstone it, so the server can let it go and no other pull
-            // delivers it again.
-            super::sync::upsert_sync_state(conn, uid, KIND_BUS, record_id, version, false, false)?;
-            mark_dirty(conn, uid, KIND_BUS, record_id, true)?;
+            if let Err(e) = deliver(conn, &msg) {
+                // Let a later pull try again rather than lose it.
+                conn.execute(
+                    "DELETE FROM sync_state WHERE user_id = ?1 AND kind = ?2 AND record_id = ?3 AND dirty = 1",
+                    params![uid, KIND_BUS, record_id],
+                )?;
+                return Err(e);
+            }
             Ok(true)
         }
         other => bail!("not a bus sync kind: {other}"),
+    }
+}
+
+/// Claim a pulled message for delivery here: record it, already tombstoned
+/// for push, in one write transaction. True only for the one caller whose
+/// insert created the row; checking first and recording after delivery let
+/// two concurrent pulls both deliver it.
+fn claim_message(conn: &Connection, uid: &str, record_id: &str, version: i64) -> Result<bool> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let inserted = conn.execute(
+        "INSERT INTO sync_state (user_id, kind, record_id, version, deleted, dirty, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 1, 1, ?5)
+         ON CONFLICT(user_id, kind, record_id) DO NOTHING",
+        params![
+            uid,
+            KIND_BUS,
+            record_id,
+            version + 1,
+            crate::message::epoch_secs() as i64
+        ],
+    );
+    match inserted {
+        Ok(n) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(n == 1)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e.into())
+        }
     }
 }
 
