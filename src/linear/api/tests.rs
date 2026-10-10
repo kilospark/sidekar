@@ -207,12 +207,12 @@ async fn a_text_query_uses_search_and_a_bare_one_lists() {
         limit: 5,
         ..Default::default()
     };
-    assert_eq!(issues(&l, &q).await.unwrap()[0].identifier, "ENG-1");
+    assert_eq!(issues(&l, &q).await.unwrap().items[0].identifier, "ENG-1");
     let q = IssueQuery {
         limit: 5,
         ..Default::default()
     };
-    assert_eq!(issues(&l, &q).await.unwrap()[0].identifier, "ENG-2");
+    assert_eq!(issues(&l, &q).await.unwrap().items[0].identifier, "ENG-2");
     let reqs = server.requests();
     assert!(
         reqs[0].json()["query"]
@@ -418,14 +418,14 @@ async fn the_inbox_is_newest_first_and_can_show_only_unread() {
         .unwrap();
     assert_eq!(unread, 1);
     assert_eq!(
-        all.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        all.items.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
         ["new", "old"]
     );
     let (_, only) = notifications(&linear_at(&server), true, false, 10)
         .await
         .unwrap();
     assert_eq!(
-        only.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        only.items.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
         ["old"]
     );
     let vars = &server.requests()[0].json()["variables"];
@@ -771,5 +771,181 @@ async fn linking_a_url_uses_attachment_link_url() {
         link_url(&linear_at(&server), "ENG-1", "ftp://x", None)
             .await
             .is_err()
+    );
+}
+
+mod paging {
+    use super::*;
+
+    fn page(conn: &str, nodes: Value, next: Option<&str>) -> Value {
+        json!({"data": {conn: {"nodes": nodes, "pageInfo": {
+            "hasNextPage": next.is_some(), "endCursor": next}}}})
+    }
+
+    #[tokio::test]
+    async fn labels_follow_the_cursor_to_the_last_page() {
+        let server = MockServer::sequence(vec![
+            page(
+                "issueLabels",
+                json!([{"id": "L1", "name": "bug"}]),
+                Some("c1"),
+            ),
+            page("issueLabels", json!([{"id": "L2", "name": "zebra"}]), None),
+        ]);
+        let all = labels(&linear_at(&server), Some("T1")).await.unwrap();
+        assert_eq!(
+            all.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["L1", "L2"]
+        );
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].json()["variables"]["after"], Value::Null);
+        assert_eq!(reqs[1].json()["variables"]["after"], "c1");
+        assert_eq!(reqs[1].json()["variables"]["teamId"], "T1");
+        // A label past the first page is still found by name.
+        assert_eq!(pick_labels(&all, &["Zebra".into()]).unwrap(), ["L2"]);
+    }
+
+    #[tokio::test]
+    async fn an_exact_project_name_on_a_later_page_wins() {
+        let server = MockServer::sequence(vec![
+            page(
+                "projects",
+                json!([{"id": "P1", "name": "Launch v2"}, {"id": "P2", "name": "Launch beta"}]),
+                Some("c1"),
+            ),
+            page("projects", json!([{"id": "P3", "name": "launch"}]), None),
+        ]);
+        assert_eq!(
+            resolve_project(&linear_at(&server), "Launch")
+                .await
+                .unwrap(),
+            "P3"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_cut_at_the_limit_says_there_is_more() {
+        let rows = |ids: &[&str]| {
+            json!(
+                ids.iter()
+                    .map(|i| json!({"identifier": i}))
+                    .collect::<Vec<_>>()
+            )
+        };
+        let server = MockServer::sequence(vec![
+            page("issues", rows(&["A-1", "A-2"]), Some("c1")),
+            page("issues", rows(&["A-3"]), Some("c2")),
+        ]);
+        let q = IssueQuery {
+            include_closed: true,
+            limit: 3,
+            ..Default::default()
+        };
+        let got = issues(&linear_at(&server), &q).await.unwrap();
+        assert_eq!(got.items.len(), 3);
+        assert!(got.more, "Linear said there was a next page");
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 2, "stops once it has enough");
+        assert_eq!(reqs[0].json()["variables"]["first"], 3);
+        assert_eq!(
+            reqs[1].json()["variables"]["first"],
+            1,
+            "asks only for what is left"
+        );
+
+        // All of it fit: no note.
+        let server = MockServer::sequence(vec![page("issues", rows(&["A-1"]), None)]);
+        let got = issues(&linear_at(&server), &q).await.unwrap();
+        assert!(!got.more);
+    }
+
+    #[tokio::test]
+    async fn a_filtered_user_list_pages_until_it_has_enough() {
+        let user = |id: &str, active: bool| json!({"id": id, "name": id, "active": active});
+        let server = MockServer::sequence(vec![
+            page(
+                "users",
+                json!([user("a", false), user("b", true)]),
+                Some("c1"),
+            ),
+            page(
+                "users",
+                json!([user("c", false), user("d", true), user("e", true)]),
+                None,
+            ),
+        ]);
+        let active = |p: &Person| p.active;
+        let got = users(&linear_at(&server), 2, Some(&active)).await.unwrap();
+        assert_eq!(
+            got.items.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["b", "d"]
+        );
+        assert!(got.more, "e was left over");
+        assert_eq!(server.requests()[0].json()["variables"]["first"], 250);
+    }
+
+    #[tokio::test]
+    async fn cycles_are_sorted_across_pages_then_cut() {
+        let c = |n: i64| json!({"id": format!("C{n}"), "number": n, "team": {"key": "ENG"}});
+        let server = MockServer::sequence(vec![
+            page("cycles", json!([c(1), c(3)]), Some("c1")),
+            page("cycles", json!([c(2)]), None),
+        ]);
+        let got = cycles(&linear_at(&server), Some("ENG"), true, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            got.items.iter().map(|c| c.number).collect::<Vec<_>>(),
+            [3, 2]
+        );
+        assert!(got.more);
+    }
+
+    #[tokio::test]
+    async fn reading_all_unread_stops_paging_once_every_unread_one_is_found() {
+        let n = |id: &str, read: bool| {
+            json!({"id": id, "createdAt": "2026-10-01T00:00:00Z",
+                   "readAt": if read { json!("2026-10-02T00:00:00Z") } else { Value::Null }})
+        };
+        let p = |nodes: Value, next: Option<&str>| {
+            let mut v = page("notifications", nodes, next);
+            v["data"]["notificationsUnreadCount"] = json!(2);
+            v
+        };
+        let server = MockServer::sequence(vec![
+            p(json!([n("a", false), n("b", true)]), Some("c1")),
+            p(json!([n("c", true), n("d", false)]), Some("c2")),
+            p(json!([n("e", false)]), None),
+        ]);
+        let (unread, got) = notifications(&linear_at(&server), true, false, usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(unread, 2);
+        let mut ids: Vec<&str> = got.items.iter().map(|n| n.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "d"]);
+        assert!(!got.more);
+        assert_eq!(server.requests().len(), 2, "the third page was not needed");
+        assert_eq!(server.requests()[1].json()["variables"]["after"], "c1");
+    }
+}
+
+#[test]
+fn a_bare_upload_link_ending_a_sentence_drops_the_full_stop() {
+    let md = "Logs at https://uploads.linear.app/o/f/run.log. And (https://uploads.linear.app/o/g/b.png), too.";
+    let found = uploads_in(md);
+    assert_eq!(
+        found,
+        [
+            (
+                "run.log".to_string(),
+                "https://uploads.linear.app/o/f/run.log".to_string()
+            ),
+            (
+                "b.png".to_string(),
+                "https://uploads.linear.app/o/g/b.png".to_string()
+            ),
+        ]
     );
 }

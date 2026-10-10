@@ -18,24 +18,25 @@ macro_rules! issue_row {
 pub const Q_VIEWER: &str =
     "query { viewer { id name displayName email organization { name urlKey } } }";
 
-pub const Q_TEAMS: &str = "query { teams(first: 250) { nodes { \
-    id key name description private issueCount cyclesEnabled } } }";
+pub const Q_TEAMS: &str = "query($first: Int, $after: String) { teams(first: $first, after: $after) { \
+    nodes { id key name description private issueCount cyclesEnabled } \
+    pageInfo { hasNextPage endCursor } } }";
 
 pub const Q_TEAM_BY_KEY: &str = "query($key: String!) { \
     teams(filter: { key: { eqIgnoreCase: $key } }, first: 1) { nodes { id key name } } }";
 
 pub const Q_ISSUES: &str = concat!(
-    "query($filter: IssueFilter, $first: Int) { \
-     issues(filter: $filter, first: $first, orderBy: updatedAt) { nodes { ",
+    "query($filter: IssueFilter, $first: Int, $after: String) { \
+     issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) { nodes { ",
     issue_row!(),
-    " } } }"
+    " } pageInfo { hasNextPage endCursor } } }"
 );
 
 pub const Q_SEARCH: &str = concat!(
-    "query($term: String!, $filter: IssueFilter, $first: Int) { \
-     searchIssues(term: $term, filter: $filter, first: $first) { nodes { ",
+    "query($term: String!, $filter: IssueFilter, $first: Int, $after: String) { \
+     searchIssues(term: $term, filter: $filter, first: $first, after: $after) { nodes { ",
     issue_row!(),
-    " } } }"
+    " } pageInfo { hasNextPage endCursor } } }"
 );
 
 pub const Q_ISSUE: &str = "query($id: String!) { issue(id: $id) { \
@@ -57,24 +58,28 @@ pub const Q_STATES: &str = "query($teamId: ID!) { \
     workflowStates(filter: { team: { id: { eq: $teamId } } }, first: 100) { \
     nodes { id name type position } } }";
 
-pub const Q_LABELS_FOR_TEAM: &str = "query($teamId: ID!) { \
-    issueLabels(first: 250, filter: { or: [ { team: { id: { eq: $teamId } } }, \
-    { team: { null: true } } ] }) { nodes { id name isGroup team { key } } } }";
+pub const Q_LABELS_FOR_TEAM: &str = "query($teamId: ID!, $first: Int, $after: String) { \
+    issueLabels(first: $first, after: $after, filter: { or: [ { team: { id: { eq: $teamId } } }, \
+    { team: { null: true } } ] }) { nodes { id name isGroup team { key } } \
+    pageInfo { hasNextPage endCursor } } }";
 
-pub const Q_LABELS: &str =
-    "query { issueLabels(first: 250) { nodes { id name isGroup team { key } } } }";
+pub const Q_LABELS: &str = "query($first: Int, $after: String) { \
+    issueLabels(first: $first, after: $after) { nodes { id name isGroup team { key } } \
+    pageInfo { hasNextPage endCursor } } }";
 
-pub const Q_USERS: &str = "query($filter: UserFilter, $first: Int) { \
-    users(filter: $filter, first: $first) { nodes { id name displayName email active } } }";
+pub const Q_USERS: &str = "query($filter: UserFilter, $first: Int, $after: String) { \
+    users(filter: $filter, first: $first, after: $after) { \
+    nodes { id name displayName email active } pageInfo { hasNextPage endCursor } } }";
 
-pub const Q_PROJECTS: &str = "query($filter: ProjectFilter, $first: Int) { \
-    projects(filter: $filter, first: $first, orderBy: updatedAt) { nodes { \
+pub const Q_PROJECTS: &str = "query($filter: ProjectFilter, $first: Int, $after: String) { \
+    projects(filter: $filter, first: $first, after: $after, orderBy: updatedAt) { nodes { \
     id name url progress startDate targetDate health status { name } lead { name displayName } \
-    teams(first: 10) { nodes { key } } } } }";
+    teams(first: 10) { nodes { key } } } pageInfo { hasNextPage endCursor } } }";
 
-pub const Q_CYCLES: &str = "query($filter: CycleFilter, $first: Int) { \
-    cycles(filter: $filter, first: $first) { nodes { \
-    id number name startsAt endsAt isActive isNext isPast progress team { key } } } }";
+pub const Q_CYCLES: &str = "query($filter: CycleFilter, $first: Int, $after: String) { \
+    cycles(filter: $filter, first: $first, after: $after) { nodes { \
+    id number name startsAt endsAt isActive isNext isPast progress team { key } } \
+    pageInfo { hasNextPage endCursor } } }";
 
 pub const Q_ACTIVE_CYCLE: &str =
     "query($id: String!) { team(id: $id) { activeCycle { id number } } }";
@@ -105,13 +110,15 @@ pub const Q_ORGANIZATION: &str = "query { organization { id name urlKey userCoun
 
 /// The inbox. `Notification` is an interface; the issue and project kinds
 /// carry what they are about.
-pub const Q_NOTIFICATIONS: &str = "query($first: Int, $includeArchived: Boolean) { \
+pub const Q_NOTIFICATIONS: &str = "query($first: Int, $after: String, $includeArchived: Boolean) { \
     notificationsUnreadCount \
-    notifications(first: $first, includeArchived: $includeArchived, orderBy: createdAt) { nodes { \
+    notifications(first: $first, after: $after, includeArchived: $includeArchived, \
+    orderBy: createdAt) { nodes { \
     id type title subtitle url createdAt readAt archivedAt snoozedUntilAt \
     actor { name displayName } \
     ... on IssueNotification { issue { identifier title } comment { body } } \
-    ... on ProjectNotification { project { name } } } } }";
+    ... on ProjectNotification { project { name } } } \
+    pageInfo { hasNextPage endCursor } } }";
 
 pub const M_NOTIFICATION_UPDATE: &str = "mutation($id: String!, $input: NotificationUpdateInput!) { \
     notificationUpdate(id: $id, input: $input) { success } }";
@@ -119,9 +126,10 @@ pub const M_NOTIFICATION_UPDATE: &str = "mutation($id: String!, $input: Notifica
 pub const M_NOTIFICATION_ARCHIVE: &str =
     "mutation($id: String!) { notificationArchive(id: $id) { success } }";
 
-pub const Q_COMMENTS: &str = "query($filter: CommentFilter, $first: Int) { \
-    comments(filter: $filter, first: $first, orderBy: updatedAt) { nodes { \
-    id body url createdAt updatedAt user { name displayName } issue { identifier title } } } }";
+pub const Q_COMMENTS: &str = "query($filter: CommentFilter, $first: Int, $after: String) { \
+    comments(filter: $filter, first: $first, after: $after, orderBy: updatedAt) { nodes { \
+    id body url createdAt updatedAt user { name displayName } issue { identifier title } } \
+    pageInfo { hasNextPage endCursor } } }";
 
 pub const Q_HISTORY: &str = "query($id: String!, $first: Int) { issue(id: $id) { identifier title \
     history(first: $first) { nodes { createdAt actor { name displayName } \
@@ -186,6 +194,81 @@ fn person(v: &Value, ptr: &str) -> String {
     }
 }
 
+/// Linear's largest page.
+const PAGE_MAX: usize = 250;
+
+/// A list that may have been cut at a limit. `more` says Linear had further
+/// results, so a command can say so instead of passing a page off as all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listing<T> {
+    pub items: Vec<T>,
+    pub more: bool,
+}
+
+impl<T> Listing<T> {
+    fn map<U>(self, f: impl FnMut(T) -> U) -> Listing<U> {
+        Listing {
+            items: self.items.into_iter().map(f).collect(),
+            more: self.more,
+        }
+    }
+}
+
+/// Walk a connection (`conn`, e.g. `/issueLabels`) page by page through
+/// `pageInfo`, until `want` nodes are kept or there are no more pages.
+/// `keep` drops nodes a caller filters on its side (they still cost a page
+/// slot, so a filtered walk asks for full pages). The document must take
+/// `$first` and `$after` and select `pageInfo { hasNextPage endCursor }`.
+pub(crate) async fn walk(
+    linear: &Linear,
+    doc: &str,
+    vars: Value,
+    conn: &str,
+    want: usize,
+    keep: Option<&(dyn Fn(&Value) -> bool + Sync)>,
+) -> Result<Listing<Value>> {
+    let mut items = Vec::new();
+    let mut after = Value::Null;
+    loop {
+        let first = if keep.is_some() {
+            PAGE_MAX
+        } else {
+            (want - items.len()).clamp(1, PAGE_MAX)
+        };
+        let mut v = vars.clone();
+        v["first"] = json!(first);
+        v["after"] = after.clone();
+        let d = linear.query(doc, v).await?;
+        let page = nodes(&d, &format!("{conn}/nodes"));
+        let mut left_on_page = false;
+        for n in page {
+            if keep.is_some_and(|k| !k(n)) {
+                continue;
+            }
+            if items.len() == want {
+                left_on_page = true;
+                break;
+            }
+            items.push(n.clone());
+        }
+        let next = d.pointer(&format!("{conn}/pageInfo/hasNextPage")) == Some(&json!(true));
+        let cursor = d
+            .pointer(&format!("{conn}/pageInfo/endCursor"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if items.len() >= want || left_on_page {
+            return Ok(Listing {
+                items,
+                more: left_on_page || next,
+            });
+        }
+        if !next || cursor.is_null() {
+            return Ok(Listing { items, more: false });
+        }
+        after = cursor;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Viewer, teams, people
 // ---------------------------------------------------------------------------
@@ -235,11 +318,8 @@ pub(crate) fn team_from(v: &Value) -> Team {
 }
 
 pub async fn teams(linear: &Linear) -> Result<Vec<Team>> {
-    let d = linear.query(Q_TEAMS, json!({})).await?;
-    Ok(nodes(&d, "/teams/nodes")
-        .into_iter()
-        .map(team_from)
-        .collect())
+    let all = walk(linear, Q_TEAMS, json!({}), "/teams", usize::MAX, None).await?;
+    Ok(all.items.iter().map(team_from).collect())
 }
 
 /// A team by key (`ENG`). With no key, the only team, if there is just one.
@@ -294,14 +374,25 @@ fn person_from(v: &Value) -> Person {
     }
 }
 
-pub async fn users(linear: &Linear, limit: usize) -> Result<Vec<Person>> {
-    let d = linear
-        .query(Q_USERS, json!({"first": limit.clamp(1, 250)}))
-        .await?;
-    Ok(nodes(&d, "/users/nodes")
-        .into_iter()
-        .map(person_from)
-        .collect())
+/// People in the workspace, up to `limit` of those `keep` accepts.
+pub async fn users(
+    linear: &Linear,
+    limit: usize,
+    keep: Option<&(dyn Fn(&Person) -> bool + Sync)>,
+) -> Result<Listing<Person>> {
+    let keep_node = keep.map(|k| move |v: &Value| k(&person_from(v)));
+    let found = walk(
+        linear,
+        Q_USERS,
+        json!({}),
+        "/users",
+        limit.max(1),
+        keep_node
+            .as_ref()
+            .map(|k| k as &(dyn Fn(&Value) -> bool + Sync)),
+    )
+    .await?;
+    Ok(found.map(|v| person_from(&v)))
 }
 
 /// The `UserFilter` for "who is this": `me`, an email, or a name.
@@ -329,6 +420,8 @@ pub async fn resolve_user(linear: &Linear, who: &str) -> Result<Person> {
             active: true,
         });
     }
+    // Ten is plenty to show an ambiguity; a name shared by more is listed
+    // in part and still refused.
     let d = linear
         .query(Q_USERS, json!({"filter": user_filter(who), "first": 10}))
         .await?;
@@ -468,23 +561,18 @@ pub(crate) fn issue_filter(q: &IssueQuery) -> Option<Value> {
 
 /// Issues matching a query: full-text search when there is text, otherwise
 /// the most recently updated.
-pub async fn issues(linear: &Linear, q: &IssueQuery) -> Result<Vec<IssueRow>> {
-    let first = q.limit.clamp(1, 250);
+pub async fn issues(linear: &Linear, q: &IssueQuery) -> Result<Listing<IssueRow>> {
     let filter = issue_filter(q);
-    let (doc, vars, path) = match q.text.as_deref().filter(|t| !t.trim().is_empty()) {
+    let (doc, vars, conn) = match q.text.as_deref().filter(|t| !t.trim().is_empty()) {
         Some(term) => (
             Q_SEARCH,
-            json!({"term": term, "filter": filter, "first": first}),
-            "/searchIssues/nodes",
+            json!({"term": term, "filter": filter}),
+            "/searchIssues",
         ),
-        None => (
-            Q_ISSUES,
-            json!({"filter": filter, "first": first}),
-            "/issues/nodes",
-        ),
+        None => (Q_ISSUES, json!({"filter": filter}), "/issues"),
     };
-    let d = linear.query(doc, vars).await?;
-    Ok(nodes(&d, path).into_iter().map(issue_row_from).collect())
+    let found = walk(linear, doc, vars, conn, q.limit.max(1), None).await?;
+    Ok(found.map(|v| issue_row_from(&v)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -745,16 +833,33 @@ pub struct Label {
 }
 
 pub async fn labels(linear: &Linear, team_id: Option<&str>) -> Result<Vec<Label>> {
-    let d = match team_id {
+    let all = match team_id {
         Some(t) => {
-            linear
-                .query(Q_LABELS_FOR_TEAM, json!({"teamId": t}))
-                .await?
+            walk(
+                linear,
+                Q_LABELS_FOR_TEAM,
+                json!({"teamId": t}),
+                "/issueLabels",
+                usize::MAX,
+                None,
+            )
+            .await?
         }
-        None => linear.query(Q_LABELS, json!({})).await?,
+        None => {
+            walk(
+                linear,
+                Q_LABELS,
+                json!({}),
+                "/issueLabels",
+                usize::MAX,
+                None,
+            )
+            .await?
+        }
     };
-    Ok(nodes(&d, "/issueLabels/nodes")
-        .into_iter()
+    Ok(all
+        .items
+        .iter()
         .map(|n| Label {
             id: s(n, "/id"),
             name: s(n, "/name"),
@@ -826,7 +931,7 @@ pub async fn projects(
     team: Option<&str>,
     name: Option<&str>,
     limit: usize,
-) -> Result<Vec<Project>> {
+) -> Result<Listing<Project>> {
     let mut f = serde_json::Map::new();
     if let Some(t) = team {
         f.insert(
@@ -842,16 +947,16 @@ pub async fn projects(
     } else {
         Value::Object(f)
     };
-    let d = linear
-        .query(
-            Q_PROJECTS,
-            json!({"filter": filter, "first": limit.clamp(1, 250)}),
-        )
-        .await?;
-    Ok(nodes(&d, "/projects/nodes")
-        .into_iter()
-        .map(project_from)
-        .collect())
+    let found = walk(
+        linear,
+        Q_PROJECTS,
+        json!({"filter": filter}),
+        "/projects",
+        limit.max(1),
+        None,
+    )
+    .await?;
+    Ok(found.map(|v| project_from(&v)))
 }
 
 /// A project id from a name: exact match first, else a single partial one.
@@ -859,7 +964,8 @@ pub async fn resolve_project(linear: &Linear, name: &str) -> Result<String> {
     if is_uuid(name) {
         return Ok(name.to_string());
     }
-    let found = projects(linear, None, Some(name), 25).await?;
+    // Every match, so an exact name past the first page still wins.
+    let found = projects(linear, None, Some(name), usize::MAX).await?.items;
     if let Some(p) = found.iter().find(|p| p.name.eq_ignore_ascii_case(name)) {
         return Ok(p.id.clone());
     }
@@ -893,7 +999,7 @@ pub async fn cycles(
     team: Option<&str>,
     include_past: bool,
     limit: usize,
-) -> Result<Vec<Cycle>> {
+) -> Result<Listing<Cycle>> {
     let mut f = serde_json::Map::new();
     if let Some(t) = team {
         f.insert("team".into(), json!({"key": {"eqIgnoreCase": t}}));
@@ -911,16 +1017,22 @@ pub async fn cycles(
     } else {
         Value::Object(f)
     };
-    let d = linear
-        .query(Q_CYCLES, json!({"filter": filter, "first": 250}))
-        .await?;
-    let mut out: Vec<Cycle> = nodes(&d, "/cycles/nodes")
-        .into_iter()
-        .map(cycle_from)
-        .collect();
+    // All of them: the order is ours (team, newest first), so a page of
+    // Linear's order would show the wrong ones.
+    let all = walk(
+        linear,
+        Q_CYCLES,
+        json!({"filter": filter}),
+        "/cycles",
+        usize::MAX,
+        None,
+    )
+    .await?;
+    let mut out: Vec<Cycle> = all.items.iter().map(cycle_from).collect();
     out.sort_by(|a, b| a.team.cmp(&b.team).then(b.number.cmp(&a.number)));
+    let more = out.len() > limit;
     out.truncate(limit);
-    Ok(out)
+    Ok(Listing { items: out, more })
 }
 
 pub(crate) fn cycle_from(n: &Value) -> Cycle {
@@ -958,7 +1070,9 @@ pub async fn resolve_cycle(linear: &Linear, team: &Team, wanted: &str) -> Result
         }
         return Ok(id);
     }
-    let all = cycles(linear, Some(&team.key), true, usize::MAX).await?;
+    let all = cycles(linear, Some(&team.key), true, usize::MAX)
+        .await?
+        .items;
     let found = if wanted.eq_ignore_ascii_case("next") {
         all.iter().find(|c| c.status == "next")
     } else {
@@ -1270,27 +1384,50 @@ pub async fn notifications(
     unread_only: bool,
     include_archived: bool,
     limit: usize,
-) -> Result<(u64, Vec<Notification>)> {
-    let d = linear
-        .query(
-            Q_NOTIFICATIONS,
-            json!({"first": if unread_only { 250 } else { limit.clamp(1, 250) },
-                   "includeArchived": include_archived}),
-        )
-        .await?;
-    let unread = d
-        .get("notificationsUnreadCount")
-        .and_then(|u| u.as_u64())
-        .unwrap_or(0);
-    let mut found: Vec<Notification> = nodes(&d, "/notifications/nodes")
-        .into_iter()
-        .map(notification_from)
-        .filter(|n| !unread_only || !n.read)
-        .collect();
+) -> Result<(u64, Listing<Notification>)> {
+    let unread_count = |d: &Value| {
+        d.get("notificationsUnreadCount")
+            .and_then(|u| u.as_u64())
+            .unwrap_or(0)
+    };
+    let want = limit.max(1);
+    let mut found: Vec<Notification> = Vec::new();
+    let mut after = Value::Null;
+    let mut unread: u64;
+    let more = loop {
+        let d = linear
+            .query(
+                Q_NOTIFICATIONS,
+                json!({"first": PAGE_MAX, "after": after, "includeArchived": include_archived}),
+            )
+            .await?;
+        unread = unread_count(&d);
+        found.extend(
+            nodes(&d, "/notifications/nodes")
+                .into_iter()
+                .map(notification_from)
+                .filter(|n| !unread_only || !n.read),
+        );
+        let next = d.pointer("/notifications/pageInfo/hasNextPage") == Some(&json!(true));
+        let cursor = d
+            .pointer("/notifications/pageInfo/endCursor")
+            .cloned()
+            .unwrap_or(Value::Null);
+        // Every unread one is in hand once there are as many as Linear counts,
+        // so `read --all` stops paging there.
+        let have_all_unread = unread_only && found.len() as u64 >= unread;
+        if found.len() > want {
+            break true;
+        }
+        if found.len() == want || have_all_unread || !next || cursor.is_null() {
+            break next && !have_all_unread && found.len() == want;
+        }
+        after = cursor;
+    };
     // ISO-8601 UTC sorts as text.
     found.sort_by(|a, b| b.created.cmp(&a.created));
-    found.truncate(limit.max(1));
-    Ok((unread, found))
+    found.truncate(want);
+    Ok((unread, Listing { items: found, more }))
 }
 
 /// Now as the ISO-8601 instant Linear's `DateTime` takes.
@@ -1400,6 +1537,8 @@ pub(crate) fn comment_filter(team: Option<&str>, project: Option<&str>, since: &
 pub struct Activity {
     pub issues: Vec<IssueRow>,
     pub comments: Vec<RecentComment>,
+    /// Either list was cut at the limit.
+    pub more: bool,
 }
 
 /// What moved lately: issues updated (any state) and comments made since
@@ -1420,17 +1559,20 @@ pub async fn activity(
         ..Default::default()
     };
     let issues = self::issues(linear, &q).await?;
-    let d = linear
-        .query(
-            Q_COMMENTS,
-            json!({"filter": comment_filter(team, project, since), "first": limit.clamp(1, 250)}),
-        )
-        .await?;
-    let comments = nodes(&d, "/comments/nodes")
-        .into_iter()
-        .map(recent_comment_from)
-        .collect();
-    Ok(Activity { issues, comments })
+    let comments = walk(
+        linear,
+        Q_COMMENTS,
+        json!({"filter": comment_filter(team, project, since)}),
+        "/comments",
+        limit.max(1),
+        None,
+    )
+    .await?;
+    Ok(Activity {
+        more: issues.more || comments.more,
+        issues: issues.items,
+        comments: comments.items.iter().map(recent_comment_from).collect(),
+    })
 }
 
 /// One line per change in an issue history entry, e.g.
@@ -1648,7 +1790,8 @@ pub(crate) fn uploads_in(markdown: &str) -> Vec<(String, String)> {
             .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\'' | '<'))
             .map(|e| start + e)
             .unwrap_or(markdown.len());
-        let url = &markdown[start..end];
+        // A bare link at the end of a sentence: "… at https://uploads…/x.png."
+        let url = crate::attachments::trim_link_end(&markdown[start..end]);
         let before = &markdown[..start];
         let label = before
             .strip_suffix("](")
