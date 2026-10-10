@@ -873,7 +873,7 @@ pub(crate) fn parse_grid(raw: &str) -> Vec<Vec<String>> {
 }
 
 /// `--name value` or `--name=value`.
-fn flag(args: &[String], name: &str) -> Option<String> {
+pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
     let prefix = format!("{name}=");
     for (i, a) in args.iter().enumerate() {
         if let Some(v) = a.strip_prefix(&prefix) {
@@ -958,7 +958,7 @@ async fn compose_from(
 /// asked for when it was not.
 ///
 /// `--token` is accepted everywhere; it is resolved before any subcommand runs.
-fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
+pub(crate) fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
     for a in args {
         let Some(name) = a.split('=').next().filter(|n| n.starts_with("--")) else {
             continue;
@@ -983,7 +983,7 @@ fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
 /// inline, and the workaround — `--body "$(cat f)"` — silently drops trailing
 /// newlines and mangles anything with quotes in it.
 /// One body, from an inline flag or a file, never both.
-fn one_of(args: &[String], inline: &str, file: &str) -> Result<Option<String>> {
+pub(crate) fn one_of(args: &[String], inline: &str, file: &str) -> Result<Option<String>> {
     match (flag(args, inline), flag(args, file)) {
         (Some(_), Some(_)) => bail!("pass either {inline} or {file}, not both"),
         (Some(v), None) => Ok(Some(v)),
@@ -1024,7 +1024,7 @@ fn human_size(bytes: u64) -> String {
 ///
 /// `flag()` returns the first and drops the rest, which for `--attach` would
 /// silently send one file of the three somebody asked for.
-fn flags_all(args: &[String], name: &str) -> Vec<String> {
+pub(crate) fn flags_all(args: &[String], name: &str) -> Vec<String> {
     let prefix = format!("{name}=");
     let mut out = Vec::new();
     let mut i = 0;
@@ -1042,12 +1042,20 @@ fn flags_all(args: &[String], name: &str) -> Vec<String> {
     out
 }
 
-fn flag_usize(args: &[String], name: &str) -> Option<usize> {
+pub(crate) fn flag_usize(args: &[String], name: &str) -> Option<usize> {
     flag(args, name).and_then(|v| v.parse().ok())
 }
 
 /// Arguments that are neither a flag nor a flag's value.
-fn positional(args: &[String]) -> Vec<String> {
+pub(crate) fn positional(args: &[String]) -> Vec<String> {
+    positional_with_switches(args, &[])
+}
+
+/// Like [`positional`], but `switches` are flags that take no value.
+///
+/// Without this, `slack send general --broadcast --text hi` would read
+/// `--broadcast` as eating `--text`, and leave `hi` looking like a channel.
+pub(crate) fn positional_with_switches(args: &[String], switches: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     let mut skip_next = false;
     for a in args {
@@ -1056,8 +1064,9 @@ fn positional(args: &[String]) -> Vec<String> {
             continue;
         }
         if a.starts_with("--") {
-            // `--flag=value` carries its value; `--flag value` eats the next one.
-            skip_next = !a.contains('=');
+            // `--flag=value` carries its value; `--flag value` eats the next
+            // one; a switch eats nothing.
+            skip_next = !a.contains('=') && !switches.contains(&a.as_str());
             continue;
         }
         out.push(a.clone());
