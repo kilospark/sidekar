@@ -141,6 +141,8 @@ fn an_issue_reads_with_comments_oldest_first() {
     let v = json!({
         "id": "u", "identifier": "ENG-7", "title": "Fix login", "url": "https://linear.app/x/issue/ENG-7",
         "priorityLabel": "High", "state": {"name": "In Progress", "type": "started"},
+        "createdAt": "2026-09-14T03:36:49.709Z", "updatedAt": "2026-09-20T20:42:05.001Z",
+        "creator": {"name": "Ann", "displayName": "ann"},
         "assignee": {"name": "Alice Smith", "displayName": "alice"}, "team": {"key": "ENG", "name": "Engineering"},
         "description": "Steps:\n1. log in", "labels": {"nodes": [{"name": "bug"}]},
         "cycle": {"number": 12, "name": null}, "parent": null,
@@ -157,7 +159,26 @@ fn an_issue_reads_with_comments_oldest_first() {
     assert_eq!(i.comments[0].body, "first");
     assert_eq!(i.comments[0].author, "(integration)");
     assert_eq!(i.comments[1].author, "Bob");
-    let text = render_issue(&i);
+    let text = render_issue(&i, crate::timefmt::Zone::Utc);
+    // Times as ISO 8601 UTC to the second, never Linear's raw milliseconds.
+    assert!(
+        text.contains("Created by ann at 2026-09-14T03:36:49Z\n"),
+        "{text}"
+    );
+    assert!(text.contains("Updated at 2026-09-20T20:42:05Z\n"), "{text}");
+    assert!(
+        text.contains("--- (integration) · 2026-10-01T00:00:00Z\n"),
+        "{text}"
+    );
+    assert!(!text.contains(".709Z"), "{text}");
+    let local = render_issue(&i, crate::timefmt::Zone::Local);
+    assert!(
+        local.contains(&format!(
+            "Created by ann at {}",
+            crate::timefmt::from_iso("2026-09-14T03:36:49Z", crate::timefmt::Zone::Local)
+        )),
+        "{local}"
+    );
     assert!(
         text.starts_with("ENG-7: Fix login\nState: In Progress · Priority: High · Assignee: alice")
     );
@@ -614,16 +635,16 @@ fn issues_list_attachments_and_embedded_files() {
         i.attachments[0].line(),
         "PR #5\tgithub\thttps://github.com/o/r/pull/5"
     );
-    let files = embedded_files(&i);
+    let files = embedded_files(&i, crate::timefmt::Zone::Utc);
     assert_eq!(files[0].place, "description");
-    assert_eq!(files[1].place, "comment by Ann 2026-10-10");
-    let all = downloadable_files(&i);
+    assert_eq!(files[1].place, "comment by Ann 2026-10-10T10:00:00Z");
+    let all = downloadable_files(&i, crate::timefmt::Zone::Utc);
     assert_eq!(
         all.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
         ["a.png", "b.txt", "spec.pdf"],
         "uploaded attachments are downloadable, links are not"
     );
-    let shown = render_issue(&i);
+    let shown = render_issue(&i, crate::timefmt::Zone::Utc);
     assert!(shown.contains("Attachments (2):"), "{shown}");
     assert!(shown.contains("Uploaded files in the text (2)"), "{shown}");
 }

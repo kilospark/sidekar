@@ -246,6 +246,14 @@ sidekar linear link ENG-123 https://github.com/o/r/pull/42
 sidekar linear comment ENG-123 --body "repro video" --attach repro.mp4   # create takes --attach too
 ```
 
+Times in `slack` and `linear` output are ISO 8601 UTC to the second
+(`2026-09-14T03:36:49Z`), the same everywhere (issue, comments, history,
+activity, inbox, cycles, message and file times). Add `--local` to any slack or
+linear command to see this machine's zone with an explicit offset
+(`2026-09-13T23:36:49-04:00`). Slack message `ts` ids are printed unchanged;
+pass them back as they are. Calendar-style dates (`--due`, project start and
+target dates) stay `YYYY-MM-DD`.
+
 Names resolve for you: states by name or type, people by `me`, email or name,
 labels and projects by name, `--cycle current|next|N`. `issues` shows open issues
 unless `--all` or `--state` is given. A list cut at `--limit` ends with a note

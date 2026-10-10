@@ -172,3 +172,53 @@ fn a_search_limit_over_a_page_is_called_out() {
         "{note}"
     );
 }
+
+mod shown_times {
+    use super::*;
+    use crate::test_http::MockServer;
+    use serde_json::json;
+
+    async fn read_channel(zone: Zone) -> String {
+        let server = MockServer::start(|req| {
+            let body = match req.path() {
+                "/conversations.history" => json!({"ok": true, "messages": [
+                    {"ts": "1789357009.709100", "user": "U0000000A", "text": "deployed"}
+                ]}),
+                "/users.info" => json!({"ok": true, "user": {"id": "U0000000A", "name": "kb"}}),
+                other => json!({"ok": false, "error": format!("unexpected {other}")}),
+            };
+            (200, body.to_string())
+        });
+        let slack =
+            crate::slack::Slack::with_base(MockServer::client(), &server.base, "xoxp-test".into());
+        let token = auth::TokenRef {
+            key: "SLACK_T".into(),
+            kind: auth::Kind::User,
+            team: String::new(),
+            team_id: String::new(),
+            account: String::new(),
+            url: String::new(),
+            client_id_key: None,
+            client_secret_key: None,
+        };
+        let mut ctx = AppContext::new().unwrap();
+        let rest = v(&["C0123ABCD"]);
+        api_command(&mut ctx, &slack, &token, "read", &rest, &rest, zone)
+            .await
+            .unwrap();
+        std::mem::take(&mut ctx.output)
+    }
+
+    #[tokio::test]
+    async fn slack_read_shows_utc_by_default_and_local_on_request() {
+        let utc = read_channel(Zone::Utc).await;
+        // The ts stays as the id it is; the time beside it is ISO UTC.
+        assert_eq!(
+            utc,
+            "1789357009.709100\t2026-09-14T03:36:49Z\tkb\tdeployed\n"
+        );
+        let local = read_channel(Zone::Local).await;
+        let shown = crate::timefmt::from_epoch(1_789_357_009, Zone::Local);
+        assert_eq!(local, format!("1789357009.709100\t{shown}\tkb\tdeployed\n"));
+    }
+}

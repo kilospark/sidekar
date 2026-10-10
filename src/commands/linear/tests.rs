@@ -90,12 +90,6 @@ fn the_walkthrough_names_the_callback_and_keys() {
 }
 
 #[test]
-fn times_are_shortened_to_the_minute() {
-    assert_eq!(short_time("2026-10-10T14:03:05.123Z"), "2026-10-10 14:03");
-    assert_eq!(short_time("bad"), "bad");
-}
-
-#[test]
 fn inbox_lines_lead_with_the_id_and_unread_marker() {
     let n = api::Notification {
         id: "n1".into(),
@@ -108,15 +102,20 @@ fn inbox_lines_lead_with_the_id_and_unread_marker() {
         ..Default::default()
     };
     assert_eq!(
-        api_inbox_line(&n),
-        "n1\tUNREAD\t2026-10-10 14:03\tissueComment\tann\tENG-1 Bug\t“looks good”"
+        api_inbox_line(&n, Zone::Utc),
+        "n1\tUNREAD\t2026-10-10T14:03:05Z\tissueComment\tann\tENG-1 Bug\t“looks good”"
+    );
+    let local = api_inbox_line(&n, Zone::Local);
+    assert!(
+        local.contains(&timefmt::from_iso("2026-10-10T14:03:05Z", Zone::Local)),
+        "{local}"
     );
     let read = api::Notification {
         read: true,
         project: "Web".into(),
         ..n.clone()
     };
-    assert!(api_inbox_line(&read).contains("\tread\t"));
+    assert!(api_inbox_line(&read, Zone::Utc).contains("\tread\t"));
 }
 
 #[test]
@@ -177,4 +176,45 @@ fn a_cut_list_says_how_to_see_the_rest() {
         note.contains("first 25 issues") && note.contains("--limit"),
         "{note}"
     );
+}
+
+mod shown_times {
+    use super::*;
+    use crate::test_http::MockServer;
+    use serde_json::json;
+
+    async fn run(sub: &str, args: &[&str], zone: Zone, data: serde_json::Value) -> String {
+        let server = MockServer::sequence(vec![json!({"data": data})]);
+        let linear = Linear::with_url(MockServer::client(), &server.base, "lin_api_test".into());
+        let mut ctx = AppContext::new().unwrap();
+        let rest = v(args);
+        let pos = positional_with_switches(&rest, SWITCHES);
+        api_command(&mut ctx, &linear, sub, &rest, &pos, zone)
+            .await
+            .unwrap();
+        std::mem::take(&mut ctx.output)
+    }
+
+    #[tokio::test]
+    async fn history_shows_iso_utc_not_a_zoneless_minute() {
+        let data = json!({"issue": {"identifier": "ENG-1", "title": "T", "history": {"nodes": [
+            {"createdAt": "2026-09-20T20:42:05.123Z", "actor": {"name": "Ann"},
+             "fromState": {"name": "Todo"}, "toState": {"name": "Done"}}
+        ]}}});
+        let out = run("history", &["ENG-1"], Zone::Utc, data.clone()).await;
+        assert!(out.contains("2026-09-20T20:42:05Z\tAnn\t"), "{out}");
+        assert!(!out.contains("2026-09-20 20:42"), "{out}");
+        let local = run("history", &["ENG-1"], Zone::Local, data).await;
+        let shown = crate::timefmt::from_iso("2026-09-20T20:42:05Z", Zone::Local);
+        assert!(local.contains(&format!("{shown}\tAnn\t")), "{local}");
+    }
+
+    #[tokio::test]
+    async fn the_inbox_lists_times_in_utc() {
+        let data = json!({"notificationsUnreadCount": 1, "notifications": {"nodes": [
+            {"id": "n1", "type": "issueComment", "createdAt": "2026-09-14T03:36:49.709Z", "readAt": null}
+        ]}});
+        let out = run("inbox", &[], Zone::Utc, data).await;
+        assert!(out.contains("n1\tUNREAD\t2026-09-14T03:36:49Z\t"), "{out}");
+    }
 }
