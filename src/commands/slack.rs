@@ -5,7 +5,9 @@
 //! (`login`, `add`, `accounts`, `use`, `status`, `doctor`, `setup`, `logout`)
 //! sit beside the API verbs, and every API verb takes `--token <KV_KEY>`.
 
-use super::google::{flag, flag_usize, one_of, positional_with_switches, reject_unknown_flags};
+use super::google::{
+    flag, flag_usize, flags_all, one_of, positional_with_switches, reject_unknown_flags,
+};
 use crate::AppContext;
 use crate::slack::{self, Slack, api, auth};
 use anyhow::{Result, bail};
@@ -18,6 +20,7 @@ const SWITCHES: &[&str] = &[
     "--broadcast",
     "--member",
     "--all",
+    "--print",
 ];
 
 const USAGE: &str = "Usage: sidekar slack <command> …\n\
@@ -36,12 +39,16 @@ const USAGE: &str = "Usage: sidekar slack <command> …\n\
   search <query> [--limit N]                Slack syntax: from:@x in:#y after:2026-01-01\n  \
   users [filter] [--all] [--limit N]\n  \
   user <person>\n  \
-  bookmarks <channel>                       the channel's bookmarks bar\n\
+  bookmarks <channel>                       the channel's bookmarks bar\n  \
+  file <file-id|file-link>                  name, type, size, owner, where shared\n  \
+  download <file-id|file-link> [--out <path|dir/>] [--print]   --print: text files to stdout\n\
   Write:\n  \
-  send <channel> TEXT [--thread <ts>] [--broadcast]\n  \
-  dm <person> TEXT\n  \
+  send <channel> TEXT [--thread <ts>] [--broadcast] [--attach <path>]…\n  \
+  dm <person> TEXT [--attach <path>]…\n  \
+  upload <channel|person|link> <path>… [--text T] [--thread <ts>] [--title T]\n  \
   draft <channel|person|link> TEXT [--thread <ts>]   into your Slack Drafts; NOT sent\n  \
-  TEXT is --text <t> or --text-file <path>\n\n\
+  TEXT is --text <t> or --text-file <path>; optional when --attach is given.\n  \
+  Messages list their files as [file F… name (type, size)].\n\n\
   <channel> is an id, #name, a message link, or a person (@handle, email, U…) for their DM.\n\
   <person> is a user id, an email, or a handle / display name / real name.\n\
   Every command takes --token <KV_KEY> to pick a workspace.";
@@ -204,7 +211,7 @@ pub async fn cmd_slack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             Ok(())
         }
         "channels" | "read" | "history" | "thread" | "search" | "send" | "post" | "reply"
-        | "dm" | "users" | "user" | "draft" | "bookmarks" => {
+        | "dm" | "users" | "user" | "draft" | "bookmarks" | "file" | "download" | "upload" => {
             let token = auth::resolve_token(flag(rest, "--token").as_deref())?;
             let slack = Slack::connect(&token).await?;
             api_command(ctx, &slack, &token, sub, rest, &pos).await
@@ -313,8 +320,8 @@ async fn api_command(
                 for l in lines {
                     out!(ctx, "    {l}");
                 }
-                if !m.files.is_empty() {
-                    out!(ctx, "    [files: {}]", m.files.join(", "));
+                for f in &m.files {
+                    out!(ctx, "    [file {}]", f.summary());
                 }
                 if thread.is_none() && m.reply_count > 0 {
                     out!(
@@ -386,9 +393,15 @@ async fn api_command(
         }
         "send" | "post" | "reply" | "dm" => {
             let known: &[&str] = if sub == "dm" {
-                &["--text", "--text-file"]
+                &["--text", "--text-file", "--attach"]
             } else {
-                &["--text", "--text-file", "--thread", "--broadcast"]
+                &[
+                    "--text",
+                    "--text-file",
+                    "--thread",
+                    "--broadcast",
+                    "--attach",
+                ]
             };
             reject_unknown_flags(rest, known)?;
             let target = pos.first().cloned().ok_or_else(|| {
@@ -402,11 +415,14 @@ async fn api_command(
                     }
                 )
             })?;
-            let text = one_of(rest, "--text", "--text-file")?
-                .filter(|t| !t.trim().is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("slack {sub} needs --text <t> or --text-file <path>")
-                })?;
+            let attach = flags_all(rest, "--attach");
+            let text = one_of(rest, "--text", "--text-file")?.filter(|t| !t.trim().is_empty());
+            if text.is_none() && attach.is_empty() {
+                bail!("slack {sub} needs --text <t>, --text-file <path>, or --attach <path>");
+            }
+            // Read the files before anything is posted, so a typo in a path
+            // does not leave half a message behind.
+            let files = uploads_from(&attach, None)?;
             let channel = if sub == "dm" {
                 let user = api::resolve_user(slack, &target).await?;
                 api::open_dm(slack, &[user.id]).await?
@@ -420,6 +436,21 @@ async fn api_command(
                 bail!("slack reply needs --thread <ts> or a message link");
             }
             let broadcast = rest.iter().any(|a| a == "--broadcast");
+            if !files.is_empty() {
+                if broadcast {
+                    bail!("Slack cannot broadcast a file share to the channel; drop --broadcast");
+                }
+                return share(
+                    ctx,
+                    slack,
+                    &channel,
+                    files,
+                    text.as_deref(),
+                    thread.as_deref(),
+                )
+                .await;
+            }
+            let text = text.unwrap_or_default();
             let (ch, ts) = api::post(slack, &channel, &text, thread.as_deref(), broadcast).await?;
             out!(
                 ctx,
@@ -433,7 +464,113 @@ async fn api_command(
             }
             Ok(())
         }
+        "file" => {
+            reject_unknown_flags(rest, &[])?;
+            let id = file_arg(pos, "file")?;
+            let f = api::file_info(slack, &id).await?;
+            let names = api::names_for(slack, std::slice::from_ref(&f.user)).await;
+            out!(ctx, "{}\t{}", f.id, f.display_name());
+            if !f.title.is_empty() && f.title != f.name {
+                out!(ctx, "title:    {}", f.title);
+            }
+            out!(
+                ctx,
+                "type:     {}{}",
+                if f.mimetype.is_empty() {
+                    "-"
+                } else {
+                    &f.mimetype
+                },
+                if f.filetype.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", f.filetype)
+                }
+            );
+            out!(ctx, "size:     {}", crate::attachments::human_bytes(f.size));
+            if !f.mode.is_empty() {
+                out!(ctx, "mode:     {}", f.mode);
+            }
+            if !f.user.is_empty() {
+                out!(
+                    ctx,
+                    "by:       {}",
+                    names.get(&f.user).cloned().unwrap_or(f.user.clone())
+                );
+            }
+            if f.created > 0 {
+                out!(ctx, "created:  {}", api::ts_to_date(&f.created.to_string()));
+            }
+            if !f.channels.is_empty() {
+                out!(ctx, "shared in: {}", f.channels.join(", "));
+            }
+            if !f.external_url.is_empty() {
+                out!(ctx, "external: {}", f.external_url);
+            }
+            if !f.permalink.is_empty() {
+                out!(ctx, "{}", f.permalink);
+            }
+            Ok(())
+        }
+        "download" => {
+            reject_unknown_flags(rest, &["--out", "--print"])?;
+            let id = file_arg(pos, "download")?;
+            let f = api::file_info(slack, &id).await?;
+            let bytes = api::file_download(slack, &f).await?;
+            if rest.iter().any(|a| a == "--print") {
+                out!(
+                    ctx,
+                    "{}",
+                    crate::attachments::printable(f.display_name(), &bytes)?
+                );
+            } else {
+                let path = crate::attachments::save(
+                    flag(rest, "--out").as_deref(),
+                    f.display_name(),
+                    &bytes,
+                )?;
+                out!(ctx, "Wrote {} ({} bytes).", path.display(), bytes.len());
+            }
+            Ok(())
+        }
+        "upload" => {
+            reject_unknown_flags(rest, &["--text", "--text-file", "--thread", "--title"])?;
+            let target = pos.first().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Usage: sidekar slack upload <channel|person|link> <path>… [--text T] [--thread <ts>] [--title T]"
+                )
+            })?;
+            let paths: Vec<String> = pos[1..].to_vec();
+            if paths.is_empty() {
+                bail!("slack upload needs at least one file path after the channel");
+            }
+            let text = one_of(rest, "--text", "--text-file")?;
+            let channel = api::resolve_channel(slack, &target).await?;
+            let thread = flag(rest, "--thread")
+                .or_else(|| api::parse_permalink(&target).map(|(_, ts, t)| t.unwrap_or(ts)));
+            let title = flag(rest, "--title");
+            if title.is_some() && paths.len() > 1 {
+                bail!("--title names one file; upload several without it");
+            }
+            let files = uploads_from(&paths, title)?;
+            share(
+                ctx,
+                slack,
+                &channel,
+                files,
+                text.as_deref(),
+                thread.as_deref(),
+            )
+            .await
+        }
         "draft" => {
+            if rest.iter().any(|a| a == "--attach") {
+                bail!(
+                    "a Slack draft cannot carry files from here: drafts.create is undocumented \
+                     and nothing confirms it accepts files uploaded with an OAuth token. Draft \
+                     the text, then attach the file in Slack, or use `slack upload` to post it."
+                );
+            }
             reject_unknown_flags(rest, &["--text", "--text-file", "--thread"])?;
             if token.kind == auth::Kind::Bot {
                 bail!(
@@ -684,6 +821,60 @@ pub(crate) fn setup_walkthrough(
          http://localhost:N/callback and must be listed on the app.",
         redirect = slack::auth::redirect_uri(port),
     )
+}
+
+/// A file id from the first positional (an id or a file link).
+fn file_arg(pos: &[String], sub: &str) -> Result<String> {
+    let raw = pos
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Usage: sidekar slack {sub} <file-id|file-link>"))?;
+    api::parse_file_id(raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{raw} is not a Slack file id (F…) or file link; `slack read` lists files on messages"
+        )
+    })
+}
+
+/// Read local files for upload; `title` applies to a single file.
+pub(crate) fn uploads_from(paths: &[String], title: Option<String>) -> Result<Vec<api::Upload>> {
+    paths
+        .iter()
+        .map(|p| {
+            let (bytes, name, _) = crate::attachments::read_upload(p)?;
+            Ok(api::Upload {
+                name,
+                title: title.clone(),
+                bytes,
+            })
+        })
+        .collect()
+}
+
+/// Upload and share files, then say where they went.
+async fn share(
+    ctx: &mut AppContext,
+    slack: &Slack,
+    channel: &str,
+    files: Vec<api::Upload>,
+    text: Option<&str>,
+    thread: Option<&str>,
+) -> Result<()> {
+    let n = files.len();
+    let shared = api::upload_files(slack, channel, files, text, thread).await?;
+    out!(
+        ctx,
+        "Shared {n} file(s) in {channel}{}{}.",
+        if thread.is_some() { ", in thread" } else { "" },
+        if text.is_some_and(|t| !t.trim().is_empty()) {
+            " with a message"
+        } else {
+            ""
+        }
+    );
+    for (id, link) in shared {
+        out!(ctx, "{id}\t{link}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

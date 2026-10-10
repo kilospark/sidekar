@@ -44,11 +44,23 @@ pub(crate) struct MockServer {
     seen: Arc<Mutex<Vec<Request>>>,
 }
 
-type Responder = dyn Fn(&Request) -> (u16, String) + Send + Sync;
+/// A reply: status, content type, body bytes.
+pub(crate) type Reply = (u16, String, Vec<u8>);
+
+type Responder = dyn Fn(&Request) -> Reply + Send + Sync;
 
 impl MockServer {
     /// Serve every request with `respond`, recording each one.
     pub fn start(respond: impl Fn(&Request) -> (u16, String) + Send + Sync + 'static) -> Self {
+        Self::start_raw(move |req| {
+            let (status, body) = respond(req);
+            (status, "application/json".into(), body.into_bytes())
+        })
+    }
+
+    /// Like [`start`](Self::start), choosing the content type and raw bytes:
+    /// for file downloads and upload endpoints that are not JSON.
+    pub fn start_raw(respond: impl Fn(&Request) -> Reply + Send + Sync + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<Request>>> = Arc::default();
@@ -60,16 +72,15 @@ impl MockServer {
                 let Some(req) = read_request(&mut stream) else {
                     continue;
                 };
-                let (status, body) = respond(&req);
+                let (status, content_type, body) = respond(&req);
                 record.lock().unwrap().push(req);
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
                 );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
                 let _ = stream.flush();
             }
         });

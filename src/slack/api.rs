@@ -273,7 +273,7 @@ pub struct Message {
     pub text: String,
     pub thread_ts: Option<String>,
     pub reply_count: u64,
-    pub files: Vec<String>,
+    pub files: Vec<SlackFile>,
     pub subtype: String,
 }
 
@@ -299,14 +299,7 @@ pub(crate) fn message_from(v: &Value) -> Message {
         files: v
             .get("files")
             .and_then(|f| f.as_array())
-            .map(|a| {
-                a.iter()
-                    .map(|f| {
-                        let n = s(f, "name");
-                        if n.is_empty() { s(f, "title") } else { n }
-                    })
-                    .collect()
-            })
+            .map(|a| a.iter().map(file_from).collect())
             .unwrap_or_default(),
         subtype: s(v, "subtype"),
     }
@@ -432,6 +425,230 @@ pub async fn permalink(slack: &Slack, channel: &str, ts: &str) -> Result<String>
         )
         .await?;
     Ok(s(&v, "permalink"))
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlackFile {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub mimetype: String,
+    /// Slack's short type: `pdf`, `png`, `text`, `gdoc`…
+    pub filetype: String,
+    pub size: u64,
+    /// `hosted`, `external` (Drive, Dropbox…), `snippet`, `post`, or
+    /// `tombstone` for a deleted file.
+    pub mode: String,
+    pub user: String,
+    pub created: i64,
+    /// What to download: `url_private_download`, else `url_private`.
+    pub url: String,
+    pub permalink: String,
+    /// For an external file, where it really lives.
+    pub external_url: String,
+    pub channels: Vec<String>,
+}
+
+impl SlackFile {
+    /// The name to show and save under.
+    pub fn display_name(&self) -> &str {
+        if !self.name.is_empty() {
+            &self.name
+        } else if !self.title.is_empty() {
+            &self.title
+        } else {
+            &self.id
+        }
+    }
+
+    /// One line for a message listing: `F0… report.pdf (application/pdf, 1.2M)`.
+    pub fn summary(&self) -> String {
+        if self.mode == "tombstone" {
+            return format!("{} (deleted)", self.id);
+        }
+        let kind = if self.mimetype.is_empty() {
+            &self.filetype
+        } else {
+            &self.mimetype
+        };
+        let mut out = format!("{} {}", self.id, self.display_name());
+        let mut tags = Vec::new();
+        if !kind.is_empty() {
+            tags.push(kind.to_string());
+        }
+        if self.size > 0 {
+            tags.push(crate::attachments::human_bytes(self.size));
+        }
+        if self.mode == "external" {
+            tags.push("external".into());
+        }
+        if !tags.is_empty() {
+            out.push_str(&format!(" ({})", tags.join(", ")));
+        }
+        out
+    }
+}
+
+pub(crate) fn file_from(v: &Value) -> SlackFile {
+    let mut channels: Vec<String> = Vec::new();
+    for k in ["channels", "groups", "ims"] {
+        if let Some(a) = v.get(k).and_then(|x| x.as_array()) {
+            channels.extend(a.iter().filter_map(|c| c.as_str().map(String::from)));
+        }
+    }
+    let download = s(v, "url_private_download");
+    SlackFile {
+        id: s(v, "id"),
+        name: s(v, "name"),
+        title: s(v, "title"),
+        mimetype: s(v, "mimetype"),
+        filetype: s(v, "filetype"),
+        size: v.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+        mode: s(v, "mode"),
+        user: s(v, "user"),
+        created: v.get("created").and_then(|x| x.as_i64()).unwrap_or(0),
+        url: if download.is_empty() {
+            s(v, "url_private")
+        } else {
+            download
+        },
+        permalink: s(v, "permalink"),
+        external_url: s(v, "external_url"),
+        channels,
+    }
+}
+
+/// A file id from an id (`F0…`) or a file link
+/// (`https://x.slack.com/files/U…/F…/name`).
+pub fn parse_file_id(input: &str) -> Option<String> {
+    let t = input.trim();
+    let is_id = |w: &str| {
+        w.len() >= 8
+            && w.starts_with('F')
+            && w.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    };
+    if is_id(t) {
+        return Some(t.to_string());
+    }
+    if t.starts_with("http") {
+        let path = t.split(['?', '#']).next().unwrap_or(t);
+        return path
+            .split('/')
+            .find(|seg| is_id(seg))
+            .map(String::from)
+            .or_else(|| {
+                // files-pri/T…-F…/name
+                path.split('/')
+                    .find_map(|seg| seg.split_once("-F").map(|(_, f)| format!("F{f}")))
+                    .filter(|f| is_id(f))
+            });
+    }
+    None
+}
+
+/// `files.info` (scope `files:read`).
+pub async fn file_info(slack: &Slack, id: &str) -> Result<SlackFile> {
+    let v = slack.get("files.info", &[("file", id.to_string())]).await?;
+    Ok(file_from(v.get("file").unwrap_or(&Value::Null)))
+}
+
+/// A file's bytes. External files (Drive, Dropbox…) and deleted ones have
+/// nothing to download through Slack.
+pub async fn file_download(slack: &Slack, f: &SlackFile) -> Result<Vec<u8>> {
+    match f.mode.as_str() {
+        "tombstone" => bail!("{} was deleted", f.id),
+        "external" => bail!(
+            "{} is an external file; it lives at {}",
+            f.id,
+            if f.external_url.is_empty() {
+                &f.url
+            } else {
+                &f.external_url
+            }
+        ),
+        _ => {}
+    }
+    if f.url.is_empty() {
+        bail!("Slack gave no download URL for {}", f.id);
+    }
+    let bytes = slack
+        .download(&f.url, f.mimetype.starts_with("text/html"))
+        .await?;
+    if f.size > 0 && bytes.len() as u64 != f.size {
+        bail!(
+            "{} downloaded as {} bytes but Slack lists {}; not saving a partial file",
+            f.display_name(),
+            bytes.len(),
+            f.size
+        );
+    }
+    Ok(bytes)
+}
+
+/// A local file ready to upload.
+#[derive(Debug, Clone)]
+pub struct Upload {
+    pub name: String,
+    pub title: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// Upload files and share them in one message, using Slack's current flow:
+/// `files.getUploadURLExternal` per file, the bytes to each upload URL, then
+/// one `files.completeUploadExternal` that posts them (with `text` as the
+/// message) into the channel or thread. `files.upload` is retired.
+///
+/// Returns the file ids and their permalinks.
+pub async fn upload_files(
+    slack: &Slack,
+    channel: &str,
+    files: Vec<Upload>,
+    text: Option<&str>,
+    thread_ts: Option<&str>,
+) -> Result<Vec<(String, String)>> {
+    if files.is_empty() {
+        bail!("no files to upload");
+    }
+    let mut entries = Vec::new();
+    for f in files {
+        let v = slack
+            .post_form(
+                "files.getUploadURLExternal",
+                &[
+                    ("filename", f.name.clone()),
+                    ("length", f.bytes.len().to_string()),
+                ],
+            )
+            .await?;
+        let (url, id) = (s(&v, "upload_url"), s(&v, "file_id"));
+        if url.is_empty() || id.is_empty() {
+            bail!("Slack gave no upload URL for {}", f.name);
+        }
+        slack.put_upload(&url, f.bytes).await?;
+        entries.push(json!({"id": id, "title": f.title.unwrap_or(f.name)}));
+    }
+    let mut fields = vec![
+        ("files", Value::Array(entries).to_string()),
+        ("channel_id", channel.to_string()),
+    ];
+    if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
+        fields.push(("initial_comment", t.to_string()));
+    }
+    if let Some(ts) = thread_ts {
+        fields.push(("thread_ts", ts.to_string()));
+    }
+    let v = slack
+        .post_form("files.completeUploadExternal", &fields)
+        .await?;
+    Ok(v.get("files")
+        .and_then(|f| f.as_array())
+        .map(|a| a.iter().map(|f| (s(f, "id"), s(f, "permalink"))).collect())
+        .unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------

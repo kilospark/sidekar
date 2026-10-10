@@ -56,3 +56,32 @@ fn the_walkthrough_fills_in_every_key_and_the_redirect() {
     assert!(w.contains("\"token_rotation_enabled\": false"));
     assert!(w.contains("search:read"));
 }
+
+#[test]
+fn uploads_read_every_file_first_and_refuse_missing_ones() {
+    let dir = std::env::temp_dir().join(format!("sidekar-slack-up-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.txt");
+    std::fs::write(&a, "hi").unwrap();
+    let ok = uploads_from(&[a.display().to_string()], Some("T".into())).unwrap();
+    assert_eq!(
+        (ok[0].name.as_str(), ok[0].title.as_deref()),
+        ("a.txt", Some("T"))
+    );
+    let missing = dir.join("nope.txt").display().to_string();
+    assert!(uploads_from(&[a.display().to_string(), missing], None).is_err());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn attach_values_are_not_positionals() {
+    let pos = positional_with_switches(&v(&["#eng", "--attach", "a.pdf", "--print"]), SWITCHES);
+    assert_eq!(pos, ["#eng"]);
+}
+
+#[test]
+fn the_manifest_asks_for_file_scopes() {
+    for scopes in [auth::USER_SCOPES, auth::BOT_SCOPES] {
+        assert!(scopes.contains(&"files:read") && scopes.contains(&"files:write"));
+    }
+}

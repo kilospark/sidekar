@@ -139,6 +139,7 @@ macro_rules! wlog {
 }
 
 pub mod api_client;
+pub mod attachments;
 pub mod app_context;
 pub mod auth;
 pub mod broker;

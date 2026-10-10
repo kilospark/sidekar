@@ -47,7 +47,8 @@ const CLIENT_ID_TAG: &str = "client-id:";
 const CLIENT_SECRET_TAG: &str = "client-secret:";
 
 /// Scopes for a user token: read every conversation the person can, post as
-/// them, open DMs, look people up, search, and read channel bookmarks.
+/// them, open DMs, look people up, search, read channel bookmarks, and read
+/// and upload files.
 ///
 /// Drafts (`drafts.create`) need no scope of their own beyond a user token;
 /// `im:write` lets a draft target a DM that does not exist yet.
@@ -66,6 +67,8 @@ pub const USER_SCOPES: &[&str] = &[
     "users:read.email",
     "search:read",
     "bookmarks:read",
+    "files:read",
+    "files:write",
 ];
 
 /// Scopes for a bot token. The same, less search: Slack does not offer
@@ -84,6 +87,8 @@ pub const BOT_SCOPES: &[&str] = &[
     "users:read",
     "users:read.email",
     "bookmarks:read",
+    "files:read",
+    "files:write",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

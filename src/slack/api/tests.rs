@@ -109,7 +109,7 @@ fn a_bot_message_is_named_by_its_profile() {
         "text": "build passed", "files": [{"name": "log.txt"}]}),
     );
     assert_eq!(m.username, "CI");
-    assert_eq!(m.files, vec!["log.txt"]);
+    assert_eq!(m.files[0].name, "log.txt");
 }
 
 #[test]
@@ -312,4 +312,208 @@ async fn bookmarks_are_read_for_a_channel() {
     let req = &server.requests()[0];
     assert_eq!(req.path(), "/bookmarks.list");
     assert_eq!(req.query()["channel_id"], "C0000000A");
+}
+
+fn routed(
+    route: impl Fn(&str, &crate::test_http::Request) -> (String, Vec<u8>) + Send + Sync + 'static,
+) -> MockServer {
+    MockServer::start_raw(move |req| {
+        let (ct, body) = route(req.path(), req);
+        (200, ct, body)
+    })
+}
+
+fn json_reply(v: Value) -> (String, Vec<u8>) {
+    ("application/json".into(), v.to_string().into_bytes())
+}
+
+#[test]
+fn messages_carry_file_details() {
+    let m = message_from(&json!({"ts": "1.0", "files": [
+        {"id": "F0ABCDEF1", "name": "report.pdf", "mimetype": "application/pdf", "filetype": "pdf",
+         "size": 1536, "mode": "hosted", "url_private_download": "https://files.slack.com/d/report.pdf",
+         "url_private": "https://files.slack.com/p/report.pdf", "channels": ["C1"], "ims": ["D1"]},
+        {"id": "F0DELETED1", "mode": "tombstone"}
+    ]}));
+    let f = &m.files[0];
+    assert_eq!(
+        f.url, "https://files.slack.com/d/report.pdf",
+        "download URL preferred"
+    );
+    assert_eq!(f.channels, ["C1", "D1"]);
+    assert_eq!(f.summary(), "F0ABCDEF1 report.pdf (application/pdf, 1.5K)");
+    assert_eq!(m.files[1].summary(), "F0DELETED1 (deleted)");
+    let ext = file_from(
+        &json!({"id": "F0EXTERNAL", "title": "Plan", "filetype": "gdoc", "mode": "external"}),
+    );
+    assert_eq!(ext.summary(), "F0EXTERNAL Plan (gdoc, external)");
+}
+
+#[test]
+fn file_ids_come_from_ids_and_links() {
+    assert_eq!(parse_file_id("F0ABCDEF12").as_deref(), Some("F0ABCDEF12"));
+    assert_eq!(
+        parse_file_id("https://acme.slack.com/files/U012345678/F0ABCDEF12/report.pdf").as_deref(),
+        Some("F0ABCDEF12")
+    );
+    assert_eq!(
+        parse_file_id("https://files.slack.com/files-pri/T0123456-F0ABCDEF12/report.pdf")
+            .as_deref(),
+        Some("F0ABCDEF12")
+    );
+    assert_eq!(parse_file_id("C0ABCDEF12"), None);
+    assert_eq!(parse_file_id("report.pdf"), None);
+}
+
+#[tokio::test]
+async fn a_file_downloads_with_the_token_and_checks_its_size() {
+    let server = routed(|path, _| match path {
+        "/files.info" => json_reply(
+            json!({"ok": true, "file": {"id": "F0ABCDEF12", "name": "a.bin",
+            "mimetype": "application/octet-stream", "size": 4, "mode": "hosted",
+            "url_private_download": "BASE/dl/a.bin"}}),
+        ),
+        "/dl/a.bin" => ("application/octet-stream".into(), vec![0, 1, 2, 3]),
+        _ => json_reply(json!({"ok": false, "error": "unexpected"})),
+    });
+    let slack = slack_at(&server);
+    let mut f = file_info(&slack, "F0ABCDEF12").await.unwrap();
+    f.url = f.url.replace("BASE", &server.base);
+    assert_eq!(file_download(&slack, &f).await.unwrap(), vec![0, 1, 2, 3]);
+    let reqs = server.requests();
+    assert_eq!(reqs[0].query()["file"], "F0ABCDEF12");
+    assert_eq!(reqs[1].headers["authorization"], "Bearer xoxp-test");
+    f.size = 99;
+    assert!(
+        file_download(&slack, &f)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("partial")
+    );
+}
+
+#[tokio::test]
+async fn a_sign_in_page_instead_of_the_file_means_files_read_is_missing() {
+    let server = routed(|_, _| {
+        (
+            "text/html; charset=utf-8".into(),
+            b"<html>sign in</html>".to_vec(),
+        )
+    });
+    let slack = slack_at(&server);
+    let f = SlackFile {
+        id: "F1".into(),
+        mimetype: "application/pdf".into(),
+        url: format!("{}/x.pdf", server.base),
+        ..Default::default()
+    };
+    let err = file_download(&slack, &f).await.unwrap_err().to_string();
+    assert!(err.contains("files:read"), "{err}");
+}
+
+#[tokio::test]
+async fn the_token_is_never_sent_off_slack() {
+    let server = routed(|_, _| ("text/plain".into(), b"x".to_vec()));
+    let slack = slack_at(&server);
+    let f = SlackFile {
+        id: "F1".into(),
+        url: "https://evil.example/steal".into(),
+        ..Default::default()
+    };
+    assert!(
+        file_download(&slack, &f)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("refusing")
+    );
+    assert!(server.requests().is_empty());
+    let ext = SlackFile {
+        id: "F2".into(),
+        mode: "external".into(),
+        external_url: "https://drive/x".into(),
+        ..Default::default()
+    };
+    assert!(
+        file_download(&slack, &ext)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("https://drive/x")
+    );
+}
+
+#[tokio::test]
+async fn uploads_use_the_external_flow_and_share_once() {
+    let base = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let b2 = base.clone();
+    let server = routed(move |path, req| match path {
+        "/files.getUploadURLExternal" => {
+            let name = req.form()["filename"].clone();
+            json_reply(
+                json!({"ok": true, "upload_url": format!("{}/up/{name}", b2.lock().unwrap()),
+                "file_id": format!("F_{name}")}),
+            )
+        }
+        p if p.starts_with("/up/") => ("text/plain".into(), b"OK - 5".to_vec()),
+        "/files.completeUploadExternal" => json_reply(json!({"ok": true, "files": [
+            {"id": "F_a.txt", "permalink": "https://x.slack.com/files/U1/F_a.txt/a.txt"},
+            {"id": "F_b.txt", "permalink": "p2"}]})),
+        _ => json_reply(json!({"ok": false, "error": "unexpected"})),
+    });
+    *base.lock().unwrap() = server.base.clone();
+    let files = vec![
+        Upload {
+            name: "a.txt".into(),
+            title: None,
+            bytes: b"hello".to_vec(),
+        },
+        Upload {
+            name: "b.txt".into(),
+            title: Some("Bee".into()),
+            bytes: b"bz".to_vec(),
+        },
+    ];
+    let out = upload_files(
+        &slack_at(&server),
+        "C0000000A",
+        files,
+        Some("see attached"),
+        Some("1.5"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.len(), 2);
+    let reqs = server.requests();
+    let paths: Vec<&str> = reqs.iter().map(|r| r.path()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/files.getUploadURLExternal",
+            "/up/a.txt",
+            "/files.getUploadURLExternal",
+            "/up/b.txt",
+            "/files.completeUploadExternal"
+        ]
+    );
+    assert_eq!(reqs[0].form()["length"], "5");
+    assert_eq!(reqs[1].body, "hello");
+    assert!(
+        !reqs[1].headers.contains_key("authorization"),
+        "the signed URL needs no token"
+    );
+    let done = reqs[4].form();
+    assert_eq!(done["channel_id"], "C0000000A");
+    assert_eq!(done["thread_ts"], "1.5");
+    assert_eq!(done["initial_comment"], "see attached");
+    let listed: Value = serde_json::from_str(&done["files"]).unwrap();
+    assert_eq!(
+        listed,
+        json!([{"id": "F_a.txt", "title": "a.txt"}, {"id": "F_b.txt", "title": "Bee"}])
+    );
+    assert!(
+        !paths.contains(&"/files.upload"),
+        "the retired method is never used"
+    );
 }
