@@ -549,8 +549,10 @@ async fn a_channel_lookup_stops_at_the_first_exact_match() {
 async fn resolved_names_are_cached_for_a_while() {
     let _home = crate::ScratchHome::new();
     let cache = crate::slack::name_cache_path("T_TEST");
-    let server = MockServer::sequence(vec![json!({"ok": true,
-        "channels": [{"id": "C0000000A", "name": "general"}]})]);
+    let server = MockServer::sequence(vec![
+        json!({"ok": true, "channels": [{"id": "C0000000A", "name": "general"}]}),
+        json!({"ok": true, "channel": {"id": "C0000000A", "name": "general"}}),
+    ]);
     let slack = slack_at(&server).with_cache(Some(cache.clone()));
     assert_eq!(
         resolve_channel(&slack, "general").await.unwrap(),
@@ -560,10 +562,15 @@ async fn resolved_names_are_cached_for_a_while() {
         resolve_channel(&slack, "#General").await.unwrap(),
         "C0000000A"
     );
+    let paths: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.path().to_string())
+        .collect();
     assert_eq!(
-        server.requests().len(),
-        1,
-        "second lookup came from the cache"
+        paths,
+        ["/users.conversations", "/conversations.info"],
+        "second lookup came from the cache, checked with one call"
     );
     // An entry past its TTL is ignored.
     let stale = json!({"channel:general": {"id": "COLD",
@@ -639,4 +646,71 @@ fn a_link_at_the_end_of_a_sentence_leaves_the_full_stop_as_text() {
         text, "Spec: https://x.dev/spec. Also (https://y.io/a), ok? https://",
         "nothing lost or doubled"
     );
+}
+
+#[tokio::test]
+async fn a_backslash_url_never_gets_the_slack_token() {
+    let server = MockServer::sequence(vec![]);
+    let slack = slack_at(&server);
+    let (port, hits) = crate::test_http::decoy();
+    for url in [
+        format!(r"https://127.0.0.1:{port}\@files.slack.com/x"),
+        format!(r"https://127.0.0.1:{port}\.slack.com/x"),
+    ] {
+        let err = slack.download(&url, false).await.unwrap_err().to_string();
+        assert!(err.contains("refusing to send the Slack token"), "{err}");
+    }
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_cached_channel_that_was_renamed_is_looked_up_again() {
+    let _home = crate::ScratchHome::new();
+    let cache = crate::slack::name_cache_path("T_RENAME");
+    let fresh = json!({"channel:general": {"id": "COLD00001",
+        "at": crate::oauth_loopback::now_secs()}});
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, fresh.to_string()).unwrap();
+    let server = MockServer::sequence(vec![
+        // The cached channel is now called something else.
+        json!({"ok": true, "channel": {"id": "COLD00001", "name": "general-old"}}),
+        json!({"ok": true, "channels": [{"id": "CNEW00001", "name": "general"}]}),
+    ]);
+    let slack = slack_at(&server).with_cache(Some(cache.clone()));
+    assert_eq!(
+        resolve_channel(&slack, "#general").await.unwrap(),
+        "CNEW00001"
+    );
+    assert_eq!(
+        slack.cache_get("channel:general").as_deref(),
+        Some("CNEW00001")
+    );
+}
+
+#[tokio::test]
+async fn only_handles_are_cached_and_a_hit_must_still_be_that_handle() {
+    let _home = crate::ScratchHome::new();
+    let cache = crate::slack::name_cache_path("T_USERS");
+    let alex = json!({"id": "U0000000A", "name": "alex", "profile": {"display_name": "Al"}});
+    let server = MockServer::sequence(vec![
+        json!({"ok": true, "members": [alex.clone()]}),
+        // Display name: scanned again, not cached.
+        json!({"ok": true, "members": [alex.clone()]}),
+        json!({"ok": true, "members": [alex.clone()]}),
+    ]);
+    let slack = slack_at(&server).with_cache(Some(cache.clone()));
+    assert_eq!(resolve_user(&slack, "@alex").await.unwrap().id, "U0000000A");
+    assert_eq!(slack.cache_get("user:alex").as_deref(), Some("U0000000A"));
+    resolve_user(&slack, "Al").await.unwrap();
+    resolve_user(&slack, "Al").await.unwrap();
+    assert_eq!(slack.cache_get("user:al"), None);
+    assert_eq!(server.requests().len(), 3);
+
+    // The cached id now has another handle: scan again, find the new owner.
+    let server = MockServer::sequence(vec![
+        json!({"ok": true, "user": {"id": "U0000000A", "name": "alex.old"}}),
+        json!({"ok": true, "members": [{"id": "U0000000B", "name": "alex"}]}),
+    ]);
+    let slack = slack_at(&server).with_cache(Some(cache));
+    assert_eq!(resolve_user(&slack, "@alex").await.unwrap().id, "U0000000B");
 }

@@ -360,7 +360,7 @@ async fn api_command(
             let attach = flags_all(rest, "--attach");
             if !attach.is_empty() {
                 for p in &attach {
-                    crate::attachments::read_upload(p)?;
+                    crate::attachments::check_upload(p, crate::attachments::LINEAR_UPLOAD)?;
                 }
                 let md = api::upload_for_markdown(linear, &attach).await?;
                 changes.description = Some(api::with_files(changes.description.as_deref(), &md));
@@ -403,7 +403,7 @@ async fn api_command(
                 bail!("linear comment needs --body <text>, --body-file <path>, or --attach <path>");
             }
             for p in &attach {
-                crate::attachments::read_upload(p)?;
+                crate::attachments::check_upload(p, crate::attachments::LINEAR_UPLOAD)?;
             }
             let md = if attach.is_empty() {
                 String::new()
@@ -728,8 +728,10 @@ async fn api_command(
                 } else {
                     format!("{dir}/")
                 };
-                for f in &files {
-                    fetch_one(ctx, linear, &f.url, &f.name, Some(&dir), false).await?;
+                // Pasted screenshots are all "image.png"; keep every one.
+                let names: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
+                for (f, name) in files.iter().zip(crate::attachments::distinct_names(&names)) {
+                    fetch_one(ctx, linear, &f.url, &name, Some(&dir), false).await?;
                 }
                 return Ok(());
             }
@@ -768,7 +770,7 @@ async fn api_command(
             }
             // Fail on a bad path before anything is uploaded.
             for p in paths {
-                crate::attachments::read_upload(p)?;
+                crate::attachments::check_upload(p, crate::attachments::LINEAR_UPLOAD)?;
             }
             for p in paths {
                 let url = api::attach_file(linear, &id, p, title.as_deref()).await?;

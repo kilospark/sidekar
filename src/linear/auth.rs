@@ -268,15 +268,16 @@ pub async fn login(opts: LoginOptions<'_>) -> Result<super::api::Viewer> {
         .ok_or_else(|| anyhow::anyhow!("Linear returned no access token"))?;
 
     let viewer = super::api::viewer(&Linear::new(header_for(&token.access_token))).await?;
-    crate::broker::kv_set(
+    crate::oauth_loopback::store_login(
         opts.token_key,
         &token.to_value(),
-        Some(&tags_for(
+        &tags_for(
             Method::OAuth,
             &viewer.email,
             &viewer.org,
             Some((opts.client_id_key, opts.client_secret_key)),
-        )),
+        ),
+        MARKER_TAG,
     )?;
     if default_token_key()?.is_none() {
         set_default_token_key(opts.token_key)?;

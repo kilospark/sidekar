@@ -141,12 +141,16 @@ impl Slack {
     /// sign-in page rather than an error, so an HTML reply to a non-HTML file
     /// is reported as the scope problem it is.
     pub async fn download(&self, url: &str, expect_html: bool) -> Result<Vec<u8>> {
-        let test_host = crate::attachments::host_of(&self.base);
-        let test_host = test_host.filter(|h| h != "slack.com");
-        if !crate::attachments::token_may_go_to(url, "slack.com", test_host.as_deref()) {
+        // The API base (slack.com, or a test's mock) already gets the token.
+        let Some(target) = crate::attachments::token_url(url, "slack.com", Some(&self.base)) else {
             bail!("refusing to send the Slack token to {url}: not a Slack file URL");
-        }
-        let res = self.http.get(url).bearer_auth(&self.token).send().await?;
+        };
+        let res = self
+            .http
+            .get(target)
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
         let status = res.status();
         let html = res
             .headers()

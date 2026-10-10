@@ -949,3 +949,19 @@ fn a_bare_upload_link_ending_a_sentence_drops_the_full_stop() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_backslash_url_never_reaches_the_other_host() {
+    let server = routed(|_| (200, "image/png".into(), vec![1]));
+    let linear = linear_at(&server);
+    let (port, hits) = crate::test_http::decoy();
+    for url in [
+        format!(r"https://127.0.0.1:{port}\@uploads.linear.app/x"),
+        format!(r"https://127.0.0.1:{port}\.uploads.linear.app/x"),
+    ] {
+        let err = linear.download(&url).await.unwrap_err().to_string();
+        assert!(err.contains("not a Linear upload"), "{err}");
+    }
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(server.requests().is_empty());
+}
