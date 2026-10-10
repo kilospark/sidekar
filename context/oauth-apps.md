@@ -119,9 +119,48 @@ need the app reinstalled (or `slack login` again) before `slack bookmarks`,
 answers a file URL with its sign-in page; `slack download` reports that as the
 missing scope.
 
+The loopback listener (`wait_for_code`) puts a 3 s read deadline on every
+connection and keeps listening past anything that is not the redirect (an idle
+connection, a favicon request, a short read), so only the overall 5 minute
+consent timeout ends the wait. `state` is 128 random bits and is checked before
+anything else in the redirect: a request with a missing or wrong state gets a
+404 and the listener keeps waiting, so neither a stray request nor a forged
+`?error=` from another local process can end or cancel the login. Both
+loopback addresses must be free; a taken `[::1]` port is an error, not
+something to skip (only a machine without IPv6 is skipped).
+
+PKCE (S256): Google and Linear always get a `code_challenge`, and the exchange
+sends the `code_verifier` with the client secret. Slack only accepts PKCE once
+the app has PKCE turned on, which is permanent and makes the app a public client
+(no secret, and no bot scopes on a localhost redirect), so it is opt-in:
+`slack login --pkce` sends the challenge and exchanges with the verifier
+instead of the secret, and refuses `--bot`.
+
+`slack login --team T…` checks the workspace the token came back for (by id or
+name) and stores nothing if it is a different one.
+
+Refresh: rotating refresh tokens (Linear always; Slack with rotation on) are
+spent once, so read → refresh → write is serialised by a file lock per kv key
+(`~/.sidekar/locks/token-<key>.lock`). After taking the lock the entry is read
+again, so a caller that waited uses the token the first one wrote instead of
+spending the old refresh token. When a refresh fails, the entry is read once
+more before reporting it: a valid token written meanwhile (by another process,
+or by kv sync from another machine) is used, and a newer refresh token gets one
+retry. Each rotation clears the key's kv history, so spent tokens are not kept
+as old versions. The lock covers this machine only; two machines refreshing in
+the same moment can still race, and the loser's error says to log in again.
+
+Slack name lookups (`#name`, a handle or display name, user ids shown as names)
+search the person's own channels (`users.conversations`) before the whole
+workspace, stop at the first exact match, and cache name → id for 15 minutes in
+`~/.sidekar/cache/slack-names-<team>.json`. Names for user ids are fetched eight
+at a time.
+
 `slack draft` calls `drafts.create`, which is not in Slack's published API. It
-takes an OAuth user token with no extra scope (`im:write` covers drafting to a
-DM not yet open); bot tokens are refused. `drafts.list`/`update`/`delete` return
+takes an OAuth user token with no extra scope; bot tokens are refused. Drafting
+to a person opens your DM with them via `conversations.open` (`im:write`) when
+there is none yet: Slack shows them nothing until a message is sent, but the
+empty DM exists afterwards. `--existing-dm` refuses instead of opening one. `drafts.list`/`update`/`delete` return
 errors for OAuth tokens, and Saved for later (`saved.list`) needs a browser
 session token (`xoxc`), so neither is offered. `stars.list` is legacy and
 reflects the retired Stars feature, not Saved for later.
@@ -130,7 +169,12 @@ Linear scopes: `read,write` (enough for `fileUpload`, `attachmentCreate` and
 `attachmentLinkURL`; files on `uploads.linear.app` are fetched with the same
 `Authorization` header, sent to that host only). Linear rotates the refresh token on every use, so
 the access token is cached in the blob and only refreshed within five minutes of
-expiry; each refresh rewrites the kv entry (which syncs).
+expiry; each refresh rewrites the kv entry (which syncs) under the lock above.
+
+Linear lists follow `pageInfo { hasNextPage endCursor }`: label, project and
+cycle lookups read every page, so a name past the first 250 still resolves, and
+listings (`issues`, `projects`, `users`, `cycles`, `inbox`, `activity`) end with
+a note when `--limit` cut them.
 
 ## Database Collections
 
