@@ -197,7 +197,55 @@ fn ensure_added_columns(conn: &Connection) -> Result<()> {
         ensure_column(conn, table, column, ddl)?;
     }
     ensure_memory_sync_columns(conn)?;
+    migrate_device_local_kv_keys(conn)?;
     drop_unsynced_kv_state(conn)?;
+    Ok(())
+}
+
+/// Move per-device kv keys from before `internal:` (`_nick:`, `gemini_cache:`)
+/// under it, and take their copies off the server.
+///
+/// Each local row is renamed, keeping its value (encryption doesn't bind the
+/// key name) unless the new key is already set. A row that synced gets a
+/// tombstone to push, so the server copy goes and no device adopts it again;
+/// once that push lands, the leftover clean tombstone row is dropped. Pulls
+/// ignore these keys (`kv_store::kv_key_syncs`), so an older build that still
+/// writes one can't bring it back. Runs on every open, so a read guards the
+/// writes.
+fn migrate_device_local_kv_keys(conn: &Connection) -> Result<()> {
+    for (old, new) in kv_store::LEGACY_DEVICE_LOCAL_PREFIXES {
+        let pattern = format!("{old}*");
+        let pending: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM kv_store WHERE key GLOB ?1)
+                 OR EXISTS(SELECT 1 FROM sync_state WHERE kind = 'kv' AND record_id GLOB ?1
+                           AND NOT (deleted = 1 AND dirty = 1))",
+            params![pattern],
+            |r| r.get(0),
+        )?;
+        if !pending {
+            continue;
+        }
+        let tx = conn.unchecked_transaction()?;
+        let tail = old.chars().count() as i64 + 1;
+        tx.execute(
+            "INSERT OR IGNORE INTO kv_store (user_id, key, value, tags, created_at, updated_at)
+             SELECT user_id, ?2 || substr(key, ?3), value, tags, created_at, updated_at
+               FROM kv_store WHERE key GLOB ?1",
+            params![pattern, new, tail],
+        )?;
+        tx.execute("DELETE FROM kv_store WHERE key GLOB ?1", params![pattern])?;
+        tx.execute("DELETE FROM kv_history WHERE key GLOB ?1", params![pattern])?;
+        tx.execute(
+            "UPDATE sync_state SET version = version + 1, deleted = 1, dirty = 1, updated_at = ?2
+              WHERE kind = 'kv' AND record_id GLOB ?1 AND deleted = 0",
+            params![pattern, crate::message::epoch_secs() as i64],
+        )?;
+        tx.execute(
+            "DELETE FROM sync_state WHERE kind = 'kv' AND record_id GLOB ?1 AND deleted = 1 AND dirty = 0",
+            params![pattern],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
