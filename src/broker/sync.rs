@@ -1119,7 +1119,7 @@ pub async fn bus_sync_round(uid: &str) -> Result<()> {
         let conn = open()?;
         let device = device_id(&conn)?;
         super::bus_sync::reconcile_presence(&conn, uid, &device)?;
-        super::bus_sync::has_published_agents(&conn)?
+        super::bus_sync::should_pull(&conn, uid)?
     };
     if has_agents {
         pull_bus(uid).await?;

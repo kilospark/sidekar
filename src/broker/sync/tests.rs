@@ -1448,3 +1448,122 @@ fn one_machine_at_a_time_holds_a_refresh_lease() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn another_machines_agent_activity_is_seen_and_a_message_it_missed_bounces_back() -> Result<()> {
+    let _home = crate::ScratchHome::new();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let store: Arc<Mutex<Vec<ServerDoc>>> = Arc::new(Mutex::new(Vec::new()));
+        let server = FakeSyncServer::start(store.clone()).await?;
+        let old_api_url = env::var_os("SIDEKAR_API_URL");
+        unsafe { env::set_var("SIDEKAR_API_URL", format!("http://{}", server.addr)) };
+
+        let uid = "shared-account";
+        let home_a = crate::ScratchDir::new("bus-gaps-a");
+        let home_b = crate::ScratchDir::new("bus-gaps-b");
+        let switch_to = |home: &std::path::Path| {
+            unsafe { env::set_var("HOME", home) };
+            reset_encryption_state();
+            set_encryption_key(vec![23u8; 32]);
+            set_current_user_id(uid.to_string());
+            auth_set("token", uid).expect("auth_set should persist the fake device token");
+        };
+        let remote_state = |name: &str| -> Result<Option<String>> {
+            let agents = crate::broker::bus_sync::live_remote_agents(&open()?, uid)?;
+            Ok(agents
+                .into_iter()
+                .find(|a| a.name == name)
+                .and_then(|a| a.activity)
+                .map(|a| a.state))
+        };
+
+        // Machine A: an agent at work.
+        switch_to(home_a.path());
+        let agent = crate::message::AgentId {
+            name: "claude-app-1".into(),
+            nick: Some("otter".into()),
+            session: Some("/src/app".into()),
+            pane: Some("pty-525252".into()),
+            agent_type: Some("claude".into()),
+        };
+        register_agent(&agent, Some("pty-525252"))?;
+        let now = crate::message::epoch_secs();
+        update_agent_activity("claude-app-1", crate::activity::ActivityState::AgentWorking, now)?;
+        bus_sync_round(uid).await?;
+        let device_a = device_id(&open()?)?;
+
+        // Machine B sees it working, in `agents` too.
+        switch_to(home_b.path());
+        pull_bus(uid).await?;
+        assert_eq!(remote_state("claude-app-1")?.as_deref(), Some("agent_working"));
+        let (_, found) = crate::broker::bus_sync::lookup_remote_agent("otter")?
+            .expect("found by nick from another machine");
+        let row = crate::commands::agents::remote_row(&found, crate::message::epoch_secs());
+        assert_eq!(row.attention, crate::commands::agents::Attention::Working);
+        assert!(row.host.is_some());
+
+        // A's agent finishes; its next round says so at once, not at the
+        // two-minute heartbeat.
+        switch_to(home_a.path());
+        update_agent_activity("claude-app-1", crate::activity::ActivityState::Idle, now + 1)?;
+        bus_sync_round(uid).await?;
+        switch_to(home_b.path());
+        pull_bus(uid).await?;
+        assert_eq!(remote_state("claude-app-1")?.as_deref(), Some("idle"));
+
+        // B asks it something; A's agent leaves before A's next round.
+        let conn = open()?;
+        let asker = crate::message::AgentId::new("cli-app-9");
+        let request = crate::message::Envelope::new_request(asker, "claude-app-1", "review");
+        set_outbound_request(
+            &request,
+            "cli-app-9",
+            crate::bus::BUS_SYNC_TRANSPORT,
+            &found.record_id(),
+            None,
+            None,
+        )?;
+        let device_b = device_id(&conn)?;
+        crate::broker::bus_sync::queue_remote_message(
+            &conn,
+            uid,
+            &device_b,
+            &device_a,
+            "claude-app-1",
+            "cli-app-9",
+            "[from cli-app-9] review",
+            Some(&request),
+        )?;
+        drop(conn);
+        push_bus(uid, Duration::from_secs(5)).await?;
+
+        switch_to(home_a.path());
+        unregister_agent("claude-app-1")?;
+        bus_sync_round(uid).await?;
+        assert!(list_queued_messages("claude-app-1")?.is_empty());
+
+        // B's pull brings the bounce: the request is closed, so `bus await`
+        // fails at once instead of waiting.
+        switch_to(home_b.path());
+        let outcome = crate::bus::await_reply::await_reply(
+            &request.id,
+            None,
+            Duration::from_secs(10),
+        )
+        .await?;
+        assert!(
+            matches!(outcome, crate::bus::await_reply::AwaitOutcome::RecipientGone { .. }),
+            "undeliverable request reported: {outcome:?}"
+        );
+        assert!(crate::broker::bus_sync::live_remote_agents(&open()?, uid)?.is_empty());
+
+        server.stop();
+        reset_encryption_state();
+        match old_api_url {
+            Some(v) => unsafe { env::set_var("SIDEKAR_API_URL", v) },
+            None => unsafe { env::remove_var("SIDEKAR_API_URL") },
+        }
+        Ok(())
+    })
+}

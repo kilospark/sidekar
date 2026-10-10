@@ -484,3 +484,197 @@ fn machines_sharing_a_host_name_are_told_apart_by_device_id() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn presence_carries_activity_and_a_change_republishes_before_the_heartbeat() -> Result<()> {
+    with_db(|conn| {
+        register("claude-app-1", "pty-111");
+        let now = crate::message::epoch_secs();
+        update_agent_activity(
+            "claude-app-1",
+            crate::activity::ActivityState::AgentWorking,
+            now,
+        )?;
+        assert_eq!(reconcile_presence(conn, UID, "devA")?, 1);
+        clear_dirty(conn);
+        assert_eq!(reconcile_presence(conn, UID, "devA")?, 0, "nothing changed");
+
+        // The reading's time moving is not a change.
+        update_agent_activity(
+            "claude-app-1",
+            crate::activity::ActivityState::AgentWorking,
+            now + 1,
+        )?;
+        assert_eq!(reconcile_presence(conn, UID, "devA")?, 0);
+
+        // Its state is.
+        update_agent_activity("claude-app-1", crate::activity::ActivityState::Idle, now + 2)?;
+        assert_eq!(reconcile_presence(conn, UID, "devA")?, 1);
+        clear_dirty(conn);
+
+        // So is a request starting to wait on it.
+        let request = Envelope::new_request(AgentId::new("cli-x-1"), "claude-app-1", "hi");
+        set_pending(&request)?;
+        assert_eq!(reconcile_presence(conn, UID, "devA")?, 1);
+
+        let rid = agent_record_id("devA", "claude-app-1");
+        let payload: AgentPayload = serde_json::from_str(&sync_payload(conn, KIND_AGENT, &rid)?)?;
+        let activity = payload.activity.expect("activity is published");
+        assert_eq!(activity.state, "idle");
+        assert!(activity.fresh);
+        assert_eq!(activity.settled_at, Some(now + 2), "the finish travels with it");
+        assert_eq!(payload.pending, 1);
+
+        // Another machine reads it back.
+        let ciphertext = sealed(conn, KIND_AGENT, &rid);
+        let theirs = agent_record_id("devB", "claude-app-1");
+        assert!(apply_record(conn, UID, "devA", KIND_AGENT, &theirs, &ciphertext, 1, false)?);
+        let remote = live_remote_agents(conn, UID)?;
+        assert_eq!(remote.len(), 1);
+        assert_eq!(remote[0].pending, 1);
+        assert_eq!(remote[0].activity.as_ref().map(|a| a.state.as_str()), Some("idle"));
+        Ok(())
+    })
+}
+
+#[test]
+fn presence_from_a_release_without_activity_still_reads() -> Result<()> {
+    with_db(|conn| {
+        let old = serde_json::json!({
+            "name": "claude-app-1", "hostname": "studio", "device_id": "devB",
+            "published_at": crate::message::epoch_secs(),
+        });
+        let ciphertext = crate::broker::encryption::sync_encrypt(&KEY, &old.to_string())?;
+        let rid = agent_record_id("devB", "claude-app-1");
+        assert!(apply_record(conn, UID, "devA", KIND_AGENT, &rid, &ciphertext, 1, false)?);
+        let remote = live_remote_agents(conn, UID)?;
+        assert!(remote[0].activity.is_none());
+        assert_eq!(remote[0].pending, 0);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_fresh_remote_reading_stays_current_and_a_stale_one_stays_stale() {
+    let now = 10_000;
+    let fresh = RemoteActivity {
+        state: "agent_working".into(),
+        at: now - 500,
+        fresh: true,
+        reason: None,
+        settled_at: None,
+        seen_at: None,
+    };
+    assert_eq!(fresh.detail(now).at, now);
+    let stale = RemoteActivity {
+        fresh: false,
+        ..fresh
+    };
+    assert_eq!(stale.detail(now).at, now - 500);
+}
+
+#[test]
+fn a_request_for_an_agent_no_longer_here_bounces_to_the_asker() -> Result<()> {
+    with_db(|conn| {
+        let request = Envelope::new_request(AgentId::new("cli-app-7"), "claude-app-1", "review");
+        let id = queue_remote_message(
+            conn,
+            UID,
+            "devB",
+            "devA",
+            "claude-app-1",
+            "cli-app-7",
+            "[from cli-app-7] review",
+            Some(&request),
+        )?;
+        let ciphertext = sealed(conn, KIND_BUS, &id);
+        conn.execute("DELETE FROM sync_state", [])?;
+        conn.execute("DELETE FROM bus_outbox", [])?;
+
+        // Machine A: claude-app-1 is gone.
+        assert!(apply_record(conn, UID, "devA", KIND_BUS, &id, &ciphertext, 1, false)?);
+        assert!(pending_message(&id)?.is_none(), "nothing waits on an agent that isn't here");
+        assert!(origin_device(conn, &id)?.is_none());
+        let bounces: Vec<String> = conn
+            .prepare("SELECT payload FROM bus_outbox")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        assert_eq!(bounces.len(), 1, "one bounce queued");
+        let bounce: MessagePayload = serde_json::from_str(&bounces[0])?;
+        assert_eq!(bounce.to_device, "devB", "back to the machine that sent it");
+        assert_eq!(bounce.recipient, "cli-app-7");
+        assert_eq!(bounce.bounce_of.as_deref(), Some(id.as_str()));
+        assert!(bounce.undeliverable.is_some());
+        assert!(
+            bounce.envelope_json.is_none(),
+            "an older release must not take a bounce for an answer"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn a_bounce_never_bounces_and_an_answer_for_a_departed_asker_is_not_bounced() -> Result<()> {
+    with_db(|conn| {
+        // An answer whose asker left: recorded for `bus await`, not bounced.
+        let request = Envelope::new_request(AgentId::new("cli-app-7"), "claude-app-1", "q");
+        let answer = Envelope::new_response(
+            AgentId::new("claude-app-1"),
+            "cli-app-7",
+            "a",
+            request.id.clone(),
+        );
+        let id = queue_remote_message(
+            conn, UID, "devA", "devB", "cli-app-7", "claude-app-1", "a", Some(&answer),
+        )?;
+        let ciphertext = sealed(conn, KIND_BUS, &id);
+        conn.execute("DELETE FROM sync_state", [])?;
+        conn.execute("DELETE FROM bus_outbox", [])?;
+        assert!(apply_record(conn, UID, "devB", KIND_BUS, &id, &ciphertext, 1, false)?);
+        let outbox: i64 = conn.query_row("SELECT COUNT(*) FROM bus_outbox", [], |r| r.get(0))?;
+        assert_eq!(outbox, 0);
+        assert_eq!(replies_for_request(&request.id)?.len(), 1);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_bounce_closes_the_request_so_bus_await_reports_it() -> Result<()> {
+    with_db(|conn| {
+        let request = Envelope::new_request(AgentId::new("cli-app-7"), "claude-app-1", "review");
+        set_outbound_request(&request, "cli-app-7", "bus_sync", "devA\u{0}claude-app-1", None, None)?;
+        let bounce = MessagePayload {
+            to_device: "devB".into(),
+            from_device: "devA".into(),
+            recipient: "cli-app-7".into(),
+            sender: "sidekar".into(),
+            body: "[sidekar] not delivered".into(),
+            envelope_json: None,
+            created_at: crate::message::epoch_secs() as i64,
+            bounce_of: Some(request.id.clone()),
+            undeliverable: Some("claude-app-1 is no longer on \"studio\"".into()),
+        };
+        queue_payload(conn, UID, "bounce-1", &bounce)?;
+        let ciphertext = sealed(conn, KIND_BUS, "bounce-1");
+        conn.execute("DELETE FROM sync_state", [])?;
+        assert!(apply_record(conn, UID, "devB", KIND_BUS, "bounce-1", &ciphertext, 1, false)?);
+        let status = outbound_request(&request.id)?.map(|r| r.status);
+        assert_eq!(status.as_deref(), Some(OUTBOUND_STATUS_RECIPIENT_GONE));
+
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(crate::bus::await_reply::await_reply(
+                &request.id,
+                None,
+                std::time::Duration::from_secs(2),
+            ))?;
+        assert!(
+            matches!(outcome, crate::bus::await_reply::AwaitOutcome::RecipientGone { .. }),
+            "bus await fails instead of waiting: {outcome:?}"
+        );
+        // The asker isn't registered here (a one-shot shell), so nothing is queued.
+        assert!(list_queued_messages("cli-app-7")?.is_empty());
+        Ok(())
+    })
+}

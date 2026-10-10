@@ -28,7 +28,13 @@ pub fn cmd_explain(
         bail!("Usage: sidekar bus explain <agent>");
     };
 
-    let agent = super::wait::resolve_agent(state, target)?;
+    let agent = match super::wait::resolve_agent(state, target) {
+        Ok(agent) => agent,
+        Err(not_here) => match broker::bus_sync::lookup_remote_agent(target)? {
+            Some((_, remote)) => return explain_remote(ctx, &remote),
+            None => return Err(not_here),
+        },
+    };
     let name = agent.id.name.clone();
     let label = match &agent.id.nick {
         Some(nick) => format!("{nick} ({name})"),
@@ -83,6 +89,68 @@ pub fn cmd_explain(
         lines.push("  delivery: open".to_string());
     }
 
+    out!(
+        ctx,
+        "{}",
+        crate::output::to_string(&crate::output::PlainOutput::new(lines.join("\n")))?
+    );
+    Ok(())
+}
+
+/// `bus explain` for an agent on another of the account's machines: what its
+/// presence last said, and how old that is.
+fn explain_remote(ctx: &mut AppContext, agent: &broker::bus_sync::RemoteAgent) -> Result<()> {
+    let label = agent.label();
+    let now = epoch_secs();
+    let published = now.saturating_sub(agent.published_at.max(0) as u64);
+    let Some(activity) = &agent.activity else {
+        bail!(
+            "{label} publishes no activity: its machine runs a sidekar from before \
+             cross-machine bus explain. Update sidekar there."
+        );
+    };
+    let detail = activity.detail(now);
+    let mut lines = vec![format!("{label} is {}", detail.state.as_str())];
+    match &detail.reason {
+        Some(reason) if !reason.is_empty() => lines.push(format!("  because: {reason}")),
+        _ => lines.push("  because: not recorded".to_string()),
+    }
+    if activity.at == 0 {
+        lines.push("  reading:  never reported".to_string());
+    } else {
+        let staleness = if activity.fresh {
+            String::new()
+        } else {
+            format!(" (stale — older than {ACTIVITY_STALE_SECS}s there, treated as unknown)")
+        };
+        lines.push(format!(
+            "  reading:  {} on its machine's clock{staleness}",
+            ago(now.saturating_sub(activity.at))
+        ));
+    }
+    lines.push(format!(
+        "  synced:   presence published {}; changes arrive on that machine's next bus sync round",
+        ago(published)
+    ));
+    match detail.settled_at {
+        None => lines.push("  finished: not since it registered".to_string()),
+        Some(settled) => {
+            let seen = if detail.finished_unseen() {
+                " — unseen"
+            } else {
+                " — seen"
+            };
+            lines.push(format!("  finished: {}{seen}", ago(now.saturating_sub(settled))));
+        }
+    }
+    if agent.pending > 0 {
+        lines.push(format!("  pending:  {} request(s) waiting on its answer", agent.pending));
+    }
+    if detail.snapshot().should_defer_delivery() {
+        lines.push("  delivery: via sync; deferred there until this clears".to_string());
+    } else {
+        lines.push("  delivery: via sync, open".to_string());
+    }
     out!(
         ctx,
         "{}",

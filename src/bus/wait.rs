@@ -109,7 +109,14 @@ pub async fn cmd_wait(
         bail!("Usage: sidekar bus wait <agent> [--until <state>] [--timeout <ms>]");
     };
 
-    let agent = resolve_agent(state, target)?;
+    let agent = match resolve_agent(state, target) {
+        Ok(agent) => agent,
+        // Not on this machine: maybe on another of the account's.
+        Err(not_here) => match broker::bus_sync::lookup_remote_agent(target)? {
+            Some((uid, remote)) => return wait_remote(ctx, &uid, remote, until, timeout_ms).await,
+            None => return Err(not_here),
+        },
+    };
     let name = agent.id.name.clone();
     let label = agent
         .id
@@ -157,6 +164,82 @@ pub async fn cmd_wait(
             "No activity reported for {label} in {}s. \
              Activity is published by the sidekar PTY wrapper; an agent started \
              without it (plain `claude` rather than `sidekar claude`) never reports state.",
+            timeout_ms / 1000
+        );
+    }
+    bail!(
+        "Timed out after {}s waiting for {label} to be {}. Last seen: {}.",
+        timeout_ms / 1000,
+        until.describe(),
+        last.state.as_str()
+    );
+}
+
+/// How often a wait on another machine's agent pulls its presence. That
+/// machine publishes a change on its next bus sync round, so the state seen
+/// here trails by up to one round.
+const REMOTE_PULL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// `bus wait` for an agent on another of the account's machines, read from the
+/// activity its presence carries (context/bus-sync.md).
+async fn wait_remote(
+    ctx: &mut AppContext,
+    uid: &str,
+    agent: broker::bus_sync::RemoteAgent,
+    until: WaitUntil,
+    timeout_ms: u64,
+) -> Result<()> {
+    let record_id = agent.record_id();
+    let label = agent.label();
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let mut last_pull: Option<std::time::Instant> = None;
+    let mut last = ActivitySnapshot::unknown();
+    let mut ever_fresh = false;
+
+    loop {
+        if last_pull.is_none_or(|t| t.elapsed() >= REMOTE_PULL_INTERVAL) {
+            last_pull = Some(std::time::Instant::now());
+            if broker::pull_bus(uid).await.is_ok() {
+                // The tombstones of whatever the pull delivered here.
+                let _ = broker::push_bus(uid, Duration::from_secs(5)).await;
+            }
+        }
+        let Some(current) =
+            broker::bus_sync::remote_agent_by_record(&broker::open_db()?, uid, &record_id)?
+        else {
+            bail!("{label} left the bus, or its machine went quiet, while waiting on it.");
+        };
+        let Some(activity) = &current.activity else {
+            bail!(
+                "{label} publishes no activity: its machine runs a sidekar from before \
+                 cross-machine bus wait. Update sidekar there."
+            );
+        };
+        last = activity.detail(crate::message::epoch_secs()).snapshot();
+        ever_fresh |= !last.is_stale();
+
+        if until.satisfied_by(last.state) && !last.is_stale() {
+            out!(
+                ctx,
+                "{}",
+                crate::output::to_string(&crate::output::PlainOutput::new(format!(
+                    "{label} is {}.",
+                    last.state.as_str()
+                )))?
+            );
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    if !ever_fresh {
+        bail!(
+            "No activity reported for {label} in {}s. \
+             Activity is published by the sidekar PTY wrapper; an agent started \
+             without it never reports state.",
             timeout_ms / 1000
         );
     }

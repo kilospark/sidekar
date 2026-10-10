@@ -1,4 +1,5 @@
-//! `sidekar agents` — every agent on this machine, ordered by what needs you.
+//! `sidekar agents` — every agent on this machine, and on the account's other
+//! machines through bus sync, ordered by what needs you.
 //!
 //! `bus who` answers "who is on which channel". This answers the question a
 //! person running several agents actually has: which of them is waiting on me?
@@ -65,6 +66,10 @@ pub(crate) struct Row {
     pub spawned_by: Option<String>,
     /// This row is the agent running the command.
     pub you: bool,
+    /// The machine it runs on, when that is another of the account's
+    /// (context/bus-sync.md); `None` here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Decide what an agent needs, from what the registry says about it.
@@ -234,6 +239,10 @@ fn shown_nick(r: &Row) -> String {
     if r.nick.chars().count() > NICK_MAX {
         nick.push('…');
     }
+    if let Some(host) = &r.host {
+        nick.push('@');
+        nick.push_str(host.split('.').next().unwrap_or(host));
+    }
     if r.you {
         nick.push_str(" (you)");
     }
@@ -293,7 +302,49 @@ fn gather() -> Result<Vec<Row>> {
         }
         rows.push(row);
     }
+    rows.extend(remote_rows(now));
     Ok(rows)
+}
+
+/// The account's other machines' agents, from their synced presence: what this
+/// machine last heard, which trails by up to a bus sync round.
+fn remote_rows(now: u64) -> Vec<Row> {
+    let Some(uid) = crate::broker::bus_sync_account() else {
+        return Vec::new();
+    };
+    crate::broker::open_db()
+        .and_then(|conn| crate::broker::bus_sync::live_remote_agents(&conn, &uid))
+        .unwrap_or_default()
+        .iter()
+        .map(|a| remote_row(a, now))
+        .collect()
+}
+
+pub(crate) fn remote_row(a: &crate::broker::bus_sync::RemoteAgent, now: u64) -> Row {
+    let (attention, mut detail) = match &a.activity {
+        // Its presence is live, so its process is.
+        Some(activity) => classify(true, Some(&activity.detail(now)), now),
+        None => (Attention::Stale, "its sidekar publishes no activity".into()),
+    };
+    if a.pending > 0 {
+        let waiting = format!("{} waiting on it", a.pending);
+        detail = if detail.is_empty() {
+            waiting
+        } else {
+            format!("{detail} · {waiting}")
+        };
+    }
+    Row {
+        name: a.name.clone(),
+        nick: a.nick.clone().unwrap_or_else(|| a.name.clone()),
+        harness: harness_of(&a.name, a.agent_type.as_deref()),
+        channel: a.channel.as_deref().map(short_channel).unwrap_or_default(),
+        attention,
+        detail,
+        spawned_by: None,
+        you: false,
+        host: Some(a.hostname.clone()),
+    }
 }
 
 fn row_for(
@@ -328,6 +379,7 @@ fn row_for(
         detail: detail_text,
         spawned_by: spawned.get(&a.id.name).cloned().filter(|s| !s.is_empty()),
         you: me == Some(a.id.name.as_str()),
+        host: None,
     }
 }
 

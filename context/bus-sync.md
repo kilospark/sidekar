@@ -43,6 +43,19 @@ receiver's clock is taken as now, so a fast sender clock cannot keep its
 agents listed. `name@host` picks one machine; machines that share a host name
 take a device-id prefix instead (`name@<first 8 chars>`, offered in the error).
 
+Each presence record also carries the agent's activity reading (state,
+reason, when its last turn finished, when someone last looked), how many
+requests wait on it, and when it was last active. A reading that was fresh
+when published counts as current for as long as the presence is live: the
+publisher republishes as soon as the state, freshness, finish or pending
+count changes (`bus_presence_published` holds the last published signature),
+not only at the 2-minute heartbeat. So another machine sees a change within
+one round. `bus wait` and `bus explain` fall back to these when the target is
+not on this machine (`bus wait` pulls every 3 seconds while it waits), and
+`agents` lists them as `nick@host`. Presence from an older release carries no
+activity: `bus wait` says so instead of waiting, and `agents` shows it stale.
+Stopping or spawning agents on another machine is not supported.
+
 ## Messages (`bus` records)
 
 `bus send` resolves a name in this order: this channel, this machine, a
@@ -63,6 +76,17 @@ text goes into the local queue (only if the recipient is registered there;
 otherwise it would reach the next agent to take the name). It then
 tombstones the record.
 
+A message whose recipient is no longer on the machine it was sent to is
+bounced: the receiver queues a `bus` record back to the sending device, from
+`sidekar`, with `bounce_of` naming the original message and the reason.
+There, the request is closed as `recipient_gone` (so `bus await` fails at
+once with exit 2 instead of timing out), its pending entry is dropped, and the
+asker is told if it is registered. Only enveloped messages bounce (nudges do
+not), answers never do, and a bounce never bounces. A bounce carries no
+envelope, so a release without bounces just shows its text. A machine keeps
+pulling for 10 minutes after its last agent leaves, so a message sent before
+the others noticed is still bounced rather than left to expire.
+
 A request's origin device is kept in `bus_remote_origin`. An answer whose
 addressee is no longer anywhere (a one-shot `bus send` from a shell) goes
 back to that device, where it is recorded for `bus await`.
@@ -71,7 +95,7 @@ back to that device, where it is recorded for `bus await`.
 
 The daemon runs a round every `bus_sync_interval_secs` (default 15, 0 turns
 bus sync off): reconcile, pull if this machine has an agent another could
-message, push what is pending. Each round is one or two requests to
+message (or had one in the last 10 minutes), push what is pending. Each round is one or two requests to
 sidekar.dev, so a machine with no agents only pushes presence changes.
 Callers that cannot wait pull for themselves: `bus await` every 3 seconds
 while its request went to another machine, `bus who --all` before listing,
@@ -83,9 +107,7 @@ relay is immediate. The relay is still tried first.
 
 ## Not covered
 
-- `bus wait` and `bus explain` read activity from the local registry only.
-- A message for an agent that left before it arrived is logged and dropped,
-  not bounced back to its sender.
+- Stopping or spawning an agent on another machine.
 
 ## Release order
 
