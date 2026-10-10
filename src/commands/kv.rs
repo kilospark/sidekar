@@ -10,10 +10,16 @@ pub async fn cmd_kv(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "list" | "ls" => cmd_kv_list(ctx, &args[1..]).await,
         "delete" | "del" | "rm" => cmd_kv_delete(ctx, &args[1..]).await,
         "tag" => cmd_kv_tag(ctx, &args[1..]).await,
-        "history" => cmd_kv_history(ctx, &args[1..]).await,
+        "history" => {
+            let (zone, rest) = crate::timefmt::Zone::from_args(&args[1..]);
+            crate::timefmt::scoped(zone, cmd_kv_history(ctx, &rest)).await
+        }
         "rollback" => cmd_kv_rollback(ctx, &args[1..]).await,
         "exec" => cmd_kv_exec(ctx, &args[1..]).await,
-        "sync-status" => cmd_kv_sync_status(ctx, &args[1..]).await,
+        "sync-status" => {
+            let (zone, rest) = crate::timefmt::Zone::from_args(&args[1..]);
+            crate::timefmt::scoped(zone, cmd_kv_sync_status(ctx, &rest)).await
+        }
         _ => bail!(
             "Unknown subcommand: {}. Use: set, get, list, delete, tag, history, rollback, exec, sync-status",
             args[0]
@@ -215,6 +221,10 @@ struct KvHistoryEntryOut {
     unreadable: Option<String>,
     tags: Vec<String>,
     age: Option<String>,
+    /// When the version was archived (epoch seconds). Text shows it with the
+    /// age; JSON keeps its `age` field as it was.
+    #[serde(skip)]
+    archived_at: Option<u64>,
 }
 
 impl KvHistoryEntryOut {
@@ -223,6 +233,7 @@ impl KvHistoryEntryOut {
         value: Result<String, String>,
         tags: Vec<String>,
         age: Option<String>,
+        archived_at: Option<u64>,
     ) -> Self {
         let (value, unreadable) = match value {
             Ok(value) => (Some(value), None),
@@ -234,6 +245,7 @@ impl KvHistoryEntryOut {
             unreadable,
             tags,
             age,
+            archived_at,
         }
     }
 }
@@ -268,9 +280,20 @@ impl crate::output::CommandOutput for KvHistoryOutput {
                     )
                 }
             };
-            match &e.age {
-                Some(age) => writeln!(w, "  {}  {}{}  ({})", e.version, value, tag_str, age)?,
-                None => writeln!(w, "  {}  {}{}", e.version, value, tag_str)?,
+            match (&e.age, e.archived_at) {
+                (Some(age), Some(at)) => writeln!(
+                    w,
+                    "  {}  {}{}  {} ({})",
+                    e.version,
+                    value,
+                    tag_str,
+                    crate::timefmt::from_epoch(at as i64, crate::timefmt::zone()),
+                    age
+                )?,
+                (Some(age), None) => {
+                    writeln!(w, "  {}  {}{}  ({})", e.version, value, tag_str, age)?
+                }
+                (None, _) => writeln!(w, "  {}  {}{}", e.version, value, tag_str)?,
             }
         }
         Ok(())
@@ -293,11 +316,13 @@ async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 Ok(current.value),
                 current.tags,
                 None,
+                None,
             )),
             Some(Err(unreadable)) => versions.push(KvHistoryEntryOut::new(
                 "current".to_string(),
                 Err(unreadable.reason),
                 unreadable.tags,
+                None,
                 None,
             )),
             None => {}
@@ -319,6 +344,7 @@ async fn cmd_kv_history(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 e.value.clone(),
                 e.tags.clone(),
                 Some(age),
+                Some(e.archived_at),
             ));
         }
     }
@@ -483,7 +509,10 @@ async fn cmd_kv_sync_status(ctx: &mut AppContext, args: &[String]) -> Result<()>
     } else {
         format!(
             "Last pull: {}. {} dirty, {} tombstoned.",
-            status.last_pull_at, status.dirty_count, status.tombstone_count
+            // The watermark is the sync server's clock, in milliseconds.
+            crate::timefmt::from_epoch_ms(status.last_pull_at, crate::timefmt::zone()),
+            status.dirty_count,
+            status.tombstone_count
         )
     };
     out!(
@@ -501,4 +530,40 @@ fn mask_secrets(text: &str, secrets: &[&str]) -> String {
         masked = masked.replace(secret, "[REDACTED]");
     }
     masked
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn history_shows_when_each_version_was_archived_and_json_keeps_the_age() {
+        let out = KvHistoryOutput {
+            key: "api".into(),
+            versions: vec![
+                KvHistoryEntryOut::new("current".into(), Ok("v3".into()), vec![], None, None),
+                KvHistoryEntryOut::new(
+                    "v2".into(),
+                    Ok("old".into()),
+                    vec![],
+                    Some("3h ago".into()),
+                    Some(1_789_357_009),
+                ),
+            ],
+        };
+        let shown = text(&out);
+        assert!(
+            shown.contains("  v2  old  2026-09-14T03:36:49Z (3h ago)\n"),
+            "{shown}"
+        );
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["versions"][1]["age"], "3h ago");
+        assert!(json["versions"][1].get("archived_at").is_none());
+    }
 }

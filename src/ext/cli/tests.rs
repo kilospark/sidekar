@@ -1,4 +1,4 @@
-use super::{build_command, geometry_note};
+use super::{ExtHistoryOut, build_command, geometry_note};
 
 #[test]
 fn ext_read_requires_explicit_tab() {
@@ -141,4 +141,22 @@ fn an_element_without_geometry_renders_as_before() {
     // Older extensions send no rect; the line must stay clean rather than
     // printing zeros that read as a real position at the origin.
     assert_eq!(geometry_note(&serde_json::json!({"role": "button"})), "");
+}
+
+#[test]
+fn history_pairs_the_visit_time_with_its_age() {
+    let h = ExtHistoryOut {
+        title: "t".into(),
+        url: "https://example.com".into(),
+        visit_count: 2,
+        last_visit_ms: 1_789_357_009_709.0,
+        last_visit_ago: "3m ago".into(),
+    };
+    assert_eq!(h.shown_visit(), "2026-09-14T03:36:49Z (3m ago)");
+    let never = ExtHistoryOut {
+        last_visit_ms: 0.0,
+        last_visit_ago: "unknown".into(),
+        ..h
+    };
+    assert_eq!(never.shown_visit(), "unknown");
 }

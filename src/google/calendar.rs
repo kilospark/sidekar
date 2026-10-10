@@ -10,6 +10,10 @@ pub struct Event {
     pub summary: String,
     pub start: String,
     pub end: String,
+    /// The zone the event was scheduled in (`America/New_York`), when Google
+    /// names one. Shown as extra information; the times themselves are
+    /// normalised.
+    pub time_zone: String,
     pub attendees: usize,
 }
 
@@ -86,6 +90,12 @@ pub(crate) fn to_event(v: &Value) -> Event {
             .to_string(),
         start: when(v.get("start")),
         end: when(v.get("end")),
+        time_zone: v
+            .get("start")
+            .and_then(|s| s.get("timeZone"))
+            .and_then(|z| z.as_str())
+            .unwrap_or_default()
+            .to_string(),
         attendees: v
             .get("attendees")
             .and_then(|a| a.as_array())
@@ -106,9 +116,42 @@ pub(crate) fn when(slot: Option<&Value>) -> String {
         .to_string()
 }
 
+/// A listing line: id, start → end, title, attendees, and the zone the event
+/// was scheduled in when Google names one (`[America/New_York]`).
+pub fn event_line(e: &Event, zone: crate::timefmt::Zone) -> String {
+    format!(
+        "{}\t{} → {}\t{} ({} attendees){}",
+        e.id,
+        shown(&e.start, zone),
+        shown(&e.end, zone),
+        e.summary,
+        e.attendees,
+        if e.time_zone.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", e.time_zone)
+        }
+    )
+}
+
+/// A start or end as shown: a timed event's moment through the shared
+/// formatter, an all-day event's date as the date it is (it has no time, so
+/// it has no zone to convert).
+pub fn shown(when: &str, zone: crate::timefmt::Zone) -> String {
+    if is_date(when) {
+        when.to_string()
+    } else {
+        crate::timefmt::from_iso(when, zone)
+    }
+}
+
+fn is_date(value: &str) -> bool {
+    value.len() == 10 && value.chars().filter(|c| *c == '-').count() == 2
+}
+
 /// A bare `YYYY-MM-DD` means an all-day event; anything else is a timestamp.
 pub(crate) fn time_field(value: &str) -> Value {
-    if value.len() == 10 && value.chars().filter(|c| *c == '-').count() == 2 {
+    if is_date(value) {
         json!({"date": value})
     } else {
         json!({"dateTime": value})

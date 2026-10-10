@@ -582,3 +582,50 @@ fn an_update_that_carries_everything_again_drops_nothing() {
     }];
     assert!(dropped_by_update(&before, &after).is_empty());
 }
+
+#[test]
+fn the_date_header_is_shown_normalised_in_search_and_read() {
+    let m = Summary {
+        id: "m1".into(),
+        from: "Ann <ann@example.com>".into(),
+        subject: "Deploy".into(),
+        date: "Mon, 14 Sep 2026 05:36:49 +0200 (CEST)".into(),
+        snippet: String::new(),
+    };
+    assert_eq!(
+        summary_line(&m, crate::timefmt::Zone::Utc),
+        "m1\t2026-09-14T03:36:49Z\tAnn <ann@example.com>\tDeploy"
+    );
+    let full = json!({"payload": {
+        "headers": [
+            {"name": "From", "value": "ann@example.com"},
+            {"name": "To", "value": "kb@example.com"},
+            {"name": "Date", "value": "Mon, 14 Sep 2026 05:36:49 +0200"},
+            {"name": "Subject", "value": "Deploy"}
+        ],
+        "mimeType": "text/plain",
+        "body": {"data": b64("done")}
+    }});
+    let shown = render_message(&full, crate::timefmt::Zone::Utc);
+    assert!(shown.contains("Date: 2026-09-14T03:36:49Z\n"), "{shown}");
+    let local = render_message(&full, crate::timefmt::Zone::Local);
+    assert!(
+        local.contains(&format!(
+            "Date: {}\n",
+            crate::timefmt::from_epoch(1_789_357_009, crate::timefmt::Zone::Local)
+        )),
+        "{local}"
+    );
+}
+
+#[test]
+fn a_date_header_that_does_not_parse_is_shown_as_sent() {
+    let m = Summary {
+        id: "m2".into(),
+        from: "x".into(),
+        subject: "y".into(),
+        date: "the day before yesterday".into(),
+        snippet: String::new(),
+    };
+    assert!(summary_line(&m, crate::timefmt::Zone::Utc).contains("\tthe day before yesterday\t"));
+}

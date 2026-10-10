@@ -66,3 +66,24 @@ fn the_utf8_replacement_that_caused_this_is_caught_by_a_size_check() {
     );
     assert_ne!(mangled, original, "and does not round-trip");
 }
+
+#[test]
+fn a_listing_shows_modified_in_utc_without_milliseconds() {
+    let e = Entry {
+        id: "f1".into(),
+        name: "report.pdf".into(),
+        mime: "application/pdf".into(),
+        modified: "2026-09-14T03:36:49.123Z".into(),
+        size: Some("2048".into()),
+    };
+    assert_eq!(
+        entry_line(&e, crate::timefmt::Zone::Utc),
+        "f1\t2.0KB\t2026-09-14T03:36:49Z\treport.pdf"
+    );
+    assert!(
+        entry_line(&e, crate::timefmt::Zone::Local).contains(&crate::timefmt::from_epoch(
+            1_789_357_009,
+            crate::timefmt::Zone::Local
+        ))
+    );
+}

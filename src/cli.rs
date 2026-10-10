@@ -145,6 +145,10 @@ pub fn render_help(version: &str) -> String {
     );
     let _ = writeln!(
         out,
+        "  {GREEN}--local{RST}             {DIM}Show times in this machine's zone with its offset; default is UTC (…Z){RST}"
+    );
+    let _ = writeln!(
+        out,
         "  {GREEN}--toon{RST}              {DIM}Shorthand for --format=toon — compact LLM-friendly output{RST}"
     );
     let _ = writeln!(

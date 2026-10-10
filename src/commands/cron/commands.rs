@@ -192,10 +192,14 @@ impl crate::output::CommandOutput for CronListOutput {
             writeln!(w, "{} cron jobs:", self.items.len())?;
         }
         for it in &self.items {
-            let last_run = it
-                .last_run_secs_ago
-                .map(|s| format!("last run: {s}s ago"))
-                .unwrap_or_else(|| "never run".to_string());
+            let last_run = match (it.last_run_at, it.last_run_secs_ago) {
+                (Some(at), Some(ago)) => format!(
+                    "last run: {} ({})",
+                    crate::timefmt::from_epoch(at as i64, crate::timefmt::zone()),
+                    crate::timefmt::ago(ago as i64)
+                ),
+                _ => "never run".to_string(),
+            };
             let running = if it.running { " [running]" } else { "" };
             writeln!(
                 w,
@@ -304,12 +308,17 @@ impl crate::output::CommandOutput for CronShowOutput {
         writeln!(w, "schedule: {}", self.schedule)?;
         writeln!(w, "target: {}", self.target)?;
         writeln!(w, "owner: {}", self.owner)?;
-        writeln!(w, "created_at: {}", self.created_at)?;
+        let zone = crate::timefmt::zone();
+        writeln!(
+            w,
+            "created_at: {}",
+            crate::timefmt::from_epoch(self.created_at as i64, zone)
+        )?;
         writeln!(
             w,
             "last_run_at: {}",
             self.last_run_at
-                .map(|v| v.to_string())
+                .map(|v| crate::timefmt::from_epoch(v as i64, zone))
                 .unwrap_or_else(|| "-".into())
         )?;
         writeln!(w, "run_count: {}", self.run_count)?;
@@ -368,4 +377,82 @@ pub(crate) async fn cmd_cron_delete(ctx: &mut AppContext, job_id: &str) -> Resul
         bail!("Cron job '{job_id}' not found.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn show(last_run_at: Option<u64>) -> CronShowOutput {
+        CronShowOutput {
+            id: "c1".into(),
+            name: None,
+            active: true,
+            once: false,
+            schedule: "*/5 * * * *".into(),
+            target: "self".into(),
+            owner: "cli".into(),
+            created_at: 1_789_357_009,
+            last_run_at,
+            run_count: 0,
+            error_count: 0,
+            last_error: None,
+            action: json!({"command": "true"}),
+        }
+    }
+
+    #[test]
+    fn show_prints_iso_utc_and_json_keeps_epoch_seconds() {
+        let shown = text(&show(Some(1_789_357_309)));
+        assert!(
+            shown.contains("created_at: 2026-09-14T03:36:49Z\n"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("last_run_at: 2026-09-14T03:41:49Z\n"),
+            "{shown}"
+        );
+        assert!(text(&show(None)).contains("last_run_at: -\n"));
+        let json = serde_json::to_value(show(None)).unwrap();
+        assert_eq!(json["created_at"], 1_789_357_009);
+    }
+
+    #[test]
+    fn show_honours_local() {
+        let shown = crate::timefmt::scoped_sync(crate::timefmt::Zone::Local, || text(&show(None)));
+        let local = crate::timefmt::from_epoch(1_789_357_009, crate::timefmt::Zone::Local);
+        assert!(shown.contains(&format!("created_at: {local}\n")), "{shown}");
+    }
+
+    #[test]
+    fn list_pairs_the_last_run_with_its_age() {
+        let out = CronListOutput {
+            items: vec![CronListItem {
+                id: "c1".into(),
+                name: Some("tick".into()),
+                schedule: "*/5 * * * *".into(),
+                target: "self".into(),
+                owner: "cli".into(),
+                last_run_at: Some(1_789_357_009),
+                last_run_secs_ago: Some(120),
+                running: false,
+                action: json!({"command": "true"}),
+                run_count: 0,
+                error_count: 0,
+                last_error: None,
+            }],
+            running: 0,
+        };
+        let shown = text(&out);
+        assert!(
+            shown.contains("last run: 2026-09-14T03:36:49Z (2m ago)"),
+            "{shown}"
+        );
+    }
 }

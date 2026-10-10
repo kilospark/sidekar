@@ -8,7 +8,7 @@ pub(super) async fn dispatch_system_command(
     args: &[String],
 ) -> Option<Result<()>> {
     let result = match command {
-        "event" => cmd_event(ctx, args),
+        "event" => crate::timefmt::run_sync(args, |args| cmd_event(ctx, args)),
         "install" => cmd_setup(ctx, args).await,
         "uninstall" => cmd_uninstall(ctx).await,
         "config" => {
@@ -29,7 +29,7 @@ pub(super) async fn dispatch_system_command(
             cmd_config(ctx, args)
         }
         "update" => cmd_update(ctx).await,
-        "proxy" => cmd_proxy(ctx, args),
+        "proxy" => crate::timefmt::run_sync(args, |args| cmd_proxy(ctx, args)),
         _ => return None,
     };
     Some(result)
@@ -67,7 +67,11 @@ impl crate::output::CommandOutput for EventListOutput {
             writeln!(
                 w,
                 "{}\t{}\t{}\t{}\t{}",
-                r.id, r.created_at, r.level, r.source, msg
+                r.id,
+                crate::timefmt::from_epoch(r.created_at, crate::timefmt::zone()),
+                r.level,
+                r.source,
+                msg
             )?;
         }
         Ok(())
@@ -515,17 +519,11 @@ impl crate::output::CommandOutput for ProxyLogOutput {
         }
         writeln!(
             w,
-            "{:<5} {:<8} {:<6} {:<10} {:<20} {:<20} {:<6} {:<8} {:<10} RESP",
+            "{:<5} {:<20} {:<6} {:<10} {:<20} {:<20} {:<6} {:<8} {:<10} RESP",
             "ID", "TIME", "METHOD", "STATE", "PATH", "HOST", "STATUS", "DUR(ms)", "REQ"
         )?;
         for r in &self.items {
-            let time = {
-                let secs = r.created_at % 86400;
-                let h = secs / 3600;
-                let m = (secs % 3600) / 60;
-                let s = secs % 60;
-                format!("{h:02}:{m:02}:{s:02}")
-            };
+            let time = crate::timefmt::from_epoch(r.created_at, crate::timefmt::zone());
             let path_short = if r.path.len() > 20 {
                 format!("{}...", &r.path[..17])
             } else {
@@ -545,7 +543,7 @@ impl crate::output::CommandOutput for ProxyLogOutput {
             };
             writeln!(
                 w,
-                "{:<5} {:<8} {:<6} {:<10} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
+                "{:<5} {:<20} {:<6} {:<10} {:<20} {:<20} {:<6} {:<8} {:<10} {}",
                 r.id,
                 time,
                 r.method,
@@ -767,5 +765,59 @@ mod tests {
         let err = parse_event_clear_level(&args).unwrap_err().to_string();
 
         assert!(err.contains("Unknown option for event clear: 10"));
+    }
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn events_show_iso_utc_and_json_keeps_epoch_seconds() {
+        let out = EventListOutput {
+            items: vec![EventRowOut {
+                id: 7,
+                created_at: 1_789_357_009,
+                level: "error".into(),
+                source: "relay".into(),
+                message: "down".into(),
+                details: None,
+            }],
+        };
+        assert!(
+            text(&out).contains("7\t2026-09-14T03:36:49Z\terror\trelay\tdown\n"),
+            "{}",
+            text(&out)
+        );
+        assert_eq!(
+            serde_json::to_value(&out).unwrap()["items"][0]["created_at"],
+            1_789_357_009
+        );
+    }
+
+    #[test]
+    fn the_proxy_log_shows_the_whole_moment_not_a_zoneless_clock() {
+        let out = ProxyLogOutput {
+            items: vec![ProxyLogEntryOut {
+                id: 1,
+                created_at: 1_789_357_009,
+                status: "complete".into(),
+                method: "POST".into(),
+                path: "/v1/messages".into(),
+                upstream_host: "api.example.com".into(),
+                response_status: 200,
+                duration_ms: 12,
+                request_size: 10,
+                response_size: 20,
+            }],
+        };
+        let shown = text(&out);
+        assert!(shown.contains("1     2026-09-14T03:36:49Z POST"), "{shown}");
     }
 }

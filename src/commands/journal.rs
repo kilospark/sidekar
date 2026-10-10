@@ -22,6 +22,10 @@ use crate::AppContext;
 use crate::repl::journal::store::{self, JournalRow};
 
 pub fn cmd_journal(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    crate::timefmt::run_sync(args, |args| journal_command(ctx, args))
+}
+
+fn journal_command(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     match sub {
         "" | "help" | "--help" | "-h" => {
@@ -119,7 +123,7 @@ fn cmd_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "\x1b[1mJournals\x1b[0m \x1b[2m(project={project}, {n} most recent)\x1b[0m"
     );
     for r in rows {
-        let age = crate::session::format_relative_age(r.created_at, now);
+        let age = shown_at(r.created_at, now);
         let head = if r.headline.is_empty() {
             "(no headline)".to_string()
         } else {
@@ -129,7 +133,7 @@ fn cmd_list(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         // in a typical per-project journal list without filling the
         // row with the full UUID.
         let sid_short = r.session_id[..r.session_id.len().min(8)].to_string();
-        out!(ctx, "  [{id:>5}] {age:>8}  {sid_short}  {head}", id = r.id);
+        out!(ctx, "  [{id:>5}] {age}  {sid_short}  {head}", id = r.id);
     }
     Ok(())
 }
@@ -159,7 +163,7 @@ fn render_show(row: &JournalRow) -> String {
     let outcome = crate::repl::journal::parse::parse_response(&row.structured_json);
     let j = outcome.journal;
     let now = now_unix_secs();
-    let age = crate::session::format_relative_age(row.created_at, now);
+    let age = shown_at(row.created_at, now);
 
     let mut out = String::with_capacity(1024);
     let _ = writeln!(
@@ -427,18 +431,33 @@ fn import_log_summary() -> Result<Vec<(String, i64, String)>> {
     })?;
     Ok(rows
         .flatten()
-        .map(|(source, files, at)| (source, files, ago(at)))
+        .map(|(source, files, at)| {
+            let now = crate::message::epoch_secs() as i64;
+            (
+                source,
+                files,
+                crate::timefmt::with_ago(at, now, crate::timefmt::zone()),
+            )
+        })
         .collect())
 }
 
-/// "3h ago" for an epoch-seconds timestamp.
-fn ago(epoch_secs: i64) -> String {
-    let now = crate::message::epoch_secs() as i64;
-    let secs = (now - epoch_secs).max(0) as u64;
-    match secs {
-        s if s < 60 => format!("{s}s ago"),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86_400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86_400),
+/// When a journal was written, with how long ago: `2026-09-14T03:36:49Z (3h
+/// ago)`. Journal times are fractional epoch seconds.
+fn shown_at(created_at: f64, now: f64) -> String {
+    let at = created_at.floor() as i64;
+    crate::timefmt::with_ago(at, now.floor() as i64, crate::timefmt::zone())
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    #[test]
+    fn a_journal_time_reads_absolute_first_then_its_age() {
+        assert_eq!(
+            shown_at(1_789_357_009.5, 1_789_357_009.0 + 7_200.0),
+            "2026-09-14T03:36:49Z (2h ago)"
+        );
     }
 }

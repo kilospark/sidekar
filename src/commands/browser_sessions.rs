@@ -8,6 +8,10 @@ struct BrowserSessionSummary {
     tab_count: usize,
     active_tab: String,
     updated: String,
+    /// When the state last changed (epoch seconds). Text shows it before the
+    /// age; JSON keeps `updated` as it was.
+    #[serde(skip)]
+    updated_at: Option<i64>,
 }
 
 #[derive(serde::Serialize)]
@@ -30,7 +34,12 @@ impl crate::output::CommandOutput for BrowserSessionsOutput {
             writeln!(
                 w,
                 "{:<10} {:<10} {:<12} {:<6} {:<10} {}",
-                s.id, s.browser, s.profile, s.tab_count, s.active_tab, s.updated
+                s.id,
+                s.browser,
+                s.profile,
+                s.tab_count,
+                s.active_tab,
+                shown_updated(s.updated_at, &s.updated)
             )?;
         }
         Ok(())
@@ -49,6 +58,8 @@ struct BrowserSessionDetail {
     window_id: Option<i64>,
     state_file: String,
     updated: String,
+    #[serde(skip)]
+    updated_at: Option<i64>,
 }
 
 impl crate::output::CommandOutput for BrowserSessionDetail {
@@ -86,7 +97,11 @@ impl crate::output::CommandOutput for BrowserSessionDetail {
                 .unwrap_or_else(|| "-".to_string())
         )?;
         writeln!(w, "state_file: {}", self.state_file)?;
-        writeln!(w, "updated: {}", self.updated)?;
+        writeln!(
+            w,
+            "updated: {}",
+            shown_updated(self.updated_at, &self.updated)
+        )?;
         writeln!(w)?;
         writeln!(
             w,
@@ -119,7 +134,28 @@ fn session_age(updated_at: Option<std::time::SystemTime>) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+/// When a session last changed, then how long ago:
+/// `2026-09-14T03:36:49Z (3m ago)`.
+fn shown_updated(updated_at: Option<i64>, age: &str) -> String {
+    match updated_at {
+        Some(at) => format!(
+            "{} ({age})",
+            crate::timefmt::from_epoch(at, crate::timefmt::zone())
+        ),
+        None => age.to_string(),
+    }
+}
+
+fn epoch_of(t: Option<std::time::SystemTime>) -> Option<i64> {
+    t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
 pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
+    crate::timefmt::run_sync(args, browser_sessions_command)
+}
+
+fn browser_sessions_command(args: &[String]) -> Result<()> {
     let ctx = AppContext::new()?;
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
@@ -134,6 +170,7 @@ pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
                     tab_count: s.tabs.len(),
                     active_tab: s.active_tab_id.unwrap_or_else(|| "-".into()),
                     updated: session_age(s.updated_at),
+                    updated_at: epoch_of(s.updated_at),
                 })
                 .collect();
             crate::output::emit(&BrowserSessionsOutput { items })?;
@@ -155,6 +192,7 @@ pub fn cmd_browser_sessions(args: &[String]) -> Result<()> {
                 window_id: session.window_id,
                 state_file: session.state_path.display().to_string(),
                 updated: session_age(session.updated_at),
+                updated_at: epoch_of(session.updated_at),
             };
             crate::output::emit(&detail)?;
             Ok(())

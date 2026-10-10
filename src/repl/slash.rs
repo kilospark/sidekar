@@ -1557,7 +1557,12 @@ fn render_journal_show(row: &crate::repl::journal::store::JournalRow) -> String 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    let age = crate::session::format_relative_age(row.created_at, now);
+    // One journal in full: when it was written, then how long ago.
+    let age = crate::timefmt::with_ago(
+        row.created_at.floor() as i64,
+        now.floor() as i64,
+        crate::timefmt::zone(),
+    );
 
     let outcome = crate::repl::journal::parse::parse_response(&row.structured_json);
     let j = outcome.journal;
@@ -1648,7 +1653,7 @@ fn render_inbox_show(row: &crate::broker::EventRow) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    let age = crate::session::format_relative_age(row.created_at as f64, now);
+    let age = crate::timefmt::with_ago(row.created_at, now.floor() as i64, crate::timefmt::zone());
     let mut sender = row.message.clone();
     let mut recipient = String::new();
     let mut body = row.details.clone().unwrap_or_default();
@@ -1678,7 +1683,7 @@ fn render_inbox_show(row: &crate::broker::EventRow) -> String {
     if !recipient.is_empty() {
         out.push_str(&format!("To: {recipient}\n"));
     }
-    out.push_str(&format!("Age: {age}\n\n"));
+    out.push_str(&format!("Received: {age}\n\n"));
     out.push_str(body.trim());
     out
 }

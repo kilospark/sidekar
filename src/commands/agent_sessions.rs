@@ -2,6 +2,15 @@ use super::*;
 
 pub(super) fn cmd_agent_sessions(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
+    // rename and note take free text; only the listings show times.
+    if matches!(sub, "rename" | "note") {
+        return agent_sessions_command(ctx, args);
+    }
+    crate::timefmt::run_sync(args, |args| agent_sessions_command(ctx, args))
+}
+
+fn agent_sessions_command(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
     match sub {
         "" => cmd_agent_sessions_list(ctx, args),
         s if s.starts_with('-') => cmd_agent_sessions_list(ctx, args),
@@ -50,6 +59,8 @@ impl crate::output::CommandOutput for AgentSessionsListOutput {
             w,
             "id\tname\tagent\tnick\tproject\tchannel\tstarted_at\tlast_active_at\tended_at\trequests\treplies"
         )?;
+        let zone = crate::timefmt::zone();
+        let at = |secs: u64| crate::timefmt::from_epoch(secs as i64, zone);
         for s in &self.items {
             writeln!(
                 w,
@@ -60,11 +71,9 @@ impl crate::output::CommandOutput for AgentSessionsListOutput {
                 s.nick.as_deref().unwrap_or("-"),
                 s.project,
                 s.channel.as_deref().unwrap_or("-"),
-                s.started_at,
-                s.last_active_at,
-                s.ended_at
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".into()),
+                at(s.started_at),
+                at(s.last_active_at),
+                s.ended_at.map(at).unwrap_or_else(|| "-".into()),
                 s.request_count,
                 s.reply_count,
             )?;
@@ -151,15 +160,15 @@ impl crate::output::CommandOutput for AgentSessionShowOutput {
         writeln!(w, "project: {}", self.project)?;
         writeln!(w, "channel: {}", self.channel.as_deref().unwrap_or("-"))?;
         writeln!(w, "cwd: {}", self.cwd.as_deref().unwrap_or("-"))?;
-        writeln!(w, "started_at: {}", self.started_at)?;
+        let zone = crate::timefmt::zone();
+        let at = |secs: u64| crate::timefmt::from_epoch(secs as i64, zone);
+        writeln!(w, "started_at: {}", at(self.started_at))?;
         writeln!(
             w,
             "ended_at: {}",
-            self.ended_at
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into())
+            self.ended_at.map(at).unwrap_or_else(|| "-".into())
         )?;
-        writeln!(w, "last_active_at: {}", self.last_active_at)?;
+        writeln!(w, "last_active_at: {}", at(self.last_active_at))?;
         writeln!(w, "request_count: {}", self.request_count)?;
         writeln!(w, "reply_count: {}", self.reply_count)?;
         writeln!(w, "message_count: {}", self.message_count)?;
@@ -269,4 +278,41 @@ fn cmd_agent_sessions_note(ctx: &mut AppContext, args: &[String]) -> Result<()> 
         crate::output::to_string(&crate::output::PlainOutput::new(msg))?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn the_list_shows_iso_utc_for_every_time_column() {
+        let out = AgentSessionsListOutput {
+            items: vec![AgentSessionListItem {
+                id: "s1".into(),
+                name: None,
+                agent: "claude".into(),
+                nick: None,
+                project: "p".into(),
+                channel: None,
+                started_at: 1_789_357_009,
+                last_active_at: 1_789_357_069,
+                ended_at: None,
+                request_count: 1,
+                reply_count: 0,
+            }],
+        };
+        let shown = text(&out);
+        assert!(
+            shown.contains("\t2026-09-14T03:36:49Z\t2026-09-14T03:37:49Z\t-\t1\t0"),
+            "{shown}"
+        );
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["items"][0]["started_at"], 1_789_357_009);
+    }
 }

@@ -29,7 +29,11 @@ impl sidekar::output::CommandOutput for DevicesOutput {
             writeln!(
                 w,
                 "{:<20} {:<10} {:<8} {:<12} {}",
-                d.hostname, d.os, d.arch, d.version, d.last_seen
+                d.hostname,
+                d.os,
+                d.arch,
+                d.version,
+                sidekar::timefmt::from_iso(&d.last_seen, sidekar::timefmt::zone())
             )?;
         }
         Ok(())
@@ -148,12 +152,7 @@ fn recent_relay_failure() -> Option<String> {
         .ok()?
         .into_iter()
         .find(|e| e.source == "relay" && now - e.created_at < 24 * 3600)?;
-    let ago = (now - event.created_at).max(0) as u64;
-    let when = match ago {
-        s if s < 60 => format!("{s}s ago"),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s => format!("{}h ago", s / 3600),
-    };
+    let when = sidekar::timefmt::with_ago(event.created_at, now, sidekar::timefmt::zone());
     Some(format!("{when}: {}", event.message))
 }
 

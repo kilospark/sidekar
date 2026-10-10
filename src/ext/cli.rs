@@ -651,6 +651,21 @@ struct ExtHistoryOut {
     last_visit_ago: String,
 }
 
+impl ExtHistoryOut {
+    /// The last visit as shown: when, then how long ago
+    /// (`2026-09-14T03:36:49Z (3m ago)`). JSON keeps both raw fields.
+    fn shown_visit(&self) -> String {
+        if self.last_visit_ms <= 0.0 || !self.last_visit_ms.is_finite() {
+            return self.last_visit_ago.clone();
+        }
+        format!(
+            "{} ({})",
+            crate::timefmt::from_epoch_ms(self.last_visit_ms as i64, crate::timefmt::zone()),
+            self.last_visit_ago
+        )
+    }
+}
+
 #[derive(serde::Serialize)]
 struct ExtHistoryOutput {
     items: Vec<ExtHistoryOut>,
@@ -664,7 +679,8 @@ impl crate::output::CommandOutput for ExtHistoryOutput {
             writeln!(
                 w,
                 "  {} | {} visit(s)",
-                entry.last_visit_ago, entry.visit_count
+                entry.shown_visit(),
+                entry.visit_count
             )?;
             writeln!(w)?;
         }
@@ -740,7 +756,7 @@ impl crate::output::CommandOutput for ExtContextOutput {
                     .split('/')
                     .next()
                     .unwrap_or("");
-                writeln!(w, "  {} | {} | {}", h.last_visit_ago, domain, short_title)?;
+                writeln!(w, "  {} | {} | {}", h.shown_visit(), domain, short_title)?;
             }
         }
         if self.watcher_count > 0 {

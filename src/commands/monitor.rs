@@ -626,7 +626,10 @@ impl crate::output::CommandOutput for MonitorStatusOutput {
         writeln!(w, "Watching: {} tab(s)", self.watched_tabs)?;
         writeln!(w, "Events delivered: {}", self.events_delivered)?;
         let last_event = match self.last_event_secs_ago {
-            Some(s) => format!("{s}s ago"),
+            Some(s) => {
+                let now = crate::message::epoch_secs() as i64;
+                crate::timefmt::with_ago(now - s as i64, now, crate::timefmt::zone())
+            }
             None => "never".to_string(),
         };
         writeln!(w, "Last event: {last_event}")?;
