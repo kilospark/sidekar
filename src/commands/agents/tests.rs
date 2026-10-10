@@ -22,6 +22,7 @@ fn row(nick: &str, attention: Attention) -> Row {
         detail: String::new(),
         spawned_by: None,
         you: false,
+        host: None,
     }
 }
 

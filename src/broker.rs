@@ -18,7 +18,7 @@ const DB_FILE: &str = "sidekar.sqlite3";
 /// `CREATE … IF NOT EXISTS` and the FTS rebuild, turning keystrokes into
 /// multi-millisecond stalls that scale with the schema and the
 /// `memory_events` row count.
-const SCHEMA_VERSION: u32 = 15;
+const SCHEMA_VERSION: u32 = 16;
 
 mod activity;
 mod agent_registry;
@@ -193,6 +193,11 @@ fn ensure_added_columns(conn: &Connection) -> Result<()> {
         // next HOTP counter to use.
         ("totp_secrets", "kind", "TEXT NOT NULL DEFAULT 'totp'"),
         ("totp_secrets", "counter", "INTEGER NOT NULL DEFAULT 0"),
+        // Another machine's agent's activity, for `bus wait`, `bus explain`
+        // and `agents` (context/bus-sync.md).
+        ("remote_agents", "activity_json", "TEXT"),
+        ("remote_agents", "pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("remote_agents", "last_active_at", "INTEGER"),
     ] {
         ensure_column(conn, table, column, ddl)?;
     }
@@ -870,7 +875,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
     // Cross-machine bus (context/bus-sync.md). `remote_agents` is the agents
     // other machines on the account publish; `bus_outbox` holds a message to
-    // another machine until it is pushed; `bus_remote_origin` remembers which
+    // another machine until it is pushed; `bus_presence_published` is what each
+    // local agent's presence last said, so a change republishes it before its
+    // heartbeat; `bus_remote_origin` remembers which
     // machine sent a request, so the answer goes back there even when the
     // asker has left the bus.
     conn.execute_batch(
@@ -894,6 +901,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
             user_id TEXT NOT NULL,
             payload TEXT NOT NULL,
             created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bus_presence_published (
+            name TEXT PRIMARY KEY,
+            signature TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS bus_remote_origin (
             msg_id TEXT PRIMARY KEY,

@@ -78,6 +78,111 @@ struct AgentPayload {
     hostname: String,
     device_id: String,
     published_at: i64,
+    /// What the agent is doing, for `bus wait`, `bus explain` and `agents`
+    /// elsewhere. Absent from releases before it.
+    #[serde(default)]
+    activity: Option<RemoteActivity>,
+    /// Requests waiting on its answer.
+    #[serde(default)]
+    pending: i64,
+    /// When the agent last showed signs of life on its machine.
+    #[serde(default)]
+    last_active_at: Option<i64>,
+}
+
+/// An agent's activity as its own machine read it when publishing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RemoteActivity {
+    pub state: String,
+    /// The reading's own time, on the publishing machine's clock.
+    pub at: u64,
+    /// Whether the reading was current when published. A change to any of
+    /// these republishes the agent, so a fresh reading stays true for as long
+    /// as the agent's presence does.
+    pub fresh: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub settled_at: Option<u64>,
+    #[serde(default)]
+    pub seen_at: Option<u64>,
+}
+
+impl RemoteActivity {
+    /// The reading as this machine should treat it now: a fresh one is current
+    /// while the agent's presence is, so it is dated now; a stale one keeps its
+    /// own, old, time.
+    pub(crate) fn detail(&self, now: u64) -> super::ActivityDetail {
+        super::ActivityDetail {
+            state: crate::activity::ActivityState::parse(&self.state),
+            at: if self.fresh { now } else { self.at },
+            reason: self.reason.clone(),
+            settled_at: self.settled_at,
+            seen_at: self.seen_at,
+        }
+    }
+}
+
+/// What the agent's presence record says about it now, and what to compare a
+/// published one against to tell whether it needs publishing again.
+fn local_activity(conn: &Connection, name: &str) -> Result<Option<(RemoteActivity, i64, Option<i64>)>> {
+    let Some(detail) = conn
+        .query_row(
+            "SELECT activity_state, activity_at, activity_reason, settled_at, seen_at, last_seen_at
+               FROM agents WHERE name = ?1",
+            params![name],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let (state, at, reason, settled_at, seen_at, last_seen) = detail;
+    let snapshot = crate::activity::ActivitySnapshot {
+        state: crate::activity::ActivityState::parse(&state),
+        at: at.max(0) as u64,
+    };
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pending_requests WHERE recipient_name = ?1",
+        params![name],
+        |r| r.get(0),
+    )?;
+    Ok(Some((
+        RemoteActivity {
+            state,
+            at: at.max(0) as u64,
+            fresh: !snapshot.is_stale(),
+            reason,
+            settled_at: settled_at.map(|v| v.max(0) as u64),
+            seen_at: seen_at.map(|v| v.max(0) as u64),
+        },
+        pending,
+        last_seen,
+    )))
+}
+
+/// What has to change for an agent to be published again before its
+/// heartbeat: its state, whether that is current, its last finish, and how
+/// many requests wait on it. Not the reading's time, which moves constantly.
+fn presence_signature(conn: &Connection, name: &str) -> Result<Option<String>> {
+    Ok(local_activity(conn, name)?.map(|(a, pending, _)| {
+        format!(
+            "{}|{}|{}|{}",
+            a.state,
+            a.fresh,
+            a.settled_at.unwrap_or(0),
+            pending
+        )
+    }))
 }
 
 /// A message to an agent on another machine.
@@ -93,6 +198,15 @@ pub(crate) struct MessagePayload {
     #[serde(default)]
     pub envelope_json: Option<String>,
     pub created_at: i64,
+    /// Set on a bounce: the id of the message this machine sent that could not
+    /// be delivered, which closes its request here so `bus await` fails rather
+    /// than waits. A release before bounces reads one as a plain message to the
+    /// asker, which is why a bounce carries no envelope.
+    #[serde(default)]
+    pub bounce_of: Option<String>,
+    /// Why it could not be delivered.
+    #[serde(default)]
+    pub undeliverable: Option<String>,
 }
 
 /// The plaintext sync payload for a dirty bus-channel record.
@@ -101,7 +215,7 @@ pub(crate) fn sync_payload(conn: &Connection, kind: &str, record_id: &str) -> Re
         KIND_AGENT => {
             let (device_id, name) = split_agent_record_id(record_id)
                 .ok_or_else(|| anyhow!("malformed agent sync record id"))?;
-            let agent = conn
+            let mut agent = conn
                 .query_row(
                     "SELECT nick, session, cwd, agent_type FROM agents WHERE name = ?1",
                     params![name],
@@ -115,11 +229,19 @@ pub(crate) fn sync_payload(conn: &Connection, kind: &str, record_id: &str) -> Re
                             hostname: hostname(),
                             device_id: device_id.to_string(),
                             published_at: crate::message::epoch_secs() as i64,
+                            activity: None,
+                            pending: 0,
+                            last_active_at: None,
                         })
                     },
                 )
                 .optional()?
                 .ok_or_else(|| anyhow!("agent '{name}' left before it was published"))?;
+            if let Some((activity, pending, last_active)) = local_activity(conn, name)? {
+                agent.activity = Some(activity);
+                agent.pending = pending;
+                agent.last_active_at = last_active;
+            }
             Ok(serde_json::to_string(&agent)?)
         }
         KIND_BUS => conn
@@ -182,9 +304,21 @@ pub(crate) fn reconcile_presence(conn: &Connection, uid: &str, device_id: &str) 
 
     let mut marked = 0;
     for name in &local {
+        let signature = presence_signature(conn, name)?.unwrap_or_default();
+        let published_signature: Option<String> = conn
+            .query_row(
+                "SELECT signature FROM bus_presence_published WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
         let due = match published.iter().find(|(n, _, _)| n == name) {
             None => true,
-            Some((_, deleted, at)) => *deleted || now - at >= HEARTBEAT_SECS,
+            Some((_, deleted, at)) => {
+                *deleted
+                    || now - at >= HEARTBEAT_SECS
+                    || published_signature.as_deref() != Some(signature.as_str())
+            }
         };
         if due {
             mark_dirty(
@@ -194,11 +328,20 @@ pub(crate) fn reconcile_presence(conn: &Connection, uid: &str, device_id: &str) 
                 &agent_record_id(device_id, name),
                 false,
             )?;
+            conn.execute(
+                "INSERT INTO bus_presence_published (name, signature) VALUES (?1, ?2)
+                 ON CONFLICT(name) DO UPDATE SET signature = ?2",
+                params![name, signature],
+            )?;
             marked += 1;
         }
     }
     for (name, deleted, _) in &published {
         if !deleted && !local.contains(name) {
+            conn.execute(
+                "DELETE FROM bus_presence_published WHERE name = ?1",
+                params![name],
+            )?;
             mark_dirty(
                 conn,
                 uid,
@@ -210,6 +353,24 @@ pub(crate) fn reconcile_presence(conn: &Connection, uid: &str, device_id: &str) 
         }
     }
     Ok(marked)
+}
+
+/// Whether the daemon's round should pull: while this machine has an agent
+/// another could message, and for a while after the last one left. Other
+/// machines go on addressing an agent until its tombstone or silence reaches
+/// them, and what they sent meanwhile has to be pulled to be bounced back,
+/// not left to expire unanswered.
+pub(crate) fn should_pull(conn: &Connection, uid: &str) -> Result<bool> {
+    if has_published_agents(conn)? {
+        return Ok(true);
+    }
+    let since = crate::message::epoch_secs() as i64 - 2 * PRESENCE_TTL_SECS;
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_state
+                        WHERE user_id = ?1 AND kind = ?2 AND deleted = 1 AND updated_at > ?3)",
+        params![uid, KIND_AGENT, since],
+        |r| r.get(0),
+    )?)
 }
 
 /// Whether this machine has an agent published to the others, so something
@@ -246,13 +407,21 @@ pub(crate) fn queue_remote_message(
         body: body.to_string(),
         envelope_json: envelope.map(serde_json::to_string).transpose()?,
         created_at: crate::message::epoch_secs() as i64,
+        bounce_of: None,
+        undeliverable: None,
     };
+    queue_payload(conn, uid, &msg_id, &payload)?;
+    Ok(msg_id)
+}
+
+/// Put a message in the outbox and mark it for the next push.
+fn queue_payload(conn: &Connection, uid: &str, msg_id: &str, payload: &MessagePayload) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO bus_outbox (msg_id, user_id, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![msg_id, uid, serde_json::to_string(&payload)?, payload.created_at],
+        params![msg_id, uid, serde_json::to_string(payload)?, payload.created_at],
     )?;
-    mark_dirty(conn, uid, KIND_BUS, &msg_id, false)?;
-    Ok(msg_id)
+    mark_dirty(conn, uid, KIND_BUS, msg_id, false)?;
+    Ok(())
 }
 
 /// An agent another machine on the account has published.
@@ -266,6 +435,26 @@ pub(crate) struct RemoteAgent {
     pub cwd: Option<String>,
     pub agent_type: Option<String>,
     pub published_at: i64,
+    /// Absent when its machine runs a release from before activity was
+    /// published.
+    pub activity: Option<RemoteActivity>,
+    pub pending: i64,
+    pub last_active_at: Option<i64>,
+}
+
+impl RemoteAgent {
+    pub(crate) fn record_id(&self) -> String {
+        agent_record_id(&self.device_id, &self.name)
+    }
+
+    /// `nick (name)`, or the name, and the machine it is on.
+    pub(crate) fn label(&self) -> String {
+        let who = match &self.nick {
+            Some(nick) => format!("{nick} ({})", self.name),
+            None => self.name.clone(),
+        };
+        format!("{who} on \"{}\"", self.hostname)
+    }
 }
 
 /// The other machines' agents still present: heard from within
@@ -273,7 +462,8 @@ pub(crate) struct RemoteAgent {
 pub(crate) fn live_remote_agents(conn: &Connection, uid: &str) -> Result<Vec<RemoteAgent>> {
     let cutoff = crate::message::epoch_secs() as i64 - PRESENCE_TTL_SECS;
     let mut stmt = conn.prepare(
-        "SELECT device_id, hostname, name, nick, channel, cwd, agent_type, published_at
+        "SELECT device_id, hostname, name, nick, channel, cwd, agent_type, published_at,
+                activity_json, pending, last_active_at
            FROM remote_agents WHERE user_id = ?1 AND published_at > ?2
           ORDER BY hostname, name",
     )?;
@@ -287,9 +477,42 @@ pub(crate) fn live_remote_agents(conn: &Connection, uid: &str) -> Result<Vec<Rem
             cwd: r.get(5)?,
             agent_type: r.get(6)?,
             published_at: r.get(7)?,
+            activity: r
+                .get::<_, Option<String>>(8)?
+                .and_then(|j| serde_json::from_str(&j).ok()),
+            pending: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
+            last_active_at: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The other machine's agent that `record_id` names, while it is present.
+pub(crate) fn remote_agent_by_record(
+    conn: &Connection,
+    uid: &str,
+    record_id: &str,
+) -> Result<Option<RemoteAgent>> {
+    Ok(live_remote_agents(conn, uid)?
+        .into_iter()
+        .find(|a| a.record_id() == record_id))
+}
+
+/// The agent on another machine that `target` names, for a command that found
+/// no agent of that name here: asks the server first when this machine has not
+/// heard of one, so an agent started over there a moment ago is found. `None`
+/// when bus sync is off or nothing matches; the account comes with it.
+pub(crate) fn lookup_remote_agent(target: &str) -> Result<Option<(String, RemoteAgent)>> {
+    let Some(uid) = bus_sync_account() else {
+        return Ok(None);
+    };
+    let find = |uid: &str| find_remote_agent(&open()?, uid, target);
+    if let Some(found) = find(&uid)? {
+        return Ok(Some((uid, found)));
+    }
+    let pull_uid = uid.clone();
+    let _ = super::sync::run_blocking(async move { super::sync::pull_bus(&pull_uid).await });
+    Ok(find(&uid)?.map(|a| (uid, a)))
 }
 
 /// The agent on another machine that `target` names: by bus name or nick,
@@ -403,11 +626,13 @@ pub(crate) fn apply_record(
                 .context("invalid agent sync payload")?;
             let n = conn.execute(
                 "INSERT INTO remote_agents (record_id, user_id, device_id, hostname, name, nick,
-                                            channel, cwd, agent_type, published_at, version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                            channel, cwd, agent_type, published_at, version,
+                                            activity_json, pending, last_active_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT(record_id) DO UPDATE SET
                     user_id = ?2, hostname = ?4, name = ?5, nick = ?6, channel = ?7, cwd = ?8,
-                    agent_type = ?9, published_at = ?10, version = ?11
+                    agent_type = ?9, published_at = ?10, version = ?11, activity_json = ?12,
+                    pending = ?13, last_active_at = ?14
                   WHERE ?11 > remote_agents.version",
                 params![
                     record_id,
@@ -423,7 +648,10 @@ pub(crate) fn apply_record(
                     // listed past the TTL; one running behind only drops them
                     // a little early.
                     a.published_at.min(crate::message::epoch_secs() as i64),
-                    version
+                    version,
+                    a.activity.as_ref().map(serde_json::to_string).transpose()?,
+                    a.pending,
+                    a.last_active_at
                 ],
             )?;
             Ok(n > 0)
@@ -444,7 +672,7 @@ pub(crate) fn apply_record(
             if !claim_message(conn, uid, record_id, version)? {
                 return Ok(false);
             }
-            if let Err(e) = deliver(conn, &msg) {
+            if let Err(e) = deliver(conn, uid, device_id, &msg) {
                 // Let a later pull try again rather than lose it.
                 conn.execute(
                     "DELETE FROM sync_state WHERE user_id = ?1 AND kind = ?2 AND record_id = ?3 AND dirty = 1",
@@ -496,13 +724,41 @@ fn decrypt_record(ciphertext: &str) -> Result<String> {
 /// Hand a message from another machine to its recipient here, with the same
 /// bookkeeping the relay does for a tunnelled one: a request is pending until
 /// answered, an answer is recorded against its request for `bus await`.
-fn deliver(conn: &Connection, msg: &MessagePayload) -> Result<()> {
+fn deliver(conn: &Connection, uid: &str, device_id: &str, msg: &MessagePayload) -> Result<()> {
+    if let Some(original) = msg.bounce_of.as_deref() {
+        return receive_bounce(conn, msg, original);
+    }
     let envelope: Option<Envelope> = msg
         .envelope_json
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
         .context("invalid envelope in bus message")?;
+    let here = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE name = ?1)",
+        params![msg.recipient],
+        |r| r.get::<_, bool>(0),
+    )?;
+    let is_answer = envelope
+        .as_ref()
+        .is_some_and(|e| e.kind == MessageKind::Response && e.reply_to.is_some());
+    if !here && !is_answer {
+        // Nobody here to read it, and queueing it under the name would hand
+        // it to the next agent to take that name. Tell the sender instead.
+        try_log_event(
+            "warn",
+            "bus-sync",
+            "message from another machine for an agent no longer here; bounced",
+            Some(&format!(
+                "recipient={} sender={}",
+                msg.recipient, msg.sender
+            )),
+        );
+        if let Some(e) = &envelope {
+            bounce(conn, uid, device_id, msg, e)?;
+        }
+        return Ok(());
+    }
     if let Some(ref e) = envelope {
         match e.kind {
             MessageKind::Request | MessageKind::Handoff => {
@@ -526,11 +782,7 @@ fn deliver(conn: &Connection, msg: &MessagePayload) -> Result<()> {
             MessageKind::Fyi => {}
         }
     }
-    let here = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agents WHERE name = ?1)",
-        params![msg.recipient],
-        |r| r.get::<_, bool>(0),
-    )?;
+    // An answer whose asker has left was recorded above for `bus await`.
     if here {
         enqueue_bus_message(
             &msg.recipient,
@@ -539,23 +791,78 @@ fn deliver(conn: &Connection, msg: &MessagePayload) -> Result<()> {
             true,
             envelope.as_ref(),
         )?;
-    } else if !envelope
-        .as_ref()
-        .is_some_and(|e| e.kind == MessageKind::Response && e.reply_to.is_some())
-    {
-        // An answer was recorded above for `bus await`; anything else has
-        // nobody here to read it, and queueing it under the name would hand it
-        // to the next agent to take that name.
-        try_log_event(
-            "warn",
-            "bus-sync",
-            "message from another machine for an agent no longer here",
-            Some(&format!(
-                "recipient={} sender={}",
-                msg.recipient, msg.sender
-            )),
-        );
     }
+    Ok(())
+}
+
+/// Send `msg`, which could not be delivered here, back to the machine it came
+/// from: a bounce naming it, which closes its request there.
+fn bounce(
+    conn: &Connection,
+    uid: &str,
+    device_id: &str,
+    msg: &MessagePayload,
+    envelope: &Envelope,
+) -> Result<()> {
+    let reason = format!(
+        "{} is no longer on \"{}\"",
+        msg.recipient,
+        hostname()
+    );
+    let excerpt: String = envelope.message.chars().take(120).collect();
+    let payload = MessagePayload {
+        to_device: msg.from_device.clone(),
+        from_device: device_id.to_string(),
+        recipient: msg.sender.clone(),
+        sender: "sidekar".to_string(),
+        body: format!(
+            "[sidekar] Message {} to {} was not delivered: {reason}. It said: {excerpt}",
+            envelope.id, msg.recipient
+        ),
+        envelope_json: None,
+        created_at: crate::message::epoch_secs() as i64,
+        bounce_of: Some(envelope.id.clone()),
+        undeliverable: Some(reason),
+    };
+    queue_payload(conn, uid, &crate::message::gen_msg_id(), &payload)
+}
+
+/// A bounce of a message this machine sent: close its request, so `bus await`
+/// reports it undelivered rather than waiting, and tell the sender if it is
+/// still here.
+fn receive_bounce(conn: &Connection, msg: &MessagePayload, original: &str) -> Result<()> {
+    let now = crate::message::epoch_secs() as i64;
+    conn.execute(
+        "UPDATE outbound_requests
+            SET status = ?2, closed_at = COALESCE(closed_at, ?3)
+          WHERE msg_id = ?1 AND status IN (?4, ?5)",
+        params![
+            original,
+            OUTBOUND_STATUS_RECIPIENT_GONE,
+            now,
+            OUTBOUND_STATUS_OPEN,
+            OUTBOUND_STATUS_TIMED_OUT
+        ],
+    )?;
+    conn.execute("DELETE FROM pending_requests WHERE id = ?1", params![original])?;
+    let _ = purge_nudges_for_request(original);
+    let here = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE name = ?1)",
+        params![msg.recipient],
+        |r| r.get::<_, bool>(0),
+    )?;
+    if here {
+        enqueue_bus_message(&msg.recipient, &msg.sender, &msg.body, true, None)?;
+    }
+    try_log_event(
+        "info",
+        "bus-sync",
+        "a message to another machine bounced",
+        Some(&format!(
+            "msg={original} reason={}",
+            msg.undeliverable.as_deref().unwrap_or("not delivered")
+        )),
+    );
     Ok(())
 }
 

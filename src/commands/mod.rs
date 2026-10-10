@@ -2,7 +2,7 @@ use crate::*;
 
 mod agent_sessions;
 mod agent_tools;
-mod agents;
+pub(crate) mod agents;
 mod batch;
 pub mod browser_ext;
 mod browser_run;
