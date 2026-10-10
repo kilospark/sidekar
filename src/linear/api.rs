@@ -18,7 +18,8 @@ macro_rules! issue_row {
 pub const Q_VIEWER: &str =
     "query { viewer { id name displayName email organization { name urlKey } } }";
 
-pub const Q_TEAMS: &str = "query { teams(first: 250) { nodes { id key name } } }";
+pub const Q_TEAMS: &str = "query { teams(first: 250) { nodes { \
+    id key name description private issueCount cyclesEnabled } } }";
 
 pub const Q_TEAM_BY_KEY: &str = "query($key: String!) { \
     teams(filter: { key: { eqIgnoreCase: $key } }, first: 1) { nodes { id key name } } }";
@@ -66,7 +67,8 @@ pub const Q_USERS: &str = "query($filter: UserFilter, $first: Int) { \
 
 pub const Q_PROJECTS: &str = "query($filter: ProjectFilter, $first: Int) { \
     projects(filter: $filter, first: $first, orderBy: updatedAt) { nodes { \
-    id name url progress targetDate status { name } lead { name displayName } } } }";
+    id name url progress startDate targetDate health status { name } lead { name displayName } \
+    teams(first: 10) { nodes { key } } } } }";
 
 pub const Q_CYCLES: &str = "query($filter: CycleFilter, $first: Int) { \
     cycles(filter: $filter, first: $first) { nodes { \
@@ -84,6 +86,38 @@ pub const M_UPDATE: &str = "mutation($id: String!, $input: IssueUpdateInput!) { 
 
 pub const M_COMMENT: &str = "mutation($input: CommentCreateInput!) { \
     commentCreate(input: $input) { success comment { id url } } }";
+
+pub const Q_ORGANIZATION: &str = "query { organization { id name urlKey userCount } \
+    viewer { name displayName email } }";
+
+/// The inbox. `Notification` is an interface; the issue and project kinds
+/// carry what they are about.
+pub const Q_NOTIFICATIONS: &str = "query($first: Int, $includeArchived: Boolean) { \
+    notificationsUnreadCount \
+    notifications(first: $first, includeArchived: $includeArchived, orderBy: createdAt) { nodes { \
+    id type title subtitle url createdAt readAt archivedAt snoozedUntilAt \
+    actor { name displayName } \
+    ... on IssueNotification { issue { identifier title } comment { body } } \
+    ... on ProjectNotification { project { name } } } } }";
+
+pub const M_NOTIFICATION_UPDATE: &str = "mutation($id: String!, $input: NotificationUpdateInput!) { \
+    notificationUpdate(id: $id, input: $input) { success } }";
+
+pub const M_NOTIFICATION_ARCHIVE: &str =
+    "mutation($id: String!) { notificationArchive(id: $id) { success } }";
+
+pub const Q_COMMENTS: &str = "query($filter: CommentFilter, $first: Int) { \
+    comments(filter: $filter, first: $first, orderBy: updatedAt) { nodes { \
+    id body url createdAt updatedAt user { name displayName } issue { identifier title } } } }";
+
+pub const Q_HISTORY: &str = "query($id: String!, $first: Int) { issue(id: $id) { identifier title \
+    history(first: $first) { nodes { createdAt actor { name displayName } \
+    fromState { name } toState { name } fromAssignee { name displayName } \
+    toAssignee { name displayName } fromPriority toPriority fromTitle toTitle \
+    addedLabels { name } removedLabels { name } fromProject { name } toProject { name } \
+    fromCycle { number } toCycle { number } fromParent { identifier } toParent { identifier } \
+    fromDueDate toDueDate fromEstimate toEstimate updatedDescription archived trashed \
+    autoClosed autoArchived } } } }";
 
 /// Every document above, for the schema test.
 pub const ALL_DOCUMENTS: &[&str] = &[
@@ -104,6 +138,12 @@ pub const ALL_DOCUMENTS: &[&str] = &[
     M_CREATE,
     M_UPDATE,
     M_COMMENT,
+    Q_ORGANIZATION,
+    Q_NOTIFICATIONS,
+    M_NOTIFICATION_UPDATE,
+    M_NOTIFICATION_ARCHIVE,
+    Q_COMMENTS,
+    Q_HISTORY,
 ];
 
 fn s(v: &Value, ptr: &str) -> String {
@@ -154,18 +194,27 @@ pub async fn viewer(linear: &Linear) -> Result<Viewer> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Team {
     pub id: String,
     pub key: String,
     pub name: String,
+    pub description: String,
+    pub private: bool,
+    pub issue_count: u64,
+    pub cycles_enabled: bool,
 }
 
-fn team_from(v: &Value) -> Team {
+pub(crate) fn team_from(v: &Value) -> Team {
+    let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
     Team {
         id: s(v, "/id"),
         key: s(v, "/key"),
         name: s(v, "/name"),
+        description: s(v, "/description"),
+        private: b("private"),
+        issue_count: v.get("issueCount").and_then(|x| x.as_u64()).unwrap_or(0),
+        cycles_enabled: b("cyclesEnabled"),
     }
 }
 
@@ -339,6 +388,9 @@ pub struct IssueQuery {
     /// Include completed and canceled issues. Off by default: what is still
     /// open is nearly always the question.
     pub include_closed: bool,
+    /// Only issues updated after this (`DateTimeOrDuration`: an ISO time or
+    /// a duration such as `-P7D`).
+    pub updated_since: Option<String>,
     pub limit: usize,
 }
 
@@ -387,6 +439,9 @@ pub(crate) fn issue_filter(q: &IssueQuery) -> Option<Value> {
     }
     if let Some(p) = q.priority {
         f.insert("priority".into(), json!({"eq": p}));
+    }
+    if let Some(since) = &q.updated_since {
+        f.insert("updatedAt".into(), json!({"gt": since}));
     }
     if f.is_empty() {
         None
@@ -702,9 +757,30 @@ pub struct Project {
     pub name: String,
     pub status: String,
     pub progress: f64,
+    pub start: String,
     pub target: String,
+    pub health: String,
     pub lead: String,
+    pub teams: Vec<String>,
     pub url: String,
+}
+
+pub(crate) fn project_from(n: &Value) -> Project {
+    Project {
+        id: s(n, "/id"),
+        name: s(n, "/name"),
+        status: s(n, "/status/name"),
+        progress: n.get("progress").and_then(|p| p.as_f64()).unwrap_or(0.0),
+        start: s(n, "/startDate"),
+        target: s(n, "/targetDate"),
+        health: s(n, "/health"),
+        lead: person(n, "/lead"),
+        teams: nodes(n, "/teams/nodes")
+            .into_iter()
+            .map(|t| s(t, "/key"))
+            .collect(),
+        url: s(n, "/url"),
+    }
 }
 
 pub async fn projects(
@@ -736,15 +812,7 @@ pub async fn projects(
         .await?;
     Ok(nodes(&d, "/projects/nodes")
         .into_iter()
-        .map(|n| Project {
-            id: s(n, "/id"),
-            name: s(n, "/name"),
-            status: s(n, "/status/name"),
-            progress: n.get("progress").and_then(|p| p.as_f64()).unwrap_or(0.0),
-            target: s(n, "/targetDate"),
-            lead: person(n, "/lead"),
-            url: s(n, "/url"),
-        })
+        .map(project_from)
         .collect())
 }
 
@@ -885,7 +953,7 @@ pub async fn issue_context(linear: &Linear, id: &str) -> Result<IssueContext> {
         team: Team {
             id: s(i, "/team/id"),
             key: s(i, "/team/key"),
-            name: String::new(),
+            ..Default::default()
         },
     })
 }
@@ -1061,3 +1129,402 @@ pub async fn comment(linear: &Linear, id: &str, body: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// Workspace
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Organization {
+    pub id: String,
+    pub name: String,
+    pub url_key: String,
+    pub users: u64,
+    pub viewer: String,
+    pub viewer_email: String,
+}
+
+pub(crate) fn organization_from(d: &Value) -> Organization {
+    Organization {
+        id: s(d, "/organization/id"),
+        name: s(d, "/organization/name"),
+        url_key: s(d, "/organization/urlKey"),
+        users: d
+            .pointer("/organization/userCount")
+            .and_then(|u| u.as_u64())
+            .unwrap_or(0),
+        viewer: person(d, "/viewer"),
+        viewer_email: s(d, "/viewer/email"),
+    }
+}
+
+/// The workspace a token belongs to, and who it acts as there.
+pub async fn organization(linear: &Linear) -> Result<Organization> {
+    Ok(organization_from(
+        &linear.query(Q_ORGANIZATION, json!({})).await?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Inbox
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Notification {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub subtitle: String,
+    pub url: String,
+    pub created: String,
+    pub read: bool,
+    pub archived: bool,
+    pub snoozed: bool,
+    pub actor: String,
+    /// `ENG-123` for an issue notification.
+    pub issue: String,
+    pub issue_title: String,
+    pub project: String,
+    /// The first line of the comment, when there is one.
+    pub comment: String,
+}
+
+fn present(v: &Value, ptr: &str) -> bool {
+    v.pointer(ptr).is_some_and(|x| !x.is_null())
+}
+
+pub(crate) fn notification_from(v: &Value) -> Notification {
+    Notification {
+        id: s(v, "/id"),
+        kind: s(v, "/type"),
+        title: s(v, "/title"),
+        subtitle: s(v, "/subtitle"),
+        url: s(v, "/url"),
+        created: s(v, "/createdAt"),
+        read: present(v, "/readAt"),
+        archived: present(v, "/archivedAt"),
+        snoozed: present(v, "/snoozedUntilAt"),
+        actor: person(v, "/actor"),
+        issue: s(v, "/issue/identifier"),
+        issue_title: s(v, "/issue/title"),
+        project: s(v, "/project/name"),
+        comment: first_line(&s(v, "/comment/body"), 140),
+    }
+}
+
+/// A single line of at most `max` characters.
+pub(crate) fn first_line(text: &str, max: usize) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if line.chars().count() > max {
+        format!("{}…", line.chars().take(max).collect::<String>())
+    } else {
+        line.to_string()
+    }
+}
+
+/// The inbox, newest first, and the unread count Linear reports for it.
+pub async fn notifications(
+    linear: &Linear,
+    unread_only: bool,
+    include_archived: bool,
+    limit: usize,
+) -> Result<(u64, Vec<Notification>)> {
+    let d = linear
+        .query(
+            Q_NOTIFICATIONS,
+            json!({"first": if unread_only { 250 } else { limit.clamp(1, 250) },
+                   "includeArchived": include_archived}),
+        )
+        .await?;
+    let unread = d
+        .get("notificationsUnreadCount")
+        .and_then(|u| u.as_u64())
+        .unwrap_or(0);
+    let mut found: Vec<Notification> = nodes(&d, "/notifications/nodes")
+        .into_iter()
+        .map(notification_from)
+        .filter(|n| !unread_only || !n.read)
+        .collect();
+    // ISO-8601 UTC sorts as text.
+    found.sort_by(|a, b| b.created.cmp(&a.created));
+    found.truncate(limit.max(1));
+    Ok((unread, found))
+}
+
+/// Now as the ISO-8601 instant Linear's `DateTime` takes.
+pub(crate) fn iso_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    crate::utils::epoch_to_date(secs)
+        .replace(" UTC", "Z")
+        .replacen(' ', "T", 1)
+}
+
+/// Mark a notification read (or unread again).
+pub async fn mark_notification(linear: &Linear, id: &str, read: bool) -> Result<()> {
+    let read_at = if read { json!(iso_now()) } else { Value::Null };
+    let d = linear
+        .query(
+            M_NOTIFICATION_UPDATE,
+            json!({"id": id, "input": {"readAt": read_at}}),
+        )
+        .await?;
+    if d.pointer("/notificationUpdate/success") != Some(&json!(true)) {
+        bail!("Linear did not update notification {id}");
+    }
+    Ok(())
+}
+
+pub async fn archive_notification(linear: &Linear, id: &str) -> Result<()> {
+    let d = linear
+        .query(M_NOTIFICATION_ARCHIVE, json!({"id": id}))
+        .await?;
+    if d.pointer("/notificationArchive/success") != Some(&json!(true)) {
+        bail!("Linear did not archive notification {id}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Recent activity
+// ---------------------------------------------------------------------------
+
+/// `7d`, `2w`, `12h`, `30m` as the ISO-8601 duration Linear's date filters
+/// read as "that long ago"; an ISO date or time passes through.
+pub(crate) fn since(text: &str) -> Result<String> {
+    let t = text.trim();
+    if t.starts_with("-P")
+        || (t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('-'))
+    {
+        return Ok(t.to_string());
+    }
+    let (num, unit) = t.split_at(t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len()));
+    let n: u64 = num
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--since takes 7d, 2w, 12h, 30m, or a date; got {text}"))?;
+    Ok(match unit {
+        "d" | "day" | "days" => format!("-P{n}D"),
+        "w" | "week" | "weeks" => format!("-P{n}W"),
+        "h" | "hour" | "hours" => format!("-PT{n}H"),
+        "m" | "min" | "mins" => format!("-PT{n}M"),
+        _ => bail!("--since takes 7d, 2w, 12h, 30m, or a date; got {text}"),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentComment {
+    pub author: String,
+    pub created: String,
+    pub updated: String,
+    pub issue: String,
+    pub issue_title: String,
+    pub body: String,
+    pub url: String,
+}
+
+pub(crate) fn recent_comment_from(v: &Value) -> RecentComment {
+    RecentComment {
+        author: person(v, "/user"),
+        created: s(v, "/createdAt"),
+        updated: s(v, "/updatedAt"),
+        issue: s(v, "/issue/identifier"),
+        issue_title: s(v, "/issue/title"),
+        body: first_line(&s(v, "/body"), 160),
+        url: s(v, "/url"),
+    }
+}
+
+/// The `CommentFilter` for issue comments made since `since`, optionally
+/// within a team or project.
+pub(crate) fn comment_filter(team: Option<&str>, project: Option<&str>, since: &str) -> Value {
+    let mut issue = serde_json::Map::new();
+    if let Some(t) = team {
+        issue.insert("team".into(), json!({"key": {"eqIgnoreCase": t}}));
+    }
+    if let Some(p) = project {
+        issue.insert("project".into(), json!({"name": {"containsIgnoreCase": p}}));
+    }
+    let mut f = json!({"createdAt": {"gt": since}});
+    f["issue"] = if issue.is_empty() {
+        json!({"null": false})
+    } else {
+        Value::Object(issue)
+    };
+    f
+}
+
+pub struct Activity {
+    pub issues: Vec<IssueRow>,
+    pub comments: Vec<RecentComment>,
+}
+
+/// What moved lately: issues updated (any state) and comments made since
+/// `since`, across the workspace or within a team or project.
+pub async fn activity(
+    linear: &Linear,
+    team: Option<&str>,
+    project: Option<&str>,
+    since: &str,
+    limit: usize,
+) -> Result<Activity> {
+    let q = IssueQuery {
+        team: team.map(String::from),
+        project: project.map(String::from),
+        include_closed: true,
+        updated_since: Some(since.to_string()),
+        limit,
+        ..Default::default()
+    };
+    let issues = self::issues(linear, &q).await?;
+    let d = linear
+        .query(
+            Q_COMMENTS,
+            json!({"filter": comment_filter(team, project, since), "first": limit.clamp(1, 250)}),
+        )
+        .await?;
+    let comments = nodes(&d, "/comments/nodes")
+        .into_iter()
+        .map(recent_comment_from)
+        .collect();
+    Ok(Activity { issues, comments })
+}
+
+/// One line per change in an issue history entry, e.g.
+/// `state Todo → In Progress; assignee alice → bob`.
+pub(crate) fn describe_history(h: &Value) -> String {
+    let mut parts = Vec::new();
+    let mut pair = |what: &str, from: String, to: String| {
+        if !from.is_empty() || !to.is_empty() {
+            let dash = |x: String| if x.is_empty() { "none".to_string() } else { x };
+            parts.push(format!("{what} {} → {}", dash(from), dash(to)));
+        }
+    };
+    pair("state", s(h, "/fromState/name"), s(h, "/toState/name"));
+    pair(
+        "assignee",
+        person(h, "/fromAssignee"),
+        person(h, "/toAssignee"),
+    );
+    let prio = |p: &str| {
+        h.get(p)
+            .and_then(|x| x.as_f64())
+            .map(|n| priority_name(n as i64).to_string())
+            .unwrap_or_default()
+    };
+    pair("priority", prio("fromPriority"), prio("toPriority"));
+    pair("title", s(h, "/fromTitle"), s(h, "/toTitle"));
+    pair(
+        "project",
+        s(h, "/fromProject/name"),
+        s(h, "/toProject/name"),
+    );
+    let cycle = |p: &str| {
+        h.pointer(p)
+            .and_then(|x| x.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+    };
+    pair(
+        "cycle",
+        cycle("/fromCycle/number"),
+        cycle("/toCycle/number"),
+    );
+    pair(
+        "parent",
+        s(h, "/fromParent/identifier"),
+        s(h, "/toParent/identifier"),
+    );
+    pair("due", s(h, "/fromDueDate"), s(h, "/toDueDate"));
+    let est = |p: &str| {
+        h.get(p)
+            .and_then(|x| x.as_f64())
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+    };
+    pair("estimate", est("fromEstimate"), est("toEstimate"));
+    let names = |p: &str| {
+        h.get(p)
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|l| s(l, "/name"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    let added = names("addedLabels");
+    if !added.is_empty() {
+        parts.push(format!("+labels {added}"));
+    }
+    let removed = names("removedLabels");
+    if !removed.is_empty() {
+        parts.push(format!("-labels {removed}"));
+    }
+    let flag = |k: &str| h.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+    if flag("updatedDescription") {
+        parts.push("edited description".into());
+    }
+    if flag("autoClosed") {
+        parts.push("auto-closed".into());
+    }
+    if flag("autoArchived") {
+        parts.push("auto-archived".into());
+    } else if flag("archived") {
+        parts.push("archived".into());
+    }
+    if flag("trashed") {
+        parts.push("deleted".into());
+    }
+    if parts.is_empty() {
+        "updated".into()
+    } else {
+        parts.join("; ")
+    }
+}
+
+/// Linear's names for priority numbers.
+pub(crate) fn priority_name(p: i64) -> &'static str {
+    match p {
+        1 => "urgent",
+        2 => "high",
+        3 => "medium",
+        4 => "low",
+        _ => "none",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub at: String,
+    pub actor: String,
+    pub change: String,
+}
+
+/// An issue's change log, oldest first.
+pub async fn history(
+    linear: &Linear,
+    id: &str,
+    limit: usize,
+) -> Result<(String, Vec<HistoryEntry>)> {
+    let d = linear
+        .query(Q_HISTORY, json!({"id": id, "first": limit.clamp(1, 250)}))
+        .await?;
+    let title = format!("{} {}", s(&d, "/issue/identifier"), s(&d, "/issue/title"));
+    let mut entries: Vec<HistoryEntry> = nodes(&d, "/issue/history/nodes")
+        .into_iter()
+        .map(|h| HistoryEntry {
+            at: s(h, "/createdAt"),
+            actor: person(h, "/actor"),
+            change: describe_history(h),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.at.cmp(&b.at));
+    Ok((title, entries))
+}

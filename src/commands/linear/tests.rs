@@ -48,8 +48,27 @@ fn a_switch_does_not_eat_the_identifier() {
 #[test]
 fn every_usage_line_names_a_real_subcommand() {
     for verb in [
-        "setup", "add", "login", "accounts", "use", "status", "doctor", "logout", "issues", "mine",
-        "issue", "teams", "projects", "cycles", "create", "update", "comment",
+        "setup",
+        "add",
+        "login",
+        "accounts",
+        "use",
+        "status",
+        "doctor",
+        "logout",
+        "issues",
+        "mine",
+        "issue",
+        "teams",
+        "projects",
+        "cycles",
+        "create",
+        "update",
+        "comment",
+        "history",
+        "activity",
+        "inbox",
+        "workspaces",
     ] {
         let tokens: Vec<&str> = USAGE
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
@@ -64,4 +83,40 @@ fn the_walkthrough_names_the_callback_and_keys() {
     assert!(w.contains("Callback URL: http://localhost:53695/callback"));
     assert!(w.contains("sidekar linear add --token LIN_T"));
     assert!(w.contains("--client-id LIN_ID --client-secret LIN_SECRET"));
+}
+
+#[test]
+fn times_are_shortened_to_the_minute() {
+    assert_eq!(short_time("2026-10-10T14:03:05.123Z"), "2026-10-10 14:03");
+    assert_eq!(short_time("bad"), "bad");
+}
+
+#[test]
+fn inbox_lines_lead_with_the_id_and_unread_marker() {
+    let n = api::Notification {
+        id: "n1".into(),
+        kind: "issueComment".into(),
+        created: "2026-10-10T14:03:05Z".into(),
+        actor: "ann".into(),
+        issue: "ENG-1".into(),
+        issue_title: "Bug".into(),
+        comment: "looks good".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        api_inbox_line(&n),
+        "n1\tUNREAD\t2026-10-10 14:03\tissueComment\tann\tENG-1 Bug\t“looks good”"
+    );
+    let read = api::Notification {
+        read: true,
+        project: "Web".into(),
+        ..n.clone()
+    };
+    assert!(api_inbox_line(&read).contains("\tread\t"));
+}
+
+#[test]
+fn inbox_switches_do_not_swallow_ids() {
+    let pos = positional_with_switches(&v(&["read", "--unread", "id1", "id2"]), SWITCHES);
+    assert_eq!(pos, ["read", "id1", "id2"]);
 }
