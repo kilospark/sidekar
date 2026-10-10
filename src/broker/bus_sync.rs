@@ -748,7 +748,11 @@ fn deliver(conn: &Connection, uid: &str, device_id: &str, msg: &MessagePayload) 
         try_log_event(
             "warn",
             "bus-sync",
-            "message from another machine for an agent no longer here; bounced",
+            if envelope.is_some() {
+                "message from another machine for an agent no longer here; bounced"
+            } else {
+                "nudge from another machine for an agent no longer here; dropped"
+            },
             Some(&format!(
                 "recipient={} sender={}",
                 msg.recipient, msg.sender
