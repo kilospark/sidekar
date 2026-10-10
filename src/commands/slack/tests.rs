@@ -85,3 +85,90 @@ fn the_manifest_asks_for_file_scopes() {
         assert!(scopes.contains(&"files:read") && scopes.contains(&"files:write"));
     }
 }
+
+mod draft_target {
+    use super::*;
+    use crate::test_http::MockServer;
+    use serde_json::json;
+
+    fn server(ims: serde_json::Value) -> MockServer {
+        MockServer::start(move |req| {
+            let body = match req.path() {
+                "/users.info" => json!({"ok": true, "user": {"id": "U0000000A", "name": "kb"}}),
+                "/users.conversations" => json!({"ok": true, "channels": ims}),
+                "/conversations.open" => json!({"ok": true, "channel": {"id": "DNEW00001"}}),
+                other => json!({"ok": false, "error": format!("unexpected {other}")}),
+            };
+            (200, body.to_string())
+        })
+    }
+
+    fn slack(server: &MockServer) -> crate::slack::Slack {
+        crate::slack::Slack::with_base(MockServer::client(), &server.base, "xoxp-test".into())
+    }
+
+    #[tokio::test]
+    async fn existing_dm_only_uses_the_dm_already_there() {
+        let s = server(json!([{"id": "DOTHER001", "user": "U0000000Z"},
+                              {"id": "DKB000001", "user": "U0000000A"}]));
+        assert_eq!(
+            draft_channel(&slack(&s), "U0000000A", true).await.unwrap(),
+            "DKB000001"
+        );
+        assert!(
+            s.requests()
+                .iter()
+                .all(|r| r.path() != "/conversations.open"),
+            "nothing was opened"
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_dm_only_refuses_when_there_is_none() {
+        let s = server(json!([{"id": "DOTHER001", "user": "U0000000Z"}]));
+        let err = draft_channel(&slack(&s), "U0000000A", true)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no DM with U0000000A"), "{err}");
+        assert!(
+            s.requests()
+                .iter()
+                .all(|r| r.path() != "/conversations.open")
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_flag_a_person_gets_their_dm_opened() {
+        let s = server(json!([]));
+        assert_eq!(
+            draft_channel(&slack(&s), "U0000000A", false).await.unwrap(),
+            "DNEW00001"
+        );
+        assert!(
+            s.requests()
+                .iter()
+                .any(|r| r.path() == "/conversations.open")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flag_changes_nothing_for_a_channel() {
+        let s = server(json!([]));
+        assert_eq!(
+            draft_channel(&slack(&s), "C0123ABCD", true).await.unwrap(),
+            "C0123ABCD"
+        );
+        assert!(s.requests().is_empty());
+    }
+}
+
+#[test]
+fn a_search_limit_over_a_page_is_called_out() {
+    assert_eq!(search_cap_note(100), None);
+    let note = search_cap_note(500).unwrap();
+    assert!(
+        note.contains("at most 100") && note.contains("not 500"),
+        "{note}"
+    );
+}

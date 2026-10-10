@@ -106,5 +106,30 @@ pub(crate) fn read_upload(path: &str) -> Result<(Vec<u8>, String, String)> {
     Ok((bytes, name, mime))
 }
 
+/// The end of a URL found in prose, without the punctuation that closes the
+/// sentence around it: `see https://x.dev/a.` links `https://x.dev/a`.
+/// A closing bracket stays when the URL opened it
+/// (`https://en.wikipedia.org/wiki/Rust_(language)`), and goes when it
+/// belongs to the text (`(see https://x.dev/a)`).
+pub(crate) fn trim_link_end(url: &str) -> &str {
+    let mut u = url;
+    loop {
+        let Some(last) = u.chars().last() else {
+            return u;
+        };
+        let drop = match last {
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '*' | '_' | '~' | '`' => true,
+            ')' => u.matches('(').count() < u.matches(')').count(),
+            ']' => u.matches('[').count() < u.matches(']').count(),
+            '}' => u.matches('{').count() < u.matches('}').count(),
+            _ => false,
+        };
+        if !drop {
+            return u;
+        }
+        u = &u[..u.len() - last.len_utf8()];
+    }
+}
+
 #[cfg(test)]
 mod tests;

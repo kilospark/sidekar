@@ -61,27 +61,39 @@ impl MockServer {
     /// Like [`start`](Self::start), choosing the content type and raw bytes:
     /// for file downloads and upload endpoints that are not JSON.
     pub fn start_raw(respond: impl Fn(&Request) -> Reply + Send + Sync + 'static) -> Self {
+        Self::serve(Arc::new(respond), false)
+    }
+
+    /// Like [`start`](Self::start), but each connection is answered on its own
+    /// thread, so a test can tell whether the client really ran calls in
+    /// parallel. Requests are recorded in completion order.
+    pub fn start_concurrent(
+        respond: impl Fn(&Request) -> (u16, String) + Send + Sync + 'static,
+    ) -> Self {
+        Self::serve(
+            Arc::new(move |req: &Request| {
+                let (status, body) = respond(req);
+                (status, "application/json".into(), body.into_bytes())
+            }),
+            true,
+        )
+    }
+
+    fn serve(respond: Arc<Responder>, concurrent: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<Request>>> = Arc::default();
         let record = seen.clone();
-        let respond: Arc<Responder> = Arc::new(respond);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let Some(req) = read_request(&mut stream) else {
-                    continue;
-                };
-                let (status, content_type, body) = respond(&req);
-                record.lock().unwrap().push(req);
-                let head = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&body);
-                let _ = stream.flush();
+                let Ok(stream) = stream else { continue };
+                let (respond, record) = (respond.clone(), record.clone());
+                let answer = move || answer(stream, &*respond, &record);
+                if concurrent {
+                    std::thread::spawn(answer);
+                } else {
+                    answer();
+                }
             }
         });
         Self { base, seen }
@@ -144,4 +156,20 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<Request> {
         headers,
         body: String::from_utf8_lossy(&body).into_owned(),
     })
+}
+
+fn answer(mut stream: std::net::TcpStream, respond: &Responder, record: &Mutex<Vec<Request>>) {
+    let Some(req) = read_request(&mut stream) else {
+        return;
+    };
+    let (status, content_type, body) = respond(&req);
+    record.lock().unwrap().push(req);
+    let head = format!(
+        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&body);
+    let _ = stream.flush();
 }

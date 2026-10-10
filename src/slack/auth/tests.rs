@@ -85,6 +85,7 @@ fn a_user_login_asks_for_user_scopes_only() {
         "st",
         Kind::User,
         Some("T9"),
+        None,
     );
     let q = crate::oauth_loopback::query_params(&url);
     assert!(q["user_scope"].contains("search:read"));
@@ -100,7 +101,7 @@ fn a_user_login_asks_for_user_scopes_only() {
 
 #[test]
 fn a_bot_login_asks_for_bot_scopes_without_search() {
-    let url = authorize_url("id", &redirect_uri(1), "s", Kind::Bot, None);
+    let url = authorize_url("id", &redirect_uri(1), "s", Kind::Bot, None, None);
     let q = crate::oauth_loopback::query_params(&url);
     assert!(q["scope"].contains("chat:write"));
     // Slack offers no search scope to bots; asking would fail the install.
@@ -223,4 +224,80 @@ fn the_manifest_registers_the_redirect_and_disables_rotation() {
         .filter_map(|s| s.as_str())
         .collect();
     assert_eq!(user, USER_SCOPES);
+}
+
+mod refresh_flow {
+    use super::super::*;
+    use crate::oauth_loopback::{ExpiringToken, now_secs};
+    use crate::test_http::MockServer;
+    use serde_json::json;
+
+    const KEY: &str = "SLACK_REFRESH_TEST";
+
+    fn seed() -> TokenRef {
+        crate::broker::kv_set("SL_CID", "cid", None).unwrap();
+        crate::broker::kv_set("SL_SEC", "secret", None).unwrap();
+        let blob = ExpiringToken {
+            access_token: "xoxe.xoxp-old".into(),
+            refresh_token: Some("xoxe-1".into()),
+            expires_at: Some(now_secs() - 10),
+        };
+        let who = Identity::from_auth_test(&json!({"user_id": "U1", "user": "k",
+            "team": "Acme", "team_id": "T1", "url": "https://acme.slack.com/"}));
+        let tags = tags_for(Kind::User, &who, Some(("SL_CID", "SL_SEC")));
+        crate::broker::kv_set(KEY, &blob.to_value(), Some(&tags)).unwrap();
+        token_ref_from(KEY, &tags).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_rotating_token_refreshes_once_under_the_lock() {
+        let _home = crate::ScratchHome::new();
+        let token = seed();
+        let server = MockServer::start(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            (
+                200,
+                json!({"ok": true, "access_token": "xoxe.xoxp-new", "refresh_token": "xoxe-2",
+                       "expires_in": 43200})
+                .to_string(),
+            )
+        });
+        let http = MockServer::client();
+        let (a, b) = tokio::join!(
+            access_token_for_at(&token, &http, &server.base),
+            access_token_for_at(&token, &http, &server.base),
+        );
+        assert_eq!(a.unwrap(), "xoxe.xoxp-new");
+        assert_eq!(b.unwrap(), "xoxe.xoxp-new");
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].path(), "/oauth.v2.access");
+        assert_eq!(reqs[0].form()["refresh_token"], "xoxe-1");
+        let entry = crate::broker::kv_get(KEY).unwrap().unwrap();
+        assert_eq!(
+            ExpiringToken::parse(&entry.value).refresh_token.as_deref(),
+            Some("xoxe-2")
+        );
+        assert!(entry.tags.contains(&"team-id:T1".to_string()));
+        assert!(crate::broker::kv_history(KEY).unwrap().is_empty());
+    }
+
+    #[test]
+    fn team_checks_accept_the_id_or_the_name() {
+        let who = Identity::from_auth_test(&json!({"team": "Acme", "team_id": "T1"}));
+        assert!(team_matches("T1", &who));
+        assert!(team_matches("acme", &who));
+        assert!(!team_matches("T2", &who));
+    }
+
+    #[test]
+    fn pkce_goes_into_the_authorize_url_only_when_asked() {
+        let p = crate::oauth_loopback::Pkce::from_verifier("v".into());
+        let with = authorize_url("id", &redirect_uri(1), "s", Kind::User, None, Some(&p));
+        let q = crate::oauth_loopback::query_params(&with);
+        assert_eq!(q["code_challenge_method"], "S256");
+        assert_eq!(q["code_challenge"], p.challenge);
+        let without = authorize_url("id", &redirect_uri(1), "s", Kind::User, None, None);
+        assert!(!without.contains("code_challenge"));
+    }
 }

@@ -54,6 +54,41 @@ async fn paged(
     Ok(out)
 }
 
+/// Walk a list method page by page until `wanted` says stop. Returns every
+/// item seen, so a miss can still suggest near names. Lookups use this so a
+/// name found on page one costs one call, not a walk of the whole workspace.
+async fn scan_paged(
+    slack: &Slack,
+    method: &str,
+    params: &[(&str, String)],
+    key: &str,
+    mut stop: impl FnMut(&Value) -> bool,
+) -> Result<(bool, Vec<Value>)> {
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut p: Vec<(&str, String)> = params.to_vec();
+        if let Some(c) = &cursor {
+            p.push(("cursor", c.clone()));
+        }
+        let v = slack.get(method, &p).await?;
+        for item in v.get(key).and_then(|i| i.as_array()).into_iter().flatten() {
+            seen.push(item.clone());
+            if stop(item) {
+                return Ok((true, seen));
+            }
+        }
+        cursor = v
+            .pointer("/response_metadata/next_cursor")
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+            .map(String::from);
+        if cursor.is_none() {
+            return Ok((false, seen));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Conversations
 // ---------------------------------------------------------------------------
@@ -214,6 +249,27 @@ pub fn parse_permalink(url: &str) -> Option<(String, String, Option<String>)> {
 
 /// A channel argument as the API wants it: an id, `#name`, a name, a message
 /// link, or a person (`@name`, an email, a user id) meaning a DM with them.
+/// Whether a `<channel>` argument names a person (their DM) rather than a
+/// channel: `@handle`, a `U…` id or an email.
+pub(crate) fn is_person(t: &str) -> bool {
+    let t = t.trim();
+    t.starts_with('@') || looks_like_user_id(t) || is_email(t)
+}
+
+/// The DM already open with a person, without opening one: `None` when the
+/// two of you have never had a DM. (`conversations.open` would create it.)
+pub async fn existing_dm(slack: &Slack, user_id: &str) -> Result<Option<String>> {
+    let params = [("types", "im".to_string()), ("limit", PAGE.to_string())];
+    let with = |v: &Value| s(v, "user") == user_id;
+    let (found, seen) = scan_paged(slack, "users.conversations", &params, "channels", with).await?;
+    Ok(found
+        .then(|| seen.iter().find(|v| with(v)).map(|v| s(v, "id")))
+        .flatten())
+}
+
+/// The most `search.messages` returns in one page.
+pub const SEARCH_MAX: usize = 100;
+
 pub async fn resolve_channel(slack: &Slack, input: &str) -> Result<String> {
     let t = input.trim();
     if let Some((c, _, _)) = parse_permalink(t) {
@@ -222,21 +278,44 @@ pub async fn resolve_channel(slack: &Slack, input: &str) -> Result<String> {
     if looks_like_conversation_id(t) {
         return Ok(t.to_string());
     }
-    if t.starts_with('@') || looks_like_user_id(t) || is_email(t) {
+    if is_person(t) {
         let user = resolve_user(slack, t).await?;
         return open_dm(slack, &[user.id]).await;
     }
     let name = t.trim_start_matches('#').to_lowercase();
-    let all = channels(slack, "public_channel,private_channel", usize::MAX).await?;
-    if let Some(c) = all.iter().find(|c| c.name == name) {
-        return Ok(c.id.clone());
+    let cache_key = format!("channel:{name}");
+    if let Some(id) = slack.cache_get(&cache_key) {
+        return Ok(id);
     }
-    let close: Vec<String> = all
+    let is_it = |v: &Value| s(v, "name") == name;
+    let params = [
+        ("types", "public_channel,private_channel".to_string()),
+        ("exclude_archived", "true".to_string()),
+        ("limit", PAGE.to_string()),
+    ];
+    // Channels the person is in first: that is where nearly every post goes,
+    // and the list is far shorter than the whole workspace.
+    let (found, mut seen) = scan_paged(slack, "users.conversations", &params, "channels", is_it)
+        .await
+        .unwrap_or((false, Vec::new()));
+    if !found {
+        let (_, all) = scan_paged(slack, "conversations.list", &params, "channels", is_it).await?;
+        seen.extend(all);
+    }
+    if let Some(c) = seen.iter().find(|v| is_it(v)) {
+        let id = s(c, "id");
+        slack.cache_put(&cache_key, &id);
+        return Ok(id);
+    }
+    let mut close: Vec<String> = seen
         .iter()
-        .filter(|c| c.name.contains(&name))
-        .take(8)
-        .map(|c| format!("#{}", c.name))
+        .map(|v| s(v, "name"))
+        .filter(|n| n.contains(&name))
+        .map(|n| format!("#{n}"))
         .collect();
+    close.sort();
+    close.dedup();
+    close.truncate(8);
     if close.is_empty() {
         bail!(
             "no channel named #{name} that this token can see; `sidekar slack channels` lists them"
@@ -382,7 +461,7 @@ pub async fn search(slack: &Slack, query: &str, limit: usize) -> Result<Vec<Matc
             "search.messages",
             &[
                 ("query", query.to_string()),
-                ("count", limit.clamp(1, 100).to_string()),
+                ("count", limit.clamp(1, SEARCH_MAX).to_string()),
                 ("sort", "timestamp".into()),
                 ("sort_dir", "desc".into()),
             ],
@@ -672,6 +751,14 @@ pub(crate) fn text_to_blocks(text: &str) -> Value {
             .find(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '|')
             .map(|e| start + e)
             .unwrap_or(rest.len());
+        // "see https://x.dev/a." links the page, not "a."
+        let end = start + crate::attachments::trim_link_end(&rest[start..end]).len();
+        if rest[start..end].ends_with("://") {
+            // A bare scheme with nothing after it is just text.
+            elements.push(json!({"type": "text", "text": &rest[start..start + 1]}));
+            rest = &rest[start + 1..];
+            continue;
+        }
         elements.push(json!({"type": "link", "url": &rest[start..end]}));
         rest = &rest[end..];
     }
@@ -850,6 +937,11 @@ pub(crate) fn user_matches(u: &User, query: &str) -> bool {
 }
 
 /// A person, from an id, an email, or `@handle` / display name / real name.
+///
+/// A handle is unique, so the walk of `users.list` stops at the first
+/// handle match. A display or real name is not (two people can both be
+/// "Alex"), so those keep looking for a second match before answering.
+/// A name resolved exactly once is remembered for a few minutes.
 pub async fn resolve_user(slack: &Slack, input: &str) -> Result<User> {
     let t = input.trim();
     if looks_like_user_id(t) {
@@ -864,13 +956,39 @@ pub async fn resolve_user(slack: &Slack, input: &str) -> Result<User> {
             .await?;
         return Ok(user_from(v.get("user").unwrap_or(&Value::Null)));
     }
-    let all = users(slack, usize::MAX).await?;
-    let found: Vec<&User> = all
-        .iter()
-        .filter(|u| !u.deleted && user_matches(u, t))
-        .collect();
+    let q = t.trim_start_matches('@').to_lowercase();
+    let cache_key = format!("user:{q}");
+    if let Some(id) = slack.cache_get(&cache_key)
+        && let Ok(u) = user_info(slack, &id).await
+    {
+        return Ok(u);
+    }
+    let mut found: Vec<User> = Vec::new();
+    scan_paged(
+        slack,
+        "users.list",
+        &[("limit", PAGE.to_string())],
+        "members",
+        |v| {
+            let u = user_from(v);
+            if u.deleted || !user_matches(&u, &q) {
+                return false;
+            }
+            let by_handle = u.name.to_lowercase() == q;
+            if by_handle {
+                found = vec![u];
+                return true;
+            }
+            found.push(u);
+            false
+        },
+    )
+    .await?;
     match found.as_slice() {
-        [one] => Ok((*one).clone()),
+        [one] => {
+            slack.cache_put(&cache_key, &one.id);
+            Ok(one.clone())
+        }
         [] => bail!(
             "no Slack user matches {t}; `sidekar slack users {}` searches",
             t.trim_start_matches('@')
@@ -885,16 +1003,40 @@ pub async fn resolve_user(slack: &Slack, input: &str) -> Result<User> {
     }
 }
 
-/// Display names for these user ids, one `users.info` each. A lookup that
-/// fails leaves the id in place rather than failing the whole read.
+/// How many `users.info` calls run at once when naming people.
+const NAME_LOOKUPS_AT_ONCE: usize = 8;
+
+/// Display names for these user ids. Remembered names come from the cache;
+/// the rest are looked up a few at a time rather than one after another. A
+/// lookup that fails leaves the id in place rather than failing the read.
 pub async fn names_for(slack: &Slack, ids: &[String]) -> HashMap<String, String> {
+    use futures_util::StreamExt;
     let mut out = HashMap::new();
+    let mut missing: Vec<String> = Vec::new();
     for id in ids {
-        if id.is_empty() || out.contains_key(id) {
+        if id.is_empty() || out.contains_key(id) || missing.contains(id) {
             continue;
         }
-        if let Ok(u) = user_info(slack, id).await {
-            out.insert(id.clone(), u.label().to_string());
+        match slack.cache_get(&format!("name:{id}")) {
+            Some(label) => {
+                out.insert(id.clone(), label);
+            }
+            None => missing.push(id.clone()),
+        }
+    }
+    let looked_up: Vec<(String, Option<User>)> = futures_util::stream::iter(missing)
+        .map(|id| async move {
+            let u = user_info(slack, &id).await.ok();
+            (id, u)
+        })
+        .buffer_unordered(NAME_LOOKUPS_AT_ONCE)
+        .collect()
+        .await;
+    for (id, u) in looked_up {
+        if let Some(u) = u {
+            let label = u.label().to_string();
+            slack.cache_put(&format!("name:{id}"), &label);
+            out.insert(id, label);
         }
     }
     out

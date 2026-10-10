@@ -183,14 +183,24 @@ async fn a_channel_name_resolves_by_listing() {
 
 #[tokio::test]
 async fn an_unknown_channel_suggests_near_names() {
-    let server = MockServer::sequence(vec![json!({"ok": true, "channels": [
-        {"id": "C0000000B", "name": "eng-alerts"}
-    ]})]);
+    let server = MockServer::sequence(vec![
+        json!({"ok": true, "channels": [{"id": "C0000000C", "name": "eng-oncall"}]}),
+        json!({"ok": true, "channels": [{"id": "C0000000B", "name": "eng-alerts"}]}),
+    ]);
     let err = resolve_channel(&slack_at(&server), "eng")
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("#eng-alerts"), "{err}");
+    assert!(
+        err.contains("#eng-alerts") && err.contains("#eng-oncall"),
+        "{err}"
+    );
+    let paths: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.path().to_string())
+        .collect();
+    assert_eq!(paths, ["/users.conversations", "/conversations.list"]);
 }
 
 #[tokio::test]
@@ -515,5 +525,118 @@ async fn uploads_use_the_external_flow_and_share_once() {
     assert!(
         !paths.contains(&"/files.upload"),
         "the retired method is never used"
+    );
+}
+
+#[tokio::test]
+async fn a_channel_lookup_stops_at_the_first_exact_match() {
+    // Page one of the person's own channels has it; the next page and the
+    // workspace-wide list are never fetched.
+    let server = MockServer::sequence(vec![json!({"ok": true,
+        "channels": [{"id": "C0000000A", "name": "general"}],
+        "response_metadata": {"next_cursor": "more"}})]);
+    assert_eq!(
+        resolve_channel(&slack_at(&server), "#general")
+            .await
+            .unwrap(),
+        "C0000000A"
+    );
+    assert_eq!(server.requests().len(), 1);
+    assert_eq!(server.requests()[0].path(), "/users.conversations");
+}
+
+#[tokio::test]
+async fn resolved_names_are_cached_for_a_while() {
+    let _home = crate::ScratchHome::new();
+    let cache = crate::slack::name_cache_path("T_TEST");
+    let server = MockServer::sequence(vec![json!({"ok": true,
+        "channels": [{"id": "C0000000A", "name": "general"}]})]);
+    let slack = slack_at(&server).with_cache(Some(cache.clone()));
+    assert_eq!(
+        resolve_channel(&slack, "general").await.unwrap(),
+        "C0000000A"
+    );
+    assert_eq!(
+        resolve_channel(&slack, "#General").await.unwrap(),
+        "C0000000A"
+    );
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "second lookup came from the cache"
+    );
+    // An entry past its TTL is ignored.
+    let stale = json!({"channel:general": {"id": "COLD",
+        "at": crate::oauth_loopback::now_secs() - crate::slack::NAME_CACHE_TTL_SECS - 1}});
+    std::fs::write(&cache, stale.to_string()).unwrap();
+    assert_eq!(slack.cache_get("channel:general"), None);
+}
+
+#[tokio::test]
+async fn a_handle_match_stops_the_user_walk_but_a_shared_name_does_not() {
+    let page1 = json!({"ok": true, "members": [
+        {"id": "U0000000A", "name": "alex", "profile": {"display_name": "Alex"}}
+    ], "response_metadata": {"next_cursor": "p2"}});
+    let server = MockServer::sequence(vec![page1.clone()]);
+    let u = resolve_user(&slack_at(&server), "@alex").await.unwrap();
+    assert_eq!(u.id, "U0000000A");
+    assert_eq!(server.requests().len(), 1, "a handle is unique");
+
+    let page1 = json!({"ok": true, "members": [
+        {"id": "U0000000B", "name": "a.one", "profile": {"display_name": "Sam"}}
+    ], "response_metadata": {"next_cursor": "p2"}});
+    let page2 = json!({"ok": true, "members": [
+        {"id": "U0000000C", "name": "a.two", "profile": {"display_name": "Sam"}}
+    ]});
+    let server = MockServer::sequence(vec![page1, page2]);
+    let err = resolve_user(&slack_at(&server), "Sam")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("several"), "{err}");
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn names_are_looked_up_concurrently_and_once_each() {
+    let server = MockServer::start_concurrent(|req| {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let id = req.query()["user"].clone();
+        (
+            200,
+            json!({"ok": true, "user": {"id": id, "name": format!("n-{id}")}}).to_string(),
+        )
+    });
+    let ids: Vec<String> = (0..8).map(|i| format!("U00000000{i}")).collect();
+    let mut with_dupes = ids.clone();
+    with_dupes.extend(ids.iter().cloned());
+    let started = std::time::Instant::now();
+    let names = names_for(&slack_at(&server), &with_dupes).await;
+    assert_eq!(names.len(), 8);
+    assert_eq!(server.requests().len(), 8, "one call per distinct id");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(150 * 8),
+        "ran one after another: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_link_at_the_end_of_a_sentence_leaves_the_full_stop_as_text() {
+    let b = text_to_blocks("Spec: https://x.dev/spec. Also (https://y.io/a), ok? https://");
+    let els = b[0]["elements"][0]["elements"].as_array().unwrap();
+    let links: Vec<&str> = els
+        .iter()
+        .filter(|e| e["type"] == "link")
+        .map(|e| e["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(links, ["https://x.dev/spec", "https://y.io/a"]);
+    let text: String = els
+        .iter()
+        .map(|e| e["text"].as_str().or(e["url"].as_str()).unwrap())
+        .collect();
+    assert_eq!(
+        text, "Spec: https://x.dev/spec. Also (https://y.io/a), ok? https://",
+        "nothing lost or doubled"
     );
 }

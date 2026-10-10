@@ -15,19 +15,21 @@ use anyhow::{Result, bail};
 /// Flags that take no value, anywhere under `slack`.
 const SWITCHES: &[&str] = &[
     "--bot",
+    "--pkce",
     "--no-browser",
     "--print-url",
     "--broadcast",
     "--member",
     "--all",
     "--print",
+    "--existing-dm",
 ];
 
 const USAGE: &str = "Usage: sidekar slack <command> …\n\
   Account:\n  \
   setup [--port N] [--app-name NAME]        the app to create, with a ready manifest\n  \
   login --token <KV_KEY> --client-id <KV_KEY> --client-secret <KV_KEY>\n        \
-        [--bot] [--team <T…>] [--port N] [--no-browser]   OAuth; user token unless --bot\n  \
+        [--bot] [--team <T…>] [--port N] [--no-browser] [--pkce]   OAuth; user token unless --bot\n  \
   add --token <KV_KEY>                      adopt an xoxp-/xoxb- token already in kv\n  \
   accounts                                  stored tokens; * marks the default\n  \
   use <KV_KEY>                              make it the default\n  \
@@ -46,7 +48,9 @@ const USAGE: &str = "Usage: sidekar slack <command> …\n\
   send <channel> TEXT [--thread <ts>] [--broadcast] [--attach <path>]…\n  \
   dm <person> TEXT [--attach <path>]…\n  \
   upload <channel|person|link> <path>… [--text T] [--thread <ts>] [--title T]\n  \
-  draft <channel|person|link> TEXT [--thread <ts>]   into your Slack Drafts; NOT sent\n  \
+  draft <channel|person|link> TEXT [--thread <ts>] [--existing-dm]   into your Slack Drafts; NOT sent\n  \
+        a person drafts into your DM with them, opening one if there is none\n  \
+        (Slack shows them nothing until a message is sent); --existing-dm refuses instead\n  \
   TEXT is --text <t> or --text-file <path>; optional when --attach is given.\n  \
   Messages list their files as [file F… name (type, size)].\n\n\
   <channel> is an id, #name, a message link, or a person (@handle, email, U…) for their DM.\n\
@@ -89,6 +93,7 @@ pub async fn cmd_slack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                     "--port",
                     "--no-browser",
                     "--print-url",
+                    "--pkce",
                 ],
             )?;
             let token_key = flag(rest, "--token").ok_or_else(|| {
@@ -114,6 +119,7 @@ pub async fn cmd_slack(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 team: team.as_deref(),
                 port: port_flag(rest)?,
                 open_browser: !has("--no-browser") && !has("--print-url"),
+                pkce: has("--pkce"),
             })
             .await?;
             out!(
@@ -350,8 +356,11 @@ async fn api_command(
                     "Usage: sidekar slack search <query> [--limit N]  (from:@x in:#y after:2026-01-01)"
                 );
             }
-            let found =
-                api::search(slack, &query, flag_usize(rest, "--limit").unwrap_or(20)).await?;
+            let limit = flag_usize(rest, "--limit").unwrap_or(20);
+            if let Some(note) = search_cap_note(limit) {
+                eprintln!("{note}");
+            }
+            let found = api::search(slack, &query, limit).await?;
             if found.is_empty() {
                 out!(ctx, "No messages match {query}.");
                 return Ok(());
@@ -571,7 +580,10 @@ async fn api_command(
                      the text, then attach the file in Slack, or use `slack upload` to post it."
                 );
             }
-            reject_unknown_flags(rest, &["--text", "--text-file", "--thread"])?;
+            reject_unknown_flags(
+                rest,
+                &["--text", "--text-file", "--thread", "--existing-dm"],
+            )?;
             if token.kind == auth::Kind::Bot {
                 bail!(
                     "a draft lives in a person's own composer, so it needs a user token; {} is a \
@@ -581,7 +593,7 @@ async fn api_command(
             }
             let target = pos.first().cloned().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Usage: sidekar slack draft <channel|person|message-link> --text <t>|--text-file <path> [--thread <ts>]"
+                    "Usage: sidekar slack draft <channel|person|message-link> --text <t>|--text-file <path> [--thread <ts>] [--existing-dm]"
                 )
             })?;
             let text = one_of(rest, "--text", "--text-file")?
@@ -589,7 +601,8 @@ async fn api_command(
                 .ok_or_else(|| {
                     anyhow::anyhow!("slack draft needs --text <t> or --text-file <path>")
                 })?;
-            let channel = api::resolve_channel(slack, &target).await?;
+            let channel =
+                draft_channel(slack, &target, rest.iter().any(|a| a == "--existing-dm")).await?;
             let thread = flag(rest, "--thread")
                 .or_else(|| api::parse_permalink(&target).map(|(_, ts, t)| t.unwrap_or(ts)));
             let id = api::draft_create(slack, &channel, &text, thread.as_deref()).await?;
@@ -774,6 +787,39 @@ async fn doctor(ctx: &mut AppContext, requested: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Where a draft goes. A person means your DM with them; `conversations.open`
+/// creates that DM if there is none (invisible to them until something is
+/// sent). With `existing_only`, a person you have no DM with is refused
+/// rather than opened.
+pub(crate) async fn draft_channel(
+    slack: &crate::slack::Slack,
+    target: &str,
+    existing_only: bool,
+) -> Result<String> {
+    if !(existing_only && api::is_person(target)) {
+        return api::resolve_channel(slack, target).await;
+    }
+    let user = api::resolve_user(slack, target).await?;
+    api::existing_dm(slack, &user.id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "you have no DM with {target} yet, and --existing-dm says not to open one. \
+             Drop --existing-dm to open it (they see nothing until a message is sent)."
+        )
+    })
+}
+
+/// The warning when `--limit` asks for more than one search page holds.
+pub(crate) fn search_cap_note(limit: usize) -> Option<String> {
+    (limit > api::SEARCH_MAX).then(|| {
+        format!(
+            "note: Slack search returns at most {} matches per request; showing the newest {}, \
+             not {limit}. Narrow the query (after:, in:, from:) to reach older ones.",
+            api::SEARCH_MAX,
+            api::SEARCH_MAX
+        )
+    })
 }
 
 fn port_flag(args: &[String]) -> Result<u16> {

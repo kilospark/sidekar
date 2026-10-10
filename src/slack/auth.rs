@@ -299,6 +299,7 @@ pub(crate) fn authorize_url(
     state: &str,
     kind: Kind,
     team: Option<&str>,
+    pkce: Option<&crate::oauth_loopback::Pkce>,
 ) -> String {
     let (param, scopes) = match kind {
         Kind::User => ("user_scope", USER_SCOPES),
@@ -315,6 +316,9 @@ pub(crate) fn authorize_url(
         // Skips the workspace picker, so the grant cannot land on whichever
         // workspace the browser happened to be signed into.
         url.push_str(&format!("&team={}", urlencoding::encode(t)));
+    }
+    if let Some(p) = pkce {
+        url.push_str(&p.query());
     }
     url
 }
@@ -351,6 +355,17 @@ pub struct LoginOptions<'a> {
     pub team: Option<&'a str>,
     pub port: u16,
     pub open_browser: bool,
+    /// Use PKCE. Only for apps with PKCE turned on in their settings, which
+    /// Slack makes a one-way switch to "public client"; see [`login`].
+    pub pkce: bool,
+}
+
+/// Whether the workspace a token landed in is the one `--team` asked for:
+/// its id, or its name.
+pub(crate) fn team_matches(requested: &str, who: &Identity) -> bool {
+    let r = requested.trim();
+    r.eq_ignore_ascii_case(&who.team_id)
+        || (!who.team.is_empty() && r.eq_ignore_ascii_case(&who.team))
 }
 
 /// Run the OAuth consent flow and store the token under `token_key`.
@@ -360,10 +375,26 @@ pub async fn login(opts: LoginOptions<'_>) -> Result<Identity> {
     let client_secret = kv(opts.client_secret_key)?
         .ok_or_else(|| anyhow::anyhow!("{} is not in sidekar kv", opts.client_secret_key))?;
 
+    if opts.pkce && opts.kind == Kind::Bot {
+        bail!(
+            "Slack does not let a PKCE app request bot scopes through a localhost redirect; \
+             drop --pkce for --bot"
+        );
+    }
     let listeners = crate::oauth_loopback::bind_localhost(opts.port)?;
     let redirect = redirect_uri(opts.port);
-    let state = crate::message::gen_msg_id();
-    let url = authorize_url(&client_id, &redirect, &state, opts.kind, opts.team);
+    let state = crate::oauth_loopback::random_state();
+    // Slack accepts PKCE only from apps that turned it on, and turning it on
+    // is permanent and rules out bot scopes on localhost, so it is opt-in.
+    let pkce = opts.pkce.then(crate::oauth_loopback::Pkce::new);
+    let url = authorize_url(
+        &client_id,
+        &redirect,
+        &state,
+        opts.kind,
+        opts.team,
+        pkce.as_ref(),
+    );
 
     println!("Open this URL to authorize:\n  {url}\n");
     println!(
@@ -376,22 +407,34 @@ pub async fn login(opts: LoginOptions<'_>) -> Result<Identity> {
     }
 
     let code = crate::oauth_loopback::wait_for_code(listeners, &state, "Slack", CONSENT_TIMEOUT)?;
-    let res = exchange(
-        &crate::http_client::client(),
-        super::BASE,
-        &[
-            ("client_id", client_id.as_str()),
-            ("client_secret", client_secret.as_str()),
-            ("code", code.as_str()),
-            ("redirect_uri", redirect.as_str()),
-        ],
-    )
-    .await?;
+    let mut form = vec![
+        ("client_id", client_id.as_str()),
+        ("code", code.as_str()),
+        ("redirect_uri", redirect.as_str()),
+    ];
+    // Slack's PKCE exchange takes the verifier instead of the secret.
+    match &pkce {
+        Some(p) => form.push(("code_verifier", p.verifier.as_str())),
+        None => form.push(("client_secret", client_secret.as_str())),
+    }
+    let res = exchange(&crate::http_client::client(), super::BASE, &form).await?;
     let token = token_from_exchange(&res, opts.kind, crate::oauth_loopback::now_secs())?;
 
     // Ask Slack who this is rather than trusting the exchange: auth.test is
     // the same call `doctor` makes, so a token that passes here works.
     let who = identify(&Slack::new(token.access_token.clone())).await?;
+    // `team=` only preselects a workspace in the consent screen; the person
+    // can still pick another. Check where the grant landed before storing it.
+    if let Some(t) = opts.team
+        && !team_matches(t, &who)
+    {
+        bail!(
+            "asked for team {t} but Slack granted a token for {} ({}). Nothing was stored; \
+             run login again and pick {t} on the consent screen.",
+            who.team,
+            who.team_id
+        );
+    }
     crate::broker::kv_set(
         opts.token_key,
         &token.to_value(),
@@ -464,13 +507,30 @@ pub(crate) async fn exchange(
 /// The access token to call with, refreshed first if it rotates and is near
 /// expiry. A token without rotation is returned as stored.
 pub async fn access_token_for(token: &TokenRef) -> Result<String> {
-    let stored = kv(&token.key)?
-        .ok_or_else(|| anyhow::anyhow!("no Slack token stored under {}", token.key))?;
-    let current = ExpiringToken::parse(&stored);
-    let now = crate::oauth_loopback::now_secs();
-    if !current.needs_refresh(now) {
-        return Ok(current.access_token);
-    }
+    access_token_for_at(token, &crate::http_client::client(), super::BASE).await
+}
+
+/// [`access_token_for`] against a given API base (tests aim it at a mock).
+/// Refreshes run under [`crate::oauth_loopback::refresh_stored`]'s lock:
+/// with rotation on, Slack's refresh tokens are single-use too.
+pub(crate) async fn access_token_for_at(
+    token: &TokenRef,
+    http: &reqwest::Client,
+    base: &str,
+) -> Result<String> {
+    let next = crate::oauth_loopback::refresh_stored(&token.key, "Slack", |current| {
+        refresh_once(token, http, base, current)
+    })
+    .await?;
+    Ok(next.access_token)
+}
+
+async fn refresh_once(
+    token: &TokenRef,
+    http: &reqwest::Client,
+    base: &str,
+    current: ExpiringToken,
+) -> Result<ExpiringToken> {
     let (Some(id_key), Some(secret_key)) = (&token.client_id_key, &token.client_secret_key) else {
         bail!(
             "the Slack token in {} has expired and was not minted by `slack login`, so there is \
@@ -483,9 +543,10 @@ pub async fn access_token_for(token: &TokenRef) -> Result<String> {
     let client_secret =
         kv(secret_key)?.ok_or_else(|| anyhow::anyhow!("{secret_key} is not in sidekar kv"))?;
     let refresh = current.refresh_token.clone().unwrap_or_default();
+    let now = crate::oauth_loopback::now_secs();
     let res = exchange(
-        &crate::http_client::client(),
-        super::BASE,
+        http,
+        base,
         &[
             ("client_id", client_id.as_str()),
             ("client_secret", client_secret.as_str()),
@@ -502,9 +563,7 @@ pub async fn access_token_for(token: &TokenRef) -> Result<String> {
             token.key
         )
     })?;
-    let next = refreshed(&res, &current, now)?;
-    crate::broker::kv_set(&token.key, &next.to_value(), None)?;
-    Ok(next.access_token)
+    refreshed(&res, &current, now)
 }
 
 /// The token after a refresh. A rotating refresh answers at the top level for

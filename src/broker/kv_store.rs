@@ -365,6 +365,19 @@ pub fn kv_history(key: &str) -> Result<Vec<KvHistoryEntry>> {
     Ok(out)
 }
 
+/// Drop every archived version of a key, keeping its current value. For
+/// keys whose old values are spent credentials (rotated OAuth tokens), where
+/// history is only a pile of secrets with no use.
+pub fn kv_clear_history(key: &str) -> Result<()> {
+    let conn = open()?;
+    let uid = current_user_id().unwrap_or_default();
+    conn.execute(
+        "DELETE FROM kv_history WHERE user_id = ?1 AND key = ?2",
+        params![uid, key],
+    )?;
+    Ok(())
+}
+
 /// Rollback a KV key to a previous version. Current value is archived first (reversible).
 pub fn kv_rollback(key: &str, target_version: i64) -> Result<()> {
     let conn = open()?;
