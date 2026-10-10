@@ -738,6 +738,7 @@ impl crate::output::CommandOutput for RequestsOutput {
             w,
             "msg_id\tstatus\tkind\tto\tcreated_at\tanswered_at\tpreview"
         )?;
+        let at = |secs: u64| crate::timefmt::from_epoch(secs as i64, crate::timefmt::zone());
         for r in &self.items {
             writeln!(
                 w,
@@ -746,10 +747,8 @@ impl crate::output::CommandOutput for RequestsOutput {
                 r.status,
                 r.kind,
                 r.to,
-                r.created_at,
-                r.answered_at
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".into()),
+                at(r.created_at),
+                r.answered_at.map(at).unwrap_or_else(|| "-".into()),
                 r.preview.replace('\n', " "),
             )?;
         }
@@ -820,7 +819,7 @@ impl crate::output::CommandOutput for RepliesOutput {
                 r.reply_id,
                 r.from,
                 r.kind,
-                r.created_at,
+                crate::timefmt::from_epoch(r.created_at as i64, crate::timefmt::zone()),
                 r.message.replace('\n', " "),
             )?;
         }
@@ -891,20 +890,17 @@ impl crate::output::CommandOutput for ShowRequestOutput {
         writeln!(w, "to: {}", self.to)?;
         writeln!(w, "channel: {}", self.channel.as_deref().unwrap_or("-"))?;
         writeln!(w, "project: {}", self.project.as_deref().unwrap_or("-"))?;
-        writeln!(w, "created_at: {}", self.created_at)?;
+        let at = |secs: u64| crate::timefmt::from_epoch(secs as i64, crate::timefmt::zone());
+        writeln!(w, "created_at: {}", at(self.created_at))?;
         writeln!(
             w,
             "answered_at: {}",
-            self.answered_at
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into())
+            self.answered_at.map(at).unwrap_or_else(|| "-".into())
         )?;
         writeln!(
             w,
             "timed_out_at: {}",
-            self.timed_out_at
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into())
+            self.timed_out_at.map(at).unwrap_or_else(|| "-".into())
         )?;
         writeln!(w, "preview: {}", self.preview)?;
         if self.replies.is_empty() {
@@ -1224,4 +1220,52 @@ pub fn cmd_unregister(state: &mut SidekarBusState, ctx: &mut AppContext) -> Resu
         crate::output::to_string(&crate::output::PlainOutput::new(msg))?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn requests_and_replies_show_iso_utc() {
+        let out = RequestsOutput {
+            items: vec![RequestOut {
+                msg_id: "m1".into(),
+                status: "answered".into(),
+                kind: "request".into(),
+                to: "bison".into(),
+                created_at: 1_789_357_009,
+                answered_at: Some(1_789_357_069),
+                preview: "hi".into(),
+            }],
+        };
+        assert!(
+            text(&out).contains(
+                "m1\tanswered\trequest\tbison\t2026-09-14T03:36:49Z\t2026-09-14T03:37:49Z\thi"
+            ),
+            "{}",
+            text(&out)
+        );
+        let replies = RepliesOutput {
+            items: vec![ReplyOut {
+                reply_to: "m1".into(),
+                reply_id: "r1".into(),
+                from: "bison".into(),
+                kind: "response".into(),
+                created_at: 1_789_357_069,
+                message: "ok".into(),
+            }],
+        };
+        assert!(text(&replies).contains("\t2026-09-14T03:37:49Z\tok"));
+        assert_eq!(
+            serde_json::to_value(&out).unwrap()["items"][0]["created_at"],
+            1_789_357_009
+        );
+    }
 }

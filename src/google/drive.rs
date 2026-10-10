@@ -14,6 +14,17 @@ pub struct Entry {
     pub size: Option<String>,
 }
 
+/// A listing line: id, size, modified (normalised, no milliseconds), name.
+pub fn entry_line(e: &Entry, zone: crate::timefmt::Zone) -> String {
+    format!(
+        "{}\t{}\t{}\t{}",
+        e.id,
+        human_size(e.size.as_deref()),
+        crate::timefmt::from_iso(&e.modified, zone),
+        e.name
+    )
+}
+
 /// List or search. `query` is Drive query syntax; empty lists the root.
 pub async fn list(token: &super::auth::TokenRef, query: &str, limit: usize) -> Result<Vec<Entry>> {
     let q = if let Some(p) = query.strip_prefix("parent:") {

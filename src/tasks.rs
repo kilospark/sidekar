@@ -26,7 +26,7 @@ pub fn cmd_tasks(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "done" => cmd_tasks_done(ctx, &args[1..]),
         "reopen" => cmd_tasks_reopen(ctx, &args[1..]),
         "delete" => cmd_tasks_delete(ctx, &args[1..]),
-        "show" => cmd_tasks_show(ctx, &args[1..]),
+        "show" => crate::timefmt::run_sync(&args[1..], |rest| cmd_tasks_show(ctx, rest)),
         "depend" => cmd_tasks_depend(ctx, &args[1..]),
         "undepend" => cmd_tasks_undepend(ctx, &args[1..]),
         "deps" => cmd_tasks_deps(ctx, &args[1..]),
@@ -236,13 +236,23 @@ impl crate::output::CommandOutput for TaskShowOutput {
         writeln!(w, "status: {}", self.status)?;
         writeln!(w, "priority: {}", self.priority)?;
         writeln!(w, "ready: {}", if self.ready { "yes" } else { "no" })?;
-        writeln!(w, "created_at: {}", self.created_at)?;
-        writeln!(w, "updated_at: {}", self.updated_at)?;
+        // Task times are stored in milliseconds.
+        let zone = crate::timefmt::zone();
+        writeln!(
+            w,
+            "created_at: {}",
+            crate::timefmt::from_epoch_ms(self.created_at, zone)
+        )?;
+        writeln!(
+            w,
+            "updated_at: {}",
+            crate::timefmt::from_epoch_ms(self.updated_at, zone)
+        )?;
         writeln!(
             w,
             "completed_at: {}",
             self.completed_at
-                .map(|v| v.to_string())
+                .map(|v| crate::timefmt::from_epoch_ms(v, zone))
                 .unwrap_or_else(|| "-".to_string())
         )?;
         writeln!(w, "notes: {}", self.notes.as_deref().unwrap_or("-"))?;

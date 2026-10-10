@@ -111,6 +111,15 @@ async fn run(mut args: Vec<String>) -> Result<()> {
         None
     };
 
+    // `--local`: shown times in this machine's zone instead of UTC. Taken
+    // before the passthrough args after `--` are added back, and only from
+    // sidekar's own part of the line, so an agent's own `--local` reaches it.
+    if take_local_flag(&mut args, |name| {
+        sidekar::is_known_command(sidekar::canonical_command_name(name).unwrap_or(name))
+    }) {
+        sidekar::timefmt::set_default(sidekar::timefmt::Zone::Local);
+    }
+
     // Sidekar's browser flags, taken before the passthrough args after `--`
     // are added back, so a `--profile` there (for an agent or a script) is
     // never mistaken for sidekar's. See `take_browser_flags`.
@@ -513,6 +522,38 @@ struct BrowserFlags {
     host: bool,
 }
 
+/// Take `--local` from the args: anywhere for a sidekar command, only ahead
+/// of the name for an agent (`sidekar --local claude`), whose own flags are
+/// its business. True when it was there.
+fn take_local_flag(args: &mut Vec<String>, is_sidekar_command: impl Fn(&str) -> bool) -> bool {
+    const FLAG: &str = sidekar::timefmt::LOCAL_FLAG;
+    let mut command_at = 0;
+    while let Some(arg) = args.get(command_at) {
+        command_at += match arg.as_str() {
+            "--profile" => 2,
+            "--host" | FLAG => 1,
+            a if a.starts_with("--profile=") => 1,
+            _ => break,
+        };
+    }
+    let end = match args.get(command_at) {
+        Some(command) if !is_sidekar_command(command) => command_at,
+        _ => args.len(),
+    };
+    let before = args.len();
+    let mut i = 0;
+    let mut kept_end = end;
+    while i < kept_end {
+        if args[i] == FLAG {
+            args.remove(i);
+            kept_end -= 1;
+        } else {
+            i += 1;
+        }
+    }
+    args.len() != before
+}
+
 /// Take `--profile <name>`, `--profile=<name>` and `--host` out of `args`
 /// (argv before any `--`).
 ///
@@ -649,21 +690,11 @@ fn print_version_info() {
     let _ = sidekar::output::emit(&version_info());
 }
 
+/// When something last happened, then how long ago:
+/// `2026-09-14T03:36:49Z (3h ago)`.
 fn format_age(timestamp: f64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    let secs = (now - timestamp).max(0.0) as u64;
-    if secs < 60 {
-        "just now".to_string()
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86400)
-    }
+    let now = sidekar::message::epoch_secs() as i64;
+    sidekar::timefmt::with_ago(timestamp.floor() as i64, now, sidekar::timefmt::zone())
 }
 
 #[cfg(test)]
@@ -709,6 +740,22 @@ mod tests {
             assert!(flags.host, "{given:?}");
             assert_eq!(rest, strings(&["browser", "tabs"]), "{given:?}");
         }
+    }
+
+    #[test]
+    fn local_is_taken_anywhere_for_sidekar_but_only_ahead_of_an_agent() {
+        let is_sidekar = |n: &str| n != "claude";
+        let mut args = strings(&["kv", "history", "k", "--local"]);
+        assert!(take_local_flag(&mut args, is_sidekar));
+        assert_eq!(args, strings(&["kv", "history", "k"]));
+
+        let mut args = strings(&["--local", "--profile", "work", "claude", "--local"]);
+        assert!(take_local_flag(&mut args, is_sidekar));
+        assert_eq!(args, strings(&["--profile", "work", "claude", "--local"]));
+
+        let mut args = strings(&["claude", "--local"]);
+        assert!(!take_local_flag(&mut args, is_sidekar));
+        assert_eq!(args, strings(&["claude", "--local"]));
     }
 
     #[test]

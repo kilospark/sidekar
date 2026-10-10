@@ -31,9 +31,9 @@ pub(super) async fn dispatch_agent_command(
         "prompt" => super::prompt::cmd_prompt(ctx, args),
         "bus" => dispatch_bus_root(ctx, args).await,
         "bus-who" => cmd_bus_who(ctx, args),
-        "bus-requests" => cmd_bus_requests(ctx, args),
-        "bus-replies" => cmd_bus_replies(ctx, args),
-        "bus-show" => cmd_bus_show(ctx, args),
+        "bus-requests" => crate::timefmt::run_sync(args, |args| cmd_bus_requests(ctx, args)),
+        "bus-replies" => crate::timefmt::run_sync(args, |args| cmd_bus_replies(ctx, args)),
+        "bus-show" => crate::timefmt::run_sync(args, |args| cmd_bus_show(ctx, args)),
         "bus-send" => cmd_bus_send(ctx, args),
         "bus-done" => cmd_bus_done(ctx, args),
         "bus-cancel" => cmd_bus_cancel(ctx, args),
@@ -43,8 +43,17 @@ pub(super) async fn dispatch_agent_command(
         "bus-explain" => cmd_bus_explain(ctx, args),
         "cron" => dispatch_cron_root(ctx, args).await,
         "cron-create" => cmd_cron_create(ctx, args).await,
-        "cron-list" => cmd_cron_list(ctx, args).await,
-        "cron-show" => cmd_cron_show(ctx, args).await,
+        "cron-list" | "cron-show" => {
+            let (zone, args) = crate::timefmt::Zone::from_args(args);
+            let run = async {
+                if command == "cron-list" {
+                    cmd_cron_list(ctx, &args).await
+                } else {
+                    cmd_cron_show(ctx, &args).await
+                }
+            };
+            crate::timefmt::scoped(zone, run).await
+        }
         "cron-delete" => cmd_cron_delete(ctx, args).await,
         "loop" => cmd_loop(ctx, args).await,
         "pack" => cmd_pack(ctx, args),

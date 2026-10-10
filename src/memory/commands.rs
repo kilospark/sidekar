@@ -13,8 +13,8 @@ pub async fn cmd_memory(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         "hygiene" => cmd_memory_hygiene(ctx, &args[1..]),
         "patterns" => cmd_memory_patterns(ctx, &args[1..]),
         "rate" => cmd_memory_rate(ctx, &args[1..]),
-        "detail" => cmd_memory_detail(ctx, &args[1..]),
-        "usage" => cmd_memory_usage(ctx, &args[1..]),
+        "detail" => crate::timefmt::run_sync(&args[1..], |rest| cmd_memory_detail(ctx, rest)),
+        "usage" => crate::timefmt::run_sync(&args[1..], |rest| cmd_memory_usage(ctx, rest)),
         "candidates" => super::candidates::cmd_memory_candidates(ctx, &args[1..]),
         "import" => super::import::cmd_memory_import(ctx, &args[1..]).await,
         "" => cmd_memory_list(ctx, args),
@@ -716,7 +716,7 @@ impl crate::output::CommandOutput for MemoryDetailOutput {
             w,
             "last_reinforced_at: {}",
             self.last_reinforced_at
-                .map(|v| v.to_string())
+                .map(|v| crate::timefmt::from_epoch_ms(v, crate::timefmt::zone()))
                 .unwrap_or_else(|| "-".to_string())
         )?;
         writeln!(
@@ -724,8 +724,18 @@ impl crate::output::CommandOutput for MemoryDetailOutput {
             "summary_hash: {}",
             self.summary_hash.as_deref().unwrap_or("-")
         )?;
-        writeln!(w, "created_at: {}", self.created_at)?;
-        writeln!(w, "updated_at: {}", self.updated_at)?;
+        // Memory times are stored in milliseconds.
+        let zone = crate::timefmt::zone();
+        writeln!(
+            w,
+            "created_at: {}",
+            crate::timefmt::from_epoch_ms(self.created_at, zone)
+        )?;
+        writeln!(
+            w,
+            "updated_at: {}",
+            crate::timefmt::from_epoch_ms(self.updated_at, zone)
+        )?;
         Ok(())
     }
 }
@@ -840,8 +850,14 @@ impl crate::output::CommandOutput for MemoryUsageOutput {
             };
             writeln!(
                 w,
-                "[{}] {} at {:.3}{}{}{}{}",
-                item.id, item.usage_kind, item.created_at, session, journal, entry, detail
+                "[{}] {} at {}{}{}{}{}",
+                item.id,
+                item.usage_kind,
+                crate::timefmt::from_epoch_f64(item.created_at, crate::timefmt::zone()),
+                session,
+                journal,
+                entry,
+                detail
             )?;
         }
         Ok(())
@@ -879,4 +895,47 @@ fn cmd_memory_usage(ctx: &mut AppContext, args: &[String]) -> Result<()> {
         })?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn detail_reads_millisecond_times_as_iso_utc() {
+        let out = MemoryDetailOutput {
+            id: 1,
+            summary: "s".into(),
+            event_type: "fact".into(),
+            project: "p".into(),
+            scope: "project".into(),
+            confidence: 0.5,
+            trigger: "t".into(),
+            source: "x".into(),
+            tags: vec![],
+            supersedes: vec![],
+            superseded_by: None,
+            reinforcement_count: 0,
+            last_reinforced_at: None,
+            summary_hash: None,
+            created_at: 1_789_357_009_709,
+            updated_at: 1_789_357_069_000,
+        };
+        let shown = text(&out);
+        assert!(
+            shown.contains("created_at: 2026-09-14T03:36:49Z\n"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("updated_at: 2026-09-14T03:37:49Z\n"),
+            "{shown}"
+        );
+        assert!(shown.contains("last_reinforced_at: -\n"), "{shown}");
+    }
 }

@@ -63,15 +63,32 @@ pub async fn search(
 /// One message as readable text.
 pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
     let m = super::api_get(token, &format!("{BASE}/messages/{id}?format=full")).await?;
-    let mut out = format!("From: {}\nTo: {}\n", header(&m, "From"), header(&m, "To"));
-    let cc = header(&m, "Cc");
+    Ok(render_message(&m, crate::timefmt::zone()))
+}
+
+/// A search hit as one line: id, date, sender, subject. The `Date` header is
+/// shown normalised (see [`crate::timefmt::from_rfc2822`]).
+pub fn summary_line(m: &Summary, zone: crate::timefmt::Zone) -> String {
+    format!(
+        "{}\t{}\t{}\t{}",
+        m.id,
+        crate::timefmt::from_rfc2822(&m.date, zone),
+        m.from,
+        m.subject
+    )
+}
+
+/// A full message (`format=full`) as readable text.
+pub(crate) fn render_message(m: &Value, zone: crate::timefmt::Zone) -> String {
+    let mut out = format!("From: {}\nTo: {}\n", header(m, "From"), header(m, "To"));
+    let cc = header(m, "Cc");
     if !cc.is_empty() {
         out.push_str(&format!("Cc: {cc}\n"));
     }
     out.push_str(&format!(
         "Date: {}\nSubject: {}\n\n",
-        header(&m, "Date"),
-        header(&m, "Subject")
+        crate::timefmt::from_rfc2822(&header(m, "Date"), zone),
+        header(m, "Subject")
     ));
     let payload = m.get("payload").unwrap_or(&Value::Null);
     let files = attachments(payload);
@@ -88,7 +105,7 @@ pub async fn read(token: &super::auth::TokenRef, id: &str) -> Result<String> {
         out.push('\n');
     }
     out.push_str(&body_text(payload));
-    Ok(out)
+    out
 }
 
 /// One file hanging off a message.

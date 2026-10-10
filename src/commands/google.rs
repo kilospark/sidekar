@@ -2,6 +2,7 @@
 
 use crate::AppContext;
 use crate::google;
+use crate::timefmt::{self, Zone};
 use anyhow::{Context, Result, bail};
 
 pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
@@ -240,6 +241,13 @@ pub async fn cmd_google(ctx: &mut AppContext, args: &[String]) -> Result<()> {
 }
 
 pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    // `--local` goes with every command, like `--token`: it only changes how
+    // times are shown.
+    let (zone, args) = Zone::from_args(args);
+    timefmt::scoped(zone, gmail_command(ctx, &args)).await
+}
+
+async fn gmail_command(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
@@ -256,7 +264,7 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 out!(ctx, "No messages match {query}.");
             }
             for m in found {
-                out!(ctx, "{}\t{}\t{}\t{}", m.id, m.date, m.from, m.subject);
+                out!(ctx, "{}", google::gmail::summary_line(&m, timefmt::zone()));
                 if !m.snippet.is_empty() {
                     out!(ctx, "    {}", m.snippet);
                 }
@@ -397,7 +405,8 @@ pub async fn cmd_gmail(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              attachment <message-id> <filename> [--out <path>] | --all [--out <dir>]\n  \
              (--attach <path> on send/draft, repeatable, 5MB total)\n  \
              labels\n  \
-             modify <id> [--add LABEL] [--remove LABEL]   (UNREAD is a label)"
+             modify <id> [--add LABEL] [--remove LABEL]   (UNREAD is a label)\n  \
+             Dates show as ISO 8601 UTC (2026-09-14T03:36:49Z); --local shows this machine's zone."
         ),
     }
 }
@@ -517,6 +526,13 @@ async fn cmd_gmail_draft(
 }
 
 pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    // `--local` goes with every command, like `--token`: it only changes how
+    // times are shown.
+    let (zone, args) = Zone::from_args(args);
+    timefmt::scoped(zone, drive_command(ctx, &args)).await
+}
+
+async fn drive_command(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
@@ -535,14 +551,7 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 out!(ctx, "Nothing found.");
             }
             for e in entries {
-                out!(
-                    ctx,
-                    "{}\t{}\t{}\t{}",
-                    e.id,
-                    google::drive::human_size(e.size.as_deref()),
-                    e.modified,
-                    e.name
-                );
+                out!(ctx, "{}", google::drive::entry_line(&e, timefmt::zone()));
                 let _ = &e.mime;
             }
             Ok(())
@@ -628,18 +637,27 @@ pub async fn cmd_drive(ctx: &mut AppContext, args: &[String]) -> Result<()> {
              mv <file-id> --to <folder-id> [--from <folder-id>]   one call, no data transfer\n  \
              get <file-id> [--out path]    Docs export as text, Sheets as CSV\n  \
              put <path> [--name n] [--folder id]   omit --folder for My Drive root\n  \
-             rm <file-id> [--permanent]    trashes by default; --permanent has no undo"
+             rm <file-id> [--permanent]    trashes by default; --permanent has no undo\n  \
+             Modified times show as ISO 8601 UTC (2026-09-14T03:36:49Z); --local shows this machine's zone."
         ),
     }
 }
 
 pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
+    // `--local` goes with every command, like `--token`: it only changes how
+    // times are shown.
+    let (zone, args) = Zone::from_args(args);
+    timefmt::scoped(zone, calendar_command(ctx, &args)).await
+}
+
+async fn calendar_command(ctx: &mut AppContext, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let token = google::auth::resolve_token(flag(rest, "--token").as_deref())?;
     let cal = flag(rest, "--calendar").unwrap_or_else(|| "primary".into());
     match sub {
         "list" | "" => {
+            let zone = timefmt::zone();
             let days = flag_usize(rest, "--days").unwrap_or(7) as u32;
             let limit = flag_usize(rest, "--limit").unwrap_or(25);
             let events = google::calendar::list(&token, &cal, days, limit).await?;
@@ -647,15 +665,7 @@ pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
                 out!(ctx, "Nothing scheduled in the next {days} days.");
             }
             for e in events {
-                out!(
-                    ctx,
-                    "{}\t{} → {}\t{} ({} attendees)",
-                    e.id,
-                    e.start,
-                    e.end,
-                    e.summary,
-                    e.attendees
-                );
+                out!(ctx, "{}", google::calendar::event_line(&e, zone));
             }
             Ok(())
         }
@@ -678,7 +688,9 @@ pub async fn cmd_calendar(ctx: &mut AppContext, args: &[String]) -> Result<()> {
             "Usage: sidekar calendar <list|create> …\n  \
              list [--days N] [--limit N] [--calendar id]\n  \
              create --summary <s> --start <t> --end <t> [--attendees a,b] [--calendar id]\n  \
-             times are RFC3339 (2026-09-20T14:00:00-04:00) or a bare date for all-day"
+             times are RFC3339 (2026-09-20T14:00:00-04:00) or a bare date for all-day\n  \
+             list shows timed events in ISO 8601 UTC (--local: this machine's zone) with the\n  \
+             event's own zone in [brackets]; all-day events stay dates"
         ),
     }
 }

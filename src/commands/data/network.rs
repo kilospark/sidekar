@@ -8,6 +8,10 @@ struct CookieEntry {
     domain: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires: Option<String>,
+    /// The same expiry in epoch seconds, for the text view; JSON keeps
+    /// `expires` as it was.
+    #[serde(skip)]
+    expires_at: Option<i64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     flags: Vec<String>,
 }
@@ -25,9 +29,13 @@ impl crate::output::CommandOutput for CookiesOutput {
         }
         for c in &self.cookies {
             let exp = c
-                .expires
-                .as_ref()
-                .map(|e| format!(" exp:{e}"))
+                .expires_at
+                .map(|at| {
+                    format!(
+                        " exp:{}",
+                        crate::timefmt::from_epoch(at, crate::timefmt::zone())
+                    )
+                })
                 .unwrap_or_default();
             writeln!(
                 w,
@@ -168,16 +176,14 @@ pub(crate) async fn cmd_cookies(ctx: &mut AppContext, args: &[String]) -> Result
                     if c.get("session").and_then(Value::as_bool).unwrap_or(false) {
                         flags.push("session".to_string());
                     }
-                    let expires = if expires > 0.0 {
-                        Some(epoch_to_date(expires as i64))
-                    } else {
-                        None
-                    };
+                    let expires_at = (expires > 0.0).then_some(expires as i64);
+                    let expires = expires_at.map(epoch_to_date);
                     CookieEntry {
                         name,
                         value,
                         domain,
                         expires,
+                        expires_at,
                         flags,
                     }
                 })
@@ -998,4 +1004,34 @@ pub(crate) async fn cmd_block(ctx: &mut AppContext, args: &[String]) -> Result<(
     };
     out!(ctx, "{}", crate::output::to_string(&PlainOutput::new(msg))?);
     Ok(())
+}
+
+#[cfg(test)]
+mod shown_times {
+    use super::*;
+
+    fn text<T: crate::output::CommandOutput>(v: &T) -> String {
+        let mut buf = Vec::new();
+        v.render_text(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn a_cookie_expiry_reads_as_iso_utc_and_json_keeps_its_string() {
+        let out = CookiesOutput {
+            cookies: vec![CookieEntry {
+                name: "sid".into(),
+                value: "x".into(),
+                domain: ".example.com".into(),
+                expires: Some(epoch_to_date(1_789_357_009)),
+                expires_at: Some(1_789_357_009),
+                flags: vec!["secure".into()],
+            }],
+        };
+        let shown = text(&out);
+        assert!(shown.contains("exp:2026-09-14T03:36:49Z"), "{shown}");
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["cookies"][0]["expires"], "2026-09-14 03:36:49 UTC");
+        assert!(json["cookies"][0].get("expires_at").is_none());
+    }
 }
