@@ -435,6 +435,123 @@ pub async fn permalink(slack: &Slack, channel: &str, ts: &str) -> Result<String>
 }
 
 // ---------------------------------------------------------------------------
+// Drafts
+// ---------------------------------------------------------------------------
+
+/// Text as the single rich-text block Slack's composer stores a draft as,
+/// with bare URLs turned into link elements so they stay clickable.
+pub(crate) fn text_to_blocks(text: &str) -> Value {
+    let mut elements = Vec::new();
+    let mut rest = text;
+    while let Some(start) = ["https://", "http://"]
+        .iter()
+        .filter_map(|p| rest.find(p))
+        .min()
+    {
+        if start > 0 {
+            elements.push(json!({"type": "text", "text": &rest[..start]}));
+        }
+        let end = rest[start..]
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '|')
+            .map(|e| start + e)
+            .unwrap_or(rest.len());
+        elements.push(json!({"type": "link", "url": &rest[start..end]}));
+        rest = &rest[end..];
+    }
+    if !rest.is_empty() {
+        elements.push(json!({"type": "text", "text": rest}));
+    }
+    json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": elements}]}])
+}
+
+/// A random v4 UUID, which Slack wants as the draft's `client_msg_id`.
+pub(crate) fn uuid_v4() -> String {
+    let mut b: [u8; 16] = rand::random();
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// Put a draft in the user's own Slack composer — in Drafts & Sent, not
+/// posted. Returns the draft id.
+///
+/// `drafts.create` is not in Slack's published API. It is what Slack's own
+/// clients call, and it accepts an OAuth user token; its siblings
+/// (`drafts.list`, `drafts.update`, `drafts.delete`) do not, so a draft made
+/// here is reviewed, edited, sent or discarded in Slack itself. Because it is
+/// undocumented, Slack may change or close it without notice; errors are
+/// reported as Slack gives them rather than papered over.
+pub async fn draft_create(
+    slack: &Slack,
+    channel: &str,
+    text: &str,
+    thread_ts: Option<&str>,
+) -> Result<String> {
+    let mut dest = json!({"channel_id": channel});
+    if let Some(t) = thread_ts {
+        dest["thread_ts"] = json!(t);
+    }
+    let v = slack
+        .post(
+            "drafts.create",
+            &json!({
+                "blocks": text_to_blocks(text),
+                "destinations": [dest],
+                "file_ids": [],
+                "is_from_composer": false,
+                "client_msg_id": uuid_v4(),
+            }),
+        )
+        .await?;
+    Ok(v.pointer("/draft/id")
+        .and_then(|d| d.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Bookmarks
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    pub id: String,
+    pub title: String,
+    pub link: String,
+    pub kind: String,
+    pub emoji: String,
+}
+
+pub(crate) fn bookmark_from(v: &Value) -> Bookmark {
+    Bookmark {
+        id: s(v, "id"),
+        title: s(v, "title"),
+        link: s(v, "link"),
+        kind: s(v, "type"),
+        emoji: s(v, "emoji"),
+    }
+}
+
+/// The bookmarks bar of a channel (`bookmarks.list`, scope `bookmarks:read`).
+pub async fn bookmarks(slack: &Slack, channel: &str) -> Result<Vec<Bookmark>> {
+    let v = slack
+        .get("bookmarks.list", &[("channel_id", channel.to_string())])
+        .await?;
+    Ok(v.get("bookmarks")
+        .and_then(|b| b.as_array())
+        .map(|a| a.iter().map(bookmark_from).collect())
+        .unwrap_or_default())
+}
+
+// ---------------------------------------------------------------------------
 // People
 // ---------------------------------------------------------------------------
 

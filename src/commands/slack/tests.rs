@@ -16,8 +16,23 @@ fn a_switch_does_not_eat_the_next_flag() {
 #[test]
 fn every_usage_line_names_a_real_subcommand() {
     for verb in [
-        "setup", "login", "add", "accounts", "use", "status", "doctor", "logout", "channels",
-        "read", "search", "users", "user", "send", "dm",
+        "setup",
+        "login",
+        "add",
+        "accounts",
+        "use",
+        "status",
+        "doctor",
+        "logout",
+        "channels",
+        "read",
+        "search",
+        "users",
+        "user",
+        "send",
+        "dm",
+        "draft",
+        "bookmarks",
     ] {
         let tokens: Vec<&str> = USAGE
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
